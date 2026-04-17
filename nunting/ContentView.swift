@@ -6,12 +6,14 @@ struct ContentView: View {
     @State private var errorMessage: String?
 
     private let board = Board.clienNews
-    private let parser = ClienParser()
 
     var body: some View {
         NavigationStack {
             content
                 .navigationTitle(board.name)
+                .navigationDestination(for: Post.self) { post in
+                    PostDetailView(post: post)
+                }
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button {
@@ -49,9 +51,6 @@ struct ContentView: View {
                     }
                 }
             }
-            .navigationDestination(for: Post.self) { post in
-                PostDetailView(post: post)
-            }
             .refreshable { await load() }
         }
     }
@@ -60,6 +59,7 @@ struct ContentView: View {
         isLoading = true
         errorMessage = nil
         do {
+            let parser = try ParserFactory.parser(for: board.site)
             let html = try await Networking.fetchHTML(url: board.url, encoding: board.site.encoding)
             posts = try parser.parseList(html: html, board: board)
         } catch {

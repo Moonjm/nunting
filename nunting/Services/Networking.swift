@@ -15,10 +15,23 @@ enum NetworkError: Error, LocalizedError {
 struct Networking {
     static let userAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
 
+    static let sharedCache: URLCache = {
+        let cache = URLCache(
+            memoryCapacity: 50 * 1024 * 1024,
+            diskCapacity: 200 * 1024 * 1024,
+            directory: nil
+        )
+        URLCache.shared = cache
+        return cache
+    }()
+
     static let session: URLSession = {
+        _ = sharedCache
         let config = URLSessionConfiguration.default
         config.httpAdditionalHeaders = ["User-Agent": userAgent]
         config.timeoutIntervalForRequest = 15
+        config.urlCache = sharedCache
+        config.requestCachePolicy = .useProtocolCachePolicy
         return URLSession(configuration: config)
     }()
 

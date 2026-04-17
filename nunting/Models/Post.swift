@@ -12,16 +12,17 @@ struct Post: Identifiable, Hashable {
     let url: URL
 }
 
-enum ContentBlock: Identifiable, Hashable {
-    case text(String)
-    case image(URL)
+struct ContentBlock: Identifiable, Hashable {
+    let id: UUID
+    let kind: Kind
 
-    var id: String {
-        switch self {
-        case .text(let s): "t-\(s.hashValue)"
-        case .image(let url): "i-\(url.absoluteString)"
-        }
+    enum Kind: Hashable {
+        case text(String)
+        case image(URL)
     }
+
+    static func text(_ s: String) -> ContentBlock { .init(id: UUID(), kind: .text(s)) }
+    static func image(_ url: URL) -> ContentBlock { .init(id: UUID(), kind: .image(url)) }
 }
 
 struct PostSource: Hashable {
@@ -32,8 +33,14 @@ struct PostSource: Hashable {
 struct PostDetail {
     let post: Post
     let blocks: [ContentBlock]
-    let images: [URL]
     let fullDateText: String?
     let viewCount: Int?
     let source: PostSource?
+    let comments: [Comment]
+
+    var images: [URL] {
+        blocks.compactMap { block in
+            if case .image(let url) = block.kind { url } else { nil }
+        }
+    }
 }

@@ -25,7 +25,11 @@ struct ClienParser: BoardParser {
 
             let commentCount = Int(try row.attr("data-comment-count")) ?? 0
             let boardSN = try row.attr("data-board-sn")
-            let postID = boardSN.isEmpty ? url.absoluteString : boardSN
+            let postID: String = if !boardSN.isEmpty {
+                boardSN
+            } else {
+                url.pathComponents.last ?? url.path
+            }
 
             return Post(
                 id: "\(site.rawValue)-\(postID)",
@@ -44,93 +48,179 @@ struct ClienParser: BoardParser {
     func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
         guard let article = try doc.select("div.post_article").first() else {
-            return PostDetail(post: post, blocks: [], images: [], fullDateText: nil, viewCount: nil, source: nil)
+            throw ParserError.structureChanged("post_article 없음")
         }
 
         let (source, skipFirstParagraph) = try extractSource(from: article)
 
         var blocks: [ContentBlock] = []
-        var images: [URL] = []
-
-        for (index, child) in article.children().enumerated() {
+        let children = article.children()
+        for (index, child) in children.enumerated() {
             if skipFirstParagraph && index == 0 { continue }
-            try appendBlocks(from: child, into: &blocks, images: &images)
+            try collectBlocks(from: child, into: &blocks)
         }
 
         let fullDateText = try doc.select("div.post_date").first()?.text()
             .replacingOccurrences(of: "\u{00A0}", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         let viewCountText = try doc.select("div.view_count").first()?.text() ?? ""
-        let viewCount = Int(viewCountText.filter(\.isNumber))
+        let viewCount = firstInteger(in: viewCountText)
+
+        let comments = try parseComments(doc: doc)
 
         return PostDetail(
             post: post,
             blocks: blocks,
-            images: images,
             fullDateText: fullDateText,
             viewCount: viewCount,
-            source: source
+            source: source,
+            comments: comments
         )
     }
 
     private func extractSource(from article: Element) throws -> (source: PostSource?, skipFirstParagraph: Bool) {
         guard let firstP = article.children().first(),
-              firstP.tagName().lowercased() == "p",
-              let anchor = try firstP.select("a").first()
-        else { return (nil, false) }
-
-        let href = try anchor.attr("href")
-        guard let url = URL(string: href),
-              let host = url.host,
-              !host.contains("clien.net")
+              firstP.tagName().lowercased() == "p"
         else { return (nil, false) }
 
         let paragraphText = try firstP.text()
-        let sourceName: String
-        if let pipeRange = paragraphText.range(of: "|", options: .backwards) {
-            let after = paragraphText[pipeRange.upperBound...].trimmingCharacters(in: .whitespaces)
-            sourceName = after.isEmpty ? host : after
-        } else {
-            sourceName = host
+        guard let pipeRange = paragraphText.range(of: "|", options: .backwards) else {
+            return (nil, false)
         }
+        let afterPipe = paragraphText[pipeRange.upperBound...].trimmingCharacters(in: .whitespaces)
+        guard !afterPipe.isEmpty else { return (nil, false) }
 
-        return (PostSource(name: sourceName, url: url), true)
+        guard let anchor = try firstP.select("a").first() else {
+            return (nil, false)
+        }
+        let anchorText = try anchor.text()
+        guard let anchorPos = paragraphText.range(of: anchorText),
+              anchorPos.lowerBound < pipeRange.lowerBound
+        else { return (nil, false) }
+
+        let href = try anchor.attr("href")
+        guard let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL,
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = url.host?.lowercased(),
+              !host.hasSuffix(".clien.net"),
+              host != "clien.net"
+        else { return (nil, false) }
+
+        return (PostSource(name: afterPipe, url: url), true)
     }
 
-    private func appendBlocks(from element: Element, into blocks: inout [ContentBlock], images: inout [URL]) throws {
-        let tag = element.tagName().lowercased()
+    private func collectBlocks(from element: Element, into blocks: inout [ContentBlock]) throws {
+        var textBuffer = ""
 
+        func flushText() {
+            let trimmed = textBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                blocks.append(.text(trimmed))
+            }
+            textBuffer = ""
+        }
+
+        let tag = element.tagName().lowercased()
         if tag == "img" {
             if let url = try imageURL(from: element) {
                 blocks.append(.image(url))
-                images.append(url)
             }
             return
         }
 
-        let innerImgs = try element.select("img")
-        if !innerImgs.isEmpty() {
-            for img in innerImgs {
-                if let url = try imageURL(from: img) {
-                    blocks.append(.image(url))
-                    images.append(url)
+        for node in element.getChildNodes() {
+            if let el = node as? Element {
+                let childTag = el.tagName().lowercased()
+                switch childTag {
+                case "img":
+                    flushText()
+                    if let url = try imageURL(from: el) {
+                        blocks.append(.image(url))
+                    }
+                case "br":
+                    textBuffer += "\n"
+                default:
+                    let nestedImgs = try el.select("img")
+                    if !nestedImgs.isEmpty() {
+                        flushText()
+                        try collectBlocks(from: el, into: &blocks)
+                    } else {
+                        textBuffer += try el.text()
+                    }
                 }
+            } else if let textNode = node as? TextNode {
+                textBuffer += textNode.text()
             }
-            let strippedText = try element.text().trimmingCharacters(in: .whitespacesAndNewlines)
-            if !strippedText.isEmpty {
-                blocks.append(.text(strippedText))
-            }
-            return
         }
-
-        let text = try element.text().trimmingCharacters(in: .whitespacesAndNewlines)
-        if !text.isEmpty {
-            blocks.append(.text(text))
-        }
+        flushText()
     }
 
     private func imageURL(from element: Element) throws -> URL? {
         let src = try element.attr("src")
-        guard !src.isEmpty else { return nil }
-        return URL(string: src, relativeTo: site.baseURL)?.absoluteURL
+        guard !src.isEmpty,
+              let url = URL(string: src, relativeTo: site.baseURL)?.absoluteURL,
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https"
+        else { return nil }
+        return url
+    }
+
+    private func parseComments(doc: Document) throws -> [Comment] {
+        let rows = try doc.select("div.comment_row[data-role=comment-row]")
+        var results: [Comment] = []
+
+        for row in rows {
+            let sn = try row.attr("data-comment-sn").trimmingCharacters(in: .whitespaces)
+            let authorID = try row.attr("data-author-id")
+
+            let nicknameText = try row.select("span.nickname").first()?.text()
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let nickImgAlt = try row.select("span.nickimg img").first()?.attr("alt")
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let author = !nicknameText.isEmpty ? nicknameText
+                : !nickImgAlt.isEmpty ? nickImgAlt
+                : authorID
+
+            let dateText = try row.select("span.timestamp").first()?.text()
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+            guard let viewEl = try row.select("div.comment_view").first() else { continue }
+            try viewEl.select("input").remove()
+            let content = try viewEl.text().trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !content.isEmpty else { continue }
+
+            let likeText = try row.select("strong[id^=setLikeCount_]").first()?.text()
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? "0"
+            let likeCount = Int(likeText) ?? 0
+
+            let isReply = try row.classNames().contains { $0.lowercased().contains("re") && $0.lowercased() != "comment_row" }
+
+            let commentID: String = sn.isEmpty
+                ? "\(site.rawValue)-c-\(results.count)"
+                : "\(site.rawValue)-c-\(sn)"
+
+            results.append(Comment(
+                id: commentID,
+                author: author,
+                dateText: dateText,
+                content: content,
+                likeCount: likeCount,
+                isReply: isReply
+            ))
+        }
+        return results
+    }
+
+    private func firstInteger(in text: String) -> Int? {
+        var digits = ""
+        for char in text {
+            if char.isNumber {
+                digits.append(char)
+            } else if !digits.isEmpty && char != "," {
+                break
+            }
+        }
+        return digits.isEmpty ? nil : Int(digits)
     }
 }
