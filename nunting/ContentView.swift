@@ -34,18 +34,23 @@ struct ContentView: View {
             ContentUnavailableView("불러오기 실패", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
         } else {
             List(posts) { post in
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(post.title).font(.body)
-                    HStack(spacing: 8) {
-                        Text(post.author)
-                        Text(post.dateText)
-                        if post.commentCount > 0 {
-                            Text("💬 \(post.commentCount)")
+                NavigationLink(value: post) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(post.title).font(.body)
+                        HStack(spacing: 8) {
+                            Text(post.author)
+                            Text(post.dateText)
+                            if post.commentCount > 0 {
+                                Text("💬 \(post.commentCount)")
+                            }
                         }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 }
+            }
+            .navigationDestination(for: Post.self) { post in
+                PostDetailView(post: post)
             }
             .refreshable { await load() }
         }

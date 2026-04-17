@@ -12,8 +12,22 @@ struct Post: Identifiable, Hashable {
     let url: URL
 }
 
+enum ContentBlock: Identifiable, Hashable {
+    case text(String)
+    case image(URL)
+
+    var id: String {
+        switch self {
+        case .text(let s): "t-\(s.hashValue)"
+        case .image(let url): "i-\(url.absoluteString)"
+        }
+    }
+}
+
 struct PostDetail {
     let post: Post
-    let contentHTML: String
+    let blocks: [ContentBlock]
     let images: [URL]
+    let fullDateText: String?
+    let viewCount: Int?
 }

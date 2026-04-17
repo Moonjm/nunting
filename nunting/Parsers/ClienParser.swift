@@ -43,16 +43,66 @@ struct ClienParser: BoardParser {
 
     func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
-        let contentEl = try doc.select("div.post_article").first()
-            ?? doc.select("div.post_content").first()
-        let contentHTML = try contentEl?.html() ?? ""
-
-        let imageElements = try doc.select("div.post_article img, div.post_content img")
-        let images: [URL] = imageElements.compactMap { img in
-            guard let src = try? img.attr("src"), !src.isEmpty else { return nil }
-            return URL(string: src, relativeTo: site.baseURL)?.absoluteURL
+        guard let article = try doc.select("div.post_article").first() else {
+            return PostDetail(post: post, blocks: [], images: [], fullDateText: nil, viewCount: nil)
         }
 
-        return PostDetail(post: post, contentHTML: contentHTML, images: images)
+        var blocks: [ContentBlock] = []
+        var images: [URL] = []
+
+        for child in article.children() {
+            try appendBlocks(from: child, into: &blocks, images: &images)
+        }
+
+        let fullDateText = try doc.select("div.post_date").first()?.text()
+            .replacingOccurrences(of: "\u{00A0}", with: " ")
+        let viewCountText = try doc.select("div.view_count").first()?.text() ?? ""
+        let viewCount = Int(viewCountText.filter(\.isNumber))
+
+        return PostDetail(
+            post: post,
+            blocks: blocks,
+            images: images,
+            fullDateText: fullDateText,
+            viewCount: viewCount
+        )
+    }
+
+    private func appendBlocks(from element: Element, into blocks: inout [ContentBlock], images: inout [URL]) throws {
+        let tag = element.tagName().lowercased()
+
+        if tag == "img" {
+            if let url = try imageURL(from: element) {
+                blocks.append(.image(url))
+                images.append(url)
+            }
+            return
+        }
+
+        let innerImgs = try element.select("img")
+        if !innerImgs.isEmpty() {
+            for img in innerImgs {
+                if let url = try imageURL(from: img) {
+                    blocks.append(.image(url))
+                    images.append(url)
+                }
+            }
+            let strippedText = try element.text().trimmingCharacters(in: .whitespacesAndNewlines)
+            if !strippedText.isEmpty {
+                blocks.append(.text(strippedText))
+            }
+            return
+        }
+
+        let text = try element.text().trimmingCharacters(in: .whitespacesAndNewlines)
+        if !text.isEmpty {
+            blocks.append(.text(text))
+        }
+    }
+
+    private func imageURL(from element: Element) throws -> URL? {
+        let src = try element.attr("src")
+        guard !src.isEmpty else { return nil }
+        return URL(string: src, relativeTo: site.baseURL)?.absoluteURL
     }
 }
