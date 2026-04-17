@@ -44,13 +44,16 @@ struct ClienParser: BoardParser {
     func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
         guard let article = try doc.select("div.post_article").first() else {
-            return PostDetail(post: post, blocks: [], images: [], fullDateText: nil, viewCount: nil)
+            return PostDetail(post: post, blocks: [], images: [], fullDateText: nil, viewCount: nil, source: nil)
         }
+
+        let (source, skipFirstParagraph) = try extractSource(from: article)
 
         var blocks: [ContentBlock] = []
         var images: [URL] = []
 
-        for child in article.children() {
+        for (index, child) in article.children().enumerated() {
+            if skipFirstParagraph && index == 0 { continue }
             try appendBlocks(from: child, into: &blocks, images: &images)
         }
 
@@ -64,8 +67,33 @@ struct ClienParser: BoardParser {
             blocks: blocks,
             images: images,
             fullDateText: fullDateText,
-            viewCount: viewCount
+            viewCount: viewCount,
+            source: source
         )
+    }
+
+    private func extractSource(from article: Element) throws -> (source: PostSource?, skipFirstParagraph: Bool) {
+        guard let firstP = article.children().first(),
+              firstP.tagName().lowercased() == "p",
+              let anchor = try firstP.select("a").first()
+        else { return (nil, false) }
+
+        let href = try anchor.attr("href")
+        guard let url = URL(string: href),
+              let host = url.host,
+              !host.contains("clien.net")
+        else { return (nil, false) }
+
+        let paragraphText = try firstP.text()
+        let sourceName: String
+        if let pipeRange = paragraphText.range(of: "|", options: .backwards) {
+            let after = paragraphText[pipeRange.upperBound...].trimmingCharacters(in: .whitespaces)
+            sourceName = after.isEmpty ? host : after
+        } else {
+            sourceName = host
+        }
+
+        return (PostSource(name: sourceName, url: url), true)
     }
 
     private func appendBlocks(from element: Element, into blocks: inout [ContentBlock], images: inout [URL]) throws {

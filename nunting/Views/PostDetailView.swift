@@ -10,8 +10,6 @@ struct PostDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                SiteBadge(site: post.site)
-
                 Text(post.title)
                     .font(.title3)
                     .fontWeight(.semibold)
@@ -29,6 +27,10 @@ struct PostDetailView: View {
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+                if let source = detail?.source {
+                    SourceBanner(source: source)
+                }
 
                 Divider()
 
@@ -99,5 +101,27 @@ struct PostDetailView: View {
             errorMessage = error.localizedDescription
         }
         isLoading = false
+    }
+}
+
+private struct SourceBanner: View {
+    let source: PostSource
+
+    var body: some View {
+        Link(destination: source.url) {
+            HStack(spacing: 8) {
+                Image(systemName: "link")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("출처").font(.caption2).foregroundStyle(.secondary)
+                    Text(source.name).font(.callout).fontWeight(.medium)
+                }
+                Spacer()
+                Image(systemName: "arrow.up.right.square")
+                    .foregroundStyle(.secondary)
+            }
+            .padding(12)
+            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
     }
 }

@@ -24,10 +24,16 @@ enum ContentBlock: Identifiable, Hashable {
     }
 }
 
+struct PostSource: Hashable {
+    let name: String
+    let url: URL
+}
+
 struct PostDetail {
     let post: Post
     let blocks: [ContentBlock]
     let images: [URL]
     let fullDateText: String?
     let viewCount: Int?
+    let source: PostSource?
 }
