@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		6ED66F832F92705500A64087 /* SwiftSoup in Frameworks */ = {isa = PBXBuildFile; productRef = 6ED66F822F92705500A64087 /* SwiftSoup */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		6ED66F732F926F2700A64087 /* nunting.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = nunting.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -23,6 +27,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				6ED66F832F92705500A64087 /* SwiftSoup in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -65,6 +70,7 @@
 			);
 			name = nunting;
 			packageProductDependencies = (
+				6ED66F822F92705500A64087 /* SwiftSoup */,
 			);
 			productName = nunting;
 			productReference = 6ED66F732F926F2700A64087 /* nunting.app */;
@@ -94,6 +100,9 @@
 			);
 			mainGroup = 6ED66F6A2F926F2700A64087;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				6ED66F812F92705500A64087 /* XCRemoteSwiftPackageReference "SwiftSoup" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 6ED66F742F926F2700A64087 /* Products */;
 			projectDirPath = "";
@@ -351,6 +360,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		6ED66F812F92705500A64087 /* XCRemoteSwiftPackageReference "SwiftSoup" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/scinfu/SwiftSoup";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.13.4;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		6ED66F822F92705500A64087 /* SwiftSoup */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 6ED66F812F92705500A64087 /* XCRemoteSwiftPackageReference "SwiftSoup" */;
+			productName = SwiftSoup;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 6ED66F6B2F926F2700A64087 /* Project object */;
 }
