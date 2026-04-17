@@ -10,8 +10,6 @@ struct PostDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                SiteBadge(site: post.site)
-
                 Text(post.title)
                     .font(.title3)
                     .fontWeight(.semibold)
@@ -30,9 +28,18 @@ struct PostDetailView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+                if let source = detail?.source {
+                    SourceBanner(source: source)
+                }
+
                 Divider()
 
-                content
+                articleContent
+
+                if let comments = detail?.comments, !comments.isEmpty {
+                    CommentsSection(comments: comments)
+                        .padding(.top, 8)
+                }
             }
             .padding()
         }
@@ -45,11 +52,11 @@ struct PostDetailView: View {
                 }
             }
         }
-        .task { await load() }
+        .task(id: post.id) { await load() }
     }
 
     @ViewBuilder
-    private var content: some View {
+    private var articleContent: some View {
         if isLoading {
             HStack { Spacer(); ProgressView(); Spacer() }.padding(.vertical, 40)
         } else if let errorMessage {
@@ -57,7 +64,7 @@ struct PostDetailView: View {
         } else if let detail {
             VStack(alignment: .leading, spacing: 12) {
                 ForEach(detail.blocks) { block in
-                    switch block {
+                    switch block.kind {
                     case .text(let text):
                         Text(text)
                             .font(.body)
@@ -89,15 +96,97 @@ struct PostDetailView: View {
     }
 
     private func load() async {
+        guard !Task.isCancelled else { return }
         isLoading = true
         errorMessage = nil
+        defer { isLoading = false }
         do {
+            let parser = try ParserFactory.parser(for: post.site)
             let html = try await Networking.fetchHTML(url: post.url, encoding: post.site.encoding)
-            let parser = ClienParser()
+            try Task.checkCancellation()
             detail = try parser.parseDetail(html: html, post: post)
+        } catch is CancellationError {
+            return
         } catch {
             errorMessage = error.localizedDescription
         }
-        isLoading = false
+    }
+}
+
+private struct SourceBanner: View {
+    let source: PostSource
+
+    var body: some View {
+        Link(destination: source.url) {
+            HStack(spacing: 8) {
+                Image(systemName: "link")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("출처").font(.caption2).foregroundStyle(.secondary)
+                    Text(source.name).font(.callout).fontWeight(.medium)
+                }
+                Spacer()
+                Image(systemName: "arrow.up.right.square")
+                    .foregroundStyle(.secondary)
+            }
+            .padding(12)
+            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("출처 \(source.name), 외부 사이트 열기")
+    }
+}
+
+private struct CommentsSection: View {
+    let comments: [Comment]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("댓글")
+                    .font(.headline)
+                Text("\(comments.count)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(comments.enumerated()), id: \.element.id) { index, comment in
+                    CommentRow(comment: comment)
+                    if index < comments.count - 1 {
+                        Divider().padding(.vertical, 2)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct CommentRow: View {
+    let comment: Comment
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(comment.author)
+                    .font(.caption)
+                    .fontWeight(.medium)
+                Text(comment.dateText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if comment.likeCount > 0 {
+                    Label("\(comment.likeCount)", systemImage: "heart.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.pink)
+                }
+            }
+            Text(comment.content)
+                .font(.subheadline)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 8)
+        .padding(.leading, comment.isReply ? 20 : 0)
     }
 }
