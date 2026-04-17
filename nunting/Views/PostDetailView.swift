@@ -10,6 +10,8 @@ struct PostDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                SiteBadge(site: post.site)
+
                 Text(post.title)
                     .font(.title3)
                     .fontWeight(.semibold)
