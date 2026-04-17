@@ -1,71 +1,63 @@
 import SwiftUI
 
 struct ContentView: View {
-    @State private var posts: [Post] = []
-    @State private var isLoading = false
-    @State private var errorMessage: String?
-
-    private let board = Board.clienNews
+    @State private var selectedTab: TopTab = .site(.clien)
+    @State private var selectedBoardPerSite: [Site: Board] = [:]
 
     var body: some View {
         NavigationStack {
-            content
-                .navigationTitle(board.name)
-                .navigationDestination(for: Post.self) { post in
-                    PostDetailView(post: post)
-                }
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            Task { await load() }
-                        } label: {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                        .disabled(isLoading)
-                    }
-                }
+            VStack(spacing: 0) {
+                SiteTabBar(tabs: TopTab.all, selection: $selectedTab)
+                Divider()
+                tabContent
+            }
+            .navigationTitle(navigationTitle)
+            .navigationBarTitleDisplayMode(.inline)
+            .navigationDestination(for: Post.self) { post in
+                PostDetailView(post: post)
+            }
         }
-        .task { await load() }
     }
 
     @ViewBuilder
-    private var content: some View {
-        if isLoading && posts.isEmpty {
-            ProgressView().controlSize(.large)
-        } else if let errorMessage, posts.isEmpty {
-            ContentUnavailableView("불러오기 실패", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
-        } else {
-            List(posts) { post in
-                NavigationLink(value: post) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(post.title).font(.body)
-                        HStack(spacing: 8) {
-                            Text(post.author)
-                            Text(post.dateText)
-                            if post.commentCount > 0 {
-                                Text("💬 \(post.commentCount)")
-                            }
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .refreshable { await load() }
+    private var tabContent: some View {
+        switch selectedTab {
+        case .site(let site):
+            siteContent(site: site)
+        case .favorites:
+            FavoritesView()
         }
     }
 
-    private func load() async {
-        isLoading = true
-        errorMessage = nil
-        do {
-            let parser = try ParserFactory.parser(for: board.site)
-            let html = try await Networking.fetchHTML(url: board.url, encoding: board.site.encoding)
-            posts = try parser.parseList(html: html, board: board)
-        } catch {
-            errorMessage = error.localizedDescription
+    @ViewBuilder
+    private func siteContent(site: Site) -> some View {
+        let boards = Board.boards(for: site)
+        if boards.isEmpty {
+            ContentUnavailableView("게시판 없음", systemImage: "tray", description: Text("등록된 게시판이 없어요"))
+        } else {
+            let selected = selectedBoardPerSite[site] ?? boards[0]
+            BoardSegmentedPicker(
+                boards: boards,
+                selection: Binding(
+                    get: { selected },
+                    set: { selectedBoardPerSite[site] = $0 }
+                )
+            )
+            .padding(.vertical, 8)
+            Divider()
+            BoardListView(board: selected)
         }
-        isLoading = false
+    }
+
+    private var navigationTitle: String {
+        switch selectedTab {
+        case .site(let site):
+            return selectedBoardPerSite[site]?.name
+                ?? Board.boards(for: site).first?.name
+                ?? site.displayName
+        case .favorites:
+            return "모음"
+        }
     }
 }
 
