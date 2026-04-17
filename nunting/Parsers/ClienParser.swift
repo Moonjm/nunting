@@ -6,25 +6,26 @@ struct ClienParser: BoardParser {
 
     func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
-        let rows = try doc.select("div.list_item.symph_row")
+        let rows = try doc.select("a.list_item.symph-row")
 
         return try rows.compactMap { row -> Post? in
-            guard let titleEl = try row.select("a.list_subject").first() else { return nil }
-            let title = try titleEl.select("span.subject_fixed").first()?.text()
-                ?? titleEl.text()
-            let href = try titleEl.attr("href")
+            let href = try row.attr("href")
             guard !href.isEmpty,
                   let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL
             else { return nil }
 
-            let author = try row.select("span.nickname").first()?.text() ?? ""
-            let dateText = try row.select("span.timestamp").first()?.text()
-                ?? row.select("span.time").first()?.text()
+            let title = try row.select("span[data-role=list-title-text]").first()?.text()
+                ?? row.select("div.list_subject").first()?.text()
                 ?? ""
-            let commentText = try row.select("a.list_reply span.rSymph05").first()?.text() ?? "0"
-            let commentCount = Int(commentText.trimmingCharacters(in: .whitespaces)) ?? 0
 
-            let postID = url.lastPathComponent.isEmpty ? href : url.lastPathComponent
+            let author = try row.select("div.list_author span.nickname").first()?.text()
+                ?? row.attr("data-author-id")
+
+            let dateText = try row.select("div.list_time span").first()?.text() ?? ""
+
+            let commentCount = Int(try row.attr("data-comment-count")) ?? 0
+            let boardSN = try row.attr("data-board-sn")
+            let postID = boardSN.isEmpty ? url.absoluteString : boardSN
 
             return Post(
                 id: "\(site.rawValue)-\(postID)",
