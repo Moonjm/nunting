@@ -1,63 +1,63 @@
 import SwiftUI
 
 struct ContentView: View {
-    @State private var selectedTab: TopTab = .site(.clien)
-    @State private var selectedBoardPerSite: [Site: Board] = [:]
+    @State private var favorites = FavoritesStore()
+    @State private var selectedBoard: Board?
+    @State private var showPicker = false
+
+    private var favoriteBoards: [Board] {
+        favorites.favoriteBoards()
+    }
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                SiteTabBar(tabs: TopTab.all, selection: $selectedTab)
+                BoardChipBar(
+                    boards: favoriteBoards,
+                    selection: $selectedBoard,
+                    onBrowseAll: { showPicker = true }
+                )
                 Divider()
-                tabContent
+                mainContent
             }
-            .navigationTitle(navigationTitle)
+            .navigationTitle(selectedBoard?.name ?? "눈팅")
             .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(for: Post.self) { post in
                 PostDetailView(post: post)
             }
-        }
-    }
-
-    @ViewBuilder
-    private var tabContent: some View {
-        switch selectedTab {
-        case .site(let site):
-            siteContent(site: site)
-        case .favorites:
-            FavoritesView()
-        }
-    }
-
-    @ViewBuilder
-    private func siteContent(site: Site) -> some View {
-        let boards = Board.boards(for: site)
-        if boards.isEmpty {
-            ContentUnavailableView("게시판 없음", systemImage: "tray", description: Text("등록된 게시판이 없어요"))
-        } else {
-            let selected = selectedBoardPerSite[site] ?? boards[0]
-            BoardSegmentedPicker(
-                boards: boards,
-                selection: Binding(
-                    get: { selected },
-                    set: { selectedBoardPerSite[site] = $0 }
+            .sheet(isPresented: $showPicker) {
+                BoardPickerSheet(
+                    favorites: favorites,
+                    onSelect: { selectedBoard = $0 }
                 )
-            )
-            .padding(.vertical, 8)
-            Divider()
-            BoardListView(board: selected)
+            }
+        }
+        .onAppear(perform: seedSelectionIfNeeded)
+        .onChange(of: favoriteBoards) { _, newBoards in
+            if selectedBoard == nil, let first = newBoards.first {
+                selectedBoard = first
+            }
         }
     }
 
-    private var navigationTitle: String {
-        switch selectedTab {
-        case .site(let site):
-            return selectedBoardPerSite[site]?.name
-                ?? Board.boards(for: site).first?.name
-                ?? site.displayName
-        case .favorites:
-            return "모음"
+    @ViewBuilder
+    private var mainContent: some View {
+        if let board = selectedBoard {
+            BoardListView(board: board)
+        } else if favoriteBoards.isEmpty {
+            ContentUnavailableView {
+                Label("즐겨찾기한 보드가 없어요", systemImage: "star")
+            } description: {
+                Text("우측 상단 ≡ 버튼으로 전체 목록에서 보드를 고르세요")
+            }
+        } else {
+            ContentUnavailableView("보드를 선택하세요", systemImage: "list.bullet")
         }
+    }
+
+    private func seedSelectionIfNeeded() {
+        guard selectedBoard == nil else { return }
+        selectedBoard = favoriteBoards.first
     }
 }
 
