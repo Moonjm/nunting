@@ -300,12 +300,7 @@ struct InvenParser: BoardParser {
 
     private struct InvenCommentResponse: Decodable {
         let authicon: String?
-        let bestcomment: InvenBestCommentBlock?
         let commentlist: [InvenCommentBlock]
-    }
-
-    private struct InvenBestCommentBlock: Decodable {
-        let list: [InvenComment]
     }
 
     private struct InvenCommentBlock: Decodable {

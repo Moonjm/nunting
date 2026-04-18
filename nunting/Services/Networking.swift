@@ -67,6 +67,10 @@ struct Networking {
 
         let (data, response) = try await session.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            #if DEBUG
+            let preview = String(data: data.prefix(256), encoding: .utf8) ?? "<binary>"
+            print("[Networking.postForm] HTTP \(http.statusCode) for \(url.absoluteString): \(preview)")
+            #endif
             throw NetworkError.badResponse(http.statusCode)
         }
         return data

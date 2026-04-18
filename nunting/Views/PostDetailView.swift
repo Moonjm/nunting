@@ -173,27 +173,15 @@ private struct CommentRow: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 if let levelURL = comment.levelIconURL {
-                    AsyncImage(url: levelURL) { phase in
-                        if case .success(let image) = phase {
-                            image.resizable().scaledToFit()
-                        } else {
-                            Color.clear
-                        }
-                    }
-                    .frame(width: 16, height: 16)
+                    CachedAsyncImage(url: levelURL, maxDimension: 48)
+                        .frame(width: 16, height: 16)
                 }
                 Text(comment.author)
                     .font(.caption)
                     .fontWeight(.medium)
                 if let iconURL = comment.authIconURL {
-                    AsyncImage(url: iconURL) { phase in
-                        if case .success(let image) = phase {
-                            image.resizable().scaledToFit()
-                        } else {
-                            Color.clear
-                        }
-                    }
-                    .frame(width: 14, height: 14)
+                    CachedAsyncImage(url: iconURL, maxDimension: 48)
+                        .frame(width: 14, height: 14)
                 }
                 Text(comment.dateText)
                     .font(.caption2)
@@ -213,23 +201,8 @@ private struct CommentRow: View {
             }
             if let stickerURL = comment.stickerURL {
                 HStack(spacing: 0) {
-                    AsyncImage(url: stickerURL) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image
-                                .resizable()
-                                .scaledToFit()
-                                .frame(maxHeight: 140)
-                        case .empty:
-                            ProgressView().frame(width: 100, height: 100)
-                        case .failure:
-                            Image(systemName: "photo")
-                                .foregroundStyle(.secondary)
-                                .frame(width: 80, height: 80)
-                        @unknown default:
-                            EmptyView()
-                        }
-                    }
+                    CachedAsyncImage(url: stickerURL, maxDimension: 280)
+                        .frame(maxWidth: 200, maxHeight: 140)
                     Spacer(minLength: 0)
                 }
             }
