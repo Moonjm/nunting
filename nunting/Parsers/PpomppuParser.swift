@@ -177,6 +177,8 @@ struct PpomppuParser: BoardParser {
             let isReply = (Int(depthAttr) ?? 0) > 0
 
             // Comment ID lives on the preceding anchor, or inside ctx_{id}.
+            // Fallback uses the result index so identity stays stable across re-parses
+            // (avoids SwiftUI ForEach churn).
             let cmtID: String = try {
                 if let anchor = try node.previousElementSibling(),
                    anchor.tagName().lowercased() == "a" {
@@ -187,7 +189,7 @@ struct PpomppuParser: BoardParser {
                     let raw = try ctx.attr("id")
                     return String(raw.dropFirst(4))
                 }
-                return UUID().uuidString
+                return "fallback-\(results.count)"
             }()
 
             let writerEl = try node.select("h6.com_name span.com_name_writer").first()
