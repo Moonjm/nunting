@@ -139,6 +139,7 @@ struct InvenParser: BoardParser {
                 case "script", "style", "iframe":
                     continue
                 default:
+                    let isBlock = ["p", "div", "li", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article"].contains(childTag)
                     let nestedImgs = try el.select("img")
                     let nestedVideos = try el.select("video")
                     if !nestedImgs.isEmpty() || !nestedVideos.isEmpty() {
@@ -146,6 +147,9 @@ struct InvenParser: BoardParser {
                         try collectBlocks(from: el, into: &blocks)
                     } else {
                         textBuffer += try el.text()
+                    }
+                    if isBlock {
+                        textBuffer += "\n"
                     }
                 }
             } else if let textNode = node as? TextNode {
@@ -259,12 +263,9 @@ struct InvenParser: BoardParser {
     }
 
     private func extractStickerURL(from rawHTML: String) -> URL? {
-        let decoded = rawHTML
-            .replacingOccurrences(of: "&amp;", with: "&")
-            .replacingOccurrences(of: "&lt;", with: "<")
-            .replacingOccurrences(of: "&gt;", with: ">")
-            .replacingOccurrences(of: "&quot;", with: "\"")
-        guard let doc = try? SwiftSoup.parseBodyFragment(decoded),
+        // SwiftSoup decodes entities while parsing, so the raw entity-encoded payload
+        // works directly without a manual decode pass.
+        guard let doc = try? SwiftSoup.parseBodyFragment(rawHTML),
               let img = try? doc.select("img").first(),
               let src = try? img.attr("src"),
               !src.isEmpty,
@@ -276,62 +277,25 @@ struct InvenParser: BoardParser {
     }
 
     private func cleanCommentText(_ raw: String) -> String {
-        var r = raw
-        // 1) Decode &amp; first so double-encoded sequences resolve in one pass.
-        r = r.replacingOccurrences(of: "&amp;", with: "&")
-        // 2) Decode the rest of the named entities.
-        r = r.replacingOccurrences(of: "&lt;", with: "<")
-        r = r.replacingOccurrences(of: "&gt;", with: ">")
-        r = r.replacingOccurrences(of: "&quot;", with: "\"")
-        r = r.replacingOccurrences(of: "&#39;", with: "'")
-        r = r.replacingOccurrences(of: "&nbsp;", with: " ")
-        // 3) Decode numeric character references (&#1234; / &#x1F6E2;) so emoji survive.
-        r = decodeNumericEntities(r)
-        // 4) Map block-level breaks to newlines so structure survives tag stripping.
-        r = r.replacingOccurrences(of: "<br\\s*/?>", with: "\n", options: .regularExpression)
-        r = r.replacingOccurrences(of: "</p>", with: "\n", options: .regularExpression)
-        r = r.replacingOccurrences(of: "</div>", with: "\n", options: .regularExpression)
-        // 5) Strip remaining tags.
-        r = r.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-        // 6) Collapse runs of blank lines and trim.
-        r = r.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
-        return r.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
+        // SwiftSoup decodes both named and numeric entities while building the DOM,
+        // and walking the DOM lets us drop tags without inventing rules for &amp; / &lt; / etc.
+        guard let doc = try? SwiftSoup.parseBodyFragment(raw),
+              let body = doc.body()
+        else { return raw }
 
-    private func decodeNumericEntities(_ s: String) -> String {
-        var result = ""
-        var index = s.startIndex
-        while index < s.endIndex {
-            if s[index] == "&",
-               let semi = s[index...].firstIndex(of: ";"),
-               s.distance(from: index, to: semi) <= 10
-            {
-                let token = s[s.index(after: index)..<semi]
-                if token.hasPrefix("#") {
-                    let body = token.dropFirst()
-                    let radix: Int
-                    let digits: Substring
-                    if body.first == "x" || body.first == "X" {
-                        radix = 16
-                        digits = body.dropFirst()
-                    } else {
-                        radix = 10
-                        digits = body
-                    }
-                    if !digits.isEmpty,
-                       let code = UInt32(digits, radix: radix),
-                       let scalar = Unicode.Scalar(code)
-                    {
-                        result.unicodeScalars.append(scalar)
-                        index = s.index(after: semi)
-                        continue
-                    }
-                }
+        // Stamp a non-whitespace marker before block-level breaks so they survive
+        // SwiftSoup's text() whitespace collapsing; we replace it with \n afterwards.
+        let blockMarker = "\u{0001}NL\u{0001}"
+        if let blocks = try? body.select("br, p, div, li, blockquote") {
+            for el in blocks {
+                _ = try? el.before(blockMarker)
             }
-            result.append(s[index])
-            index = s.index(after: index)
         }
-        return result
+
+        let text = (try? body.text()) ?? raw
+        var result = text.replacingOccurrences(of: blockMarker, with: "\n")
+        result = result.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private struct InvenCommentResponse: Decodable {

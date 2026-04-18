@@ -17,8 +17,13 @@ struct InlineVideoPlayer: View {
                     player = AVPlayer(url: url)
                 }
             }
+            .onChange(of: url) { _, newURL in
+                player?.pause()
+                player = AVPlayer(url: newURL)
+            }
             .onDisappear {
                 player?.pause()
+                player = nil
             }
     }
 }

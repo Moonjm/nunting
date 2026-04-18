@@ -254,12 +254,16 @@ private struct CommentRow: View {
             current = ""
         }
 
+        func isMentionBodyChar(_ c: Character) -> Bool {
+            c.isLetter || c.isNumber || c == "_"
+        }
+
         for char in text {
             if char == "@" {
                 flush()
                 inMention = true
                 current.append(char)
-            } else if inMention && char.isWhitespace {
+            } else if inMention && !isMentionBodyChar(char) {
                 flush()
                 inMention = false
                 current.append(char)
