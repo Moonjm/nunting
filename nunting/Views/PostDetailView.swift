@@ -171,10 +171,20 @@ private struct CommentRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 Text(comment.author)
                     .font(.caption)
                     .fontWeight(.medium)
+                if let iconURL = comment.authIconURL {
+                    AsyncImage(url: iconURL) { phase in
+                        if case .success(let image) = phase {
+                            image.resizable().scaledToFit()
+                        } else {
+                            Color.clear
+                        }
+                    }
+                    .frame(width: 14, height: 14)
+                }
                 Text(comment.dateText)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -185,12 +195,67 @@ private struct CommentRow: View {
                         .foregroundStyle(.pink)
                 }
             }
-            Text(comment.content)
-                .font(.subheadline)
-                .textSelection(.enabled)
+            if !comment.content.isEmpty {
+                Text(styledContent(comment.content))
+                    .font(.subheadline)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if let stickerURL = comment.stickerURL {
+                AsyncImage(url: stickerURL) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxHeight: 140)
+                    case .empty:
+                        ProgressView().frame(width: 100, height: 100)
+                    case .failure:
+                        Image(systemName: "photo")
+                            .foregroundStyle(.secondary)
+                            .frame(width: 80, height: 80)
+                    @unknown default:
+                        EmptyView()
+                    }
+                }
                 .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .padding(.vertical, 8)
         .padding(.leading, comment.isReply ? 20 : 0)
+    }
+
+    private func styledContent(_ text: String) -> AttributedString {
+        var result = AttributedString()
+        var current = ""
+        var inMention = false
+
+        func flush() {
+            guard !current.isEmpty else { return }
+            var part = AttributedString(current)
+            if inMention {
+                part.foregroundColor = .blue
+                part.font = .subheadline.bold()
+            }
+            result.append(part)
+            current = ""
+        }
+
+        for char in text {
+            if char == "@" {
+                flush()
+                inMention = true
+                current.append(char)
+            } else if inMention && char.isWhitespace {
+                flush()
+                inMention = false
+                current.append(char)
+            } else {
+                current.append(char)
+            }
+        }
+        flush()
+        return result
     }
 }

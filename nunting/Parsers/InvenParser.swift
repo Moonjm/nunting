@@ -196,20 +196,24 @@ struct InvenParser: BoardParser {
             .map { $0.attr.titlenum }
 
         let blocks: [InvenCommentBlock]
+        let authIconURLString: String?
         if collapsed.isEmpty {
             blocks = firstResponse.commentlist
+            authIconURLString = firstResponse.authicon
         } else {
             var paramsWithTitles = baseParams
             paramsWithTitles["titles"] = collapsed.map(String.init).joined(separator: "|")
             let extraData = try await Networking.postForm(url: apiURL, parameters: paramsWithTitles, referer: post.url)
             let extraResponse = try JSONDecoder().decode(InvenCommentResponse.self, from: extraData)
             blocks = extraResponse.commentlist
+            authIconURLString = extraResponse.authicon ?? firstResponse.authicon
         }
 
-        return convertToComments(blocks: blocks)
+        let authIconURL = authIconURLString.flatMap { URL(string: $0) }
+        return convertToComments(blocks: blocks, authIconURL: authIconURL)
     }
 
-    private func convertToComments(blocks: [InvenCommentBlock]) -> [Comment] {
+    private func convertToComments(blocks: [InvenCommentBlock], authIconURL: URL?) -> [Comment] {
         // titlenum 0 = latest block; positive titlenums are older slices ordered ascending.
         let sortedBlocks = blocks.sorted { lhs, rhs in
             let l = lhs.attr.titlenum == 0 ? Int.max : lhs.attr.titlenum
@@ -220,20 +224,41 @@ struct InvenParser: BoardParser {
         var results: [Comment] = []
         for block in sortedBlocks {
             for raw in block.list {
+                let stickerURL = extractStickerURL(from: raw.comment)
                 let content = cleanCommentText(raw.comment)
-                guard !content.isEmpty else { continue }
+                guard !content.isEmpty || stickerURL != nil else { continue }
                 let isReply = raw.attr.cmtidx != raw.attr.cmtpidx
+                let perCommentAuthIcon: URL? = (raw.authicon == true) ? authIconURL : nil
                 results.append(Comment(
                     id: "\(site.rawValue)-c-\(raw.attr.cmtidx)",
                     author: raw.name,
                     dateText: raw.date,
                     content: content,
                     likeCount: raw.recommend,
-                    isReply: isReply
+                    isReply: isReply,
+                    stickerURL: stickerURL,
+                    authIconURL: perCommentAuthIcon
                 ))
             }
         }
         return results
+    }
+
+    private func extractStickerURL(from rawHTML: String) -> URL? {
+        let decoded = rawHTML
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+        guard let doc = try? SwiftSoup.parseBodyFragment(decoded),
+              let img = try? doc.select("img").first(),
+              let src = try? img.attr("src"),
+              !src.isEmpty,
+              let url = URL(string: src),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https"
+        else { return nil }
+        return url
     }
 
     private func cleanCommentText(_ raw: String) -> String {
@@ -259,6 +284,7 @@ struct InvenParser: BoardParser {
     }
 
     private struct InvenCommentResponse: Decodable {
+        let authicon: String?
         let commentlist: [InvenCommentBlock]
     }
 
@@ -282,6 +308,7 @@ struct InvenParser: BoardParser {
         let name: String
         let comment: String
         let recommend: Int
+        let authicon: Bool?
 
         enum CodingKeys: String, CodingKey {
             case attr = "__attr__"
@@ -289,6 +316,7 @@ struct InvenParser: BoardParser {
             case name = "o_name"
             case comment = "o_comment"
             case recommend = "o_recommend"
+            case authicon
         }
     }
 
