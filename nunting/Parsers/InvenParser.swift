@@ -191,21 +191,23 @@ struct InvenParser: BoardParser {
     }
 
     private func cleanCommentText(_ raw: String) -> String {
-        // 1) Replace block-level breaks with newlines BEFORE stripping tags.
         var r = raw
-        r = r.replacingOccurrences(of: "<br\\s*/?>", with: "\n", options: .regularExpression)
-        r = r.replacingOccurrences(of: "</p>", with: "\n", options: .regularExpression)
-        r = r.replacingOccurrences(of: "</div>", with: "\n", options: .regularExpression)
-        // 2) Strip remaining HTML tags.
-        r = r.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-        // 3) Decode entities — &amp; first so double-encoded sequences resolve.
+        // 1) Decode &amp; first so double-encoded sequences resolve in one pass.
         r = r.replacingOccurrences(of: "&amp;", with: "&")
-        r = r.replacingOccurrences(of: "&nbsp;", with: " ")
+        // 2) Decode the rest of the entities so tag-encoded markup (&lt;span&gt; etc.)
+        //    becomes real tags before the strip step can see them.
         r = r.replacingOccurrences(of: "&lt;", with: "<")
         r = r.replacingOccurrences(of: "&gt;", with: ">")
         r = r.replacingOccurrences(of: "&quot;", with: "\"")
         r = r.replacingOccurrences(of: "&#39;", with: "'")
-        // 4) Collapse runs of blank lines and trim.
+        r = r.replacingOccurrences(of: "&nbsp;", with: " ")
+        // 3) Map block-level breaks to newlines so structure survives tag stripping.
+        r = r.replacingOccurrences(of: "<br\\s*/?>", with: "\n", options: .regularExpression)
+        r = r.replacingOccurrences(of: "</p>", with: "\n", options: .regularExpression)
+        r = r.replacingOccurrences(of: "</div>", with: "\n", options: .regularExpression)
+        // 4) Strip remaining tags (mention spans, sticker wrappers, anchors, etc.)
+        r = r.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+        // 5) Collapse runs of blank lines and trim.
         r = r.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
         return r.trimmingCharacters(in: .whitespacesAndNewlines)
     }
