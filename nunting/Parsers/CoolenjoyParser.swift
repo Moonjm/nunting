@@ -1,0 +1,199 @@
+import Foundation
+import SwiftSoup
+
+struct CoolenjoyParser: BoardParser {
+    let site: Site = .coolenjoy
+
+    func parseList(html: String, board: Board) throws -> [Post] {
+        let doc = try SwiftSoup.parse(html)
+        let rows = try doc.select("ul.na-table > li.d-md-table-row")
+
+        return try rows.compactMap { row -> Post? in
+            guard let titleEl = try row.select("a.na-subject").first() else { return nil }
+            let href = try titleEl.attr("href")
+            guard !href.isEmpty,
+                  let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL
+            else { return nil }
+
+            let title = try cleanedTitle(from: titleEl)
+            guard !title.isEmpty else { return nil }
+
+            let author = try authorName(from: row)
+            let dateText = try metaValue(from: row, label: "등록일")
+                ?? metaValue(from: row, label: "작성일")
+                ?? ""
+            let commentCount = try commentCountValue(from: row)
+            let postID = url.pathComponents.last ?? url.absoluteString
+
+            return Post(
+                id: "\(site.rawValue)-\(postID)",
+                site: site,
+                boardID: board.id,
+                title: title,
+                author: author,
+                date: nil,
+                dateText: dateText,
+                commentCount: commentCount,
+                url: url
+            )
+        }
+    }
+
+    func parseDetail(html: String, post: Post) throws -> PostDetail {
+        let doc = try SwiftSoup.parse(html)
+        guard let article = try doc.select("article#bo_v").first() else {
+            throw ParserError.structureChanged("article#bo_v 없음")
+        }
+
+        guard let contentEl = try article.select("div.view-content").first() else {
+            throw ParserError.structureChanged("view-content 없음")
+        }
+
+        var blocks: [ContentBlock] = []
+        for child in contentEl.children() {
+            try collectBlocks(from: child, into: &blocks)
+        }
+
+        let fullDateText = try article.select("time").first()?.text()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let viewCount = try metaValueInArticle(article: article, label: "조회").flatMap(firstInteger)
+
+        return PostDetail(
+            post: post,
+            blocks: blocks,
+            fullDateText: fullDateText,
+            viewCount: viewCount,
+            source: nil,
+            comments: []
+        )
+    }
+
+    private func cleanedTitle(from anchor: Element) throws -> String {
+        try anchor.select("span.sr-only").remove()
+        let text = try anchor.text().trimmingCharacters(in: .whitespacesAndNewlines)
+        return text
+    }
+
+    private func authorName(from row: Element) throws -> String {
+        if let memberEl = try row.select("a.sv_member").first() {
+            let titleAttr = try memberEl.attr("title")
+            if let stripped = stripSuffix(titleAttr, suffix: " 자기소개"), !stripped.isEmpty {
+                return stripped
+            }
+            let text = try memberEl.text().trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty { return text }
+        }
+        return ""
+    }
+
+    private func metaValue(from row: Element, label: String) throws -> String? {
+        let cells = try row.select("div.d-md-table-cell")
+        for cell in cells {
+            let srOnly = try cell.select("span.sr-only").first()
+            if try srOnly?.text() == label {
+                let copy = cell.copy() as? Element ?? cell
+                try copy.select("span.sr-only").remove()
+                try copy.select("i").remove()
+                let text = try copy.text().trimmingCharacters(in: .whitespacesAndNewlines)
+                return text
+            }
+        }
+        return nil
+    }
+
+    private func commentCountValue(from row: Element) throws -> Int {
+        guard let countEl = try row.select("span.count-plus").first() else { return 0 }
+        let raw = try countEl.text()
+        let digits = raw.filter(\.isNumber)
+        return Int(digits) ?? 0
+    }
+
+    private func metaValueInArticle(article: Element, label: String) throws -> String? {
+        let srOnlies = try article.select("span.sr-only")
+        for sr in srOnlies {
+            if try sr.text() == label {
+                if let parent = sr.parent() {
+                    let copy = parent.copy() as? Element ?? parent
+                    try copy.select("span.sr-only").remove()
+                    try copy.select("i").remove()
+                    let text = try copy.text().trimmingCharacters(in: .whitespacesAndNewlines)
+                    return text
+                }
+            }
+        }
+        return nil
+    }
+
+    private func collectBlocks(from element: Element, into blocks: inout [ContentBlock]) throws {
+        var textBuffer = ""
+
+        func flushText() {
+            let trimmed = textBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                blocks.append(.text(trimmed))
+            }
+            textBuffer = ""
+        }
+
+        let tag = element.tagName().lowercased()
+        if tag == "img" {
+            if let url = try imageURL(from: element) {
+                blocks.append(.image(url))
+            }
+            return
+        }
+
+        for node in element.getChildNodes() {
+            if let el = node as? Element {
+                let childTag = el.tagName().lowercased()
+                switch childTag {
+                case "img":
+                    flushText()
+                    if let url = try imageURL(from: el) {
+                        blocks.append(.image(url))
+                    }
+                case "br":
+                    textBuffer += "\n"
+                default:
+                    let nestedImgs = try el.select("img")
+                    if !nestedImgs.isEmpty() {
+                        flushText()
+                        try collectBlocks(from: el, into: &blocks)
+                    } else {
+                        textBuffer += try el.text()
+                    }
+                }
+            } else if let textNode = node as? TextNode {
+                textBuffer += textNode.text()
+            }
+        }
+        flushText()
+    }
+
+    private func imageURL(from element: Element) throws -> URL? {
+        let src = try element.attr("src")
+        guard !src.isEmpty,
+              let url = URL(string: src, relativeTo: site.baseURL)?.absoluteURL,
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https"
+        else { return nil }
+        return url
+    }
+
+    private func firstInteger(in text: String) -> Int? {
+        var digits = ""
+        for char in text {
+            if char.isNumber {
+                digits.append(char)
+            } else if !digits.isEmpty && char != "," {
+                break
+            }
+        }
+        return digits.isEmpty ? nil : Int(digits)
+    }
+
+    private func stripSuffix(_ s: String, suffix: String) -> String? {
+        guard s.hasSuffix(suffix) else { return nil }
+        return String(s.dropLast(suffix.count))
+    }
+}
