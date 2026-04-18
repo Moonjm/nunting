@@ -10,6 +10,8 @@ struct CoolenjoyParser: BoardParser {
 
         return try rows.compactMap { row -> Post? in
             guard let titleEl = try row.select("a.na-subject").first() else { return nil }
+            if try !titleEl.select("strong").isEmpty() { return nil }
+
             let href = try titleEl.attr("href")
             guard !href.isEmpty,
                   let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL
