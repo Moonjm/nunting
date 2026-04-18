@@ -197,9 +197,11 @@ struct InvenParser: BoardParser {
 
         let blocks: [InvenCommentBlock]
         let authIconURLString: String?
+        let bestList: [InvenComment]
         if collapsed.isEmpty {
             blocks = firstResponse.commentlist
             authIconURLString = firstResponse.authicon
+            bestList = firstResponse.bestcomment?.list ?? []
         } else {
             var paramsWithTitles = baseParams
             paramsWithTitles["titles"] = collapsed.map(String.init).joined(separator: "|")
@@ -207,13 +209,14 @@ struct InvenParser: BoardParser {
             let extraResponse = try JSONDecoder().decode(InvenCommentResponse.self, from: extraData)
             blocks = extraResponse.commentlist
             authIconURLString = extraResponse.authicon ?? firstResponse.authicon
+            bestList = extraResponse.bestcomment?.list ?? firstResponse.bestcomment?.list ?? []
         }
 
         let authIconURL = authIconURLString.flatMap { URL(string: $0) }
-        return convertToComments(blocks: blocks, authIconURL: authIconURL)
+        return convertToComments(bestList: bestList, blocks: blocks, authIconURL: authIconURL)
     }
 
-    private func convertToComments(blocks: [InvenCommentBlock], authIconURL: URL?) -> [Comment] {
+    private func convertToComments(bestList: [InvenComment], blocks: [InvenCommentBlock], authIconURL: URL?) -> [Comment] {
         // titlenum 0 = latest block; positive titlenums are older slices ordered ascending.
         let sortedBlocks = blocks.sorted { lhs, rhs in
             let l = lhs.attr.titlenum == 0 ? Int.max : lhs.attr.titlenum
@@ -221,26 +224,34 @@ struct InvenParser: BoardParser {
             return l < r
         }
 
+        var seen = Set<Int>()
         var results: [Comment] = []
-        for block in sortedBlocks {
-            for raw in block.list {
-                let stickerURL = extractStickerURL(from: raw.comment)
-                let content = cleanCommentText(raw.comment)
-                guard !content.isEmpty || stickerURL != nil else { continue }
-                let isReply = raw.attr.cmtidx != raw.attr.cmtpidx
-                let perCommentAuthIcon: URL? = (raw.authicon == true) ? authIconURL : nil
-                results.append(Comment(
-                    id: "\(site.rawValue)-c-\(raw.attr.cmtidx)",
-                    author: raw.name,
-                    dateText: raw.date,
-                    content: content,
-                    likeCount: raw.recommend,
-                    isReply: isReply,
-                    stickerURL: stickerURL,
-                    authIconURL: perCommentAuthIcon
-                ))
-            }
+
+        func append(_ raw: InvenComment) {
+            if seen.contains(raw.attr.cmtidx) { return }
+            seen.insert(raw.attr.cmtidx)
+            let stickerURL = extractStickerURL(from: raw.comment)
+            let content = cleanCommentText(raw.comment)
+            guard !content.isEmpty || stickerURL != nil else { return }
+            let isReply = raw.attr.cmtidx != raw.attr.cmtpidx
+            let perCommentAuthIcon: URL? = (raw.authicon == true) ? authIconURL : nil
+            results.append(Comment(
+                id: "\(site.rawValue)-c-\(raw.attr.cmtidx)",
+                author: raw.name,
+                dateText: raw.date,
+                content: content,
+                likeCount: raw.recommend,
+                isReply: isReply,
+                stickerURL: stickerURL,
+                authIconURL: perCommentAuthIcon
+            ))
         }
+
+        for raw in bestList { append(raw) }
+        for block in sortedBlocks {
+            for raw in block.list { append(raw) }
+        }
+
         return results
     }
 
@@ -285,7 +296,12 @@ struct InvenParser: BoardParser {
 
     private struct InvenCommentResponse: Decodable {
         let authicon: String?
+        let bestcomment: InvenBestCommentBlock?
         let commentlist: [InvenCommentBlock]
+    }
+
+    private struct InvenBestCommentBlock: Decodable {
+        let list: [InvenComment]
     }
 
     private struct InvenCommentBlock: Decodable {
