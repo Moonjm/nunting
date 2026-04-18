@@ -43,3 +43,6 @@ fastlane/test_output
 # IDE
 .idea/
 .vscode/
+
+# 로컬 노트
+README.md

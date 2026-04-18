@@ -1,72 +1,140 @@
 import SwiftUI
 
 struct ContentView: View {
-    @State private var posts: [Post] = []
-    @State private var isLoading = false
-    @State private var errorMessage: String?
+    @State private var favorites = FavoritesStore()
+    @State private var selectedBoard: Board = .clienNews
+    @State private var drawerOpen = false
+    @State private var drawerSection: DrawerSection = .favorites
 
-    private let board = Board.clienNews
+    @State private var dragOffset: CGFloat = 0
+    @State private var dragDirection: DragDirection?
+    @State private var dragLockBaseline: CGFloat = 0
+
+    private let drawerWidth: CGFloat = 300
 
     var body: some View {
         NavigationStack {
-            content
-                .navigationTitle(board.name)
-                .navigationDestination(for: Post.self) { post in
-                    PostDetailView(post: post)
-                }
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            Task { await load() }
-                        } label: {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                        .disabled(isLoading)
-                    }
-                }
+            ZStack(alignment: .leading) {
+                mainScreen
+                    .toolbar(.hidden, for: .navigationBar)
+
+                Color.black
+                    .opacity(0.3 * drawerProgress)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(drawerOpen)
+                    .onTapGesture { closeDrawer() }
+
+                SideDrawer(
+                    favorites: favorites,
+                    selectedSection: $drawerSection,
+                    onSelectBoard: { board in
+                        selectedBoard = board
+                        closeDrawer()
+                    },
+                    onClose: closeDrawer
+                )
+                .frame(width: drawerWidth)
+                .offset(x: drawerXOffset)
+            }
+            .ignoresSafeArea(.keyboard)
+            .simultaneousGesture(panGesture)
+            .navigationDestination(for: Post.self) { post in
+                PostDetailView(post: post)
+            }
         }
-        .task { await load() }
     }
 
-    @ViewBuilder
-    private var content: some View {
-        if isLoading && posts.isEmpty {
-            ProgressView().controlSize(.large)
-        } else if let errorMessage, posts.isEmpty {
-            ContentUnavailableView("불러오기 실패", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
-        } else {
-            List(posts) { post in
-                NavigationLink(value: post) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(post.title).font(.body)
-                        HStack(spacing: 8) {
-                            Text(post.author)
-                            Text(post.dateText)
-                            if post.commentCount > 0 {
-                                Text("💬 \(post.commentCount)")
-                            }
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+    private var mainScreen: some View {
+        VStack(spacing: 0) {
+            BoardListView(board: selectedBoard)
+            MainBottomBar(
+                board: selectedBoard,
+                favorites: favorites,
+                onSiteTap: { openDrawer(targetSection: .site(selectedBoard.site)) },
+                onSearch: {},
+                onMore: { openDrawer(targetSection: drawerSection) }
+            )
+        }
+    }
+
+    private var drawerProgress: CGFloat {
+        let base: CGFloat = drawerOpen ? drawerWidth : 0
+        let target = base + dragOffset
+        return max(0, min(1, target / drawerWidth))
+    }
+
+    private var drawerXOffset: CGFloat {
+        -drawerWidth + drawerWidth * drawerProgress
+    }
+
+    private var panGesture: some Gesture {
+        DragGesture(minimumDistance: 6)
+            .onChanged { value in
+                if dragDirection == nil {
+                    let absW = abs(value.translation.width)
+                    let absH = abs(value.translation.height)
+                    if absW > 10 && absW >= absH {
+                        dragDirection = .horizontal
+                        dragLockBaseline = value.translation.width
+                    } else if absH > 10 && absH > absW {
+                        dragDirection = .vertical
                     }
+                }
+                if dragDirection == .horizontal {
+                    dragOffset = value.translation.width - dragLockBaseline
                 }
             }
-            .refreshable { await load() }
+            .onEnded { value in
+                let lockedHorizontal = dragDirection == .horizontal
+                let baseline = dragLockBaseline
+                dragDirection = nil
+                dragLockBaseline = 0
+
+                guard lockedHorizontal else {
+                    dragOffset = 0
+                    return
+                }
+
+                let velocity = value.predictedEndTranslation.width - value.translation.width
+                let traveled = value.translation.width - baseline
+
+                let shouldOpen: Bool
+                if drawerOpen {
+                    shouldOpen = !(traveled < -drawerWidth / 3 || velocity < -150)
+                } else {
+                    shouldOpen = (traveled > drawerWidth / 3 || velocity > 150)
+                }
+
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
+                    drawerOpen = shouldOpen
+                    dragOffset = 0
+                }
+            }
+    }
+
+    private func openDrawer(targetSection: DrawerSection) {
+        drawerSection = targetSection
+        dragDirection = nil
+        dragLockBaseline = 0
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
+            drawerOpen = true
+            dragOffset = 0
         }
     }
 
-    private func load() async {
-        isLoading = true
-        errorMessage = nil
-        do {
-            let parser = try ParserFactory.parser(for: board.site)
-            let html = try await Networking.fetchHTML(url: board.url, encoding: board.site.encoding)
-            posts = try parser.parseList(html: html, board: board)
-        } catch {
-            errorMessage = error.localizedDescription
+    private func closeDrawer() {
+        dragDirection = nil
+        dragLockBaseline = 0
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+            drawerOpen = false
+            dragOffset = 0
         }
-        isLoading = false
     }
+}
+
+private enum DragDirection {
+    case horizontal
+    case vertical
 }
 
 #Preview {
