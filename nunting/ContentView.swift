@@ -5,10 +5,11 @@ struct ContentView: View {
     @State private var selectedBoard: Board = .clienNews
     @State private var drawerOpen = false
     @State private var drawerSection: DrawerSection = .favorites
+
     @State private var dragOffset: CGFloat = 0
+    @State private var dragDirection: DragDirection?
 
     private let drawerWidth: CGFloat = 300
-    private let edgeTriggerWidth: CGFloat = 22
 
     var body: some View {
         NavigationStack {
@@ -16,13 +17,11 @@ struct ContentView: View {
                 mainScreen
                     .toolbar(.hidden, for: .navigationBar)
 
-                if drawerOpen || dragOffset > 0 {
-                    Color.black
-                        .opacity(0.3 * (currentDrawerOffset / drawerWidth))
-                        .ignoresSafeArea()
-                        .onTapGesture { closeDrawer() }
-                        .allowsHitTesting(drawerOpen)
-                }
+                Color.black
+                    .opacity(0.3 * drawerProgress)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(drawerProgress > 0.01)
+                    .onTapGesture { closeDrawer() }
 
                 SideDrawer(
                     favorites: favorites,
@@ -31,31 +30,13 @@ struct ContentView: View {
                         selectedBoard = board
                         closeDrawer()
                     },
-                    onClose: { closeDrawer() }
+                    onClose: closeDrawer
                 )
                 .frame(width: drawerWidth)
-                .offset(x: -drawerWidth + currentDrawerOffset)
-                .gesture(
-                    DragGesture()
-                        .onChanged { value in
-                            if drawerOpen {
-                                dragOffset = max(-drawerWidth, min(0, value.translation.width))
-                            }
-                        }
-                        .onEnded { value in
-                            if drawerOpen && value.translation.width < -80 {
-                                closeDrawer()
-                            } else {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                                    dragOffset = 0
-                                }
-                            }
-                        }
-                )
-
-                edgeSwipeCatcher
+                .offset(x: drawerXOffset)
             }
             .ignoresSafeArea(.keyboard)
+            .simultaneousGesture(panGesture)
             .navigationDestination(for: Post.self) { post in
                 PostDetailView(post: post)
             }
@@ -75,28 +56,54 @@ struct ContentView: View {
         }
     }
 
-    private var edgeSwipeCatcher: some View {
-        Color.clear
-            .frame(width: edgeTriggerWidth)
-            .frame(maxHeight: .infinity)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 12)
-                    .onEnded { value in
-                        if !drawerOpen
-                            && value.startLocation.x < edgeTriggerWidth
-                            && value.translation.width > 50
-                        {
-                            openDrawer(targetSection: drawerSection)
-                        }
-                    }
-            )
-            .allowsHitTesting(!drawerOpen)
+    private var drawerProgress: CGFloat {
+        let base: CGFloat = drawerOpen ? drawerWidth : 0
+        let target = base + dragOffset
+        return max(0, min(1, target / drawerWidth))
     }
 
-    private var currentDrawerOffset: CGFloat {
-        let base: CGFloat = drawerOpen ? drawerWidth : 0
-        return max(0, min(drawerWidth, base + dragOffset))
+    private var drawerXOffset: CGFloat {
+        -drawerWidth + drawerWidth * drawerProgress
+    }
+
+    private var panGesture: some Gesture {
+        DragGesture(minimumDistance: 6)
+            .onChanged { value in
+                if dragDirection == nil {
+                    let absW = abs(value.translation.width)
+                    let absH = abs(value.translation.height)
+                    if absW > 8 && absW > absH * 1.3 {
+                        dragDirection = .horizontal
+                    } else if absH > 8 && absH > absW * 1.3 {
+                        dragDirection = .vertical
+                    }
+                }
+                if dragDirection == .horizontal {
+                    dragOffset = value.translation.width
+                }
+            }
+            .onEnded { value in
+                let lockedHorizontal = dragDirection == .horizontal
+                dragDirection = nil
+
+                guard lockedHorizontal else {
+                    dragOffset = 0
+                    return
+                }
+
+                let velocity = value.predictedEndTranslation.width - value.translation.width
+                let shouldOpen: Bool
+                if drawerOpen {
+                    shouldOpen = !(value.translation.width < -drawerWidth / 3 || velocity < -150)
+                } else {
+                    shouldOpen = (value.translation.width > drawerWidth / 3 || velocity > 150)
+                }
+
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
+                    drawerOpen = shouldOpen
+                    dragOffset = 0
+                }
+            }
     }
 
     private func openDrawer(targetSection: DrawerSection) {
@@ -113,6 +120,11 @@ struct ContentView: View {
             dragOffset = 0
         }
     }
+}
+
+private enum DragDirection {
+    case horizontal
+    case vertical
 }
 
 #Preview {
