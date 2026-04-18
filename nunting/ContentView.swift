@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @State private var favorites = FavoritesStore()
     @State private var selectedBoard: Board = .clienNews
+    @State private var selectedFilter: BoardFilter? = nil
     @State private var drawerOpen = false
     @State private var drawerSection: DrawerSection = .favorites
     @State private var navigationPath = NavigationPath()
@@ -50,9 +51,13 @@ struct ContentView: View {
         VStack(spacing: 0) {
             BoardListView(
                 board: selectedBoard,
+                filter: selectedFilter,
                 scrollLocked: scrollLocked,
                 onSelectPost: { navigationPath.append($0) }
             )
+            if !selectedBoard.filters.isEmpty {
+                BoardFilterBar(filters: selectedBoard.filters, selection: $selectedFilter)
+            }
             MainBottomBar(
                 board: selectedBoard,
                 favorites: favorites,
@@ -60,6 +65,9 @@ struct ContentView: View {
                 onSearch: {},
                 onMore: { openDrawer(targetSection: drawerSection) }
             )
+        }
+        .onChange(of: selectedBoard) { _, _ in
+            selectedFilter = nil
         }
     }
 

@@ -2,12 +2,17 @@ import SwiftUI
 
 struct BoardListView: View {
     let board: Board
+    var filter: BoardFilter? = nil
     var scrollLocked: Bool = false
     let onSelectPost: (Post) -> Void
 
     @State private var posts: [Post] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
+
+    private var taskKey: String {
+        "\(board.id)|\(filter?.id ?? "_all")"
+    }
 
     var body: some View {
         Group {
@@ -21,7 +26,7 @@ struct BoardListView: View {
                 listView
             }
         }
-        .task(id: board.id) { await load() }
+        .task(id: taskKey) { await load() }
     }
 
     private var loadingView: some View {
@@ -71,7 +76,8 @@ struct BoardListView: View {
         defer { isLoading = false }
         do {
             let parser = try ParserFactory.parser(for: board.site)
-            let html = try await Networking.fetchHTML(url: board.url, encoding: board.site.encoding)
+            let url = board.url(filter: filter)
+            let html = try await Networking.fetchHTML(url: url, encoding: board.site.encoding)
             try Task.checkCancellation()
             posts = try parser.parseList(html: html, board: board)
         } catch is CancellationError {
