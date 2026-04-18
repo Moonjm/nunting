@@ -9,6 +9,7 @@ struct BoardListView: View {
     @State private var posts: [Post] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var loadedKey: String?
 
     private var taskKey: String {
         "\(board.id)|\(filter?.id ?? "_all")"
@@ -26,7 +27,13 @@ struct BoardListView: View {
                 listView
             }
         }
-        .task(id: taskKey) { await load() }
+        .task(id: taskKey) {
+            if loadedKey != taskKey {
+                posts = []
+                errorMessage = nil
+            }
+            await load()
+        }
     }
 
     private var loadingView: some View {
@@ -81,7 +88,6 @@ struct BoardListView: View {
 
     private func load() async {
         guard !Task.isCancelled else { return }
-        posts = []
         errorMessage = nil
         isLoading = true
         defer { isLoading = false }
@@ -91,7 +97,10 @@ struct BoardListView: View {
             let html = try await Networking.fetchHTML(url: url, encoding: board.site.encoding)
             try Task.checkCancellation()
             posts = try parser.parseList(html: html, board: board)
+            loadedKey = taskKey
         } catch is CancellationError {
+            return
+        } catch let urlError as URLError where urlError.code == .cancelled {
             return
         } catch {
             errorMessage = error.localizedDescription

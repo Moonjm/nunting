@@ -269,9 +269,16 @@ struct CoolenjoyParser: BoardParser {
                     }
                 case "br":
                     textBuffer += "\n"
+                case "a":
+                    if let markdown = try anchorMarkdown(from: el) {
+                        textBuffer += markdown
+                    } else {
+                        textBuffer += try el.text()
+                    }
                 default:
                     let nestedImgs = try el.select("img")
-                    if !nestedImgs.isEmpty() {
+                    let nestedAnchors = try el.select("a")
+                    if !nestedImgs.isEmpty() || !nestedAnchors.isEmpty() {
                         flushText()
                         try collectBlocks(from: el, into: &blocks)
                     } else {

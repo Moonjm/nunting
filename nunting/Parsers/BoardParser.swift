@@ -1,4 +1,5 @@
 import Foundation
+import SwiftSoup
 
 protocol BoardParser {
     var site: Site { get }
@@ -17,6 +18,25 @@ extension BoardParser {
         guard let url = commentsURL(for: post) else { return [] }
         let html = try await fetcher(url)
         return try parseComments(html: html)
+    }
+
+    /// Convert an `<a href>` element into a markdown link (`[label](<url>)`) usable by
+    /// `AttributedString(markdown:)`. Returns nil when the href is missing or non-http(s).
+    func anchorMarkdown(from element: Element) throws -> String? {
+        let href = try element.attr("href")
+        guard !href.isEmpty,
+              let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL,
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https"
+        else { return nil }
+
+        let label = try element.text().trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayLabel = label.isEmpty ? url.absoluteString : label
+        let safeLabel = displayLabel
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "[", with: "\\[")
+            .replacingOccurrences(of: "]", with: "\\]")
+        return "[\(safeLabel)](<\(url.absoluteString)>)"
     }
 }
 

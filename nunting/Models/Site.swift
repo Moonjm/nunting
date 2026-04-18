@@ -29,7 +29,9 @@ enum Site: String, CaseIterable, Identifiable, Codable {
     var encoding: String.Encoding {
         switch self {
         case .ppomppu:
-            let cf = CFStringEncoding(CFStringEncodings.EUC_KR.rawValue)
+            // Server advertises EUC-KR but actually serves CP949 (Windows-949), which is a superset.
+            // Decoding strictly as EUC-KR fails on extended characters.
+            let cf = CFStringEncoding(CFStringEncodings.dosKorean.rawValue)
             return String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(cf))
         default:
             return .utf8

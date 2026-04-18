@@ -66,7 +66,7 @@ struct PostDetailView: View {
                 ForEach(detail.blocks) { block in
                     switch block.kind {
                     case .text(let text):
-                        Text(text)
+                        textView(for: text)
                             .font(.body)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -77,6 +77,20 @@ struct PostDetailView: View {
                     }
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func textView(for text: String) -> some View {
+        if let attributed = try? AttributedString(
+            markdown: text,
+            options: AttributedString.MarkdownParsingOptions(
+                interpretedSyntax: .inlineOnlyPreservingWhitespace
+            )
+        ) {
+            Text(attributed)
+        } else {
+            Text(text)
         }
     }
 

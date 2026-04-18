@@ -22,6 +22,10 @@ struct PpomppuParser: BoardParser {
         }
 
         return try rows.compactMap { row -> Post? in
+            // Skip pinned-by-popularity rows that break chronological order.
+            let rowClasses = (try? row.attr("class")) ?? ""
+            if rowClasses.contains("hotpop_bg_color") { return nil }
+
             guard let link = try row.select("a[href*=bbs_view.php]").first() else { return nil }
             let href = try link.attr("href")
             guard !href.isEmpty,
@@ -94,6 +98,9 @@ struct PpomppuParser: BoardParser {
         }
 
         var blocks: [ContentBlock] = []
+        if let dealLink = try dealLinkBlock(from: view) {
+            blocks.append(dealLink)
+        }
         try collectBlocks(from: content, into: &blocks)
         blocks = mergeAdjacentText(blocks)
 
@@ -281,12 +288,19 @@ struct PpomppuParser: BoardParser {
                     }
                 case "br":
                     textBuffer += "\n"
+                case "a":
+                    if let markdown = try anchorMarkdown(from: el) {
+                        textBuffer += markdown
+                    } else {
+                        textBuffer += try el.text()
+                    }
                 default:
                     if Self.skipTags.contains(childTag) { continue }
                     let nestedImgs = try el.select("img")
                     let nestedVideos = try el.select("video")
+                    let nestedAnchors = try el.select("a")
                     let isBlock = Self.blockTags.contains(childTag)
-                    if !nestedImgs.isEmpty() || !nestedVideos.isEmpty() {
+                    if !nestedImgs.isEmpty() || !nestedVideos.isEmpty() || !nestedAnchors.isEmpty() {
                         flushText()
                         try collectBlocks(from: el, into: &blocks)
                     } else {
@@ -331,6 +345,14 @@ struct PpomppuParser: BoardParser {
         return url
     }
 
+    private func dealLinkBlock(from view: Element) throws -> ContentBlock? {
+        // Mobile: <div class="link-box"> inside <h4>.
+        // Desktop: <li class="topTitle-link partner"> inside <ul class="topTitle-mainbox">.
+        let anchor = try view.select("div.link-box a[href], li.topTitle-link a[href]").first()
+        guard let anchor, let markdown = try anchorMarkdown(from: anchor) else { return nil }
+        return .text("🔗 \(markdown)")
+    }
+
     private func videoURL(from element: Element) throws -> URL? {
         let dataSrc = try element.attr("data-src")
         let raw = dataSrc.isEmpty ? try element.attr("src") : dataSrc
@@ -352,8 +374,8 @@ struct PpomppuParser: BoardParser {
         try copy.select("img, script, style").remove()
         let blockMarker = "\u{0001}NL\u{0001}"
         let blocks = try copy.select("br, p, div, li, blockquote, tr")
-        for el in blocks {
-            try el.before(blockMarker)
+        for el in blocks where el.parent() != nil {
+            try? el.before(blockMarker)
         }
         let text = try copy.text()
         var result = text.replacingOccurrences(of: blockMarker, with: "\n")
