@@ -174,7 +174,7 @@ struct InvenParser: BoardParser {
         var results: [Comment] = []
         for block in response.commentlist {
             for raw in block.list {
-                let content = decodeHTMLEntities(raw.comment).trimmingCharacters(in: .whitespacesAndNewlines)
+                let content = cleanCommentText(raw.comment)
                 guard !content.isEmpty else { continue }
                 let isReply = raw.attr.cmtidx != raw.attr.cmtpidx
                 results.append(Comment(
@@ -190,15 +190,24 @@ struct InvenParser: BoardParser {
         return results
     }
 
-    private func decodeHTMLEntities(_ s: String) -> String {
-        var r = s
+    private func cleanCommentText(_ raw: String) -> String {
+        // 1) Replace block-level breaks with newlines BEFORE stripping tags.
+        var r = raw
+        r = r.replacingOccurrences(of: "<br\\s*/?>", with: "\n", options: .regularExpression)
+        r = r.replacingOccurrences(of: "</p>", with: "\n", options: .regularExpression)
+        r = r.replacingOccurrences(of: "</div>", with: "\n", options: .regularExpression)
+        // 2) Strip remaining HTML tags.
+        r = r.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+        // 3) Decode entities — &amp; first so double-encoded sequences resolve.
+        r = r.replacingOccurrences(of: "&amp;", with: "&")
         r = r.replacingOccurrences(of: "&nbsp;", with: " ")
         r = r.replacingOccurrences(of: "&lt;", with: "<")
         r = r.replacingOccurrences(of: "&gt;", with: ">")
         r = r.replacingOccurrences(of: "&quot;", with: "\"")
         r = r.replacingOccurrences(of: "&#39;", with: "'")
-        r = r.replacingOccurrences(of: "&amp;", with: "&")
-        return r
+        // 4) Collapse runs of blank lines and trim.
+        r = r.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
+        return r.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private struct InvenCommentResponse: Decodable {
