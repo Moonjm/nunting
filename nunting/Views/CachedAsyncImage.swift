@@ -4,7 +4,7 @@ import ImageIO
 
 struct CachedAsyncImage: View {
     let url: URL
-    var maxDimension: CGFloat = 1600
+    var maxDimension: CGFloat = 1200
 
     @State private var image: UIImage?
     @State private var failed = false
@@ -43,13 +43,10 @@ struct CachedAsyncImage: View {
         let limit = maxDimension
 
         do {
-            let (data, _) = try await URLSession.shared.data(for: URLRequest(url: url))
+            let (data, _) = try await Networking.session.data(for: URLRequest(url: url))
             try Task.checkCancellation()
 
-            let decoded = await Task.detached(priority: .userInitiated) {
-                Self.decode(data: data, maxDimension: limit, scale: scale)
-            }.value
-
+            let decoded = try await decodeOffMain(data: data, limit: limit, scale: scale)
             try Task.checkCancellation()
 
             if let decoded {
@@ -62,6 +59,18 @@ struct CachedAsyncImage: View {
             return
         } catch {
             failed = true
+        }
+    }
+
+    private func decodeOffMain(data: Data, limit: CGFloat, scale: CGFloat) async throws -> UIImage? {
+        try await withThrowingTaskGroup(of: UIImage?.self) { group in
+            group.addTask(priority: .userInitiated) {
+                try Task.checkCancellation()
+                let img = Self.decode(data: data, maxDimension: limit, scale: scale)
+                try Task.checkCancellation()
+                return img
+            }
+            return try await group.next() ?? nil
         }
     }
 
@@ -80,12 +89,16 @@ struct CachedAsyncImage: View {
     }
 }
 
+// maxDimension 1200pt × scale 3 = 3600px on the long edge — overkill for an
+// iPhone (≈1290px native) but leaves headroom for landscape full-screen.
+// At ~38MB per fully-decoded image, the 200MB cap holds ~5 images comfortably,
+// matching a typical scroll context (one screen of post body images).
 final class ImageCache {
     static let shared = ImageCache()
 
     private let cache: NSCache<NSURL, UIImage> = {
         let c = NSCache<NSURL, UIImage>()
-        c.totalCostLimit = 100 * 1024 * 1024
+        c.totalCostLimit = 200 * 1024 * 1024
         return c
     }()
 

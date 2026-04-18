@@ -89,7 +89,7 @@ struct PostDetailView: View {
             try Task.checkCancellation()
             var parsed = try parser.parseDetail(html: html, post: post)
 
-            if parsed.comments.isEmpty {
+            if parsed.comments.isEmpty, parser.commentsURL(for: post) != nil {
                 let postSite = post.site
                 let extras = try? await parser.fetchAllComments(for: post) { url in
                     try await Networking.fetchHTML(url: url, encoding: postSite.encoding)

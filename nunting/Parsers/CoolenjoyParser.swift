@@ -10,12 +10,9 @@ struct CoolenjoyParser: BoardParser {
 
         return try rows.compactMap { row -> Post? in
             guard let titleEl = try row.select("a.na-subject").first() else { return nil }
-            if try !titleEl.select("strong").isEmpty() { return nil }
+            if try !titleEl.select("strong > b.text-white").isEmpty() { return nil }
 
-            let href = try titleEl.attr("href")
-            guard !href.isEmpty,
-                  let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL
-            else { return nil }
+            guard let url = try resolvePostURL(titleEl: titleEl, row: row) else { return nil }
 
             let title = try cleanedTitle(from: titleEl)
             guard !title.isEmpty else { return nil }
@@ -161,6 +158,29 @@ struct CoolenjoyParser: BoardParser {
             source: nil,
             comments: []
         )
+    }
+
+    private func resolvePostURL(titleEl: Element, row: Element) throws -> URL? {
+        let href = try titleEl.attr("href")
+        if !href.isEmpty && href != "#",
+           let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL,
+           let scheme = url.scheme?.lowercased(),
+           scheme == "http" || scheme == "https" {
+            return url
+        }
+        let onclick = try row.attr("onclick")
+        if let extracted = Self.extractLocationHref(from: onclick),
+           let url = URL(string: extracted, relativeTo: site.baseURL)?.absoluteURL {
+            return url
+        }
+        return nil
+    }
+
+    private static func extractLocationHref(from onclick: String) -> String? {
+        guard let start = onclick.range(of: "location.href='")?.upperBound,
+              let end = onclick[start...].range(of: "'")?.lowerBound
+        else { return nil }
+        return String(onclick[start..<end])
     }
 
     private func cleanedTitle(from anchor: Element) throws -> String {
