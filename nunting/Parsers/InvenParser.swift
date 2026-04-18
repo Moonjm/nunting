@@ -98,6 +98,10 @@ struct InvenParser: BoardParser {
             }
             return
         }
+        if tag == "video" {
+            blocks.append(.text("[🎬 영상은 우측 상단 🧭 사파리 버튼으로 원문에서 재생하세요]"))
+            return
+        }
         if tag == "script" || tag == "style" || tag == "iframe" {
             return
         }
@@ -111,13 +115,17 @@ struct InvenParser: BoardParser {
                     if let url = try imageURL(from: el) {
                         blocks.append(.image(url))
                     }
+                case "video":
+                    flushText()
+                    blocks.append(.text("[🎬 영상은 우측 상단 🧭 사파리 버튼으로 원문에서 재생하세요]"))
                 case "br":
                     textBuffer += "\n"
                 case "script", "style", "iframe":
                     continue
                 default:
                     let nestedImgs = try el.select("img")
-                    if !nestedImgs.isEmpty() {
+                    let nestedVideos = try el.select("video")
+                    if !nestedImgs.isEmpty() || !nestedVideos.isEmpty() {
                         flushText()
                         try collectBlocks(from: el, into: &blocks)
                     } else {
