@@ -2,6 +2,8 @@ import SwiftUI
 
 struct BoardListView: View {
     let board: Board
+    var scrollLocked: Bool = false
+    let onSelectPost: (Post) -> Void
 
     @State private var posts: [Post] = []
     @State private var isLoading = false
@@ -33,7 +35,9 @@ struct BoardListView: View {
 
     private var listView: some View {
         List(posts) { post in
-            NavigationLink(value: post) {
+            Button {
+                onSelectPost(post)
+            } label: {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(post.title).font(.body)
                     HStack(spacing: 8) {
@@ -46,9 +50,13 @@ struct BoardListView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
         }
         .listStyle(.plain)
+        .scrollDisabled(scrollLocked)
         .refreshable { await load() }
     }
 
