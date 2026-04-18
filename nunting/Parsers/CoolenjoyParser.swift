@@ -39,6 +39,48 @@ struct CoolenjoyParser: BoardParser {
         }
     }
 
+    func commentsURL(for post: Post) -> URL? {
+        let comps = post.url.pathComponents
+        guard comps.count >= 4 else { return nil }
+        let boardTable = comps[2]
+        let wrID = comps[3]
+        return URL(string: "https://coolenjoy.net/nariya/bbs/comment_view.php?bo_table=\(boardTable)&wr_id=\(wrID)")
+    }
+
+    func parseComments(html: String) throws -> [Comment] {
+        let doc = try SwiftSoup.parse(html)
+        let articles = try doc.select("article[id^=c_]")
+        var results: [Comment] = []
+
+        for article in articles {
+            let articleID = try article.attr("id")
+            let snStart = articleID.index(articleID.startIndex, offsetBy: 2, limitedBy: articleID.endIndex)
+            guard let sn = snStart.map({ String(articleID[$0...]) }), !sn.isEmpty else { continue }
+
+            let author = try authorName(from: article)
+            let dateText = try article.select("time").first()?.text()
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+            let content = try article.select("textarea[id^=save_comment_]").first()?.text()
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !content.isEmpty else { continue }
+
+            let likeText = try article.select("b[id^=c_g]").first()?.text()
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? "0"
+            let likeCount = Int(likeText) ?? 0
+
+            results.append(Comment(
+                id: "\(site.rawValue)-c-\(sn)",
+                author: author,
+                dateText: dateText,
+                content: content,
+                likeCount: likeCount,
+                isReply: false
+            ))
+        }
+        return results
+    }
+
     func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
         guard let article = try doc.select("article#bo_v").first() else {

@@ -4,6 +4,13 @@ protocol BoardParser {
     var site: Site { get }
     func parseList(html: String, board: Board) throws -> [Post]
     func parseDetail(html: String, post: Post) throws -> PostDetail
+    func commentsURL(for post: Post) -> URL?
+    func parseComments(html: String) throws -> [Comment]
+}
+
+extension BoardParser {
+    func commentsURL(for post: Post) -> URL? { nil }
+    func parseComments(html: String) throws -> [Comment] { [] }
 }
 
 enum ParserError: Error, LocalizedError {

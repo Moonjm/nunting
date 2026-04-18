@@ -71,24 +71,7 @@ struct PostDetailView: View {
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     case .image(let url):
-                        AsyncImage(url: url) { phase in
-                            switch phase {
-                            case .empty:
-                                ProgressView()
-                                    .frame(maxWidth: .infinity, minHeight: 120)
-                            case .success(let image):
-                                image
-                                    .resizable()
-                                    .scaledToFit()
-                                    .frame(maxWidth: .infinity)
-                            case .failure:
-                                Image(systemName: "photo")
-                                    .foregroundStyle(.secondary)
-                                    .frame(maxWidth: .infinity, minHeight: 80)
-                            @unknown default:
-                                EmptyView()
-                            }
-                        }
+                        CachedAsyncImage(url: url)
                     }
                 }
             }
@@ -104,12 +87,33 @@ struct PostDetailView: View {
             let parser = try ParserFactory.parser(for: post.site)
             let html = try await Networking.fetchHTML(url: post.url, encoding: post.site.encoding)
             try Task.checkCancellation()
-            detail = try parser.parseDetail(html: html, post: post)
+            var parsed = try parser.parseDetail(html: html, post: post)
+
+            if parsed.comments.isEmpty, let cmtURL = parser.commentsURL(for: post) {
+                if let extras = try? await fetchComments(parser: parser, url: cmtURL) {
+                    parsed = PostDetail(
+                        post: parsed.post,
+                        blocks: parsed.blocks,
+                        fullDateText: parsed.fullDateText,
+                        viewCount: parsed.viewCount,
+                        source: parsed.source,
+                        comments: extras
+                    )
+                }
+            }
+
+            detail = parsed
         } catch is CancellationError {
             return
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func fetchComments(parser: BoardParser, url: URL) async throws -> [Comment] {
+        let html = try await Networking.fetchHTML(url: url, encoding: post.site.encoding)
+        try Task.checkCancellation()
+        return try parser.parseComments(html: html)
     }
 }
 
