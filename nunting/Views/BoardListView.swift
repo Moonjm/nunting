@@ -9,6 +9,7 @@ struct BoardListView: View {
     @State private var posts: [Post] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var loadedKey: String?
 
     private var taskKey: String {
         "\(board.id)|\(filter?.id ?? "_all")"
@@ -26,7 +27,13 @@ struct BoardListView: View {
                 listView
             }
         }
-        .task(id: taskKey) { await load() }
+        .task(id: taskKey) {
+            if loadedKey != taskKey {
+                posts = []
+                errorMessage = nil
+            }
+            await load()
+        }
     }
 
     private var loadingView: some View {
@@ -81,19 +88,31 @@ struct BoardListView: View {
 
     private func load() async {
         guard !Task.isCancelled else { return }
-        posts = []
+        // Capture taskKey at the start so a stale fetch (board switched mid-flight)
+        // can't overwrite the new task's posts/errorMessage on completion.
+        let key = taskKey
         errorMessage = nil
         isLoading = true
-        defer { isLoading = false }
+        defer {
+            if key == taskKey {
+                isLoading = false
+            }
+        }
         do {
             let parser = try ParserFactory.parser(for: board.site)
             let url = board.url(filter: filter)
             let html = try await Networking.fetchHTML(url: url, encoding: board.site.encoding)
             try Task.checkCancellation()
-            posts = try parser.parseList(html: html, board: board)
+            let parsed = try parser.parseList(html: html, board: board)
+            guard key == taskKey else { return }
+            posts = parsed
+            loadedKey = key
         } catch is CancellationError {
             return
+        } catch let urlError as URLError where urlError.code == .cancelled {
+            return
         } catch {
+            guard key == taskKey else { return }
             errorMessage = error.localizedDescription
         }
     }

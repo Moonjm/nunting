@@ -22,14 +22,16 @@ enum Site: String, CaseIterable, Identifiable, Codable {
         case .clien: URL(string: "https://www.clien.net")!
         case .coolenjoy: URL(string: "https://coolenjoy.net")!
         case .inven: URL(string: "https://www.inven.co.kr")!
-        case .ppomppu: URL(string: "https://www.ppomppu.co.kr")!
+        case .ppomppu: URL(string: "https://m.ppomppu.co.kr")!
         }
     }
 
     var encoding: String.Encoding {
         switch self {
         case .ppomppu:
-            let cf = CFStringEncoding(CFStringEncodings.EUC_KR.rawValue)
+            // Server advertises EUC-KR but actually serves CP949 (Windows-949), which is a superset.
+            // Decoding strictly as EUC-KR fails on extended characters.
+            let cf = CFStringEncoding(CFStringEncodings.dosKorean.rawValue)
             return String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(cf))
         default:
             return .utf8

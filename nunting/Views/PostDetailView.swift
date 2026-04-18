@@ -65,8 +65,8 @@ struct PostDetailView: View {
             VStack(alignment: .leading, spacing: 12) {
                 ForEach(detail.blocks) { block in
                     switch block.kind {
-                    case .text(let text):
-                        Text(text)
+                    case .richText(let segments):
+                        Text(attributedString(from: segments))
                             .font(.body)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -74,10 +74,29 @@ struct PostDetailView: View {
                         CachedAsyncImage(url: url)
                     case .video(let url):
                         InlineVideoPlayer(url: url)
+                    case .dealLink(let url, let label):
+                        DealLinkBanner(url: url, label: label)
                     }
                 }
             }
         }
+    }
+
+    private func attributedString(from segments: [InlineSegment]) -> AttributedString {
+        var result = AttributedString()
+        for segment in segments {
+            switch segment {
+            case .text(let s):
+                result.append(AttributedString(s))
+            case .link(let url, let label):
+                var part = AttributedString(label)
+                part.link = url
+                part.foregroundColor = .accentColor
+                part.underlineStyle = .single
+                result.append(part)
+            }
+        }
+        return result
     }
 
     private func load() async {
@@ -91,7 +110,11 @@ struct PostDetailView: View {
             try Task.checkCancellation()
             var parsed = try parser.parseDetail(html: html, post: post)
 
-            if parsed.comments.isEmpty, parser.commentsURL(for: post) != nil {
+            // Always run fetchAllComments when the parser provides a comments URL — the
+            // default protocol impl returns [] for parsers without a real override (Clien),
+            // so detail-page comments survive. Parsers with overrides (Coolenjoy, Inven,
+            // Ppomppu) handle pagination authoritatively.
+            if parser.commentsURL(for: post) != nil {
                 let postSite = post.site
                 let extras = try? await parser.fetchAllComments(for: post) { url in
                     try await Networking.fetchHTML(url: url, encoding: postSite.encoding)
@@ -114,6 +137,31 @@ struct PostDetailView: View {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+}
+
+private struct DealLinkBanner: View {
+    let url: URL
+    let label: String
+
+    var body: some View {
+        Link(destination: url) {
+            HStack(spacing: 8) {
+                Image(systemName: "link")
+                Text(label)
+                    .font(.callout)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                Spacer()
+                Image(systemName: "arrow.up.right.square")
+                    .foregroundStyle(.secondary)
+            }
+            .padding(12)
+            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("딜 링크 \(label), 외부 사이트 열기")
     }
 }
 

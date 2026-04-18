@@ -55,8 +55,8 @@ extension Board {
         ]
     )
 
-    static let ppomppuMain = Board(id: "ppomppu-main", site: .ppomppu, name: "뽐뿌게시판", path: "/zboard/zboard.php?id=ppomppu")
-    static let ppomppuFree = Board(id: "ppomppu-free", site: .ppomppu, name: "자유게시판", path: "/zboard/zboard.php?id=freeboard")
+    static let ppomppuMain = Board(id: "ppomppu-main", site: .ppomppu, name: "뽐뿌게시판", path: "/new/bbs_list.php?id=ppomppu")
+    static let ppomppuFree = Board(id: "ppomppu-free", site: .ppomppu, name: "자유게시판", path: "/new/bbs_list.php?id=freeboard")
 
     static let all: [Board] = [
         .clienNews, .clienJirum, .clienPark,
