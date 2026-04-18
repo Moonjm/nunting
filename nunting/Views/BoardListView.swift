@@ -54,8 +54,9 @@ struct BoardListView: View {
 
     private func load() async {
         guard !Task.isCancelled else { return }
-        isLoading = true
+        posts = []
         errorMessage = nil
+        isLoading = true
         defer { isLoading = false }
         do {
             let parser = try ParserFactory.parser(for: board.site)
@@ -66,7 +67,6 @@ struct BoardListView: View {
             return
         } catch {
             errorMessage = error.localizedDescription
-            posts = []
         }
     }
 }

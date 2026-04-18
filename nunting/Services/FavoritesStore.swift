@@ -4,15 +4,23 @@ import Observation
 @Observable
 final class FavoritesStore {
     private let storageKey = "favoriteBoardIDs"
+    private let seededKey = "favoritesSeeded"
+    private let defaults: UserDefaults
     var boardIDs: Set<String>
 
     init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+
         if let data = defaults.data(forKey: storageKey),
            let decoded = try? JSONDecoder().decode(Set<String>.self, from: data) {
             self.boardIDs = decoded
+        } else if defaults.bool(forKey: seededKey) {
+            self.boardIDs = []
         } else {
-            self.boardIDs = [Board.clienNews.id]
-            Self.persist(boardIDs: [Board.clienNews.id], key: storageKey, defaults: defaults)
+            let seeded: Set<String> = [Board.clienNews.id]
+            self.boardIDs = seeded
+            defaults.set(true, forKey: seededKey)
+            Self.persist(boardIDs: seeded, key: storageKey, defaults: defaults)
         }
     }
 
@@ -26,7 +34,7 @@ final class FavoritesStore {
         } else {
             boardIDs.insert(board.id)
         }
-        Self.persist(boardIDs: boardIDs, key: storageKey, defaults: .standard)
+        Self.persist(boardIDs: boardIDs, key: storageKey, defaults: defaults)
     }
 
     func favoriteBoards(in registry: [Board] = Board.all) -> [Board] {

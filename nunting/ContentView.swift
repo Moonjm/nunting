@@ -8,6 +8,7 @@ struct ContentView: View {
 
     @State private var dragOffset: CGFloat = 0
     @State private var dragDirection: DragDirection?
+    @State private var dragLockBaseline: CGFloat = 0
 
     private let drawerWidth: CGFloat = 300
 
@@ -20,7 +21,7 @@ struct ContentView: View {
                 Color.black
                     .opacity(0.3 * drawerProgress)
                     .ignoresSafeArea()
-                    .allowsHitTesting(drawerProgress > 0.01)
+                    .allowsHitTesting(drawerOpen)
                     .onTapGesture { closeDrawer() }
 
                 SideDrawer(
@@ -72,19 +73,22 @@ struct ContentView: View {
                 if dragDirection == nil {
                     let absW = abs(value.translation.width)
                     let absH = abs(value.translation.height)
-                    if absW > 8 && absW > absH * 1.3 {
+                    if absW > 10 && absW >= absH {
                         dragDirection = .horizontal
-                    } else if absH > 8 && absH > absW * 1.3 {
+                        dragLockBaseline = value.translation.width
+                    } else if absH > 10 && absH > absW {
                         dragDirection = .vertical
                     }
                 }
                 if dragDirection == .horizontal {
-                    dragOffset = value.translation.width
+                    dragOffset = value.translation.width - dragLockBaseline
                 }
             }
             .onEnded { value in
                 let lockedHorizontal = dragDirection == .horizontal
+                let baseline = dragLockBaseline
                 dragDirection = nil
+                dragLockBaseline = 0
 
                 guard lockedHorizontal else {
                     dragOffset = 0
@@ -92,11 +96,13 @@ struct ContentView: View {
                 }
 
                 let velocity = value.predictedEndTranslation.width - value.translation.width
+                let traveled = value.translation.width - baseline
+
                 let shouldOpen: Bool
                 if drawerOpen {
-                    shouldOpen = !(value.translation.width < -drawerWidth / 3 || velocity < -150)
+                    shouldOpen = !(traveled < -drawerWidth / 3 || velocity < -150)
                 } else {
-                    shouldOpen = (value.translation.width > drawerWidth / 3 || velocity > 150)
+                    shouldOpen = (traveled > drawerWidth / 3 || velocity > 150)
                 }
 
                 withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
@@ -108,6 +114,8 @@ struct ContentView: View {
 
     private func openDrawer(targetSection: DrawerSection) {
         drawerSection = targetSection
+        dragDirection = nil
+        dragLockBaseline = 0
         withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
             drawerOpen = true
             dragOffset = 0
@@ -115,6 +123,8 @@ struct ContentView: View {
     }
 
     private func closeDrawer() {
+        dragDirection = nil
+        dragLockBaseline = 0
         withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
             drawerOpen = false
             dragOffset = 0
