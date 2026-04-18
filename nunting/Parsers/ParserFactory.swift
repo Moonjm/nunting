@@ -5,7 +5,8 @@ enum ParserFactory {
         switch site {
         case .clien: return ClienParser()
         case .coolenjoy: return CoolenjoyParser()
-        case .inven, .ppomppu:
+        case .inven: return InvenParser()
+        case .ppomppu:
             throw ParserError.unsupportedSite(site)
         }
     }
