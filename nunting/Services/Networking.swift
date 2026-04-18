@@ -40,9 +40,39 @@ struct Networking {
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             throw NetworkError.badResponse(http.statusCode)
         }
-        guard let html = String(data: data, encoding: encoding) else {
-            throw NetworkError.decodingFailed
+        if let html = String(data: data, encoding: encoding) {
+            return html
         }
-        return html
+        if encoding == .utf8 {
+            return String(decoding: data, as: UTF8.self)
+        }
+        throw NetworkError.decodingFailed
+    }
+
+    static func postForm(url: URL, parameters: [String: String], referer: URL? = nil) async throws -> Data {
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        request.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
+        if let referer {
+            request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer")
+            if let scheme = referer.scheme, let host = referer.host {
+                request.setValue("\(scheme)://\(host)", forHTTPHeaderField: "Origin")
+            }
+        }
+
+        var comps = URLComponents()
+        comps.queryItems = parameters.map { URLQueryItem(name: $0.key, value: $0.value) }
+        request.httpBody = comps.percentEncodedQuery?.data(using: .utf8)
+
+        let (data, response) = try await session.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            #if DEBUG
+            let preview = String(data: data.prefix(256), encoding: .utf8) ?? "<binary>"
+            print("[Networking.postForm] HTTP \(http.statusCode) for \(url.absoluteString): \(preview)")
+            #endif
+            throw NetworkError.badResponse(http.statusCode)
+        }
+        return data
     }
 }

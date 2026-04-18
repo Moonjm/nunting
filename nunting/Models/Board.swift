@@ -5,9 +5,31 @@ struct Board: Identifiable, Hashable, Codable {
     let site: Site
     let name: String
     let path: String
+    let filters: [BoardFilter]
 
-    var url: URL {
-        URL(string: path, relativeTo: site.baseURL)?.absoluteURL ?? site.baseURL
+    init(id: String, site: Site, name: String, path: String, filters: [BoardFilter] = []) {
+        self.id = id
+        self.site = site
+        self.name = name
+        self.path = path
+        self.filters = filters
+    }
+
+    var url: URL { url(filter: nil) }
+
+    func url(filter: BoardFilter?) -> URL {
+        let base = URL(string: path, relativeTo: site.baseURL)?.absoluteURL ?? site.baseURL
+        guard let filter, !filter.queryItems.isEmpty,
+              var comps = URLComponents(url: base, resolvingAgainstBaseURL: false)
+        else { return base }
+
+        var items = comps.queryItems ?? []
+        for (key, value) in filter.queryItems {
+            items.removeAll { $0.name == key }
+            items.append(URLQueryItem(name: key, value: value))
+        }
+        comps.queryItems = items
+        return comps.url ?? base
     }
 }
 
@@ -21,7 +43,17 @@ extension Board {
     static let coolenjoyReview = Board(id: "coolenjoy-review", site: .coolenjoy, name: "사용기/리뷰", path: "/bbs/review")
     static let coolenjoyQna = Board(id: "coolenjoy-qna", site: .coolenjoy, name: "질문답변", path: "/bbs/qa")
 
-    static let invenMaple = Board(id: "inven-maple", site: .inven, name: "메이플 자유게시판", path: "/board/maple/5974")
+    static let invenMaple = Board(
+        id: "inven-maple",
+        site: .inven,
+        name: "메이플 자유게시판",
+        path: "/board/maple/5974",
+        filters: [
+            BoardFilter(id: "chu", name: "10추", queryItems: ["my": "chu"]),
+            BoardFilter(id: "chuchu", name: "30추", queryItems: ["my": "chuchu"]),
+            BoardFilter(id: "inbang", name: "인방", queryItems: ["category": "인방"]),
+        ]
+    )
 
     static let ppomppuMain = Board(id: "ppomppu-main", site: .ppomppu, name: "뽐뿌게시판", path: "/zboard/zboard.php?id=ppomppu")
     static let ppomppuFree = Board(id: "ppomppu-free", site: .ppomppu, name: "자유게시판", path: "/zboard/zboard.php?id=freeboard")
