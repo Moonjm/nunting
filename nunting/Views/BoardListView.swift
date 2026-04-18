@@ -35,29 +35,32 @@ struct BoardListView: View {
 
     private var listView: some View {
         List(posts) { post in
-            Button {
-                onSelectPost(post)
-            } label: {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(post.title).font(.body)
-                    HStack(spacing: 8) {
-                        Text(post.author)
-                        Text(post.dateText)
-                        if post.commentCount > 0 {
-                            Text("💬 \(post.commentCount)")
-                        }
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+            postRow(post: post)
         }
         .listStyle(.plain)
         .scrollDisabled(scrollLocked)
         .refreshable { await load() }
+    }
+
+    @ViewBuilder
+    private func postRow(post: Post) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(post.title).font(.body)
+            HStack(spacing: 8) {
+                Text(post.author)
+                Text(post.dateText)
+                if post.commentCount > 0 {
+                    Text("💬 \(post.commentCount)")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture { onSelectPost(post) }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
     }
 
     private func load() async {
