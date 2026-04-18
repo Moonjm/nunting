@@ -4,9 +4,11 @@ struct ContentView: View {
     @State private var favorites = FavoritesStore()
     @State private var selectedBoard: Board = .clienNews
     @State private var selectedFilter: BoardFilter? = nil
+    @State private var searchQuery: String? = nil
     @State private var drawerOpen = false
     @State private var drawerSection: DrawerSection = .favorites
     @State private var navigationPath = NavigationPath()
+    @State private var searchSheetPresented = false
 
     @State private var dragOffset: CGFloat = 0
     @State private var dragDirection: DragDirection?
@@ -49,9 +51,13 @@ struct ContentView: View {
 
     private var mainScreen: some View {
         VStack(spacing: 0) {
+            if let q = searchQuery, !q.isEmpty {
+                SearchActiveBar(query: q) { searchQuery = nil }
+            }
             BoardListView(
                 board: selectedBoard,
                 filter: selectedFilter,
+                searchQuery: searchQuery,
                 scrollLocked: scrollLocked,
                 onSelectPost: { navigationPath.append($0) }
             )
@@ -62,12 +68,26 @@ struct ContentView: View {
                 board: selectedBoard,
                 favorites: favorites,
                 onSiteTap: { openDrawer(targetSection: .site(selectedBoard.site)) },
-                onSearch: {},
+                onSearch: { searchSheetPresented = true },
                 onMore: { openDrawer(targetSection: drawerSection) }
             )
         }
         .onChange(of: selectedBoard) { _, _ in
             selectedFilter = nil
+            searchQuery = nil
+        }
+        .onChange(of: selectedFilter) { _, _ in
+            // Filter switches can swap the path entirely (BoardFilter.replacementPath),
+            // so the prior search query may not be meaningful on the new endpoint.
+            searchQuery = nil
+        }
+        .sheet(isPresented: $searchSheetPresented) {
+            SearchSheet(
+                board: selectedBoard,
+                initialQuery: searchQuery ?? "",
+                onSubmit: { q in searchQuery = q },
+                onClear: { searchQuery = nil }
+            )
         }
     }
 
@@ -153,6 +173,32 @@ struct ContentView: View {
 private enum DragDirection {
     case horizontal
     case vertical
+}
+
+private struct SearchActiveBar: View {
+    let query: String
+    let onClear: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            Text("\"\(query)\" 검색 결과")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button(action: onClear) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("검색 해제")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color(uiColor: .secondarySystemBackground))
+        .overlay(alignment: .bottom) { Divider() }
+    }
 }
 
 #Preview {

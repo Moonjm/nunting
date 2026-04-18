@@ -6,30 +6,65 @@ struct Board: Identifiable, Hashable, Codable {
     let name: String
     let path: String
     let filters: [BoardFilter]
+    /// When non-nil, the board supports keyword search; the URL receives a
+    /// `?{searchQueryName}=KEYWORD` parameter merged into its query items.
+    let searchQueryName: String?
+    /// Query parameter name used for paging (e.g. `page` on aagag). Nil means
+    /// the board does not support infinite scroll.
+    let pageQueryName: String?
 
-    init(id: String, site: Site, name: String, path: String, filters: [BoardFilter] = []) {
+    init(id: String, site: Site, name: String, path: String, filters: [BoardFilter] = [], searchQueryName: String? = nil, pageQueryName: String? = nil) {
         self.id = id
         self.site = site
         self.name = name
         self.path = path
         self.filters = filters
+        self.searchQueryName = searchQueryName
+        self.pageQueryName = pageQueryName
     }
 
-    var url: URL { url(filter: nil) }
+    var url: URL { url(filter: nil, search: nil, page: nil) }
 
     func url(filter: BoardFilter?) -> URL {
-        let base = URL(string: path, relativeTo: site.baseURL)?.absoluteURL ?? site.baseURL
-        guard let filter, !filter.queryItems.isEmpty,
-              var comps = URLComponents(url: base, resolvingAgainstBaseURL: false)
-        else { return base }
+        url(filter: filter, search: nil, page: nil)
+    }
 
+    func url(filter: BoardFilter?, search: String?) -> URL {
+        url(filter: filter, search: search, page: nil)
+    }
+
+    func url(filter: BoardFilter?, search: String?, page: Int?) -> URL {
+        let effectivePath = filter?.replacementPath ?? path
+        let base = URL(string: effectivePath, relativeTo: site.baseURL)?.absoluteURL ?? site.baseURL
+
+        let extraItems: [(String, String)] = (filter?.queryItems.map { ($0.key, $0.value) } ?? [])
+            + searchItems(query: search)
+            + pageItems(page: page)
+        if extraItems.isEmpty { return base }
+
+        guard var comps = URLComponents(url: base, resolvingAgainstBaseURL: false) else { return base }
         var items = comps.queryItems ?? []
-        for (key, value) in filter.queryItems {
+        for (key, value) in extraItems {
             items.removeAll { $0.name == key }
             items.append(URLQueryItem(name: key, value: value))
         }
         comps.queryItems = items
         return comps.url ?? base
+    }
+
+    var supportsSearch: Bool { searchQueryName != nil }
+    var supportsPaging: Bool { pageQueryName != nil }
+
+    private func searchItems(query: String?) -> [(String, String)] {
+        guard let searchQueryName,
+              let query, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return [] }
+        return [(searchQueryName, query)]
+    }
+
+    private func pageItems(page: Int?) -> [(String, String)] {
+        guard let pageQueryName, let page, page > 1 else { return [] }
+        return [(pageQueryName, "\(page)")]
     }
 }
 
@@ -58,11 +93,24 @@ extension Board {
     static let ppomppuMain = Board(id: "ppomppu-main", site: .ppomppu, name: "뽐뿌게시판", path: "/new/bbs_list.php?id=ppomppu")
     static let ppomppuFree = Board(id: "ppomppu-free", site: .ppomppu, name: "자유게시판", path: "/new/bbs_list.php?id=freeboard")
 
+    static let aagag = Board(
+        id: "aagag",
+        site: .aagag,
+        name: "모음",
+        path: "/mirror/?site=clien%7Cppomppu%7C82cook%7Cbobae%7Chumor%7Cddanzi%7Cslrclub%7Cdamoang&select=multi",
+        filters: [
+            BoardFilter(id: "issue", name: "이슈모음", replacementPath: "/issue/"),
+        ],
+        searchQueryName: "word",
+        pageQueryName: "page"
+    )
+
     static let all: [Board] = [
         .clienNews, .clienJirum, .clienPark,
         .coolenjoyJirum, .coolenjoyFree, .coolenjoyReview, .coolenjoyQna,
         .invenMaple,
         .ppomppuMain, .ppomppuFree,
+        .aagag,
     ]
 
     static func boards(for site: Site) -> [Board] {

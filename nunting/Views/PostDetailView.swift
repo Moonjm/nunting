@@ -76,6 +76,12 @@ struct PostDetailView: View {
                         InlineVideoPlayer(url: url)
                     case .dealLink(let url, let label):
                         DealLinkBanner(url: url, label: label)
+                    case .embed(.youtube, let id):
+                        YouTubeBanner(videoID: id)
+                    case .embed(.instagram, let id):
+                        if let url = URL(string: "https://www.instagram.com/p/\(id)/") {
+                            DealLinkBanner(url: url, label: "Instagram 게시물 보기")
+                        }
                     }
                 }
             }
@@ -99,44 +105,175 @@ struct PostDetailView: View {
         return result
     }
 
+    private enum Dispatch {
+        /// Use the given Post with its site's parser. Optional prefetched body
+        /// is the GET response captured by `resolveFinalURL` (avoids re-fetch).
+        case parser(Post, prefetched: Data?)
+        /// Resolved redirect points at a site we don't parse; render an
+        /// external-link banner and skip the parser pipeline.
+        case external(URL)
+    }
+
+    /// Aagag mirror items have URLs of the form `aagag.com/mirror/re?ss=...`
+    /// which 301-redirect to the source site. Resolve and decide how to load:
+    /// dispatch to a source parser if we recognise the host, else surface a
+    /// "외부 사이트로 이동" banner.
+    private func resolveDispatchedPost(_ post: Post) async throws -> Dispatch {
+        guard post.site == .aagag,
+              let host = post.url.host?.lowercased(),
+              host.hasSuffix("aagag.com"),
+              post.url.path.hasSuffix("/re") || post.url.path.hasSuffix("/mirror/re")
+        else { return .parser(post, prefetched: nil) }
+
+        let resolved = await Networking.resolveFinalURL(post.url)
+        guard resolved.url != post.url else {
+            return .parser(post, prefetched: nil)
+        }
+        guard let sourceSite = Site.detect(host: resolved.url.host) else {
+            return .external(resolved.url)
+        }
+        let dispatched = Post(
+            id: post.id,
+            site: sourceSite,
+            boardID: post.boardID,
+            title: post.title,
+            author: post.author,
+            date: post.date,
+            dateText: post.dateText,
+            commentCount: post.commentCount,
+            url: resolved.url,
+            viewCount: post.viewCount,
+            recommendCount: post.recommendCount,
+            levelText: post.levelText,
+            hasAuthIcon: post.hasAuthIcon
+        )
+        return .parser(dispatched, prefetched: resolved.prefetchedBody)
+    }
+
     private func load() async {
         guard !Task.isCancelled else { return }
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
         do {
-            let parser = try ParserFactory.parser(for: post.site)
-            let html = try await Networking.fetchHTML(url: post.url, encoding: post.site.encoding)
+            // Aagag mirror items are HTTP redirects to a source site; resolve the
+            // target URL and dispatch to the source parser when supported.
+            let dispatch = try await resolveDispatchedPost(post)
             try Task.checkCancellation()
-            var parsed = try parser.parseDetail(html: html, post: post)
 
-            // Always run fetchAllComments when the parser provides a comments URL — the
-            // default protocol impl returns [] for parsers without a real override (Clien),
-            // so detail-page comments survive. Parsers with overrides (Coolenjoy, Inven,
-            // Ppomppu) handle pagination authoritatively.
-            if parser.commentsURL(for: post) != nil {
-                let postSite = post.site
-                let extras = try? await parser.fetchAllComments(for: post) { url in
-                    try await Networking.fetchHTML(url: url, encoding: postSite.encoding)
+            switch dispatch {
+            case .external(let externalURL):
+                detail = PostDetail(
+                    post: post,
+                    blocks: [.dealLink(externalURL, label: "외부 사이트로 이동: \(externalURL.host ?? externalURL.absoluteString)")],
+                    fullDateText: post.dateText,
+                    viewCount: post.viewCount,
+                    source: nil,
+                    comments: []
+                )
+                return
+
+            case .parser(let resolved, let prefetched):
+                let parser = try ParserFactory.parser(for: resolved.site)
+                let html: String
+                if let prefetched {
+                    html = Networking.decodeHTML(data: prefetched, encoding: resolved.site.encoding)
+                } else {
+                    html = try await Networking.fetchHTML(url: resolved.url, encoding: resolved.site.encoding)
                 }
-                if let extras, !extras.isEmpty {
-                    parsed = PostDetail(
-                        post: parsed.post,
-                        blocks: parsed.blocks,
-                        fullDateText: parsed.fullDateText,
-                        viewCount: parsed.viewCount,
-                        source: parsed.source,
-                        comments: extras
-                    )
+                try Task.checkCancellation()
+                var parsed = try parser.parseDetail(html: html, post: resolved)
+
+                // Always run fetchAllComments when the parser provides a comments URL — the
+                // default protocol impl returns [] for parsers without a real override (Clien),
+                // so detail-page comments survive. Parsers with overrides (Coolenjoy, Inven,
+                // Ppomppu) handle pagination authoritatively.
+                if parser.commentsURL(for: resolved) != nil {
+                    let postSite = resolved.site
+                    let extras = try? await parser.fetchAllComments(for: resolved) { url in
+                        try await Networking.fetchHTML(url: url, encoding: postSite.encoding)
+                    }
+                    if let extras, !extras.isEmpty {
+                        parsed = PostDetail(
+                            post: parsed.post,
+                            blocks: parsed.blocks,
+                            fullDateText: parsed.fullDateText,
+                            viewCount: parsed.viewCount,
+                            source: parsed.source,
+                            comments: extras
+                        )
+                    }
                 }
+
+                detail = parsed
             }
-
-            detail = parsed
         } catch is CancellationError {
             return
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+}
+
+private struct YouTubeBanner: View {
+    let videoID: String
+
+    private var watchURL: URL { URL(string: "https://www.youtube.com/watch?v=\(videoID)")! }
+    private var thumbnailURL: URL { URL(string: "https://img.youtube.com/vi/\(videoID)/hqdefault.jpg")! }
+
+    var body: some View {
+        Link(destination: watchURL) {
+            ZStack(alignment: .center) {
+                // Branded gradient backstop so layout stays intact when the
+                // thumbnail 404s (e.g. very new uploads, age-restricted, deleted).
+                LinearGradient(
+                    colors: [Color.red.opacity(0.55), Color.black.opacity(0.85)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(maxWidth: .infinity)
+                .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                CachedAsyncImage(url: thumbnailURL, maxDimension: 720)
+                    .frame(maxWidth: .infinity)
+                    .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.18)))
+
+                Image(systemName: "play.rectangle.fill")
+                    .font(.system(size: 56, weight: .regular))
+                    .foregroundStyle(Color.red, Color.white)
+                    .shadow(radius: 4)
+
+                VStack {
+                    HStack {
+                        Spacer()
+                        Label("YouTube", systemImage: "play.tv")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.red, in: Capsule())
+                            .padding(8)
+                    }
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        Text("youtu.be/\(videoID)")
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.black.opacity(0.55), in: Capsule())
+                            .padding(8)
+                    }
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("YouTube 영상 \(videoID), 외부 앱에서 열기")
     }
 }
 
