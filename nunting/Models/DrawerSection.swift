@@ -21,10 +21,11 @@ enum DrawerSection: Hashable, Identifiable {
     var shortLabel: String {
         switch self {
         case .favorites: "모음"
-        case .site(.clien): "클앙"
+        case .site(.clien): "클량"
         case .site(.coolenjoy): "쿨엔"
         case .site(.inven): "인벤"
         case .site(.ppomppu): "뽐뿌"
+        case .site(.aagag): "애객"
         }
     }
 

@@ -14,12 +14,18 @@ struct InlineVideoPlayer: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .onAppear {
                 if player == nil {
-                    player = AVPlayer(url: url)
+                    let p = AVPlayer(url: url)
+                    p.isMuted = true   // iOS blocks autoplay with sound
+                    player = p
                 }
+                player?.play()
             }
             .onChange(of: url) { _, newURL in
                 player?.pause()
-                player = AVPlayer(url: newURL)
+                let p = AVPlayer(url: newURL)
+                p.isMuted = true
+                player = p
+                p.play()
             }
             .onDisappear {
                 player?.pause()

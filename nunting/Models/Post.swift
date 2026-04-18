@@ -55,6 +55,7 @@ struct ContentBlock: Identifiable, Hashable {
         case image(URL)
         case video(URL)
         case dealLink(url: URL, label: String)
+        case youtube(videoID: String)
     }
 
     static func text(_ s: String) -> ContentBlock {
@@ -67,6 +68,9 @@ struct ContentBlock: Identifiable, Hashable {
     static func video(_ url: URL) -> ContentBlock { .init(id: UUID(), kind: .video(url)) }
     static func dealLink(_ url: URL, label: String) -> ContentBlock {
         .init(id: UUID(), kind: .dealLink(url: url, label: label))
+    }
+    static func youtube(_ videoID: String) -> ContentBlock {
+        .init(id: UUID(), kind: .youtube(videoID: videoID))
     }
 }
 

@@ -83,6 +83,27 @@ struct Networking {
         return output
     }
 
+    /// Resolve a URL by following redirects with a HEAD request (or GET fallback).
+    /// Returns the final URL after redirects, or the original URL on failure.
+    static func resolveFinalURL(_ url: URL) async -> URL {
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+        request.timeoutInterval = 10
+        if let (_, response) = try? await session.data(for: request),
+           let final = response.url {
+            return final
+        }
+        // Some endpoints reject HEAD; fall back to GET.
+        var get = URLRequest(url: url)
+        get.httpMethod = "GET"
+        get.timeoutInterval = 10
+        if let (_, response) = try? await session.data(for: get),
+           let final = response.url {
+            return final
+        }
+        return url
+    }
+
     static func postForm(url: URL, parameters: [String: String], referer: URL? = nil) async throws -> Data {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"

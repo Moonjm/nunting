@@ -7,6 +7,7 @@ enum ParserFactory {
         case .coolenjoy: return CoolenjoyParser()
         case .inven: return InvenParser()
         case .ppomppu: return PpomppuParser()
+        case .aagag: return AagagParser()
         }
     }
 }

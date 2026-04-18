@@ -7,6 +7,7 @@ extension Site {
         case .coolenjoy: .orange
         case .inven: .red
         case .ppomppu: .green
+        case .aagag: .purple
         }
     }
 }
