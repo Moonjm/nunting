@@ -47,6 +47,57 @@ struct CoolenjoyParser: BoardParser {
         return URL(string: "https://coolenjoy.net/nariya/bbs/comment_view.php?bo_table=\(boardTable)&wr_id=\(wrID)")
     }
 
+    func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment] {
+        guard let baseURL = commentsURL(for: post) else { return [] }
+
+        let firstPageURL = appendingPagingParams(to: baseURL, page: 1)
+        let firstHtml = try await fetcher(firstPageURL)
+        let totalPages = try totalCommentPages(html: firstHtml)
+        let firstPage = try parseComments(html: firstHtml)
+
+        if totalPages <= 1 { return firstPage }
+
+        let pagesToFetch = Array(2...totalPages)
+        var pageMap: [Int: [Comment]] = [1: firstPage]
+
+        try await withThrowingTaskGroup(of: (Int, [Comment]).self) { group in
+            for page in pagesToFetch {
+                let url = appendingPagingParams(to: baseURL, page: page)
+                group.addTask {
+                    let html = try await fetcher(url)
+                    let parsed = try self.parseComments(html: html)
+                    return (page, parsed)
+                }
+            }
+            for try await (page, comments) in group {
+                pageMap[page] = comments
+            }
+        }
+
+        return (1...totalPages).flatMap { pageMap[$0] ?? [] }
+    }
+
+    private func appendingPagingParams(to url: URL, page: Int) -> URL {
+        guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+        var items = (comps.queryItems ?? []).filter { $0.name != "page" && $0.name != "cob" }
+        items.append(URLQueryItem(name: "cob", value: "old"))
+        items.append(URLQueryItem(name: "page", value: "\(page)"))
+        comps.queryItems = items
+        return comps.url ?? url
+    }
+
+    private func totalCommentPages(html: String) throws -> Int {
+        let doc = try SwiftSoup.parse(html)
+        let items = try doc.select("ul.pagination li.page-item:not(.page-first):not(.page-prev):not(.page-next):not(.page-last)")
+        var maxPage = 1
+        for item in items {
+            let text = try item.text().trimmingCharacters(in: .whitespacesAndNewlines)
+            let digits = String(text.prefix { $0.isNumber })
+            if let n = Int(digits), n > maxPage { maxPage = n }
+        }
+        return maxPage
+    }
+
     func parseComments(html: String) throws -> [Comment] {
         let doc = try SwiftSoup.parse(html)
         let articles = try doc.select("article[id^=c_]")

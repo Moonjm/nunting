@@ -89,8 +89,12 @@ struct PostDetailView: View {
             try Task.checkCancellation()
             var parsed = try parser.parseDetail(html: html, post: post)
 
-            if parsed.comments.isEmpty, let cmtURL = parser.commentsURL(for: post) {
-                if let extras = try? await fetchComments(parser: parser, url: cmtURL) {
+            if parsed.comments.isEmpty {
+                let postSite = post.site
+                let extras = try? await parser.fetchAllComments(for: post) { url in
+                    try await Networking.fetchHTML(url: url, encoding: postSite.encoding)
+                }
+                if let extras, !extras.isEmpty {
                     parsed = PostDetail(
                         post: parsed.post,
                         blocks: parsed.blocks,
@@ -108,12 +112,6 @@ struct PostDetailView: View {
         } catch {
             errorMessage = error.localizedDescription
         }
-    }
-
-    private func fetchComments(parser: BoardParser, url: URL) async throws -> [Comment] {
-        let html = try await Networking.fetchHTML(url: url, encoding: post.site.encoding)
-        try Task.checkCancellation()
-        return try parser.parseComments(html: html)
     }
 }
 

@@ -6,11 +6,18 @@ protocol BoardParser {
     func parseDetail(html: String, post: Post) throws -> PostDetail
     func commentsURL(for post: Post) -> URL?
     func parseComments(html: String) throws -> [Comment]
+    func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment]
 }
 
 extension BoardParser {
     func commentsURL(for post: Post) -> URL? { nil }
     func parseComments(html: String) throws -> [Comment] { [] }
+
+    func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment] {
+        guard let url = commentsURL(for: post) else { return [] }
+        let html = try await fetcher(url)
+        return try parseComments(html: html)
+    }
 }
 
 enum ParserError: Error, LocalizedError {
