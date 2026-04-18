@@ -155,7 +155,7 @@ struct InvenParser: BoardParser {
             return []
         }
 
-        let params: [String: String] = [
+        let baseParams: [String: String] = [
             "act": "list",
             "out": "json",
             "comeidx": comeidx,
@@ -165,14 +165,37 @@ struct InvenParser: BoardParser {
             "replyidx": "0",
         ]
 
-        let data = try await Networking.postForm(url: apiURL, parameters: params, referer: post.url)
-        return try parseInvenCommentsJSON(data: data)
+        let firstData = try await Networking.postForm(url: apiURL, parameters: baseParams, referer: post.url)
+        let firstResponse = try JSONDecoder().decode(InvenCommentResponse.self, from: firstData)
+
+        let collapsed = firstResponse.commentlist
+            .filter { $0.attr.titlenum > 0 && $0.list.isEmpty }
+            .map { $0.attr.titlenum }
+
+        let blocks: [InvenCommentBlock]
+        if collapsed.isEmpty {
+            blocks = firstResponse.commentlist
+        } else {
+            var paramsWithTitles = baseParams
+            paramsWithTitles["titles"] = collapsed.map(String.init).joined(separator: "|")
+            let extraData = try await Networking.postForm(url: apiURL, parameters: paramsWithTitles, referer: post.url)
+            let extraResponse = try JSONDecoder().decode(InvenCommentResponse.self, from: extraData)
+            blocks = extraResponse.commentlist
+        }
+
+        return convertToComments(blocks: blocks)
     }
 
-    private func parseInvenCommentsJSON(data: Data) throws -> [Comment] {
-        let response = try JSONDecoder().decode(InvenCommentResponse.self, from: data)
+    private func convertToComments(blocks: [InvenCommentBlock]) -> [Comment] {
+        // titlenum 0 = latest block; positive titlenums are older slices ordered ascending.
+        let sortedBlocks = blocks.sorted { lhs, rhs in
+            let l = lhs.attr.titlenum == 0 ? Int.max : lhs.attr.titlenum
+            let r = rhs.attr.titlenum == 0 ? Int.max : rhs.attr.titlenum
+            return l < r
+        }
+
         var results: [Comment] = []
-        for block in response.commentlist {
+        for block in sortedBlocks {
             for raw in block.list {
                 let content = cleanCommentText(raw.comment)
                 guard !content.isEmpty else { continue }
@@ -217,7 +240,17 @@ struct InvenParser: BoardParser {
     }
 
     private struct InvenCommentBlock: Decodable {
+        let attr: InvenBlockAttr
         let list: [InvenComment]
+
+        enum CodingKeys: String, CodingKey {
+            case attr = "__attr__"
+            case list
+        }
+    }
+
+    private struct InvenBlockAttr: Decodable {
+        let titlenum: Int
     }
 
     private struct InvenComment: Decodable {
