@@ -40,10 +40,13 @@ struct Networking {
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             throw NetworkError.badResponse(http.statusCode)
         }
-        guard let html = String(data: data, encoding: encoding) else {
-            throw NetworkError.decodingFailed
+        if let html = String(data: data, encoding: encoding) {
+            return html
         }
-        return html
+        if encoding == .utf8 {
+            return String(decoding: data, as: UTF8.self)
+        }
+        throw NetworkError.decodingFailed
     }
 
     static func postForm(url: URL, parameters: [String: String], referer: URL? = nil) async throws -> Data {
