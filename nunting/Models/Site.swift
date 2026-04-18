@@ -22,7 +22,7 @@ enum Site: String, CaseIterable, Identifiable, Codable {
         case .clien: URL(string: "https://www.clien.net")!
         case .coolenjoy: URL(string: "https://coolenjoy.net")!
         case .inven: URL(string: "https://www.inven.co.kr")!
-        case .ppomppu: URL(string: "https://www.ppomppu.co.kr")!
+        case .ppomppu: URL(string: "https://m.ppomppu.co.kr")!
         }
     }
 
