@@ -40,6 +40,12 @@ struct Networking {
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             throw NetworkError.badResponse(http.statusCode)
         }
+        return decodeHTML(data: data, encoding: encoding)
+    }
+
+    /// Strict-then-lossy decode shared with the redirect-resolver path that
+    /// reuses an already-fetched body to avoid a second round-trip.
+    static func decodeHTML(data: Data, encoding: String.Encoding) -> String {
         if let html = String(data: data, encoding: encoding) {
             return html
         }
@@ -83,25 +89,35 @@ struct Networking {
         return output
     }
 
-    /// Resolve a URL by following redirects with a HEAD request (or GET fallback).
-    /// Returns the final URL after redirects, or the original URL on failure.
-    static func resolveFinalURL(_ url: URL) async -> URL {
+    struct ResolvedRedirect {
+        let url: URL
+        /// When non-nil, the body fetched while discovering the URL — return it
+        /// to the caller so they don't have to re-fetch the same URL.
+        let prefetchedBody: Data?
+    }
+
+    /// Resolve a URL by following redirects with HEAD (cheap) and falling back
+    /// to GET (which captures the body so it can be reused). Returns the
+    /// original URL with no body on total failure.
+    static func resolveFinalURL(_ url: URL) async -> ResolvedRedirect {
         var request = URLRequest(url: url)
         request.httpMethod = "HEAD"
         request.timeoutInterval = 10
         if let (_, response) = try? await session.data(for: request),
-           let final = response.url {
-            return final
+           let final = response.url, final != url {
+            return ResolvedRedirect(url: final, prefetchedBody: nil)
         }
-        // Some endpoints reject HEAD; fall back to GET.
+        // Some endpoints reject HEAD or return 200 without redirecting; fall
+        // back to GET. We capture `data` so callers can decode it directly
+        // instead of re-fetching the same URL.
         var get = URLRequest(url: url)
         get.httpMethod = "GET"
         get.timeoutInterval = 10
-        if let (_, response) = try? await session.data(for: get),
+        if let (data, response) = try? await session.data(for: get),
            let final = response.url {
-            return final
+            return ResolvedRedirect(url: final, prefetchedBody: data)
         }
-        return url
+        return ResolvedRedirect(url: url, prefetchedBody: nil)
     }
 
     static func postForm(url: URL, parameters: [String: String], referer: URL? = nil) async throws -> Data {

@@ -34,7 +34,7 @@ struct Board: Identifiable, Hashable, Codable {
     }
 
     func url(filter: BoardFilter?, search: String?, page: Int?) -> URL {
-        let effectivePath = filter?.pathOverride ?? path
+        let effectivePath = filter?.replacementPath ?? path
         let base = URL(string: effectivePath, relativeTo: site.baseURL)?.absoluteURL ?? site.baseURL
 
         let extraItems: [(String, String)] = (filter?.queryItems.map { ($0.key, $0.value) } ?? [])
@@ -99,7 +99,7 @@ extension Board {
         name: "모음",
         path: "/mirror/?site=clien%7Cppomppu%7C82cook%7Cbobae%7Chumor%7Cddanzi%7Cslrclub%7Cdamoang&select=multi",
         filters: [
-            BoardFilter(id: "issue", name: "이슈모음", pathOverride: "/issue/"),
+            BoardFilter(id: "issue", name: "이슈모음", replacementPath: "/issue/"),
         ],
         searchQueryName: "word",
         pageQueryName: "page"

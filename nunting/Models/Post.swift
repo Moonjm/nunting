@@ -12,6 +12,9 @@ struct Post: Identifiable, Hashable {
     let url: URL
     let viewCount: Int?
     let recommendCount: Int?
+    /// User level on most sites (e.g. Inven "Lv.42"); on aagag mirror posts
+    /// it's the source-site code (`ppomppu`, `humor`, ...) which the list
+    /// view renders as a colored `AagagSourceTag` instead of plain text.
     let levelText: String?
     let hasAuthIcon: Bool
 
@@ -55,7 +58,7 @@ struct ContentBlock: Identifiable, Hashable {
         case image(URL)
         case video(URL)
         case dealLink(url: URL, label: String)
-        case youtube(videoID: String)
+        case embed(provider: EmbedProvider, id: String)
     }
 
     static func text(_ s: String) -> ContentBlock {
@@ -69,9 +72,14 @@ struct ContentBlock: Identifiable, Hashable {
     static func dealLink(_ url: URL, label: String) -> ContentBlock {
         .init(id: UUID(), kind: .dealLink(url: url, label: label))
     }
-    static func youtube(_ videoID: String) -> ContentBlock {
-        .init(id: UUID(), kind: .youtube(videoID: videoID))
+    static func embed(_ provider: EmbedProvider, id: String) -> ContentBlock {
+        .init(id: UUID(), kind: .embed(provider: provider, id: id))
     }
+}
+
+enum EmbedProvider: Hashable {
+    case youtube
+    case instagram
 }
 
 enum InlineSegment: Hashable {

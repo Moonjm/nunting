@@ -76,6 +76,11 @@ struct ContentView: View {
             selectedFilter = nil
             searchQuery = nil
         }
+        .onChange(of: selectedFilter) { _, _ in
+            // Filter switches can swap the path entirely (BoardFilter.replacementPath),
+            // so the prior search query may not be meaningful on the new endpoint.
+            searchQuery = nil
+        }
         .sheet(isPresented: $searchSheetPresented) {
             SearchSheet(
                 board: selectedBoard,

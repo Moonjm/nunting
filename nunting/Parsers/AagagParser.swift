@@ -5,6 +5,10 @@ struct AagagParser: BoardParser {
     let site: Site = .aagag
 
     private static let imageHost = "https://i.aagag.com"
+    // YouTube IDs are exactly 11 chars from [A-Za-z0-9_-].
+    private static let youtubeIDRegex = try! NSRegularExpression(pattern: #"^[A-Za-z0-9_-]{11}$"#)
+    // Instagram shortcodes are 5+ chars from [A-Za-z0-9_-].
+    private static let instaIDRegex = try! NSRegularExpression(pattern: #"^[A-Za-z0-9_-]+$"#)
 
     func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
@@ -121,24 +125,34 @@ struct AagagParser: BoardParser {
     }
 
     private func findContentScript(in doc: Document) throws -> String? {
+        // Anchor on `AAGAG_AA.content =` (with the equals sign and optional whitespace)
+        // so we don't false-match other property reads like `AAGAG_AA.contentLength`.
+        let anchorRegex = try NSRegularExpression(pattern: #"AAGAG_AA\.content\s*=\s*""#)
         for script in try doc.select("script") {
             let text = script.data()
-            if let range = text.range(of: "AAGAG_AA.content") {
-                let tail = text[range.upperBound...]
-                guard let openQuote = tail.firstIndex(of: "\"") else { continue }
-                let body = tail[tail.index(after: openQuote)...]
-                // Find the closing quote, respecting backslash escapes.
-                var idx = body.startIndex
-                var prev: Character = " "
-                while idx < body.endIndex {
-                    let c = body[idx]
-                    if c == "\"" && prev != "\\" {
-                        let raw = String(body[..<idx])
-                        return Self.unescapeJSString(raw)
+            let nsText = text as NSString
+            let match = anchorRegex.firstMatch(in: text, range: NSRange(location: 0, length: nsText.length))
+            guard let match else { continue }
+            let bodyStart = text.index(text.startIndex, offsetBy: match.range.location + match.range.length)
+            let body = text[bodyStart...]
+
+            // Walk character-by-character, locating the unescaped closing quote.
+            // A quote is a real terminator iff the run of immediately preceding
+            // backslashes has even length (each `\\` is itself an escape pair).
+            var idx = body.startIndex
+            while idx < body.endIndex {
+                if body[idx] == "\"" {
+                    var backslashes = 0
+                    var look = idx
+                    while look > body.startIndex {
+                        look = body.index(before: look)
+                        if body[look] == "\\" { backslashes += 1 } else { break }
                     }
-                    prev = c
-                    idx = body.index(after: idx)
+                    if backslashes % 2 == 0 {
+                        return Self.unescapeJSString(String(body[..<idx]))
+                    }
                 }
+                idx = body.index(after: idx)
             }
         }
         return nil
@@ -294,16 +308,19 @@ struct AagagParser: BoardParser {
         guard let q = json["q"] as? String, !q.isEmpty else { return nil }
         let m = (json["m"] as? String)?.lowercased() ?? ""
 
-        // YouTube / Instagram embeds: AVPlayer can't play these; render a
-        // tappable link banner so the user can hop to the source app.
+        // YouTube / Instagram embeds. Validate IDs to avoid building broken
+        // URLs from corrupt payloads.
         if m == "ytb" {
-            return .youtube(q)
+            guard Self.youtubeIDRegex.firstMatch(in: q, range: NSRange(location: 0, length: (q as NSString).length)) != nil else {
+                return nil
+            }
+            return .embed(.youtube, id: q)
         }
         if m == "insta" {
-            if let url = URL(string: "https://www.instagram.com/p/\(q)/") {
-                return .dealLink(url, label: "Instagram 게시물 보기")
+            guard Self.instaIDRegex.firstMatch(in: q, range: NSRange(location: 0, length: (q as NSString).length)) != nil else {
+                return nil
             }
-            return nil
+            return .embed(.instagram, id: q)
         }
 
         let isVideo = json["mp4_seq"] != nil

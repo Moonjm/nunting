@@ -13,6 +13,7 @@ struct BoardListView: View {
     @State private var hasMorePages: Bool = true
     @State private var isLoading = false
     @State private var isLoadingMore = false
+    @State private var loadMoreError: Bool = false
     @State private var errorMessage: String?
     @State private var loadedKey: String?
 
@@ -38,6 +39,7 @@ struct BoardListView: View {
                 seenIDs = []
                 currentPage = 1
                 hasMorePages = true
+                loadMoreError = false
                 errorMessage = nil
             }
             await load()
@@ -61,6 +63,7 @@ struct BoardListView: View {
                         if board.supportsPaging,
                            hasMorePages,
                            !isLoadingMore,
+                           !loadMoreError,
                            post.id == posts.last?.id {
                             Task { await loadMore() }
                         }
@@ -72,6 +75,22 @@ struct BoardListView: View {
                     ProgressView().controlSize(.regular)
                     Spacer()
                 }
+                .padding(.vertical, 12)
+                .listRowSeparator(.hidden)
+            } else if loadMoreError {
+                Button {
+                    Task { await loadMore() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Spacer()
+                        Image(systemName: "arrow.clockwise")
+                        Text("불러오지 못했습니다 · 다시 시도")
+                        Spacer()
+                    }
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
                 .padding(.vertical, 12)
                 .listRowSeparator(.hidden)
             }
@@ -157,6 +176,7 @@ struct BoardListView: View {
         guard board.supportsPaging, hasMorePages, !isLoadingMore else { return }
         let key = taskKey
         let nextPage = currentPage + 1
+        loadMoreError = false
         isLoadingMore = true
         defer {
             if key == taskKey {
@@ -184,9 +204,10 @@ struct BoardListView: View {
         } catch let urlError as URLError where urlError.code == .cancelled {
             return
         } catch {
-            // Silently stop paging on error so the user can still keep reading what loaded.
+            // Surface a "다시 시도" footer so users can retry without losing scroll
+            // position. `hasMorePages` stays true so the retry button can fire loadMore.
             guard key == taskKey else { return }
-            hasMorePages = false
+            loadMoreError = true
         }
     }
 }
