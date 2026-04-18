@@ -10,6 +10,40 @@ struct Post: Identifiable, Hashable {
     let dateText: String
     let commentCount: Int
     let url: URL
+    let viewCount: Int?
+    let recommendCount: Int?
+    let levelText: String?
+    let hasAuthIcon: Bool
+
+    init(
+        id: String,
+        site: Site,
+        boardID: String,
+        title: String,
+        author: String,
+        date: Date?,
+        dateText: String,
+        commentCount: Int,
+        url: URL,
+        viewCount: Int? = nil,
+        recommendCount: Int? = nil,
+        levelText: String? = nil,
+        hasAuthIcon: Bool = false
+    ) {
+        self.id = id
+        self.site = site
+        self.boardID = boardID
+        self.title = title
+        self.author = author
+        self.date = date
+        self.dateText = dateText
+        self.commentCount = commentCount
+        self.url = url
+        self.viewCount = viewCount
+        self.recommendCount = recommendCount
+        self.levelText = levelText
+        self.hasAuthIcon = hasAuthIcon
+    }
 }
 
 struct ContentBlock: Identifiable, Hashable {

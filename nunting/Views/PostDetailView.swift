@@ -212,24 +212,26 @@ private struct CommentRow: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             if let stickerURL = comment.stickerURL {
-                AsyncImage(url: stickerURL) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFit()
-                            .frame(maxHeight: 140)
-                    case .empty:
-                        ProgressView().frame(width: 100, height: 100)
-                    case .failure:
-                        Image(systemName: "photo")
-                            .foregroundStyle(.secondary)
-                            .frame(width: 80, height: 80)
-                    @unknown default:
-                        EmptyView()
+                HStack(spacing: 0) {
+                    AsyncImage(url: stickerURL) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image
+                                .resizable()
+                                .scaledToFit()
+                                .frame(maxHeight: 140)
+                        case .empty:
+                            ProgressView().frame(width: 100, height: 100)
+                        case .failure:
+                            Image(systemName: "photo")
+                                .foregroundStyle(.secondary)
+                                .frame(width: 80, height: 80)
+                        @unknown default:
+                            EmptyView()
+                        }
                     }
+                    Spacer(minLength: 0)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .padding(.vertical, 8)

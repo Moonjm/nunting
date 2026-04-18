@@ -51,15 +51,32 @@ struct BoardListView: View {
     private func postRow(post: Post) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(post.title).font(.body)
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 Text(post.author)
+                if post.hasAuthIcon {
+                    Text("✓")
+                        .font(.caption2.bold())
+                        .foregroundStyle(.green)
+                }
+                if let lv = post.levelText, !lv.isEmpty {
+                    Text(lv).font(.caption2).foregroundStyle(.tertiary)
+                }
+                Text("·").foregroundStyle(.tertiary)
                 Text(post.dateText)
+                if let views = post.viewCount {
+                    Text("· 조회 \(views)").foregroundStyle(.tertiary)
+                }
+                if let recos = post.recommendCount, recos > 0 {
+                    Text("· 추천 \(recos)").foregroundStyle(.pink)
+                }
                 if post.commentCount > 0 {
                     Text("💬 \(post.commentCount)")
                 }
             }
             .font(.caption)
             .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())

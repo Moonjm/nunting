@@ -34,6 +34,14 @@ struct InvenParser: BoardParser {
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? "0"
             let commentCount = Int(commentText) ?? 0
 
+            let levelText = try row.select("span.lv").first()?.text()
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let viewText = try row.select("span.view").first()?.text() ?? ""
+            let viewCount = viewText.isEmpty ? nil : Int(viewText.filter(\.isNumber))
+            let recoText = try row.select("span.reco").first()?.text() ?? ""
+            let recommendCount = recoText.isEmpty ? nil : Int(recoText.filter(\.isNumber))
+            let hasAuthIcon = try !row.select("span.layerNickName .maple").isEmpty()
+
             let postID = url.pathComponents.last ?? url.absoluteString
 
             return Post(
@@ -45,7 +53,11 @@ struct InvenParser: BoardParser {
                 date: nil,
                 dateText: dateText,
                 commentCount: commentCount,
-                url: url
+                url: url,
+                viewCount: viewCount,
+                recommendCount: recommendCount,
+                levelText: levelText,
+                hasAuthIcon: hasAuthIcon
             )
         }
     }
@@ -197,11 +209,9 @@ struct InvenParser: BoardParser {
 
         let blocks: [InvenCommentBlock]
         let authIconURLString: String?
-        let bestList: [InvenComment]
         if collapsed.isEmpty {
             blocks = firstResponse.commentlist
             authIconURLString = firstResponse.authicon
-            bestList = firstResponse.bestcomment?.list ?? []
         } else {
             var paramsWithTitles = baseParams
             paramsWithTitles["titles"] = collapsed.map(String.init).joined(separator: "|")
@@ -209,14 +219,13 @@ struct InvenParser: BoardParser {
             let extraResponse = try JSONDecoder().decode(InvenCommentResponse.self, from: extraData)
             blocks = extraResponse.commentlist
             authIconURLString = extraResponse.authicon ?? firstResponse.authicon
-            bestList = extraResponse.bestcomment?.list ?? firstResponse.bestcomment?.list ?? []
         }
 
         let authIconURL = authIconURLString.flatMap { URL(string: $0) }
-        return convertToComments(bestList: bestList, blocks: blocks, authIconURL: authIconURL)
+        return convertToComments(blocks: blocks, authIconURL: authIconURL)
     }
 
-    private func convertToComments(bestList: [InvenComment], blocks: [InvenCommentBlock], authIconURL: URL?) -> [Comment] {
+    private func convertToComments(blocks: [InvenCommentBlock], authIconURL: URL?) -> [Comment] {
         // titlenum 0 = latest block; positive titlenums are older slices ordered ascending.
         let sortedBlocks = blocks.sorted { lhs, rhs in
             let l = lhs.attr.titlenum == 0 ? Int.max : lhs.attr.titlenum
@@ -224,36 +233,28 @@ struct InvenParser: BoardParser {
             return l < r
         }
 
-        var seen = Set<Int>()
         var results: [Comment] = []
-
-        func append(_ raw: InvenComment) {
-            if seen.contains(raw.attr.cmtidx) { return }
-            seen.insert(raw.attr.cmtidx)
-            let stickerURL = extractStickerURL(from: raw.comment)
-            let content = cleanCommentText(raw.comment)
-            guard !content.isEmpty || stickerURL != nil else { return }
-            let isReply = raw.attr.cmtidx != raw.attr.cmtpidx
-            let perCommentAuthIcon: URL? = (raw.authicon == true) ? authIconURL : nil
-            let levelIconURL = Self.levelIconURL(level: raw.level)
-            results.append(Comment(
-                id: "\(site.rawValue)-c-\(raw.attr.cmtidx)",
-                author: raw.name,
-                dateText: raw.date,
-                content: content,
-                likeCount: raw.recommend,
-                isReply: isReply,
-                stickerURL: stickerURL,
-                authIconURL: perCommentAuthIcon,
-                levelIconURL: levelIconURL
-            ))
-        }
-
-        for raw in bestList { append(raw) }
         for block in sortedBlocks {
-            for raw in block.list { append(raw) }
+            for raw in block.list {
+                let stickerURL = extractStickerURL(from: raw.comment)
+                let content = cleanCommentText(raw.comment)
+                guard !content.isEmpty || stickerURL != nil else { continue }
+                let isReply = raw.attr.cmtidx != raw.attr.cmtpidx
+                let perCommentAuthIcon: URL? = (raw.authicon == true) ? authIconURL : nil
+                let levelIconURL = Self.levelIconURL(level: raw.level)
+                results.append(Comment(
+                    id: "\(site.rawValue)-c-\(raw.attr.cmtidx)",
+                    author: raw.name,
+                    dateText: raw.date,
+                    content: content,
+                    likeCount: raw.recommend,
+                    isReply: isReply,
+                    stickerURL: stickerURL,
+                    authIconURL: perCommentAuthIcon,
+                    levelIconURL: levelIconURL
+                ))
+            }
         }
-
         return results
     }
 
@@ -278,22 +279,59 @@ struct InvenParser: BoardParser {
         var r = raw
         // 1) Decode &amp; first so double-encoded sequences resolve in one pass.
         r = r.replacingOccurrences(of: "&amp;", with: "&")
-        // 2) Decode the rest of the entities so tag-encoded markup (&lt;span&gt; etc.)
-        //    becomes real tags before the strip step can see them.
+        // 2) Decode the rest of the named entities.
         r = r.replacingOccurrences(of: "&lt;", with: "<")
         r = r.replacingOccurrences(of: "&gt;", with: ">")
         r = r.replacingOccurrences(of: "&quot;", with: "\"")
         r = r.replacingOccurrences(of: "&#39;", with: "'")
         r = r.replacingOccurrences(of: "&nbsp;", with: " ")
-        // 3) Map block-level breaks to newlines so structure survives tag stripping.
+        // 3) Decode numeric character references (&#1234; / &#x1F6E2;) so emoji survive.
+        r = decodeNumericEntities(r)
+        // 4) Map block-level breaks to newlines so structure survives tag stripping.
         r = r.replacingOccurrences(of: "<br\\s*/?>", with: "\n", options: .regularExpression)
         r = r.replacingOccurrences(of: "</p>", with: "\n", options: .regularExpression)
         r = r.replacingOccurrences(of: "</div>", with: "\n", options: .regularExpression)
-        // 4) Strip remaining tags (mention spans, sticker wrappers, anchors, etc.)
+        // 5) Strip remaining tags.
         r = r.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-        // 5) Collapse runs of blank lines and trim.
+        // 6) Collapse runs of blank lines and trim.
         r = r.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
         return r.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func decodeNumericEntities(_ s: String) -> String {
+        var result = ""
+        var index = s.startIndex
+        while index < s.endIndex {
+            if s[index] == "&",
+               let semi = s[index...].firstIndex(of: ";"),
+               s.distance(from: index, to: semi) <= 10
+            {
+                let token = s[s.index(after: index)..<semi]
+                if token.hasPrefix("#") {
+                    let body = token.dropFirst()
+                    let radix: Int
+                    let digits: Substring
+                    if body.first == "x" || body.first == "X" {
+                        radix = 16
+                        digits = body.dropFirst()
+                    } else {
+                        radix = 10
+                        digits = body
+                    }
+                    if !digits.isEmpty,
+                       let code = UInt32(digits, radix: radix),
+                       let scalar = Unicode.Scalar(code)
+                    {
+                        result.unicodeScalars.append(scalar)
+                        index = s.index(after: semi)
+                        continue
+                    }
+                }
+            }
+            result.append(s[index])
+            index = s.index(after: index)
+        }
+        return result
     }
 
     private struct InvenCommentResponse: Decodable {
