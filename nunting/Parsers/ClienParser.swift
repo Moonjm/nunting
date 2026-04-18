@@ -32,7 +32,7 @@ struct ClienParser: BoardParser {
             }
 
             return Post(
-                id: "\(site.rawValue)-\(postID)",
+                id: "\(board.id)-\(postID)",
                 site: site,
                 boardID: board.id,
                 title: title.trimmingCharacters(in: .whitespacesAndNewlines),

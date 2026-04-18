@@ -43,8 +43,12 @@ struct CachedAsyncImage: View {
         let limit = maxDimension
 
         do {
-            let (data, _) = try await Networking.session.data(for: URLRequest(url: url))
+            let (data, response) = try await Networking.session.data(for: URLRequest(url: url))
             try Task.checkCancellation()
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                failed = true
+                return
+            }
 
             let decoded = try await decodeOffMain(data: data, limit: limit, scale: scale)
             try Task.checkCancellation()
@@ -107,7 +111,9 @@ final class ImageCache {
     }
 
     func store(_ image: UIImage, for url: URL) {
-        let cost = Int(image.size.width * image.size.height * 4)
+        let pixelW = image.size.width * image.scale
+        let pixelH = image.size.height * image.scale
+        let cost = Int(pixelW * pixelH * 4)
         cache.setObject(image, forKey: url as NSURL, cost: cost)
     }
 }

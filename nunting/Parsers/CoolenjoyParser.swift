@@ -25,7 +25,7 @@ struct CoolenjoyParser: BoardParser {
             let postID = url.pathComponents.last ?? url.absoluteString
 
             return Post(
-                id: "\(site.rawValue)-\(postID)",
+                id: "\(board.id)-\(postID)",
                 site: site,
                 boardID: board.id,
                 title: title,
