@@ -62,9 +62,7 @@ struct InvenParser: BoardParser {
 
         let imageHolder = try body.select("div#imageCollectDiv").first() ?? body
         var blocks: [ContentBlock] = []
-        for child in imageHolder.children() {
-            try collectBlocks(from: child, into: &blocks)
-        }
+        try collectBlocks(from: imageHolder, into: &blocks)
 
         let fullDateText = try section.select("div.date").first()?.text()
             .trimmingCharacters(in: .whitespacesAndNewlines)
