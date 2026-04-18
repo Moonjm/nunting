@@ -19,10 +19,12 @@ struct ContentBlock: Identifiable, Hashable {
     enum Kind: Hashable {
         case text(String)
         case image(URL)
+        case video(URL)
     }
 
     static func text(_ s: String) -> ContentBlock { .init(id: UUID(), kind: .text(s)) }
     static func image(_ url: URL) -> ContentBlock { .init(id: UUID(), kind: .image(url)) }
+    static func video(_ url: URL) -> ContentBlock { .init(id: UUID(), kind: .video(url)) }
 }
 
 struct PostSource: Hashable {

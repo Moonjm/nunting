@@ -99,7 +99,9 @@ struct InvenParser: BoardParser {
             return
         }
         if tag == "video" {
-            blocks.append(.text("[🎬 영상은 우측 상단 🧭 사파리 버튼으로 원문에서 재생하세요]"))
+            if let url = try videoURL(from: element) {
+                blocks.append(.video(url))
+            }
             return
         }
         if tag == "script" || tag == "style" || tag == "iframe" {
@@ -117,7 +119,9 @@ struct InvenParser: BoardParser {
                     }
                 case "video":
                     flushText()
-                    blocks.append(.text("[🎬 영상은 우측 상단 🧭 사파리 버튼으로 원문에서 재생하세요]"))
+                    if let url = try videoURL(from: el) {
+                        blocks.append(.video(url))
+                    }
                 case "br":
                     textBuffer += "\n"
                 case "script", "style", "iframe":
@@ -143,6 +147,17 @@ struct InvenParser: BoardParser {
         let src = try element.attr("src")
         guard !src.isEmpty,
               let url = URL(string: src, relativeTo: site.baseURL)?.absoluteURL,
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https"
+        else { return nil }
+        return url
+    }
+
+    private func videoURL(from element: Element) throws -> URL? {
+        let dataSrc = try element.attr("data-src")
+        let raw = dataSrc.isEmpty ? try element.attr("src") : dataSrc
+        guard !raw.isEmpty,
+              let url = URL(string: raw, relativeTo: site.baseURL)?.absoluteURL,
               let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https"
         else { return nil }

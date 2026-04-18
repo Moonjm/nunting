@@ -72,6 +72,8 @@ struct PostDetailView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     case .image(let url):
                         CachedAsyncImage(url: url)
+                    case .video(let url):
+                        InlineVideoPlayer(url: url)
                     }
                 }
             }
