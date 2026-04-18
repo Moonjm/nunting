@@ -140,4 +140,93 @@ struct InvenParser: BoardParser {
         else { return nil }
         return url
     }
+
+    func commentsURL(for post: Post) -> URL? {
+        URL(string: "https://www.inven.co.kr/common/board/comment.json.php")
+    }
+
+    func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment] {
+        let comps = post.url.pathComponents
+        guard comps.count >= 4 else { return [] }
+        let comeidx = comps[2]
+        let articlecode = comps[3]
+
+        guard let apiURL = URL(string: "https://www.inven.co.kr/common/board/comment.json.php") else {
+            return []
+        }
+
+        let params: [String: String] = [
+            "act": "list",
+            "out": "json",
+            "comeidx": comeidx,
+            "articlecode": articlecode,
+            "sortorder": "date",
+            "replynick": "",
+            "replyidx": "0",
+        ]
+
+        let data = try await Networking.postForm(url: apiURL, parameters: params, referer: post.url)
+        return try parseInvenCommentsJSON(data: data)
+    }
+
+    private func parseInvenCommentsJSON(data: Data) throws -> [Comment] {
+        let response = try JSONDecoder().decode(InvenCommentResponse.self, from: data)
+        var results: [Comment] = []
+        for block in response.commentlist {
+            for raw in block.list {
+                let content = decodeHTMLEntities(raw.comment).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !content.isEmpty else { continue }
+                let isReply = raw.attr.cmtidx != raw.attr.cmtpidx
+                results.append(Comment(
+                    id: "\(site.rawValue)-c-\(raw.attr.cmtidx)",
+                    author: raw.name,
+                    dateText: raw.date,
+                    content: content,
+                    likeCount: raw.recommend,
+                    isReply: isReply
+                ))
+            }
+        }
+        return results
+    }
+
+    private func decodeHTMLEntities(_ s: String) -> String {
+        var r = s
+        r = r.replacingOccurrences(of: "&nbsp;", with: " ")
+        r = r.replacingOccurrences(of: "&lt;", with: "<")
+        r = r.replacingOccurrences(of: "&gt;", with: ">")
+        r = r.replacingOccurrences(of: "&quot;", with: "\"")
+        r = r.replacingOccurrences(of: "&#39;", with: "'")
+        r = r.replacingOccurrences(of: "&amp;", with: "&")
+        return r
+    }
+
+    private struct InvenCommentResponse: Decodable {
+        let commentlist: [InvenCommentBlock]
+    }
+
+    private struct InvenCommentBlock: Decodable {
+        let list: [InvenComment]
+    }
+
+    private struct InvenComment: Decodable {
+        let attr: InvenCommentAttr
+        let date: String
+        let name: String
+        let comment: String
+        let recommend: Int
+
+        enum CodingKeys: String, CodingKey {
+            case attr = "__attr__"
+            case date = "o_date"
+            case name = "o_name"
+            case comment = "o_comment"
+            case recommend = "o_recommend"
+        }
+    }
+
+    private struct InvenCommentAttr: Decodable {
+        let cmtidx: Int
+        let cmtpidx: Int
+    }
 }
