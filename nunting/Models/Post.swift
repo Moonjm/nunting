@@ -51,14 +51,28 @@ struct ContentBlock: Identifiable, Hashable {
     let kind: Kind
 
     enum Kind: Hashable {
-        case text(String)
+        case richText([InlineSegment])
         case image(URL)
         case video(URL)
+        case dealLink(url: URL, label: String)
     }
 
-    static func text(_ s: String) -> ContentBlock { .init(id: UUID(), kind: .text(s)) }
+    static func text(_ s: String) -> ContentBlock {
+        .init(id: UUID(), kind: .richText([.text(s)]))
+    }
+    static func richText(_ segments: [InlineSegment]) -> ContentBlock {
+        .init(id: UUID(), kind: .richText(segments))
+    }
     static func image(_ url: URL) -> ContentBlock { .init(id: UUID(), kind: .image(url)) }
     static func video(_ url: URL) -> ContentBlock { .init(id: UUID(), kind: .video(url)) }
+    static func dealLink(_ url: URL, label: String) -> ContentBlock {
+        .init(id: UUID(), kind: .dealLink(url: url, label: label))
+    }
+}
+
+enum InlineSegment: Hashable {
+    case text(String)
+    case link(url: URL, label: String)
 }
 
 struct PostSource: Hashable {

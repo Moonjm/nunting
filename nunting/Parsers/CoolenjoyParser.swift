@@ -240,14 +240,13 @@ struct CoolenjoyParser: BoardParser {
     }
 
     private func collectBlocks(from element: Element, into blocks: inout [ContentBlock]) throws {
-        var textBuffer = ""
+        var inline = InlineAccumulator()
 
-        func flushText() {
-            let trimmed = textBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                blocks.append(.text(trimmed))
+        func flush() {
+            let segs = inline.drain()
+            if !segs.isEmpty {
+                blocks.append(.richText(segs))
             }
-            textBuffer = ""
         }
 
         let tag = element.tagName().lowercased()
@@ -257,39 +256,67 @@ struct CoolenjoyParser: BoardParser {
             }
             return
         }
+        if tag == "a" {
+            if let resolved = try anchor(from: element) {
+                inline.appendLink(url: resolved.url, label: resolved.label)
+                flush()
+            }
+            return
+        }
 
         for node in element.getChildNodes() {
             if let el = node as? Element {
                 let childTag = el.tagName().lowercased()
                 switch childTag {
                 case "img":
-                    flushText()
+                    flush()
                     if let url = try imageURL(from: el) {
                         blocks.append(.image(url))
                     }
                 case "br":
-                    textBuffer += "\n"
+                    inline.appendText("\n")
                 case "a":
-                    if let markdown = try anchorMarkdown(from: el) {
-                        textBuffer += markdown
+                    if let resolved = try anchor(from: el) {
+                        inline.appendLink(url: resolved.url, label: resolved.label)
                     } else {
-                        textBuffer += try el.text()
+                        inline.appendText(try el.text())
                     }
                 default:
                     let nestedImgs = try el.select("img")
-                    let nestedAnchors = try el.select("a")
-                    if !nestedImgs.isEmpty() || !nestedAnchors.isEmpty() {
-                        flushText()
+                    if !nestedImgs.isEmpty() {
+                        flush()
                         try collectBlocks(from: el, into: &blocks)
                     } else {
-                        textBuffer += try el.text()
+                        try collectInlines(from: el, into: &inline)
                     }
                 }
             } else if let textNode = node as? TextNode {
-                textBuffer += textNode.text()
+                inline.appendText(textNode.text())
             }
         }
-        flushText()
+        flush()
+    }
+
+    private func collectInlines(from element: Element, into inline: inout InlineAccumulator) throws {
+        for node in element.getChildNodes() {
+            if let el = node as? Element {
+                let childTag = el.tagName().lowercased()
+                switch childTag {
+                case "br":
+                    inline.appendText("\n")
+                case "a":
+                    if let resolved = try anchor(from: el) {
+                        inline.appendLink(url: resolved.url, label: resolved.label)
+                    } else {
+                        inline.appendText(try el.text())
+                    }
+                default:
+                    try collectInlines(from: el, into: &inline)
+                }
+            } else if let textNode = node as? TextNode {
+                inline.appendText(textNode.text())
+            }
+        }
     }
 
     private func imageURL(from element: Element) throws -> URL? {

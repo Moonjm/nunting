@@ -46,7 +46,41 @@ struct Networking {
         if encoding == .utf8 {
             return String(decoding: data, as: UTF8.self)
         }
-        throw NetworkError.decodingFailed
+        // Legacy-encoding lossy fallback: walk bytes and replace any sequence the
+        // strict decoder rejected with U+FFFD so the user sees a partial page
+        // instead of a hard failure (e.g. truncated CP949 multi-byte at EOF).
+        return lossyDecode(data: data, encoding: encoding)
+    }
+
+    private static func lossyDecode(data: Data, encoding: String.Encoding) -> String {
+        // Try chunks separated by ASCII boundaries; replace failed chunks with U+FFFD.
+        var output = ""
+        var idx = data.startIndex
+        var pending = Data()
+
+        func flush(_ buf: inout Data) {
+            guard !buf.isEmpty else { return }
+            if let s = String(data: buf, encoding: encoding) {
+                output.append(s)
+            } else {
+                output.append("\u{FFFD}")
+            }
+            buf.removeAll(keepingCapacity: true)
+        }
+
+        while idx < data.endIndex {
+            let byte = data[idx]
+            if byte < 0x80 {
+                // ASCII boundary — flush accumulated multibyte run, then append ASCII directly.
+                flush(&pending)
+                output.append(Character(UnicodeScalar(byte)))
+            } else {
+                pending.append(byte)
+            }
+            idx = data.index(after: idx)
+        }
+        flush(&pending)
+        return output
     }
 
     static func postForm(url: URL, parameters: [String: String], referer: URL? = nil) async throws -> Data {

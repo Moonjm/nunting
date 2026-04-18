@@ -24,7 +24,8 @@ struct PpomppuParser: BoardParser {
         return try rows.compactMap { row -> Post? in
             // Skip pinned-by-popularity rows that break chronological order.
             let rowClasses = (try? row.attr("class")) ?? ""
-            if rowClasses.contains("hotpop_bg_color") { return nil }
+            let rowTokens = rowClasses.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+            if rowTokens.contains("hotpop_bg_color") { return nil }
 
             guard let link = try row.select("a[href*=bbs_view.php]").first() else { return nil }
             let href = try link.attr("href")
@@ -97,12 +98,12 @@ struct PpomppuParser: BoardParser {
             throw ParserError.structureChanged("KH_Content 없음")
         }
 
+        let dealAnchor = try dealAnchor(from: view)
         var blocks: [ContentBlock] = []
-        if let dealLink = try dealLinkBlock(from: view) {
-            blocks.append(dealLink)
+        if let dealAnchor {
+            blocks.append(.dealLink(dealAnchor.url, label: dealAnchor.label))
         }
-        try collectBlocks(from: content, into: &blocks)
-        blocks = mergeAdjacentText(blocks)
+        try collectBlocks(from: content, skipping: dealAnchor?.url, into: &blocks)
 
         let header = try view.select("h4").first()
         let fullDateText = try header?.select("span.hi").first()?.text()
@@ -118,15 +119,14 @@ struct PpomppuParser: BoardParser {
             return Int(digits.filter(\.isNumber))
         }()
 
-        let comments = try parseComments(in: doc)
-
+        // Comments are deferred to fetchAllComments so multi-page (`c_page`) threads work.
         return PostDetail(
             post: post,
             blocks: blocks,
             fullDateText: fullDateText,
             viewCount: viewCount,
             source: nil,
-            comments: comments
+            comments: []
         )
     }
 
@@ -244,17 +244,14 @@ struct PpomppuParser: BoardParser {
         return comps.url
     }
 
-    private func collectBlocks(from element: Element, into blocks: inout [ContentBlock]) throws {
-        var textBuffer = ""
+    private func collectBlocks(from element: Element, skipping skipURL: URL?, into blocks: inout [ContentBlock]) throws {
+        var inline = InlineAccumulator()
 
-        func flushText() {
-            let trimmed = textBuffer
-                .replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                blocks.append(.text(trimmed))
+        func flush() {
+            let segs = inline.drain()
+            if !segs.isEmpty {
+                blocks.append(.richText(segs))
             }
-            textBuffer = ""
         }
 
         let tag = element.tagName().lowercased()
@@ -270,6 +267,18 @@ struct PpomppuParser: BoardParser {
             }
             return
         }
+        if tag == "a" {
+            if let resolved = try anchor(from: element) {
+                if resolved.url != skipURL {
+                    inline.appendLink(url: resolved.url, label: resolved.label)
+                    flush()
+                }
+            } else {
+                inline.appendText(try element.text())
+                flush()
+            }
+            return
+        }
         if Self.skipTags.contains(tag) { return }
 
         for node in element.getChildNodes() {
@@ -277,59 +286,71 @@ struct PpomppuParser: BoardParser {
                 let childTag = el.tagName().lowercased()
                 switch childTag {
                 case "img":
-                    flushText()
+                    flush()
                     if let url = try imageURL(from: el) {
                         blocks.append(.image(url))
                     }
                 case "video":
-                    flushText()
+                    flush()
                     if let url = try videoURL(from: el) {
                         blocks.append(.video(url))
                     }
                 case "br":
-                    textBuffer += "\n"
+                    inline.appendText("\n")
                 case "a":
-                    if let markdown = try anchorMarkdown(from: el) {
-                        textBuffer += markdown
+                    if let resolved = try anchor(from: el) {
+                        if resolved.url != skipURL {
+                            inline.appendLink(url: resolved.url, label: resolved.label)
+                        }
                     } else {
-                        textBuffer += try el.text()
+                        inline.appendText(try el.text())
                     }
                 default:
                     if Self.skipTags.contains(childTag) { continue }
                     let nestedImgs = try el.select("img")
                     let nestedVideos = try el.select("video")
-                    let nestedAnchors = try el.select("a")
                     let isBlock = Self.blockTags.contains(childTag)
-                    if !nestedImgs.isEmpty() || !nestedVideos.isEmpty() || !nestedAnchors.isEmpty() {
-                        flushText()
-                        try collectBlocks(from: el, into: &blocks)
+                    if !nestedImgs.isEmpty() || !nestedVideos.isEmpty() {
+                        flush()
+                        try collectBlocks(from: el, skipping: skipURL, into: &blocks)
                     } else {
-                        textBuffer += try el.text()
+                        try collectInlines(from: el, skipping: skipURL, into: &inline)
                     }
                     if isBlock {
-                        textBuffer += "\n"
+                        inline.appendText("\n")
                     }
                 }
             } else if let textNode = node as? TextNode {
-                textBuffer += textNode.text()
+                inline.appendText(textNode.text())
             }
         }
-        flushText()
+        flush()
     }
 
-    private func mergeAdjacentText(_ blocks: [ContentBlock]) -> [ContentBlock] {
-        var result: [ContentBlock] = []
-        for block in blocks {
-            if case .text(let next) = block.kind,
-               let last = result.last,
-               case .text(let prev) = last.kind {
-                result.removeLast()
-                result.append(.text(prev + "\n\n" + next))
-            } else {
-                result.append(block)
+    private func collectInlines(from element: Element, skipping skipURL: URL?, into inline: inout InlineAccumulator) throws {
+        for node in element.getChildNodes() {
+            if let el = node as? Element {
+                let childTag = el.tagName().lowercased()
+                switch childTag {
+                case "br":
+                    inline.appendText("\n")
+                case "a":
+                    if let resolved = try anchor(from: el) {
+                        if resolved.url != skipURL {
+                            inline.appendLink(url: resolved.url, label: resolved.label)
+                        }
+                    } else {
+                        inline.appendText(try el.text())
+                    }
+                case let t where Self.skipTags.contains(t):
+                    continue
+                default:
+                    try collectInlines(from: el, skipping: skipURL, into: &inline)
+                }
+            } else if let textNode = node as? TextNode {
+                inline.appendText(textNode.text())
             }
         }
-        return result
     }
 
     private func imageURL(from element: Element) throws -> URL? {
@@ -345,12 +366,12 @@ struct PpomppuParser: BoardParser {
         return url
     }
 
-    private func dealLinkBlock(from view: Element) throws -> ContentBlock? {
+    private func dealAnchor(from view: Element) throws -> (url: URL, label: String)? {
         // Mobile: <div class="link-box"> inside <h4>.
         // Desktop: <li class="topTitle-link partner"> inside <ul class="topTitle-mainbox">.
-        let anchor = try view.select("div.link-box a[href], li.topTitle-link a[href]").first()
-        guard let anchor, let markdown = try anchorMarkdown(from: anchor) else { return nil }
-        return .text("🔗 \(markdown)")
+        let el = try view.select("div.link-box a[href], li.topTitle-link a[href]").first()
+        guard let el else { return nil }
+        return try anchor(from: el)
     }
 
     private func videoURL(from element: Element) throws -> URL? {
