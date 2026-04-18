@@ -120,9 +120,7 @@ struct SideDrawer: View {
     }
 
     private func boardRow(board: Board) -> some View {
-        Button {
-            onSelectBoard(board)
-        } label: {
+        HStack(spacing: 8) {
             HStack(spacing: 8) {
                 Text(board.name)
                     .font(.callout)
@@ -131,20 +129,27 @@ struct SideDrawer: View {
                 if showSiteBadge {
                     siteBadge(site: board.site)
                 }
-                Button {
-                    favorites.toggle(board)
-                } label: {
-                    Image(systemName: favorites.isFavorite(board) ? "star.fill" : "star")
-                        .foregroundStyle(favorites.isFavorite(board) ? Color.yellow : Color.secondary.opacity(0.6))
-                        .font(.callout)
-                }
-                .buttonStyle(.borderless)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
+            .onTapGesture { onSelectBoard(board) }
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+
+            Button {
+                favorites.toggle(board)
+            } label: {
+                Image(systemName: favorites.isFavorite(board) ? "star.fill" : "star")
+                    .foregroundStyle(favorites.isFavorite(board) ? Color.yellow : Color.secondary.opacity(0.6))
+                    .font(.callout)
+                    .frame(width: 36, height: 36)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(favorites.isFavorite(board) ? "즐겨찾기 해제" : "즐겨찾기 추가")
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
     }
 
     private var showSiteBadge: Bool {
@@ -162,13 +167,3 @@ struct SideDrawer: View {
     }
 }
 
-extension Site {
-    var accentColor: Color {
-        switch self {
-        case .clien: .blue
-        case .coolenjoy: .orange
-        case .inven: .red
-        case .ppomppu: .green
-        }
-    }
-}

@@ -17,7 +17,9 @@ extension Board {
     static let clienPark = Board(id: "clien-park", site: .clien, name: "모두의 공원", path: "/service/board/park")
 
     static let coolenjoyJirum = Board(id: "coolenjoy-jirum", site: .coolenjoy, name: "지름게시판", path: "/bbs/jirum")
-    static let coolenjoyFree = Board(id: "coolenjoy-free", site: .coolenjoy, name: "자유게시판", path: "/bbs/fboard")
+    static let coolenjoyFree = Board(id: "coolenjoy-free", site: .coolenjoy, name: "자유게시판", path: "/bbs/freeboard2")
+    static let coolenjoyReview = Board(id: "coolenjoy-review", site: .coolenjoy, name: "사용기/리뷰", path: "/bbs/review")
+    static let coolenjoyQna = Board(id: "coolenjoy-qna", site: .coolenjoy, name: "질문답변", path: "/bbs/qa")
 
     static let invenMaple = Board(id: "inven-maple", site: .inven, name: "메이플 자유게시판", path: "/board/maple/5974")
 
@@ -26,7 +28,7 @@ extension Board {
 
     static let all: [Board] = [
         .clienNews, .clienJirum, .clienPark,
-        .coolenjoyJirum, .coolenjoyFree,
+        .coolenjoyJirum, .coolenjoyFree, .coolenjoyReview, .coolenjoyQna,
         .invenMaple,
         .ppomppuMain, .ppomppuFree,
     ]

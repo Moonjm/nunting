@@ -5,15 +5,17 @@ struct ContentView: View {
     @State private var selectedBoard: Board = .clienNews
     @State private var drawerOpen = false
     @State private var drawerSection: DrawerSection = .favorites
+    @State private var navigationPath = NavigationPath()
 
     @State private var dragOffset: CGFloat = 0
     @State private var dragDirection: DragDirection?
     @State private var dragLockBaseline: CGFloat = 0
+    @State private var scrollLocked = false
 
     private let drawerWidth: CGFloat = 300
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $navigationPath) {
             ZStack(alignment: .leading) {
                 mainScreen
                     .toolbar(.hidden, for: .navigationBar)
@@ -46,7 +48,11 @@ struct ContentView: View {
 
     private var mainScreen: some View {
         VStack(spacing: 0) {
-            BoardListView(board: selectedBoard)
+            BoardListView(
+                board: selectedBoard,
+                scrollLocked: scrollLocked,
+                onSelectPost: { navigationPath.append($0) }
+            )
             MainBottomBar(
                 board: selectedBoard,
                 favorites: favorites,
@@ -76,6 +82,7 @@ struct ContentView: View {
                     if absW > 10 && absW >= absH {
                         dragDirection = .horizontal
                         dragLockBaseline = value.translation.width
+                        scrollLocked = true
                     } else if absH > 10 && absH > absW {
                         dragDirection = .vertical
                     }
@@ -89,6 +96,7 @@ struct ContentView: View {
                 let baseline = dragLockBaseline
                 dragDirection = nil
                 dragLockBaseline = 0
+                scrollLocked = false
 
                 guard lockedHorizontal else {
                     dragOffset = 0
@@ -116,6 +124,7 @@ struct ContentView: View {
         drawerSection = targetSection
         dragDirection = nil
         dragLockBaseline = 0
+        scrollLocked = false
         withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
             drawerOpen = true
             dragOffset = 0
@@ -125,6 +134,7 @@ struct ContentView: View {
     private func closeDrawer() {
         dragDirection = nil
         dragLockBaseline = 0
+        scrollLocked = false
         withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
             drawerOpen = false
             dragOffset = 0
