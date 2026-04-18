@@ -191,13 +191,17 @@ struct BoardListView: View {
             let parsed = try parser.parseList(html: html, board: board)
             guard key == taskKey else { return }
 
-            let fresh = parsed.filter { !seenIDs.contains($0.id) }
+            // Insert into seenIDs *during* the filter so an intra-page duplicate
+            // (e.g. parsed = [A, A, B]) only appends once.
+            var fresh: [Post] = []
+            for p in parsed where seenIDs.insert(p.id).inserted {
+                fresh.append(p)
+            }
             if fresh.isEmpty {
                 hasMorePages = false
                 return
             }
             posts.append(contentsOf: fresh)
-            for p in fresh { seenIDs.insert(p.id) }
             currentPage = nextPage
         } catch is CancellationError {
             return

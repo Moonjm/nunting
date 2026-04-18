@@ -136,22 +136,17 @@ struct AagagParser: BoardParser {
             let bodyStart = text.index(text.startIndex, offsetBy: match.range.location + match.range.length)
             let body = text[bodyStart...]
 
-            // Walk character-by-character, locating the unescaped closing quote.
-            // A quote is a real terminator iff the run of immediately preceding
-            // backslashes has even length (each `\\` is itself an escape pair).
+            // Walk character-by-character, tracking escape state. A `\` toggles
+            // isEscaped (so `\\` cancels out, `\\\"` leaves the quote escaped),
+            // and a quote is a real terminator only when isEscaped is false.
             var idx = body.startIndex
+            var isEscaped = false
             while idx < body.endIndex {
-                if body[idx] == "\"" {
-                    var backslashes = 0
-                    var look = idx
-                    while look > body.startIndex {
-                        look = body.index(before: look)
-                        if body[look] == "\\" { backslashes += 1 } else { break }
-                    }
-                    if backslashes % 2 == 0 {
-                        return Self.unescapeJSString(String(body[..<idx]))
-                    }
+                let c = body[idx]
+                if c == "\"" && !isEscaped {
+                    return Self.unescapeJSString(String(body[..<idx]))
                 }
+                isEscaped = (c == "\\" && !isEscaped)
                 idx = body.index(after: idx)
             }
         }
