@@ -235,6 +235,7 @@ struct InvenParser: BoardParser {
             guard !content.isEmpty || stickerURL != nil else { return }
             let isReply = raw.attr.cmtidx != raw.attr.cmtpidx
             let perCommentAuthIcon: URL? = (raw.authicon == true) ? authIconURL : nil
+            let levelIconURL = Self.levelIconURL(level: raw.level)
             results.append(Comment(
                 id: "\(site.rawValue)-c-\(raw.attr.cmtidx)",
                 author: raw.name,
@@ -243,7 +244,8 @@ struct InvenParser: BoardParser {
                 likeCount: raw.recommend,
                 isReply: isReply,
                 stickerURL: stickerURL,
-                authIconURL: perCommentAuthIcon
+                authIconURL: perCommentAuthIcon,
+                levelIconURL: levelIconURL
             ))
         }
 
@@ -325,6 +327,7 @@ struct InvenParser: BoardParser {
         let comment: String
         let recommend: Int
         let authicon: Bool?
+        let level: String?
 
         enum CodingKeys: String, CodingKey {
             case attr = "__attr__"
@@ -333,7 +336,13 @@ struct InvenParser: BoardParser {
             case comment = "o_comment"
             case recommend = "o_recommend"
             case authicon
+            case level = "o_level"
         }
+    }
+
+    private static func levelIconURL(level: String?) -> URL? {
+        guard let level, !level.isEmpty else { return nil }
+        return URL(string: "https://static.inven.co.kr/image_2011/member/level/1202/\(level).gif")
     }
 
     private struct InvenCommentAttr: Decodable {

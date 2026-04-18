@@ -9,6 +9,7 @@ struct Comment: Identifiable, Hashable {
     let isReply: Bool
     let stickerURL: URL?
     let authIconURL: URL?
+    let levelIconURL: URL?
 
     init(
         id: String,
@@ -18,7 +19,8 @@ struct Comment: Identifiable, Hashable {
         likeCount: Int,
         isReply: Bool,
         stickerURL: URL? = nil,
-        authIconURL: URL? = nil
+        authIconURL: URL? = nil,
+        levelIconURL: URL? = nil
     ) {
         self.id = id
         self.author = author
@@ -28,6 +30,7 @@ struct Comment: Identifiable, Hashable {
         self.isReply = isReply
         self.stickerURL = stickerURL
         self.authIconURL = authIconURL
+        self.levelIconURL = levelIconURL
     }
 }
 

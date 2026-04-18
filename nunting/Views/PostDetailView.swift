@@ -172,6 +172,16 @@ private struct CommentRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
+                if let levelURL = comment.levelIconURL {
+                    AsyncImage(url: levelURL) { phase in
+                        if case .success(let image) = phase {
+                            image.resizable().scaledToFit()
+                        } else {
+                            Color.clear
+                        }
+                    }
+                    .frame(width: 16, height: 16)
+                }
                 Text(comment.author)
                     .font(.caption)
                     .fontWeight(.medium)
