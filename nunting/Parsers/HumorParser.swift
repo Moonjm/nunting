@@ -303,10 +303,15 @@ struct HumorParser: BoardParser {
                 return try copy.text().trimmingCharacters(in: .whitespacesAndNewlines)
             }()
 
-            let stickerURL = try extractCommentSticker(in: li)
+            let videoURL = try extractCommentVideo(in: li)
+            // When a comment carries a playable mp4 attachment we render the
+            // video directly and skip the static thumbnail — otherwise the
+            // thumbnail would flash behind the player while it loads.
+            let stickerURL = videoURL == nil ? try extractCommentSticker(in: li) : nil
             let authIconURL = try extractAuthIcon(in: li)
 
-            guard !author.isEmpty || !content.isEmpty || stickerURL != nil else { continue }
+            guard !author.isEmpty || !content.isEmpty || stickerURL != nil || videoURL != nil
+            else { continue }
 
             results.append(Comment(
                 id: "\(site.rawValue)-c-\(cmtID)",
@@ -316,11 +321,25 @@ struct HumorParser: BoardParser {
                 likeCount: likeCount,
                 isReply: isReply,
                 stickerURL: stickerURL,
+                videoURL: videoURL,
                 authIconURL: authIconURL,
                 levelIconURL: nil
             ))
         }
         return results
+    }
+
+    private func extractCommentVideo(in li: Element) throws -> URL? {
+        // Inline mp4/gif attachments live on an outer wrapper that carries
+        // the same OnClick="comment_mp4_expand('id', 'URL', 'THUMB', ...)"
+        // handler the body uses. Walk every element under the comment_file
+        // block because the OnClick can be on the outer div or on a nested
+        // anchor.
+        for el in try li.select(".comment_file [onclick]") {
+            let onclick = try el.attr("onclick")
+            if let url = try parseMp4Click(onclick) { return url }
+        }
+        return nil
     }
 
     private func extractCommentSticker(in li: Element) throws -> URL? {
