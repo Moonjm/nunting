@@ -37,7 +37,7 @@ struct SearchSheet: View {
                         }
                     }
                     .padding(10)
-                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+                    .background(Color("AppSurface2"), in: RoundedRectangle(cornerRadius: 10))
 
                     if !initialQuery.isEmpty {
                         Button {

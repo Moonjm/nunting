@@ -26,7 +26,7 @@ struct SideDrawer: View {
             Divider()
             boardsPanel
         }
-        .background(Color(uiColor: .systemBackground))
+        .background(Color("AppSurface"))
         .task {
             // Hydrate the in-memory Set once. Subsequent writes go through
             // setCollapsed which keeps both copies in sync.
@@ -49,7 +49,7 @@ struct SideDrawer: View {
             .padding(.vertical, 8)
         }
         .frame(width: 48)
-        .background(Color(uiColor: .secondarySystemBackground))
+        .background(Color("AppBackground"))
     }
 
     private func railItem(section: DrawerSection) -> some View {
@@ -203,7 +203,7 @@ struct SideDrawer: View {
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
-                .background(Color(uiColor: .secondarySystemBackground))
+                .background(Color("AppSurface2"))
             }
             .buttonStyle(.plain)
             .accessibilityElement(children: .combine)

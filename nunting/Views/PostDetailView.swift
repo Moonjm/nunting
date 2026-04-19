@@ -390,7 +390,7 @@ private struct DealLinkBanner: View {
                     .foregroundStyle(.secondary)
             }
             .padding(12)
-            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+            .background(Color("AppSurface2"), in: RoundedRectangle(cornerRadius: 10))
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
@@ -414,7 +414,7 @@ private struct SourceBanner: View {
                     .foregroundStyle(.secondary)
             }
             .padding(12)
-            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+            .background(Color("AppSurface2"), in: RoundedRectangle(cornerRadius: 10))
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)

@@ -22,7 +22,7 @@ struct CachedAsyncImage: View {
         // stops the visible "slide-from-right" jank during loading.
         ZStack {
             if image == nil && !failed && showsPlaceholder {
-                Color(uiColor: .secondarySystemBackground)
+                Color("AppSurface2")
                     .overlay(ProgressView())
             }
             if let image {

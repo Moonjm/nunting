@@ -16,7 +16,7 @@ struct BoardFilterBar: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
         }
-        .background(Color(uiColor: .secondarySystemBackground))
+        .background(Color("AppSurface2"))
         .overlay(alignment: .top) { Divider() }
         .overlay(alignment: .bottom) { Divider() }
     }
@@ -41,7 +41,7 @@ struct BoardFilterBar: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 5)
                 .background(
-                    isSelected ? Color.accentColor : Color(uiColor: .systemBackground),
+                    isSelected ? Color.accentColor : Color("AppSurface"),
                     in: Capsule()
                 )
                 .foregroundStyle(isSelected ? Color.white : Color.primary)
