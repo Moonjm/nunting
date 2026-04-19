@@ -10,6 +10,7 @@ extension Site {
         case .aagag: .purple
         case .humor: .pink
         case .bobae: Color(red: 0x45/255.0, green: 0x88/255.0, blue: 0xCE/255.0)
+        case .slr: Color(red: 0x43/255.0, green: 0x8E/255.0, blue: 0xDD/255.0)
         }
     }
 }
