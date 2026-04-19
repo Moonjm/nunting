@@ -5,10 +5,6 @@ struct BoardListView: View {
     var filter: BoardFilter? = nil
     var searchQuery: String? = nil
     var scrollLocked: Bool = false
-    /// Monotonic counter the parent increments to force a full refresh
-    /// (e.g. double-tapping the bottom-bar board name). Changing it is enough
-    /// to break `taskKey`, which triggers the `.task(id:)` reload path.
-    var reloadToken: Int = 0
     let readStore: ReadStore
     let onSelectPost: (Post) -> Void
 
@@ -24,7 +20,7 @@ struct BoardListView: View {
     @State private var nextSearchURL: URL?
 
     private var taskKey: String {
-        "\(board.id)|\(filter?.id ?? "_all")|\(searchQuery ?? "")|\(reloadToken)"
+        "\(board.id)|\(filter?.id ?? "_all")|\(searchQuery ?? "")"
     }
 
     var body: some View {

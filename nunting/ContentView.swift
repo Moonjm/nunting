@@ -18,9 +18,9 @@ struct ContentView: View {
     /// Most recently opened post — re-pushed when the user swipes from the
     /// right edge toward the left, mirroring iOS's left-edge back-swipe.
     @State private var lastOpenedPost: Post?
-    /// Bump to force BoardListView to reload from scratch — used by the
-    /// bottom-bar board-name double-tap so users can pull fresh results
-    /// even when nothing else about the view state has changed.
+    /// Bumped on bottom-bar double-tap. Attached to `mainScreen` via `.id()`
+    /// so the whole list + filter bar + bottom bar subtree is rebuilt,
+    /// triggering a fresh load regardless of current search/filter state.
     @State private var reloadToken: Int = 0
 
     @State private var dragOffset: CGFloat = 0
@@ -56,6 +56,7 @@ struct ContentView: View {
         NavigationStack(path: $navigationPath) {
             ZStack(alignment: .leading) {
                 mainScreen
+                    .id(reloadToken)
                     .toolbar(.hidden, for: .navigationBar)
 
                 Color.black
@@ -100,7 +101,6 @@ struct ContentView: View {
                 filter: selectedFilter,
                 searchQuery: searchQuery,
                 scrollLocked: scrollLocked,
-                reloadToken: reloadToken,
                 readStore: readStore,
                 onSelectPost: { post in
                     lastOpenedPost = post
