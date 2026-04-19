@@ -12,6 +12,7 @@ enum ParserFactory {
         case .bobae: return BobaeParser()
         case .slr: return SLRParser()
         case .ddanzi: return DdanziParser()
+        case .cook82: return Cook82Parser()
         }
     }
 }
