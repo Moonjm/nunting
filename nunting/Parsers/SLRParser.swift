@@ -349,20 +349,72 @@ struct SLRParser: BoardParser {
         var results: [Comment] = []
         for (idx, entry) in entries.enumerated() {
             if (entry.del ?? 0) != 0 { continue }
-            let content = (entry.memo ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             let author = (entry.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            if author.isEmpty, content.isEmpty { continue }
+            let rendered = renderMemo(entry.memo ?? "")
+            if author.isEmpty, rendered.text.isEmpty, rendered.sticker == nil { continue }
 
             let id = "slr-c-\(entry.pk ?? "idx\(idx)")"
             results.append(Comment(
                 id: id,
                 author: author,
                 dateText: entry.dt ?? "",
-                content: content,
+                content: rendered.text,
                 likeCount: entry.vt ?? 0,
-                isReply: entry.th != nil
+                isReply: entry.th != nil,
+                stickerURL: rendered.sticker
             ))
         }
         return results
+    }
+
+    /// SLR serialises comment bodies as HTML fragments inside the JSON `memo`
+    /// field (e.g. `저도 ... <br />\n전기차로 <br />\n<img src="//media...jpg">`).
+    /// Parse the fragment so:
+    ///   - `<br>` becomes a real newline
+    ///   - `<img>` gets hoisted out as an inline sticker URL (first match)
+    ///   - all other tags get stripped so users don't see raw `<br />` in text
+    private static func renderMemo(_ memo: String) -> (text: String, sticker: URL?) {
+        let raw = memo.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return ("", nil) }
+        // Fast path: no tags at all → original trimmed text.
+        if !raw.contains("<") { return (raw, nil) }
+
+        do {
+            let doc = try SwiftSoup.parseBodyFragment(raw)
+            let body = doc.body() ?? doc
+
+            var sticker: URL?
+            if sticker == nil, let img = try body.select("img").first() {
+                var src = try img.attr("src")
+                if src.isEmpty { src = try img.attr("data-src") }
+                if !src.isEmpty {
+                    let normalized = src.hasPrefix("//") ? "https:" + src : src
+                    if let url = URL(string: normalized, relativeTo: URL(string: "https://m.slrclub.com")!)?.absoluteURL,
+                       let scheme = url.scheme?.lowercased(),
+                       scheme == "http" || scheme == "https" {
+                        sticker = url
+                    }
+                }
+            }
+
+            // Drop img/script/style — they're rendered separately or irrelevant.
+            try body.select("img, script, style").remove()
+            // Convert <br> to literal newlines before calling .text() (which
+            // would otherwise collapse them to spaces).
+            try body.select("br").forEach { br in
+                try br.before(TextNode("\n", ""))
+            }
+            let text = try body.text().trimmingCharacters(in: .whitespacesAndNewlines)
+            return (text, sticker)
+        } catch {
+            // Bad markup → return the raw string stripped of the obvious
+            // `<br>` tokens so the user at least sees something readable.
+            let stripped = raw
+                .replacingOccurrences(of: "<br />", with: "\n")
+                .replacingOccurrences(of: "<br/>", with: "\n")
+                .replacingOccurrences(of: "<br>", with: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return (stripped, nil)
+        }
     }
 }
