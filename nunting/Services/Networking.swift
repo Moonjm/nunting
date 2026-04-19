@@ -139,12 +139,11 @@ struct Networking {
         url: URL,
         parameters: [String: String],
         referer: URL? = nil,
-        /// Override for endpoints that require a specific `Content-Type`
-        /// header that doesn't match the URL-encoded body (e.g. XE's
-        /// `exec_json` handler on ddanzi.com checks for
-        /// `application/json` but still wants URL-encoded params — sending
-        /// `x-www-form-urlencoded` makes the server return the normal HTML
-        /// page instead of the JSON payload).
+        /// Override the outgoing `Content-Type` header for endpoints that
+        /// expect a value not matching the URL-encoded body shape. The
+        /// default is correct for normal form POSTs; only override when a
+        /// server specifically branches on this header. See `DdanziParser`
+        /// for the current caller that needs this.
         contentType: String = "application/x-www-form-urlencoded; charset=utf-8"
     ) async throws -> Data {
         var request = URLRequest(url: url)

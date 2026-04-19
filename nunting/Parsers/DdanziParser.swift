@@ -113,9 +113,8 @@ struct DdanziParser: BoardParser {
         //    render the full HTML layout — so sending
         //    `x-www-form-urlencoded` returns the login / view page instead
         //    of the JSON payload we need here.
-        let endpoint = URL(string: "https://www.ddanzi.com/")!
         let data = try await Networking.postForm(
-            url: endpoint,
+            url: site.baseURL,
             parameters: [
                 "module": "board",
                 "act": "dispBoardContentCommentListHtml",
@@ -283,6 +282,13 @@ struct DdanziParser: BoardParser {
 
     private static func extractCommentParams(html: String) throws -> CommentParams? {
         let doc = try SwiftSoup.parse(html)
+        // Bail if the article body is missing — ddanzi's login-required /
+        // private-post error pages still ship with widgets that include
+        // a `#_document_srl` input and a `#cmt_list` target (for the login
+        // redirect flow), so reading the params from such a page would fire
+        // a garbage POST. Gating on the article wrapper keeps param
+        // extraction scoped to real detail responses.
+        guard try !doc.select(".boardR").isEmpty() else { return nil }
         // `<input id="_document_srl" value="..." />` lives inside the comment
         // section wrapper; it's the canonical document id Ddanzi uses.
         let docSrl = try doc.select("#_document_srl").first()?.attr("value")
@@ -336,8 +342,12 @@ struct DdanziParser: BoardParser {
             for li in items {
                 let cmtID = try li.attr("id")
                     .replacingOccurrences(of: "comment_", with: "")
-                let classAttr = (try? li.attr("class")) ?? ""
-                let isReply = classAttr.contains("re_comment")
+                // Exact token match via hasClass — substring `.contains`
+                // would false-positive on future adjacent class names that
+                // happen to carry "re_comment" as a prefix/suffix (e.g.
+                // `re_comment_deleted`) and render a normal comment as an
+                // indented reply.
+                let isReply = li.hasClass("re_comment")
 
                 let author = try li.select(".fbMeta .author").first()?.text()
                     .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -373,7 +383,7 @@ struct DdanziParser: BoardParser {
         if src.isEmpty { src = try img.attr("data-src") }
         guard !src.isEmpty else { return nil }
         let normalized = src.hasPrefix("//") ? "https:" + src : src
-        guard let url = URL(string: normalized, relativeTo: URL(string: "https://www.ddanzi.com")!)?.absoluteURL,
+        guard let url = URL(string: normalized, relativeTo: Site.ddanzi.baseURL)?.absoluteURL,
               let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https"
         else { return nil }
