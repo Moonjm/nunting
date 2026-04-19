@@ -4,6 +4,8 @@ import SwiftSoup
 struct AagagParser: BoardParser {
     let site: Site = .aagag
 
+    nonisolated init() {}
+
     private static let imageHost = "https://i.aagag.com"
     // YouTube IDs are exactly 11 chars from [A-Za-z0-9_-].
     private static let youtubeIDRegex = try! NSRegularExpression(pattern: #"^[A-Za-z0-9_-]{11}$"#)

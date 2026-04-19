@@ -4,6 +4,8 @@ import SwiftSoup
 struct InvenParser: BoardParser {
     let site: Site = .inven
 
+    nonisolated init() {}
+
     func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
         let rows = try doc.select("section.mo-board-list li.list")

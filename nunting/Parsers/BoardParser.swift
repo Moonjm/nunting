@@ -3,7 +3,7 @@ import SwiftSoup
 
 protocol BoardParser {
     var site: Site { get }
-    func parseList(html: String, board: Board) throws -> [Post]
+    nonisolated func parseList(html: String, board: Board) throws -> [Post]
     func parseDetail(html: String, post: Post) throws -> PostDetail
     func commentsURL(for post: Post) -> URL?
     func parseComments(html: String) throws -> [Comment]

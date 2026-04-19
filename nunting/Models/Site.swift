@@ -23,7 +23,7 @@ enum Site: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .clien: URL(string: "https://www.clien.net")!
         case .coolenjoy: URL(string: "https://coolenjoy.net")!
-        case .inven: URL(string: "https://www.inven.co.kr")!
+        case .inven: URL(string: "https://m.inven.co.kr")!
         case .ppomppu: URL(string: "https://m.ppomppu.co.kr")!
         case .aagag: URL(string: "https://aagag.com")!
         }

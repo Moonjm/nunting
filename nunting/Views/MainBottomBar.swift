@@ -3,7 +3,7 @@ import SwiftUI
 struct MainBottomBar: View {
     let board: Board
     let favorites: FavoritesStore
-    let onBoardTap: () -> Void
+    let onBoardDoubleTap: () -> Void
     let onSearch: () -> Void
     let onPrev: () -> Void
     let onNext: () -> Void
@@ -17,26 +17,29 @@ struct MainBottomBar: View {
                 onSearch()
             }
 
-            // Board name area: tap to open drawer, horizontal swipe to step
+            // Board name area: double tap clears search, horizontal swipe steps
             // through the current site's boards.
-            barButton {
+            Group {
                 Text(board.name)
                     .font(.caption.weight(.medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
-            } action: {
-                onBoardTap()
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) {
+                onBoardDoubleTap()
             }
             // High priority so the parent drawer-pan gesture in ContentView
-                // doesn't swallow the swipe before it can reach the bar.
-                .highPriorityGesture(
-                    DragGesture(minimumDistance: 30)
-                        .onEnded { value in
-                            let dx = value.translation.width
-                            if dx < -40 { onNext() }
-                            else if dx > 40 { onPrev() }
-                        }
-                )
+            // doesn't swallow the swipe before it can reach the bar.
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 30)
+                    .onEnded { value in
+                        let dx = value.translation.width
+                        if dx < -40 { onNext() }
+                        else if dx > 40 { onPrev() }
+                    }
+            )
 
             barButton {
                 Image(systemName: favorites.isFavorite(board) ? "star.fill" : "star")

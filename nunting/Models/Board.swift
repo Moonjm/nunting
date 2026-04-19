@@ -6,11 +6,11 @@ struct Board: Identifiable, Hashable, Codable {
     let name: String
     let path: String
     let filters: [BoardFilter]
-    /// When non-nil, the board supports keyword search; the URL receives a
-    /// `?{searchQueryName}=KEYWORD` parameter merged into its query items.
+    /// When non-nil, the board supports keyword search; the URL receives the
+    /// site's search parameters merged into its query items.
     let searchQueryName: String?
-    /// Query parameter name used for paging (e.g. `page` on aagag). Nil means
-    /// the board does not support infinite scroll.
+    /// Query parameter name used for paging. Defaults to the site's known
+    /// board-list paging parameter.
     let pageQueryName: String?
 
     init(id: String, site: Site, name: String, path: String, filters: [BoardFilter] = [], searchQueryName: String? = nil, pageQueryName: String? = nil) {
@@ -19,8 +19,8 @@ struct Board: Identifiable, Hashable, Codable {
         self.name = name
         self.path = path
         self.filters = filters
-        self.searchQueryName = searchQueryName
-        self.pageQueryName = pageQueryName
+        self.searchQueryName = Self.normalizedSearchQueryName(for: site, provided: searchQueryName)
+        self.pageQueryName = pageQueryName ?? Self.defaultPageQueryName(for: site)
     }
 
     var url: URL { url(filter: nil, search: nil, page: nil) }
@@ -34,12 +34,16 @@ struct Board: Identifiable, Hashable, Codable {
     }
 
     func url(filter: BoardFilter?, search: String?, page: Int?) -> URL {
-        let effectivePath = filter?.replacementPath ?? path
-        let base = URL(string: effectivePath, relativeTo: site.baseURL)?.absoluteURL ?? site.baseURL
+        let trimmedSearch = search?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isSearching = trimmedSearch?.isEmpty == false
+        let listPath = filter?.replacementPath ?? path
+        let effectivePath = isSearching ? searchPath(for: listPath) : listPath
+        let baseURL = isSearching ? searchBaseURL : site.baseURL
+        let base = URL(string: effectivePath, relativeTo: baseURL)?.absoluteURL ?? baseURL
 
         let extraItems: [(String, String)] = (filter?.queryItems.map { ($0.key, $0.value) } ?? [])
-            + searchItems(query: search)
-            + pageItems(page: page)
+            + searchItems(query: trimmedSearch)
+            + pageItems(page: page, isSearching: isSearching)
         if extraItems.isEmpty { return base }
 
         guard var comps = URLComponents(url: base, resolvingAgainstBaseURL: false) else { return base }
@@ -57,14 +61,113 @@ struct Board: Identifiable, Hashable, Codable {
 
     private func searchItems(query: String?) -> [(String, String)] {
         guard let searchQueryName,
-              let query, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+              let query, !query.isEmpty
         else { return [] }
-        return [(searchQueryName, query)]
+        return defaultSearchPrefixItems() + [(searchQueryName, query)]
     }
 
-    private func pageItems(page: Int?) -> [(String, String)] {
+    private func pageItems(page: Int?, isSearching: Bool) -> [(String, String)] {
         guard let pageQueryName, let page, page > 1 else { return [] }
-        return [(pageQueryName, "\(page)")]
+        let name = Self.pageQueryName(for: site, pageQueryName: pageQueryName, isSearching: isSearching)
+        let value = Self.pageQueryValue(for: site, page: page, isSearching: isSearching)
+        guard value > 0 else { return [] }
+        return [(name, "\(value)")]
+    }
+
+    private static func defaultPageQueryName(for site: Site) -> String? {
+        switch site {
+        case .clien:
+            "po"
+        case .coolenjoy, .ppomppu, .aagag:
+            "page"
+        case .inven:
+            "p"
+        }
+    }
+
+    private static func defaultSearchQueryName(for site: Site) -> String? {
+        switch site {
+        case .clien:
+            "q"
+        case .coolenjoy:
+            "stx"
+        case .ppomppu:
+            "keyword"
+        case .inven:
+            "svalue"
+        case .aagag:
+            "word"
+        }
+    }
+
+    private static func normalizedSearchQueryName(for site: Site, provided: String?) -> String? {
+        switch site {
+        case .clien, .coolenjoy, .inven:
+            // Older favorite snapshots can persist stale names such as
+            // Clien's former `sv`; these sites need the current fixed keys.
+            return defaultSearchQueryName(for: site)
+        case .ppomppu, .aagag:
+            return provided ?? defaultSearchQueryName(for: site)
+        }
+    }
+
+    private func defaultSearchPrefixItems() -> [(String, String)] {
+        switch site {
+        case .clien:
+            guard let boardID = Self.clienBoardID(from: path) else { return [] }
+            return [("boardCd", boardID), ("isBoard", "true"), ("sort", "recency")]
+        case .coolenjoy:
+            return [("sfl", "wr_subject")]
+        case .inven:
+            return [("stype", "subject")]
+        case .ppomppu, .aagag:
+            return []
+        }
+    }
+
+    private func searchPath(for listPath: String) -> String {
+        switch site {
+        case .clien:
+            return "/service/search"
+        case .coolenjoy, .inven, .ppomppu, .aagag:
+            return listPath
+        }
+    }
+
+    private var searchBaseURL: URL {
+        switch site {
+        case .clien:
+            URL(string: "https://m.clien.net")!
+        case .coolenjoy, .inven, .ppomppu, .aagag:
+            site.baseURL
+        }
+    }
+
+    private static func clienBoardID(from path: String) -> String? {
+        let cleanPath = path.components(separatedBy: "?").first ?? path
+        guard let range = cleanPath.range(of: "/service/board/") else { return nil }
+        let tail = cleanPath[range.upperBound...]
+        let id = tail.prefix { $0.isLetter || $0.isNumber || $0 == "_" }
+        return id.isEmpty ? nil : String(id)
+    }
+
+    private static func pageQueryName(for site: Site, pageQueryName: String, isSearching: Bool) -> String {
+        switch site {
+        case .clien where isSearching:
+            "p"
+        case .clien, .coolenjoy, .inven, .ppomppu, .aagag:
+            pageQueryName
+        }
+    }
+
+    private static func pageQueryValue(for site: Site, page: Int, isSearching: Bool) -> Int {
+        switch site {
+        case .clien:
+            // Clien uses zero-based offsets: page 2 => po/p=1.
+            page - 1
+        case .coolenjoy, .inven, .ppomppu, .aagag:
+            page
+        }
     }
 }
 

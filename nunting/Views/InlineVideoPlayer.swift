@@ -5,6 +5,7 @@ struct InlineVideoPlayer: View {
     let url: URL
 
     @State private var player: AVPlayer?
+    @State private var playbackEndObserver: NSObjectProtocol?
     @State private var isReady: Bool = false
 
     var body: some View {
@@ -35,6 +36,10 @@ struct InlineVideoPlayer: View {
         .transaction { $0.animation = nil }
         .task(id: url) { await loadPlayer() }
         .onDisappear {
+            if let playbackEndObserver {
+                NotificationCenter.default.removeObserver(playbackEndObserver)
+                self.playbackEndObserver = nil
+            }
             player?.pause()
             player = nil
             isReady = false
@@ -73,6 +78,14 @@ struct InlineVideoPlayer: View {
         // `timeControlStatus` observer would be more accurate but adds
         // KVO plumbing — for now, flip it after the asset reports ready.
         await MainActor.run {
+            playbackEndObserver = NotificationCenter.default.addObserver(
+                forName: .AVPlayerItemDidPlayToEndTime,
+                object: item,
+                queue: .main
+            ) { [weak p] _ in
+                p?.seek(to: .zero)
+                p?.play()
+            }
             self.player = p
             self.isReady = true
             p.play()

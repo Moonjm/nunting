@@ -6,6 +6,7 @@ struct PostDetailView: View {
     @State private var detail: PostDetail?
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var selectedImage: ImageViewerItem?
 
     var body: some View {
         ScrollView {
@@ -52,7 +53,17 @@ struct PostDetailView: View {
                 }
             }
         }
-        .task(id: post.id) { await load() }
+        .task(id: post.id) {
+            // Let the navigation push animation finish before mutating detail
+            // state or starting parser/network work. Doing this immediately can
+            // hitch the right-to-left transition on image-heavy or large posts.
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            await load()
+        }
+        .fullScreenCover(item: $selectedImage) { item in
+            ImageViewer(url: item.url)
+        }
     }
 
     @ViewBuilder
@@ -75,6 +86,10 @@ struct PostDetailView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     case .image(let url):
                         CachedAsyncImage(url: url)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                selectedImage = ImageViewerItem(url: url)
+                            }
                     case .video(let url):
                         InlineVideoPlayer(url: url)
                     case .dealLink(let url, let label):

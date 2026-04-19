@@ -4,6 +4,8 @@ import SwiftSoup
 struct ClienParser: BoardParser {
     let site: Site = .clien
 
+    nonisolated init() {}
+
     func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
         let rows = try doc.select("a.list_item.symph-row")

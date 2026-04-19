@@ -39,9 +39,11 @@ struct ContentView: View {
         _favorites = State(initialValue: store)
         if let firstFav = store.favoriteBoards().first {
             _selectedBoard = State(initialValue: firstFav)
+            _selectedFilter = State(initialValue: Self.defaultFilter(for: firstFav))
             _boardNavScope = State(initialValue: .favorites)
         } else {
             _selectedBoard = State(initialValue: .clienNews)
+            _selectedFilter = State(initialValue: Self.defaultFilter(for: .clienNews))
             _boardNavScope = State(initialValue: .site(.clien))
         }
     }
@@ -89,9 +91,6 @@ struct ContentView: View {
 
     private var mainScreen: some View {
         VStack(spacing: 0) {
-            if let q = searchQuery, !q.isEmpty {
-                SearchActiveBar(query: q) { searchQuery = nil }
-            }
             BoardListView(
                 board: selectedBoard,
                 filter: selectedFilter,
@@ -99,25 +98,28 @@ struct ContentView: View {
                 scrollLocked: scrollLocked,
                 readStore: readStore,
                 onSelectPost: { post in
-                    readStore.markRead(post)
                     lastOpenedPost = post
                     navigationPath.append(post)
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 350_000_000)
+                        readStore.markRead(post)
+                    }
                 }
             )
             if !selectedBoard.filters.isEmpty {
-                BoardFilterBar(filters: selectedBoard.filters, selection: $selectedFilter)
+                BoardFilterBar(board: selectedBoard, selection: $selectedFilter)
             }
             MainBottomBar(
                 board: selectedBoard,
                 favorites: favorites,
-                onBoardTap: { openDrawer(targetSection: .site(selectedBoard.site)) },
+                onBoardDoubleTap: { searchQuery = nil },
                 onSearch: { searchSheetPresented = true },
                 onPrev: { stepBoard(by: -1) },
                 onNext: { stepBoard(by: 1) }
             )
         }
         .onChange(of: selectedBoard) { _, _ in
-            selectedFilter = nil
+            selectedFilter = Self.defaultFilter(for: selectedBoard)
             searchQuery = nil
         }
         .onChange(of: selectedFilter) { _, _ in
@@ -133,6 +135,11 @@ struct ContentView: View {
                 onClear: { searchQuery = nil }
             )
         }
+    }
+
+    private static func defaultFilter(for board: Board) -> BoardFilter? {
+        guard board.id == Board.invenMaple.id else { return nil }
+        return board.filters.first { $0.id == "chu" }
     }
 
     private var drawerProgress: CGFloat {
@@ -270,32 +277,6 @@ private struct ContainerHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
-    }
-}
-
-private struct SearchActiveBar: View {
-    let query: String
-    let onClear: () -> Void
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-            Text("\"\(query)\" 검색 결과")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Button(action: onClear) {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("검색 해제")
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(Color(uiColor: .secondarySystemBackground))
-        .overlay(alignment: .bottom) { Divider() }
     }
 }
 

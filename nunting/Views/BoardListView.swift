@@ -17,6 +17,7 @@ struct BoardListView: View {
     @State private var loadMoreError: Bool = false
     @State private var errorMessage: String?
     @State private var loadedKey: String?
+    @State private var nextSearchURL: URL?
 
     private var taskKey: String {
         "\(board.id)|\(filter?.id ?? "_all")|\(searchQuery ?? "")"
@@ -35,14 +36,14 @@ struct BoardListView: View {
             }
         }
         .task(id: taskKey) {
-            if loadedKey != taskKey {
-                posts = []
-                seenIDs = []
-                currentPage = 1
-                hasMorePages = true
-                loadMoreError = false
-                errorMessage = nil
-            }
+            guard loadedKey != taskKey else { return }
+            posts = []
+            seenIDs = []
+            currentPage = 1
+            hasMorePages = true
+            loadMoreError = false
+            errorMessage = nil
+            nextSearchURL = nil
             await load()
         }
     }
@@ -78,6 +79,14 @@ struct BoardListView: View {
                 }
                 .padding(.vertical, 12)
                 .listRowSeparator(.hidden)
+                .onAppear {
+                    guard board.supportsPaging,
+                          hasMorePages,
+                          !isLoadingMore,
+                          !loadMoreError
+                    else { return }
+                    Task { await loadMore() }
+                }
             } else if loadMoreError {
                 Button {
                     Task { await loadMore() }
@@ -94,11 +103,35 @@ struct BoardListView: View {
                 .buttonStyle(.plain)
                 .padding(.vertical, 12)
                 .listRowSeparator(.hidden)
+            } else if shouldShowLoadMorePrompt {
+                Button {
+                    Task { await loadMore() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Spacer()
+                        Image(systemName: "magnifyingglass")
+                        Text("다음 검색 더 보기")
+                        Spacer()
+                    }
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .padding(.vertical, 12)
+                .listRowSeparator(.hidden)
+                .onAppear {
+                    guard hasMorePages, !isLoadingMore, !loadMoreError else { return }
+                    Task { await loadMore() }
+                }
             }
         }
         .listStyle(.plain)
         .scrollDisabled(scrollLocked)
         .refreshable { await load() }
+    }
+
+    private var shouldShowLoadMorePrompt: Bool {
+        board.site == .inven && nextSearchURL != nil && hasMorePages
     }
 
     @ViewBuilder
@@ -155,16 +188,16 @@ struct BoardListView: View {
             }
         }
         do {
-            let parser = try ParserFactory.parser(for: board.site)
             let url = board.url(filter: filter, search: searchQuery, page: nil)
-            let html = try await Networking.fetchHTML(url: url, encoding: board.site.encoding)
+            let html = try await fetchListHTML(url: url)
             try Task.checkCancellation()
-            let parsed = try parser.parseList(html: html, board: board)
+            let parsed = try await parseListOffMain(html: html, board: board)
             guard key == taskKey else { return }
             posts = parsed
             seenIDs = Set(parsed.map(\.id))
             currentPage = 1
-            hasMorePages = board.supportsPaging && !parsed.isEmpty
+            nextSearchURL = nextSearchPageURL(from: html)
+            hasMorePages = board.supportsPaging && (!parsed.isEmpty || nextSearchURL != nil)
             loadedKey = key
         } catch is CancellationError {
             return
@@ -188,12 +221,13 @@ struct BoardListView: View {
             }
         }
         do {
-            let parser = try ParserFactory.parser(for: board.site)
-            let url = board.url(filter: filter, search: searchQuery, page: nextPage)
-            let html = try await Networking.fetchHTML(url: url, encoding: board.site.encoding)
+            let url = nextSearchURL ?? board.url(filter: filter, search: searchQuery, page: nextPage)
+            let html = try await fetchListHTML(url: url)
             try Task.checkCancellation()
-            let parsed = try parser.parseList(html: html, board: board)
+            let parsed = try await parseListOffMain(html: html, board: board)
             guard key == taskKey else { return }
+            let loadedSearchURL = nextSearchURL
+            nextSearchURL = nextSearchPageURL(from: html)
 
             // Insert into seenIDs *during* the filter so an intra-page duplicate
             // (e.g. parsed = [A, A, B]) only appends once.
@@ -202,11 +236,16 @@ struct BoardListView: View {
                 fresh.append(p)
             }
             if fresh.isEmpty {
-                hasMorePages = false
+                hasMorePages = nextSearchURL != nil
                 return
             }
             posts.append(contentsOf: fresh)
-            currentPage = nextPage
+            currentPage = loadedSearchURL == nil ? nextPage : 1
+            hasMorePages = if loadedSearchURL != nil {
+                nextSearchURL != nil
+            } else {
+                board.supportsPaging && (nextSearchURL != nil || !fresh.isEmpty)
+            }
         } catch is CancellationError {
             return
         } catch let urlError as URLError where urlError.code == .cancelled {
@@ -217,5 +256,43 @@ struct BoardListView: View {
             guard key == taskKey else { return }
             loadMoreError = true
         }
+    }
+
+    private func parseListOffMain(html: String, board: Board) async throws -> [Post] {
+        try await Task.detached(priority: .userInitiated) {
+            let parser = try ParserFactory.parser(for: board.site)
+            return try parser.parseList(html: html, board: board)
+        }.value
+    }
+
+    private func fetchListHTML(url: URL) async throws -> String {
+        do {
+            return try await Networking.fetchHTML(url: url, encoding: board.site.encoding)
+        } catch NetworkError.badResponse(400)
+            where board.site == .clien && searchQuery?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            return try await Networking.fetchHTML(
+                url: url,
+                encoding: board.site.encoding,
+                userAgent: Networking.userAgent,
+                handlesCookies: false
+            )
+        }
+    }
+
+    private func nextSearchPageURL(from html: String) -> URL? {
+        guard board.site == .inven,
+              searchQuery?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        else { return nil }
+
+        let pattern = #"<a\s+href="([^"]*sterm=[^"]*)"\s+class="search-total""#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+              let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+              match.numberOfRanges > 1,
+              let range = Range(match.range(at: 1), in: html)
+        else { return nil }
+
+        let href = String(html[range])
+            .replacingOccurrences(of: "&amp;", with: "&")
+        return URL(string: href, relativeTo: board.site.baseURL)?.absoluteURL
     }
 }
