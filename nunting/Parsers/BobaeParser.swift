@@ -14,6 +14,14 @@ struct BobaeParser: BoardParser {
         pattern: #"youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{11})"#,
         options: []
     )
+    /// Matches the two shapes bobaedream renders for comment timestamps:
+    /// `HH:MM` for same-day comments and `YYYY.MM.DD HH:MM` for older ones.
+    /// Used to filter the util row's spans so an added badge / IP indicator
+    /// doesn't silently replace the timestamp.
+    private static let commentTimeRegex = try! NSRegularExpression(
+        pattern: #"\d{1,2}:\d{2}|\d{4}\.\d{1,2}\.\d{1,2}"#,
+        options: []
+    )
 
     private static let blockTags: Set<String> = [
         "p", "div", "li", "blockquote",
@@ -28,27 +36,24 @@ struct BobaeParser: BoardParser {
     }
 
     func parseDetail(html: String, post: Post) throws -> PostDetail {
-        let doc = try SwiftSoup.parse(html)
-
-        // Bobaedream returns a 200 with a "게시글이 존재하지 않습니다" alert
-        // for deleted / removed posts. Detect by absence of the article body.
-        if try doc.select("article.article .article-body").isEmpty() {
-            let body = try doc.text()
-            let notice: String
-            if body.contains("삭제") || body.contains("존재하지 않") {
-                notice = "삭제되거나 이동된 게시물입니다."
-            } else {
-                notice = "게시물을 불러올 수 없습니다."
-            }
+        // Bobaedream signals deleted / invalid posts with a 200 response whose
+        // body is literally a single `<script>alert('삭제된 글 입니다.');
+        // history.back();</script>`. Detect that BEFORE parsing the DOM, so a
+        // future article-wrapper rename doesn't make us misreport legitimate
+        // posts as deleted (the body-wrapper check and the deletion check
+        // used to share the same selector — coupling they don't need).
+        if html.contains("alert('삭제된 글") || html.contains("alert(\"삭제된 글") {
             return PostDetail(
                 post: post,
-                blocks: [.text(notice)],
+                blocks: [.text("삭제되거나 이동된 게시물입니다.")],
                 fullDateText: nil,
                 viewCount: nil,
                 source: nil,
                 comments: []
             )
         }
+
+        let doc = try SwiftSoup.parse(html)
 
         let title = try extractTitle(in: doc, fallback: post.title)
         let author = try extractAuthor(in: doc, fallback: post.author)
@@ -132,7 +137,18 @@ struct BobaeParser: BoardParser {
     // MARK: - Body blocks
 
     private func extractBlocks(in doc: Document) throws -> [ContentBlock] {
-        guard let wrap = try doc.select("article.article .article-body").first() else { return [] }
+        // Fallback chain for the body wrapper. Bobaedream currently renders
+        // `.article-body` on mobile, but older posts / migrated articles /
+        // subtle server-side A/B variants sometimes drop the wrapper and
+        // expose `#body_frame` directly. Trying several candidates keeps a
+        // single-class rename from silently returning an empty post body.
+        let candidates: [Element?] = [
+            try doc.select("article.article .article-body").first(),
+            try doc.select(".article-body").first(),
+            try doc.select("#body_frame").first(),
+            try doc.select("article.article").first(),
+        ]
+        guard let wrap = candidates.compactMap({ $0 }).first else { return [] }
         var blocks: [ContentBlock] = []
         var inline = InlineAccumulator()
         try collectBlocks(from: wrap, into: &blocks, inline: &inline)
@@ -262,11 +278,24 @@ struct BobaeParser: BoardParser {
         let nodes = try doc.select(".reple_body > ul.list > li")
         var results: [Comment] = []
         for (idx, li) in nodes.enumerated() {
-            let classAttr = (try? li.attr("class")) ?? ""
-            if classAttr.contains("best") { continue }
+            // `.best` entries are a duplicated preview of top-voted comments
+            // from the main list — skip them so we don't render each twice.
+            // Use hasClass for an exact token match: substring matching would
+            // eat future adjacent class names that happen to contain "best"
+            // (e.g. `text_best`, `bestreple`).
+            if li.hasClass("best") { continue }
 
             guard let replyEl = try li.select(".con_area > .reply").first() else { continue }
-            let isReply = try !li.select("> .ico_area").isEmpty()
+            // Replies carry a leading `<div class="ico_area">댓글</div>` badge
+            // the source site renders inline. Match any `.ico_area` descendant
+            // (not strictly the direct child) and verify its text so we don't
+            // false-positive on a similarly-named container if bobae adds one.
+            let isReply: Bool = try {
+                for el in try li.select(".ico_area") {
+                    if try el.text().contains("댓글") { return true }
+                }
+                return false
+            }()
             let content = try extractCommentContent(replyEl)
 
             let utilEl = try li.select(".con_area > .util").first()
@@ -310,16 +339,23 @@ struct BobaeParser: BoardParser {
 
     private func extractCommentDate(_ util: Element?) throws -> String {
         // `<div class="util"><span class="data4">author</span><span>14:12</span>...`
-        // The second span is the time; `.data4` and the report anchor's
-        // parent span sandwich it. Grab every child span, drop ones that
-        // carry .data4 or wrap an <a>.
+        // The time is the bare-span sibling between the author (`.data4`) and
+        // the report anchor. Picking "the first non-author, non-anchor span"
+        // is brittle — if bobae ever slots an IP / level / badge span in
+        // between, we'd display that text as the timestamp. Match against the
+        // expected HH:MM or date shape so a new span with other content gets
+        // skipped over instead of silently winning.
         guard let util else { return "" }
         for span in try util.select("span") {
             let cls = try span.attr("class")
             if cls.contains("data4") { continue }
             if try !span.select("a").isEmpty() { continue }
             let text = try span.text().trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty { return text }
+            guard !text.isEmpty else { continue }
+            let ns = text as NSString
+            if Self.commentTimeRegex.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)) != nil {
+                return text
+            }
         }
         return ""
     }
