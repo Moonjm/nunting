@@ -28,12 +28,13 @@ enum DrawerSection: Hashable, Identifiable {
         case .site(.aagag): "애객"
         case .site(.humor): "웃대"
         case .site(.bobae): "보배"
+        case .site(.slr): "SLR"
         }
     }
 
     /// Sites that are dispatch-only targets (reached via aagag mirror
     /// redirects) and shouldn't appear in the drawer as browseable entries.
-    private static let dispatchOnly: Set<Site> = [.humor, .bobae]
+    private static let dispatchOnly: Set<Site> = [.humor, .bobae, .slr]
 
     /// Sites browseable from the side drawer. Dispatch-only targets stay
     /// hidden so the drawer only lists sites the user can actually browse.
