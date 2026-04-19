@@ -9,6 +9,14 @@ struct AagagParser: BoardParser {
     private static let youtubeIDRegex = try! NSRegularExpression(pattern: #"^[A-Za-z0-9_-]{11}$"#)
     // Instagram shortcodes are 5+ chars from [A-Za-z0-9_-].
     private static let instaIDRegex = try! NSRegularExpression(pattern: #"^[A-Za-z0-9_-]+$"#)
+    // Hoisted regexes — these run on every detail parse and per stripHTML
+    // chunk respectively, so per-call NSRegularExpression construction
+    // showed up as measurable overhead on image-heavy posts.
+    private static let contentScriptRegex = try! NSRegularExpression(
+        pattern: #"AAGAG_AA\.content\s*=\s*"((?:[^"\\]|\\.)*)""#,
+        options: [.dotMatchesLineSeparators]
+    )
+    private static let numericEntityRegex = try! NSRegularExpression(pattern: #"&#(x?)([0-9a-fA-F]+);"#)
 
     func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
@@ -131,14 +139,10 @@ struct AagagParser: BoardParser {
         // `\"` inside the JSON. Using NSString.substring(with: nsRange) avoids
         // the Swift String.Index offset math that previously dropped a couple
         // of characters when the script had Korean text earlier in the body.
-        let regex = try NSRegularExpression(
-            pattern: #"AAGAG_AA\.content\s*=\s*"((?:[^"\\]|\\.)*)""#,
-            options: [.dotMatchesLineSeparators]
-        )
         for script in try doc.select("script") {
             let text = script.data()
             let ns = text as NSString
-            guard let match = regex.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)),
+            guard let match = Self.contentScriptRegex.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)),
                   match.numberOfRanges >= 2,
                   match.range(at: 1).location != NSNotFound
             else { continue }
@@ -243,19 +247,16 @@ struct AagagParser: BoardParser {
             .replacingOccurrences(of: "&#39;", with: "'")
             .replacingOccurrences(of: "&amp;", with: "&")  // last so `&amp;lt;` → `&lt;`
         // Numeric entities `&#NNNN;` and `&#xHHHH;`.
-        let regex = try? NSRegularExpression(pattern: #"&#(x?)([0-9a-fA-F]+);"#)
-        if let regex {
-            let ns = out as NSString
-            let matches = regex.matches(in: out, range: NSRange(location: 0, length: ns.length))
-            // Replace from the back so ranges stay valid.
-            for m in matches.reversed() {
-                let isHex = ns.substring(with: m.range(at: 1)) == "x"
-                let digits = ns.substring(with: m.range(at: 2))
-                guard let code = UInt32(digits, radix: isHex ? 16 : 10),
-                      let scalar = UnicodeScalar(code)
-                else { continue }
-                out = (out as NSString).replacingCharacters(in: m.range, with: String(scalar))
-            }
+        let ns = out as NSString
+        let matches = Self.numericEntityRegex.matches(in: out, range: NSRange(location: 0, length: ns.length))
+        // Replace from the back so ranges stay valid.
+        for m in matches.reversed() {
+            let isHex = ns.substring(with: m.range(at: 1)) == "x"
+            let digits = ns.substring(with: m.range(at: 2))
+            guard let code = UInt32(digits, radix: isHex ? 16 : 10),
+                  let scalar = UnicodeScalar(code)
+            else { continue }
+            out = (out as NSString).replacingCharacters(in: m.range, with: String(scalar))
         }
         return out
     }

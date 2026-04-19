@@ -9,10 +9,14 @@ struct SideDrawer: View {
     let onClose: () -> Void
 
     /// Per-section persistent expand/collapse state. Keyed by
-    /// `"<section.id>|<group.id>"`. Uses on-device storage so reopening the
-    /// app keeps the user's last view.
-    @AppStorage("drawer.collapsedGroups.v1")
-    private var collapsedGroupsRaw: String = ""
+    /// `"<section.id>|<group.id>"`. JSON-encoded Set on disk; we keep an
+    /// in-memory Set so per-row `isCollapsed` reads stay O(1) instead of
+    /// re-parsing the raw string on every render pass.
+    @AppStorage("drawer.collapsedGroups.v2")
+    private var collapsedGroupsRaw: String = "[]"
+
+    @State private var collapsedGroups: Set<String> = []
+    @State private var collapsedHydrated: Bool = false
 
     @State private var favoritesEditMode: EditMode = .inactive
 
@@ -23,6 +27,16 @@ struct SideDrawer: View {
             boardsPanel
         }
         .background(Color(uiColor: .systemBackground))
+        .task {
+            // Hydrate the in-memory Set once. Subsequent writes go through
+            // setCollapsed which keeps both copies in sync.
+            guard !collapsedHydrated else { return }
+            if let data = collapsedGroupsRaw.data(using: .utf8),
+               let decoded = try? JSONDecoder().decode([String].self, from: data) {
+                collapsedGroups = Set(decoded)
+            }
+            collapsedHydrated = true
+        }
     }
 
     private var siteRail: some View {
@@ -225,15 +239,16 @@ struct SideDrawer: View {
     }
 
     private func isCollapsed(group: BoardGroup) -> Bool {
-        let set = Set(collapsedGroupsRaw.split(separator: "\n").map(String.init))
-        return set.contains(collapseKey(group))
+        collapsedGroups.contains(collapseKey(group))
     }
 
     private func setCollapsed(_ collapsed: Bool, group: BoardGroup) {
-        var set = Set(collapsedGroupsRaw.split(separator: "\n").map(String.init))
         let key = collapseKey(group)
-        if collapsed { set.insert(key) } else { set.remove(key) }
-        collapsedGroupsRaw = set.sorted().joined(separator: "\n")
+        if collapsed { collapsedGroups.insert(key) } else { collapsedGroups.remove(key) }
+        if let data = try? JSONEncoder().encode(collapsedGroups.sorted()),
+           let raw = String(data: data, encoding: .utf8) {
+            collapsedGroupsRaw = raw
+        }
     }
 
     @ViewBuilder
