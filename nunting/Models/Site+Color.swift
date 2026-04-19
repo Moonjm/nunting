@@ -8,6 +8,7 @@ extension Site {
         case .inven: .red
         case .ppomppu: .green
         case .aagag: .purple
+        case .humor: .pink
         }
     }
 }

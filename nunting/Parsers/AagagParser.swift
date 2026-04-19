@@ -29,9 +29,21 @@ struct AagagParser: BoardParser {
         var seen = Set<String>()
         var results: [Post] = []
         for el in articles {
-            let href = try el.attr("href")
-            guard !href.isEmpty,
-                  let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL,
+            let rawHref = try el.attr("href")
+            guard !rawHref.isEmpty else { continue }
+            // Mirror items ship relative hrefs like "re?ss=humor_N" that must
+            // resolve under /mirror/. Resolving against site.baseURL alone
+            // drops the /mirror/ segment and the server 404s. Issue items use
+            // absolute /issue/?idx=… paths and don't need this fix.
+            let href: String
+            if rawHref.hasPrefix("./re?") {
+                href = "/mirror/" + String(rawHref.dropFirst(2))
+            } else if rawHref.hasPrefix("re?") {
+                href = "/mirror/" + rawHref
+            } else {
+                href = rawHref
+            }
+            guard let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL,
                   let scheme = url.scheme?.lowercased(),
                   scheme == "http" || scheme == "https"
             else { continue }

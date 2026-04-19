@@ -39,7 +39,10 @@ struct PostDetailView: View {
                 articleContent
 
                 if let comments = detail?.comments, !comments.isEmpty {
-                    CommentsSection(comments: comments)
+                    CommentsSection(
+                        comments: comments,
+                        onImageTap: { url in selectedImage = ImageViewerItem(url: url) }
+                    )
                         .padding(.top, 8)
                 }
             }
@@ -134,10 +137,17 @@ struct PostDetailView: View {
     /// dispatch to a source parser if we recognise the host, else surface a
     /// "외부 사이트로 이동" banner.
     private func resolveDispatchedPost(_ post: Post) async throws -> Dispatch {
+        // Mirror detail URLs always live under /mirror/re and carry the item
+        // id in the `ss` query — matching the query is less brittle than a
+        // bare path suffix if aagag ever renames the redirect endpoint, and
+        // still rejects issue detail URLs (which use /issue/?idx=…).
         guard post.site == .aagag,
               let host = post.url.host?.lowercased(),
               host.hasSuffix("aagag.com"),
-              post.url.path.hasSuffix("/re") || post.url.path.hasSuffix("/mirror/re")
+              post.url.path.hasPrefix("/mirror/re"),
+              URLComponents(url: post.url, resolvingAgainstBaseURL: false)?
+                  .queryItems?
+                  .contains(where: { $0.name == "ss" }) == true
         else { return .parser(post, prefetched: nil) }
 
         let resolved = await Networking.resolveFinalURL(post.url)
@@ -350,6 +360,7 @@ private struct SourceBanner: View {
 
 private struct CommentsSection: View {
     let comments: [Comment]
+    let onImageTap: (URL) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -361,9 +372,12 @@ private struct CommentsSection: View {
                     .foregroundStyle(.secondary)
             }
 
-            VStack(alignment: .leading, spacing: 0) {
+            // LazyVStack so off-screen comments don't kick off markdown
+            // parses / image fetches / AVPlayer setup at the same time the
+            // user is trying to scroll the top of a long thread.
+            LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(comments.enumerated()), id: \.element.id) { index, comment in
-                    CommentRow(comment: comment)
+                    CommentRow(comment: comment, onImageTap: onImageTap)
                     if index < comments.count - 1 {
                         Divider().padding(.vertical, 2)
                     }
@@ -375,6 +389,7 @@ private struct CommentsSection: View {
 
 private struct CommentRow: View {
     let comment: Comment
+    let onImageTap: (URL) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -406,10 +421,18 @@ private struct CommentRow: View {
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            if let stickerURL = comment.stickerURL {
+            if let videoURL = comment.videoURL {
+                HStack(spacing: 0) {
+                    InlineVideoPlayer(url: videoURL)
+                        .frame(maxWidth: 320, maxHeight: 240)
+                    Spacer(minLength: 0)
+                }
+            } else if let stickerURL = comment.stickerURL {
                 HStack(spacing: 0) {
                     CachedAsyncImage(url: stickerURL, maxDimension: 280)
                         .frame(maxWidth: 200, maxHeight: 140)
+                        .contentShape(Rectangle())
+                        .onTapGesture { onImageTap(stickerURL) }
                     Spacer(minLength: 0)
                 }
             }

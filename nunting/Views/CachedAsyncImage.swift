@@ -4,7 +4,7 @@ import ImageIO
 
 struct CachedAsyncImage: View {
     let url: URL
-    var maxDimension: CGFloat = 1200
+    var maxDimension: CGFloat = 1600
     /// When false, the loading state renders as an empty transparent view
     /// rather than the gray-box + spinner placeholder. Use this for small
     /// inline icons (comment level/auth icons) where the placeholder visibly
@@ -28,6 +28,7 @@ struct CachedAsyncImage: View {
             if let image {
                 Image(uiImage: image)
                     .resizable()
+                    .interpolation(.high)
                     .scaledToFit()
             }
             if failed {
@@ -83,29 +84,57 @@ struct CachedAsyncImage: View {
     }
 
     private func decodeOffMain(data: Data, limit: CGFloat, scale: CGFloat) async throws -> UIImage? {
-        try await withThrowingTaskGroup(of: UIImage?.self) { group in
-            group.addTask(priority: .userInitiated) {
-                try Task.checkCancellation()
-                let img = Self.decode(data: data, maxDimension: limit, scale: scale)
-                try Task.checkCancellation()
-                return img
-            }
-            return try await group.next() ?? nil
-        }
+        try await Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
+            let img = Self.decode(data: data, maxDimension: limit, scale: scale)
+            try Task.checkCancellation()
+            return img
+        }.value
     }
 
     private static func decode(data: Data, maxDimension: CGFloat, scale: CGFloat) -> UIImage? {
-        let pixelLimit = max(maxDimension * scale, 256)
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: pixelLimit,
-        ]
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
-        else { return nil }
-        return UIImage(cgImage: cg, scale: scale, orientation: .up)
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+
+        // Fetch native dimensions up-front so we can cap by width + area
+        // instead of CG's built-in "max on the long edge" heuristic. The
+        // long-edge heuristic shrinks tall aagag issue images below the
+        // device's retina width (e.g. 800×6000 → 640×4800), which visibly
+        // softens the result when SwiftUI renders them in the column.
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        let sourceW = (properties?[kCGImagePropertyPixelWidth] as? CGFloat) ?? 0
+        let sourceH = (properties?[kCGImagePropertyPixelHeight] as? CGFloat) ?? 0
+
+        let targetWidth = max(maxDimension * scale, 256)
+        // ~80 MB at 4 bytes/pixel — keeps a few decoded images under the
+        // 200 MB NSCache cap while still letting tall-but-narrow images
+        // through at native resolution.
+        let maxPixelArea: CGFloat = 20_000_000
+
+        let widthRatio = sourceW > 0 ? min(1, targetWidth / sourceW) : 1
+        let sourceArea = max(sourceW * sourceH, 1)
+        let areaRatio = sourceArea > maxPixelArea ? sqrt(maxPixelArea / sourceArea) : 1
+        let ratio = min(widthRatio, areaRatio)
+
+        let cg: CGImage?
+        if ratio >= 1 {
+            // Source already fits both caps — full decode keeps native detail.
+            cg = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        } else {
+            let longSide = max(sourceW, sourceH) * ratio
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceShouldCacheImmediately: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: longSide,
+            ]
+            cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        }
+        guard let cg else { return nil }
+        // UIImage.scale = 1 keeps the intrinsic point size equal to the pixel
+        // size, so SwiftUI's scaledToFit downsamples large images cleanly and
+        // upscales small ones (humoruniv 480px originals) without treating
+        // them as already rendered for a 3x display.
+        return UIImage(cgImage: cg, scale: 1, orientation: .up)
     }
 }
 

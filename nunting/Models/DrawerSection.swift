@@ -26,8 +26,12 @@ enum DrawerSection: Hashable, Identifiable {
         case .site(.inven): "인벤"
         case .site(.ppomppu): "뽐뿌"
         case .site(.aagag): "애객"
+        case .site(.humor): "웃대"
         }
     }
 
-    static let all: [DrawerSection] = [.favorites] + Site.allCases.map(DrawerSection.site)
+    /// Sites browseable from the side drawer. Excludes `.humor`, which is a
+    /// dispatch-only target used from aagag mirror detail pages.
+    static let all: [DrawerSection] = [.favorites]
+        + Site.allCases.filter { $0 != .humor }.map(DrawerSection.site)
 }

@@ -379,8 +379,22 @@ struct PpomppuParser: BoardParser {
     }
 
     private func videoURL(from element: Element) throws -> URL? {
+        // Ppomppu ships bodies with the standard <video><source src="..."></video>
+        // shape (the mp4 URL lives on the child <source>). Fall back to
+        // data-src / src on <video> itself for compatibility with older posts.
         let dataSrc = try element.attr("data-src")
-        let raw = dataSrc.isEmpty ? try element.attr("src") : dataSrc
+        let direct = try element.attr("src")
+        var raw = !dataSrc.isEmpty ? dataSrc : direct
+        if raw.isEmpty, let source = try element.select("source").first() {
+            let sData = try source.attr("data-src")
+            let sSrc = try source.attr("src")
+            raw = !sData.isEmpty ? sData : sSrc
+        }
+        // Drop media fragments like "#t=0.05" so URL() doesn't attach them
+        // to AVPlayer asset URLs.
+        if let hash = raw.firstIndex(of: "#") {
+            raw = String(raw[raw.startIndex..<hash])
+        }
         guard !raw.isEmpty,
               let url = URL(string: raw, relativeTo: site.baseURL)?.absoluteURL,
               let scheme = url.scheme?.lowercased(),
@@ -390,13 +404,56 @@ struct PpomppuParser: BoardParser {
     }
 
     private func extractStickerURL(from element: Element) throws -> URL? {
-        guard let img = try element.select("img").first() else { return nil }
-        return try imageURL(from: img)
+        // Comment images are lazy-loaded: src is "/images/lazyloading.jpg"
+        // and the real URL lives in data-original. Walk all imgs to find one
+        // with a content URL, then fall back to a GIF preview (data-org-src
+        // on the <a class="btn_show_org">) for video-only comments.
+        for img in try element.select("img") {
+            if let url = try commentImageURL(from: img) { return url }
+        }
+        if let gif = try element.select("a.btn_show_org").first() {
+            let href = try gif.attr("data-org-src")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !href.isEmpty,
+               let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL,
+               let scheme = url.scheme?.lowercased(),
+               scheme == "http" || scheme == "https" {
+                return url
+            }
+        }
+        return nil
+    }
+
+    private func commentImageURL(from el: Element) throws -> URL? {
+        let candidates = [
+            try el.attr("data-original"),
+            try el.attr("data-src"),
+            try el.attr("src"),
+        ]
+        for raw in candidates {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty,
+                  !trimmed.contains("lazyloading"),
+                  !trimmed.contains("/images/gif_load")
+            else { continue }
+            guard let url = URL(string: trimmed, relativeTo: site.baseURL)?.absoluteURL,
+                  let scheme = url.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https"
+            else { continue }
+            return url
+        }
+        return nil
     }
 
     private func cleanCommentText(from element: Element) throws -> String {
         let copy = (element.copy() as? Element) ?? element
-        try copy.select("img, script, style").remove()
+        // Remove media elements *and* their decorative siblings so that
+        // the <video> fallback string ("Your browser does not support...")
+        // and the GIF-expansion button's "원본보기" label don't leak into
+        // the comment content.
+        try copy.select(
+            "img, script, style, video, source, .wrapper_video, a.btn_show_org"
+        ).remove()
         let blockMarker = "\u{0001}NL\u{0001}"
         let blocks = try copy.select("br, p, div, li, blockquote, tr")
         for el in blocks where el.parent() != nil {
