@@ -9,6 +9,8 @@ enum Site: String, CaseIterable, Identifiable, Codable {
     /// Aagag mirror-only target (no direct browsing). Added so `Site.detect`
     /// can route humoruniv.com redirects to `HumorParser`.
     case humor
+    /// Aagag mirror-only target. Routes bobaedream.co.kr redirects to `BobaeParser`.
+    case bobae
 
     var id: String { rawValue }
 
@@ -20,6 +22,7 @@ enum Site: String, CaseIterable, Identifiable, Codable {
         case .ppomppu: "뽐뿌"
         case .aagag: "애객"
         case .humor: "웃대"
+        case .bobae: "보배드림"
         }
     }
 
@@ -31,6 +34,7 @@ enum Site: String, CaseIterable, Identifiable, Codable {
         case .ppomppu: URL(string: "https://m.ppomppu.co.kr")!
         case .aagag: URL(string: "https://aagag.com")!
         case .humor: URL(string: "https://m.humoruniv.com")!
+        case .bobae: URL(string: "https://m.bobaedream.co.kr")!
         }
     }
 
@@ -56,6 +60,7 @@ enum Site: String, CaseIterable, Identifiable, Codable {
         if host.hasSuffix("ppomppu.co.kr") { return .ppomppu }
         if host.hasSuffix("aagag.com") { return .aagag }
         if host.hasSuffix("humoruniv.com") { return .humor }
+        if host.hasSuffix("bobaedream.co.kr") { return .bobae }
         return nil
     }
 }
