@@ -290,18 +290,23 @@ struct HumorParser: BoardParser {
             // Top-level comments put content inside .comment_text, but
             // sub_comm_block replies put it in a plain <span style="">
             // inside .comment_body. Selecting .comment_body and stripping
-            // the vote/reply UI works for both shapes.
+            // the vote/reply UI works for both shapes. Also drop the
+            // comment-file block so its "원본" button label / thumbnail
+            // don't leak into the content text.
             let content: String = try {
                 guard let bodyEl = try li.select(".comment_body").first(),
                       let copy = bodyEl.copy() as? Element
                 else { return "" }
-                try copy.select(".recomm_btn, [id^=comm_ok_ment_], [id^=poncomm]").remove()
+                try copy.select(
+                    ".recomm_btn, [id^=comm_ok_ment_], [id^=poncomm], .comment_file, img, script, style"
+                ).remove()
                 return try copy.text().trimmingCharacters(in: .whitespacesAndNewlines)
             }()
 
+            let stickerURL = try extractCommentSticker(in: li)
             let authIconURL = try extractAuthIcon(in: li)
 
-            guard !author.isEmpty || !content.isEmpty else { continue }
+            guard !author.isEmpty || !content.isEmpty || stickerURL != nil else { continue }
 
             results.append(Comment(
                 id: "\(site.rawValue)-c-\(cmtID)",
@@ -310,12 +315,45 @@ struct HumorParser: BoardParser {
                 content: content,
                 likeCount: likeCount,
                 isReply: isReply,
-                stickerURL: nil,
+                stickerURL: stickerURL,
                 authIconURL: authIconURL,
                 levelIconURL: nil
             ))
         }
         return results
+    }
+
+    private func extractCommentSticker(in li: Element) throws -> URL? {
+        // Humor renders attached comment images via:
+        //   <div class="comment_file">
+        //     <img class="img_compress"
+        //          src="//timg.humoruniv.com/thumb.php?url=..."     (proxy thumb)
+        //          img_file_url="//down.humoruniv.com/.../r_r...jpg" (original)>
+        // The img_file_url attribute holds the untransformed URL, which gives
+        // better quality than the thumb proxy once the user taps to zoom.
+        guard let img = try li.select(".comment_file img.img_compress, .comment_file img").first()
+        else { return nil }
+        let candidates = [
+            try img.attr("img_file_url"),
+            try img.attr("data-original"),
+            try img.attr("src"),
+        ]
+        for raw in candidates {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty,
+                  !trimmed.contains("loading_bar")
+            else { continue }
+            // Scheme-relative URLs ("//down.humoruniv.com/...") get a fixed
+            // https scheme so the image loader can resolve them without a
+            // relative base that might pick http.
+            let normalized = trimmed.hasPrefix("//") ? "https:" + trimmed : trimmed
+            guard let url = URL(string: normalized, relativeTo: site.baseURL)?.absoluteURL,
+                  let scheme = url.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https"
+            else { continue }
+            return url
+        }
+        return nil
     }
 
     private func extractAuthIcon(in li: Element) throws -> URL? {
