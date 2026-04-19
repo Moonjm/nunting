@@ -113,23 +113,25 @@ struct ImageViewer: View {
     }
 
     private func decodeOffMain(data: Data, scale: CGFloat) async throws -> UIImage? {
-        try await withThrowingTaskGroup(of: UIImage?.self) { group in
-            group.addTask(priority: .userInitiated) {
-                try Task.checkCancellation()
-                let options: [CFString: Any] = [
-                    kCGImageSourceCreateThumbnailFromImageAlways: true,
-                    kCGImageSourceShouldCacheImmediately: true,
-                    kCGImageSourceCreateThumbnailWithTransform: true,
-                    kCGImageSourceThumbnailMaxPixelSize: max(2400 * scale, 1024),
-                ]
-                guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-                      let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
-                else { return nil }
-                try Task.checkCancellation()
-                return UIImage(cgImage: cg, scale: scale, orientation: .up)
-            }
-            return try await group.next() ?? nil
-        }
+        try await Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
+            // Clamp the thumbnail pixel size so ultra-high-DPI devices don't
+            // ask CoreGraphics to materialise a ~14k px thumbnail and peak
+            // memory unnecessarily. 4096 covers every iPhone/iPad retina
+            // class with headroom for pinch-to-zoom.
+            let maxPixelSize = min(max(2400 * scale, 1024), 4096)
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceShouldCacheImmediately: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+            ]
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+                  let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+            else { return nil }
+            try Task.checkCancellation()
+            return UIImage(cgImage: cg, scale: scale, orientation: .up)
+        }.value
     }
 }
 
@@ -168,10 +170,9 @@ private struct ZoomableImageView: UIViewRepresentable {
     func updateUIView(_ scrollView: UIScrollView, context: Context) {
         guard context.coordinator.imageView?.image !== image else { return }
         context.coordinator.imageView?.image = image
+        // setZoomScale fires scrollViewDidZoom, which resets isZoomed — no
+        // need to push a SwiftUI state mutation from inside updateUIView.
         scrollView.setZoomScale(1, animated: false)
-        DispatchQueue.main.async {
-            isZoomed = false
-        }
     }
 
     func makeCoordinator() -> Coordinator {
