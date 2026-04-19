@@ -5,53 +5,41 @@ import UIKit
 struct InlineVideoPlayer: View {
     let url: URL
 
-    @State private var player: AVPlayer?
-    @State private var playbackEndObserver: NSObjectProtocol?
-    @State private var isReady: Bool = false
+    @State private var isPresented = false
 
     var body: some View {
-        // Single stable ZStack — every layer is always present, just toggled
-        // by opacity. Avoids the SwiftUI view-identity swap that, combined
-        // with the parent ScrollView's implicit animation, made the player
-        // look like it was sliding in from the right while loading.
-        ZStack {
-            Color.black
+        Button {
+            isPresented = true
+        } label: {
+            ZStack {
+                Color.black
 
-            if let posterURL {
-                CachedAsyncImage(url: posterURL, maxDimension: 720)
-                    .opacity(isReady ? 0 : 1)
-                    .allowsHitTesting(false)
+                if let posterURL {
+                    CachedAsyncImage(url: posterURL, maxDimension: 720)
+                } else {
+                    Image(systemName: "film")
+                        .font(.system(size: 42, weight: .regular))
+                        .foregroundStyle(.white.opacity(0.55))
+                }
+
+                Circle()
+                    .fill(Color.black.opacity(0.58))
+                    .frame(width: 58, height: 58)
+
+                Image(systemName: "play.fill")
+                    .font(.system(size: 25, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .offset(x: 2)
             }
-
-            // `VideoPlayer` wraps `AVPlayerViewController`, whose gesture
-            // recognisers eat scroll touches the moment the player sits
-            // inside a parent ScrollView. Use a plain `AVPlayerLayer`-backed
-            // UIView instead — no built-in controls, no gesture recognisers,
-            // so the parent ScrollView receives every swipe. Forum videos
-            // here are short autoplay-muted loops, so native scrub/pause
-            // controls aren't worth the scroll freeze.
-            PlayerLayerView(player: player)
-                .opacity(isReady ? 1 : 0)
-                .allowsHitTesting(false)
-
-            ProgressView()
-                .controlSize(.regular)
-                .tint(.white)
-                .opacity(isReady ? 0 : 1)
+            .frame(maxWidth: .infinity)
+            .aspectRatio(16.0 / 9.0, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
         }
-        .frame(maxWidth: .infinity)
-        .aspectRatio(16.0 / 9.0, contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .transaction { $0.animation = nil }
-        .task(id: url) { await loadPlayer() }
-        .onDisappear {
-            if let playbackEndObserver {
-                NotificationCenter.default.removeObserver(playbackEndObserver)
-                self.playbackEndObserver = nil
-            }
-            player?.pause()
-            player = nil
-            isReady = false
+        .buttonStyle(.plain)
+        .accessibilityLabel("영상 재생")
+        .fullScreenCover(isPresented: $isPresented) {
+            FullscreenVideoPlayer(url: url)
         }
     }
 
@@ -63,67 +51,100 @@ struct InlineVideoPlayer: View {
         let q = String(last.dropLast(4))
         return URL(string: "https://i.aagag.com/o/\(q).jpg")
     }
+}
 
-    /// Load the asset off the main thread so VideoPlayer creation doesn't
-    /// block UI scroll. Once the asset reports playable, install the player
-    /// and start muted autoplay.
-    private func loadPlayer() async {
-        if Task.isCancelled { return }
-        let asset = AVURLAsset(url: url)
-        let playable: Bool
-        do {
-            playable = try await asset.load(.isPlayable)
-        } catch {
-            return
+private struct FullscreenVideoPlayer: View {
+    let url: URL
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        AVPlayerControllerView(url: url) {
+            dismiss()
         }
-        if Task.isCancelled || !playable { return }
-
-        let item = AVPlayerItem(asset: asset)
-        let p = AVPlayer(playerItem: item)
-        p.isMuted = true   // iOS blocks autoplay with sound
-        p.actionAtItemEnd = .none
-
-        // Clear isReady when item buffers far enough to start. The
-        // `timeControlStatus` observer would be more accurate but adds
-        // KVO plumbing — for now, flip it after the asset reports ready.
-        await MainActor.run {
-            playbackEndObserver = NotificationCenter.default.addObserver(
-                forName: .AVPlayerItemDidPlayToEndTime,
-                object: item,
-                queue: .main
-            ) { [weak p] _ in
-                p?.seek(to: .zero)
-                p?.play()
-            }
-            self.player = p
-            self.isReady = true
-            p.play()
-        }
+        .ignoresSafeArea()
+        .background(Color.black)
     }
 }
 
-/// Minimal UIKit wrapper that hosts an `AVPlayerLayer` inside a plain
-/// `UIView`. Unlike `VideoPlayer` it installs no tap/scrub/pause gesture
-/// recognisers, so it never fights the parent ScrollView for touches.
-private struct PlayerLayerView: UIViewRepresentable {
-    let player: AVPlayer?
+private struct AVPlayerControllerView: UIViewControllerRepresentable {
+    let url: URL
+    let onDismiss: () -> Void
 
-    func makeUIView(context: Context) -> PlayerHostView {
-        let view = PlayerHostView()
-        view.backgroundColor = .black
-        view.playerLayer.videoGravity = .resizeAspectFill
-        view.playerLayer.player = player
-        return view
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onDismiss: onDismiss)
     }
 
-    func updateUIView(_ uiView: PlayerHostView, context: Context) {
-        if uiView.playerLayer.player !== player {
-            uiView.playerLayer.player = player
+    func makeUIViewController(context: Context) -> AVPlayerViewController {
+        let controller = AVPlayerViewController()
+        let player = AVPlayer(url: url)
+        context.coordinator.player = player
+
+        controller.player = player
+        controller.showsPlaybackControls = true
+        controller.videoGravity = .resizeAspect
+        controller.allowsPictureInPicturePlayback = true
+
+        context.coordinator.installDismissGesture(on: controller.view)
+
+        player.play()
+        return controller
+    }
+
+    func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
+        if controller.player !== context.coordinator.player {
+            controller.player = context.coordinator.player
         }
+        context.coordinator.onDismiss = onDismiss
     }
 
-    final class PlayerHostView: UIView {
-        override class var layerClass: AnyClass { AVPlayerLayer.self }
-        var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+    static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: Coordinator) {
+        coordinator.player?.pause()
+        coordinator.player = nil
+        controller.player = nil
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var player: AVPlayer?
+        var onDismiss: () -> Void
+
+        private weak var dismissPan: UIPanGestureRecognizer?
+        private var hasDismissed = false
+
+        init(onDismiss: @escaping () -> Void) {
+            self.onDismiss = onDismiss
+        }
+
+        func installDismissGesture(on view: UIView) {
+            guard dismissPan == nil else { return }
+            let pan = UIPanGestureRecognizer(target: self, action: #selector(handleDismissPan(_:)))
+            pan.cancelsTouchesInView = false
+            pan.delegate = self
+            view.addGestureRecognizer(pan)
+            dismissPan = pan
+        }
+
+        @objc private func handleDismissPan(_ recognizer: UIPanGestureRecognizer) {
+            guard !hasDismissed else { return }
+            let translation = recognizer.translation(in: recognizer.view)
+            let velocity = recognizer.velocity(in: recognizer.view)
+
+            guard translation.y > 0, abs(translation.y) > abs(translation.x) else { return }
+
+            if recognizer.state == .ended || recognizer.state == .cancelled {
+                if translation.y > 70 || velocity.y > 550 {
+                    hasDismissed = true
+                    player?.pause()
+                    onDismiss()
+                }
+            }
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            true
+        }
     }
 }

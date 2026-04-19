@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 struct Post: Identifiable, Hashable {
     let id: String
@@ -55,7 +56,7 @@ struct ContentBlock: Identifiable, Hashable {
 
     enum Kind: Hashable {
         case richText([InlineSegment])
-        case image(URL)
+        case image(url: URL, aspectRatio: CGFloat?)
         case video(URL)
         case dealLink(url: URL, label: String)
         case embed(provider: EmbedProvider, id: String)
@@ -67,7 +68,9 @@ struct ContentBlock: Identifiable, Hashable {
     static func richText(_ segments: [InlineSegment]) -> ContentBlock {
         .init(id: UUID(), kind: .richText(segments))
     }
-    static func image(_ url: URL) -> ContentBlock { .init(id: UUID(), kind: .image(url)) }
+    static func image(_ url: URL, aspectRatio: CGFloat? = nil) -> ContentBlock {
+        .init(id: UUID(), kind: .image(url: url, aspectRatio: aspectRatio))
+    }
     static func video(_ url: URL) -> ContentBlock { .init(id: UUID(), kind: .video(url)) }
     static func dealLink(_ url: URL, label: String) -> ContentBlock {
         .init(id: UUID(), kind: .dealLink(url: url, label: label))
@@ -102,7 +105,7 @@ struct PostDetail {
 
     var images: [URL] {
         blocks.compactMap { block in
-            if case .image(let url) = block.kind { url } else { nil }
+            if case .image(let url, _) = block.kind { url } else { nil }
         }
     }
 }

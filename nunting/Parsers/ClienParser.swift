@@ -132,8 +132,8 @@ struct ClienParser: BoardParser {
 
         let tag = element.tagName().lowercased()
         if tag == "img" {
-            if let url = try imageURL(from: element) {
-                blocks.append(.image(url))
+            if let image = try image(from: element) {
+                blocks.append(.image(image.url, aspectRatio: image.aspectRatio))
             }
             return
         }
@@ -151,8 +151,8 @@ struct ClienParser: BoardParser {
                 switch childTag {
                 case "img":
                     flush()
-                    if let url = try imageURL(from: el) {
-                        blocks.append(.image(url))
+                    if let image = try image(from: el) {
+                        blocks.append(.image(image.url, aspectRatio: image.aspectRatio))
                     }
                 case "br":
                     inline.appendText("\n")
@@ -200,14 +200,18 @@ struct ClienParser: BoardParser {
         }
     }
 
-    private func imageURL(from element: Element) throws -> URL? {
+    private func image(from element: Element) throws -> (url: URL, aspectRatio: CGFloat?)? {
         let src = try element.attr("src")
         guard !src.isEmpty,
               let url = URL(string: src, relativeTo: site.baseURL)?.absoluteURL,
               let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https"
         else { return nil }
-        return url
+
+        let width = CGFloat(Double(try element.attr("data-img-width")) ?? 0)
+        let height = CGFloat(Double(try element.attr("data-img-height")) ?? 0)
+        let aspectRatio = width > 0 && height > 0 ? width / height : nil
+        return (url, aspectRatio)
     }
 
     private func parseComments(doc: Document) throws -> [Comment] {

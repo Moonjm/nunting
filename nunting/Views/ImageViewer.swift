@@ -85,7 +85,7 @@ struct ImageViewer: View {
         image = nil
         failed = false
 
-        if let cached = ImageCache.shared.image(for: url) {
+        if let cached = ImageCache.shared.image(for: url, variant: "viewer") {
             image = cached
             return
         }
@@ -100,7 +100,7 @@ struct ImageViewer: View {
             let decoded = try await decodeOffMain(data: data, scale: displayScale)
             try Task.checkCancellation()
             if let decoded {
-                ImageCache.shared.store(decoded, for: url)
+                ImageCache.shared.store(decoded, for: url, variant: "viewer")
                 image = decoded
             } else {
                 failed = true

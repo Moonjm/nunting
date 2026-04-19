@@ -5,6 +5,9 @@ import ImageIO
 struct CachedAsyncImage: View {
     let url: URL
     var maxDimension: CGFloat = 1600
+    var maxPixelArea: CGFloat = 20_000_000
+    var aspectRatio: CGFloat?
+    var cacheVariant: String = "default"
     /// When false, the loading state renders as an empty transparent view
     /// rather than the gray-box + spinner placeholder. Use this for small
     /// inline icons (comment level/auth icons) where the placeholder visibly
@@ -20,7 +23,7 @@ struct CachedAsyncImage: View {
         // play its default slide/fade transition when the image swaps in
         // for the placeholder. Suppressing the inherited animation also
         // stops the visible "slide-from-right" jank during loading.
-        ZStack {
+        let content = ZStack {
             if image == nil && !failed && showsPlaceholder {
                 Color("AppSurface2")
                     .overlay(ProgressView())
@@ -42,22 +45,30 @@ struct CachedAsyncImage: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .frame(minHeight: image == nil && showsPlaceholder ? 120 : nil)
         .transaction { $0.animation = nil }
         .task(id: url) { await load() }
+
+        if let aspectRatio {
+            content.aspectRatio(aspectRatio, contentMode: .fit)
+        } else {
+            content.frame(minHeight: image == nil && showsPlaceholder ? 120 : nil)
+        }
     }
 
     private func load() async {
         image = nil
         failed = false
 
-        if let cached = ImageCache.shared.image(for: url) {
+        let variant = cacheVariant
+
+        if let cached = ImageCache.shared.image(for: url, variant: variant) {
             image = cached
             return
         }
 
         let scale = displayScale
         let limit = maxDimension
+        let areaLimit = maxPixelArea
 
         // Limit concurrent decodes globally so opening a 20-image post
         // doesn't spike the main thread with rapid-fire @State updates.
@@ -72,11 +83,11 @@ struct CachedAsyncImage: View {
                 return
             }
 
-            let decoded = try await decodeOffMain(data: data, limit: limit, scale: scale)
+            let decoded = try await decodeOffMain(data: data, limit: limit, maxPixelArea: areaLimit, scale: scale)
             try Task.checkCancellation()
 
             if let decoded {
-                ImageCache.shared.store(decoded, for: url)
+                ImageCache.shared.store(decoded, for: url, variant: variant)
                 image = decoded
             } else {
                 failed = true
@@ -88,16 +99,16 @@ struct CachedAsyncImage: View {
         }
     }
 
-    private func decodeOffMain(data: Data, limit: CGFloat, scale: CGFloat) async throws -> UIImage? {
+    private func decodeOffMain(data: Data, limit: CGFloat, maxPixelArea: CGFloat, scale: CGFloat) async throws -> UIImage? {
         try await Task.detached(priority: .userInitiated) {
             try Task.checkCancellation()
-            let img = Self.decode(data: data, maxDimension: limit, scale: scale)
+            let img = Self.decode(data: data, maxDimension: limit, maxPixelArea: maxPixelArea, scale: scale)
             try Task.checkCancellation()
             return img
         }.value
     }
 
-    private static func decode(data: Data, maxDimension: CGFloat, scale: CGFloat) -> UIImage? {
+    private static func decode(data: Data, maxDimension: CGFloat, maxPixelArea: CGFloat, scale: CGFloat) -> UIImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
 
         // Fetch native dimensions up-front so we can cap by width + area
@@ -110,11 +121,6 @@ struct CachedAsyncImage: View {
         let sourceH = (properties?[kCGImagePropertyPixelHeight] as? CGFloat) ?? 0
 
         let targetWidth = max(maxDimension * scale, 256)
-        // ~80 MB at 4 bytes/pixel — keeps a few decoded images under the
-        // 200 MB NSCache cap while still letting tall-but-narrow images
-        // through at native resolution.
-        let maxPixelArea: CGFloat = 20_000_000
-
         let widthRatio = sourceW > 0 ? min(1, targetWidth / sourceW) : 1
         let sourceArea = max(sourceW * sourceH, 1)
         let areaRatio = sourceArea > maxPixelArea ? sqrt(maxPixelArea / sourceArea) : 1
@@ -148,7 +154,7 @@ struct CachedAsyncImage: View {
 /// `@State image` updates and stuttered the open animation.
 actor ImageDecodeThrottle {
     static let shared = ImageDecodeThrottle()
-    private let maxConcurrent = 3
+    private let maxConcurrent = 2
     private var inFlight = 0
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
@@ -184,20 +190,24 @@ actor ImageDecodeThrottle {
 final class ImageCache {
     static let shared = ImageCache()
 
-    private let cache: NSCache<NSURL, UIImage> = {
-        let c = NSCache<NSURL, UIImage>()
+    private let cache: NSCache<NSString, UIImage> = {
+        let c = NSCache<NSString, UIImage>()
         c.totalCostLimit = 200 * 1024 * 1024
         return c
     }()
 
-    func image(for url: URL) -> UIImage? {
-        cache.object(forKey: url as NSURL)
+    func image(for url: URL, variant: String = "default") -> UIImage? {
+        cache.object(forKey: key(for: url, variant: variant))
     }
 
-    func store(_ image: UIImage, for url: URL) {
+    func store(_ image: UIImage, for url: URL, variant: String = "default") {
         let pixelW = image.size.width * image.scale
         let pixelH = image.size.height * image.scale
         let cost = Int(pixelW * pixelH * 4)
-        cache.setObject(image, forKey: url as NSURL, cost: cost)
+        cache.setObject(image, forKey: key(for: url, variant: variant), cost: cost)
+    }
+
+    private func key(for url: URL, variant: String) -> NSString {
+        "\(variant)|\(url.absoluteString)" as NSString
     }
 }

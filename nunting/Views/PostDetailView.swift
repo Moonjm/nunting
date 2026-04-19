@@ -5,7 +5,7 @@ struct PostDetailView: View {
     let readStore: ReadStore
 
     @State private var detail: PostDetail?
-    @State private var isLoading = false
+    @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var selectedImage: ImageViewerItem?
     @State private var webItem: WebBrowserItem?
@@ -74,6 +74,11 @@ struct PostDetailView: View {
         })
         .task(id: post.id) {
             readStore.markRead(post)
+            // Let the native navigation push finish before kicking off detail
+            // parsing and image work. Image-heavy posts can otherwise start
+            // creating/decoding content while the screen is still sliding in.
+            try? await Task.sleep(for: .milliseconds(380))
+            guard !Task.isCancelled else { return }
             await load()
         }
         .fullScreenCover(item: $selectedImage) { item in
@@ -116,12 +121,18 @@ struct PostDetailView: View {
                             .font(.body)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                    case .image(let url):
-                        CachedAsyncImage(url: url)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                selectedImage = ImageViewerItem(url: url)
-                            }
+                    case .image(let url, let aspectRatio):
+                        CachedAsyncImage(
+                            url: url,
+                            maxDimension: 1000,
+                            maxPixelArea: 8_000_000,
+                            aspectRatio: aspectRatio,
+                            cacheVariant: "article-inline"
+                        )
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            selectedImage = ImageViewerItem(url: url)
+                        }
                     case .video(let url):
                         InlineVideoPlayer(url: url)
                     case .dealLink(let url, let label):
