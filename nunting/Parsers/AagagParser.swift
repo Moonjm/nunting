@@ -125,30 +125,25 @@ struct AagagParser: BoardParser {
     }
 
     private func findContentScript(in doc: Document) throws -> String? {
-        // Anchor on `AAGAG_AA.content =` (with the equals sign and optional whitespace)
-        // so we don't false-match other property reads like `AAGAG_AA.contentLength`.
-        let anchorRegex = try NSRegularExpression(pattern: #"AAGAG_AA\.content\s*=\s*""#)
+        // Capture the entire string literal body via NSRegularExpression's
+        // capture group. The character class `[^"\\]|\\.` matches any non-quote/
+        // non-backslash char OR a backslash-escape pair, so we don't trip over
+        // `\"` inside the JSON. Using NSString.substring(with: nsRange) avoids
+        // the Swift String.Index offset math that previously dropped a couple
+        // of characters when the script had Korean text earlier in the body.
+        let regex = try NSRegularExpression(
+            pattern: #"AAGAG_AA\.content\s*=\s*"((?:[^"\\]|\\.)*)""#,
+            options: [.dotMatchesLineSeparators]
+        )
         for script in try doc.select("script") {
             let text = script.data()
-            let nsText = text as NSString
-            let match = anchorRegex.firstMatch(in: text, range: NSRange(location: 0, length: nsText.length))
-            guard let match else { continue }
-            let bodyStart = text.index(text.startIndex, offsetBy: match.range.location + match.range.length)
-            let body = text[bodyStart...]
-
-            // Walk character-by-character, tracking escape state. A `\` toggles
-            // isEscaped (so `\\` cancels out, `\\\"` leaves the quote escaped),
-            // and a quote is a real terminator only when isEscaped is false.
-            var idx = body.startIndex
-            var isEscaped = false
-            while idx < body.endIndex {
-                let c = body[idx]
-                if c == "\"" && !isEscaped {
-                    return Self.unescapeJSString(String(body[..<idx]))
-                }
-                isEscaped = (c == "\\" && !isEscaped)
-                idx = body.index(after: idx)
-            }
+            let ns = text as NSString
+            guard let match = regex.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)),
+                  match.numberOfRanges >= 2,
+                  match.range(at: 1).location != NSNotFound
+            else { continue }
+            let body = ns.substring(with: match.range(at: 1))
+            return Self.unescapeJSString(body)
         }
         return nil
     }
@@ -184,41 +179,85 @@ struct AagagParser: BoardParser {
     }
 
     /// Parse the AAGAG_AA.content string: text + `[sTag]{json}[/sTag]` payloads.
+    /// Uses split-based scanning instead of `String.range` index math, which
+    /// avoided some subtle off-by issues we hit on real posts.
     private func blocksFromContentString(_ content: String) -> [ContentBlock] {
         var blocks: [ContentBlock] = []
-        let openTag = "[sTag]"
-        let closeTag = "[/sTag]"
-        var cursor = content.startIndex
 
-        // Strip surrounding HTML using SwiftSoup as a quick text extractor for non-sTag chunks.
         func appendText(_ raw: String) {
             let stripped = stripHTML(raw).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !stripped.isEmpty else { return }
             blocks.append(.text(stripped))
         }
 
-        while let openRange = content.range(of: openTag, range: cursor..<content.endIndex) {
-            if openRange.lowerBound > cursor {
-                appendText(String(content[cursor..<openRange.lowerBound]))
+        let parts = content.components(separatedBy: "[sTag]")
+        // Anything before the first `[sTag]` is plain prose / leading whitespace.
+        if let prefix = parts.first { appendText(prefix) }
+
+        for part in parts.dropFirst() {
+            // Each part should look like `{json...}[/sTag]<trailing html>`.
+            let halves = part.components(separatedBy: "[/sTag]")
+            if halves.count >= 2 {
+                if let block = stagBlock(from: halves[0]) {
+                    blocks.append(block)
+                }
+                // Re-join in the unlikely case multiple `[/sTag]` slipped in;
+                // that preserves any literal stray markers in the trailing text.
+                let trailing = halves.dropFirst().joined(separator: "[/sTag]")
+                appendText(trailing)
+            } else {
+                // No close tag — treat the whole chunk as text rather than
+                // dropping it.
+                appendText(part)
             }
-            guard let closeRange = content.range(of: closeTag, range: openRange.upperBound..<content.endIndex) else {
-                break
-            }
-            let payload = String(content[openRange.upperBound..<closeRange.lowerBound])
-            if let block = stagBlock(from: payload) {
-                blocks.append(block)
-            }
-            cursor = closeRange.upperBound
-        }
-        if cursor < content.endIndex {
-            appendText(String(content[cursor...]))
         }
         return blocks
     }
 
     private func stripHTML(_ s: String) -> String {
-        guard let doc = try? SwiftSoup.parseBodyFragment(s) else { return s }
-        return (try? doc.body()?.text()) ?? s
+        // Pure-Swift strip: regex tag removal + small entity table. Avoids
+        // SwiftSoup parseBodyFragment per chunk so image-heavy posts don't
+        // pay an SwiftSoup parse cost N times on the main thread.
+        var t = s.replacingOccurrences(
+            of: #"<\s*br\s*/?>"#, with: "\n", options: [.regularExpression, .caseInsensitive]
+        )
+        t = t.replacingOccurrences(
+            of: #"</?(p|div|li|blockquote|tr)[^>]*>"#,
+            with: "\n", options: [.regularExpression, .caseInsensitive]
+        )
+        t = t.replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
+        t = Self.decodeBasicEntities(t)
+        t = t.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
+        return t
+    }
+
+    /// Decode the entity set we actually see in aagag content. Avoids pulling
+    /// SwiftSoup just for `&amp;` / `&nbsp;` decoding.
+    private static func decodeBasicEntities(_ input: String) -> String {
+        var out = input
+            .replacingOccurrences(of: "&nbsp;", with: " ")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&apos;", with: "'")
+            .replacingOccurrences(of: "&#39;", with: "'")
+            .replacingOccurrences(of: "&amp;", with: "&")  // last so `&amp;lt;` → `&lt;`
+        // Numeric entities `&#NNNN;` and `&#xHHHH;`.
+        let regex = try? NSRegularExpression(pattern: #"&#(x?)([0-9a-fA-F]+);"#)
+        if let regex {
+            let ns = out as NSString
+            let matches = regex.matches(in: out, range: NSRange(location: 0, length: ns.length))
+            // Replace from the back so ranges stay valid.
+            for m in matches.reversed() {
+                let isHex = ns.substring(with: m.range(at: 1)) == "x"
+                let digits = ns.substring(with: m.range(at: 2))
+                guard let code = UInt32(digits, radix: isHex ? 16 : 10),
+                      let scalar = UnicodeScalar(code)
+                else { continue }
+                out = (out as NSString).replacingCharacters(in: m.range, with: String(scalar))
+            }
+        }
+        return out
     }
 
     func commentsURL(for post: Post) -> URL? {
@@ -258,7 +297,30 @@ struct AagagParser: BoardParser {
               let body = doc.body()
         else { return raw }
 
-        // Replace <br> with literal newlines via SwiftSoup's text()-collapse-resistant marker.
+        // Convert anchors to markdown so PostDetailView's comment renderer can
+        // make them tappable. `[label](<url>)` — the `<>` wrapping survives URL
+        // characters like `?`, `&`, `=`.
+        if let anchors = try? body.select("a[href]") {
+            for el in anchors where el.parent() != nil {
+                let href = (try? el.attr("href")) ?? ""
+                let label = ((try? el.text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !href.isEmpty,
+                      let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL,
+                      let scheme = url.scheme?.lowercased(),
+                      scheme == "http" || scheme == "https"
+                else { continue }
+                let displayLabel = label.isEmpty ? url.absoluteString : label
+                let safe = displayLabel
+                    .replacingOccurrences(of: "\\", with: "\\\\")
+                    .replacingOccurrences(of: "[", with: "\\[")
+                    .replacingOccurrences(of: "]", with: "\\]")
+                let markdown = "[\(safe)](<\(url.absoluteString)>)"
+                _ = try? el.replaceWith(TextNode(markdown, ""))
+            }
+        }
+
+        // Replace <br>/block elements with literal newlines via a marker that
+        // survives SwiftSoup's text() whitespace collapsing.
         let blockMarker = "\u{0001}NL\u{0001}"
         if let blocks = try? body.select("br, p, div, li, blockquote") {
             for el in blocks where el.parent() != nil {

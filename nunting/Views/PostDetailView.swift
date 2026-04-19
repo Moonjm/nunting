@@ -62,7 +62,10 @@ struct PostDetailView: View {
         } else if let errorMessage {
             ContentUnavailableView("불러오기 실패", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
         } else if let detail {
-            VStack(alignment: .leading, spacing: 12) {
+            // Lazy so only the blocks near the viewport materialise — keeps
+            // image-heavy posts from kicking off ~20 simultaneous fetches and
+            // decode passes the moment the screen opens.
+            LazyVStack(alignment: .leading, spacing: 12) {
                 ForEach(detail.blocks) { block in
                     switch block.kind {
                     case .richText(let segments):
@@ -182,7 +185,14 @@ struct PostDetailView: View {
                     html = try await Networking.fetchHTML(url: resolved.url, encoding: resolved.site.encoding)
                 }
                 try Task.checkCancellation()
-                var parsed = try parser.parseDetail(html: html, post: resolved)
+                // Run the heavy SwiftSoup parse + per-chunk text stripping off
+                // the main actor so opening an image-heavy post doesn't freeze
+                // the scroll for hundreds of milliseconds.
+                let parsedHTML = html
+                let parsedPost = resolved
+                var parsed = try await Task.detached(priority: .userInitiated) {
+                    try parser.parseDetail(html: parsedHTML, post: parsedPost)
+                }.value
 
                 // Always run fetchAllComments when the parser provides a comments URL — the
                 // default protocol impl returns [] for parsers without a real override (Clien),
@@ -397,39 +407,56 @@ private struct CommentRow: View {
     }
 
     private func styledContent(_ text: String) -> AttributedString {
-        var result = AttributedString()
-        var current = ""
-        var inMention = false
-
-        func flush() {
-            guard !current.isEmpty else { return }
-            var part = AttributedString(current)
-            if inMention {
-                part.foregroundColor = .blue
-                part.font = .subheadline.bold()
-            }
-            result.append(part)
-            current = ""
+        // First parse markdown so any `[label](<url>)` anchors that the
+        // parser preserved become real `.link` spans. Falls back to plain
+        // text if the parser rejects the input. Then apply the @mention
+        // coloring on top of whatever the markdown parser produced.
+        var base: AttributedString
+        if let attributed = try? AttributedString(
+            markdown: text,
+            options: AttributedString.MarkdownParsingOptions(
+                interpretedSyntax: .inlineOnlyPreservingWhitespace
+            )
+        ) {
+            base = attributed
+        } else {
+            base = AttributedString(text)
         }
 
-        func isMentionBodyChar(_ c: Character) -> Bool {
-            c.isLetter || c.isNumber || c == "_"
-        }
-
-        for char in text {
-            if char == "@" {
-                flush()
-                inMention = true
-                current.append(char)
-            } else if inMention && !isMentionBodyChar(char) {
-                flush()
-                inMention = false
-                current.append(char)
-            } else {
-                current.append(char)
+        // Apply consistent link styling so embedded URLs are visibly tappable.
+        for run in base.runs {
+            if run.link != nil {
+                base[run.range].foregroundColor = .accentColor
+                base[run.range].underlineStyle = .single
             }
         }
-        flush()
-        return result
+
+        // Highlight `@nickname` mentions. Walks the plain-string view of the
+        // attributed result so we don't have to re-parse the original input.
+        let plain = String(base.characters)
+        var mentionRanges: [Range<String.Index>] = []
+        var i = plain.startIndex
+        while i < plain.endIndex {
+            guard plain[i] == "@" else {
+                i = plain.index(after: i)
+                continue
+            }
+            var end = plain.index(after: i)
+            while end < plain.endIndex,
+                  plain[end].isLetter || plain[end].isNumber || plain[end] == "_" {
+                end = plain.index(after: end)
+            }
+            if end > plain.index(after: i) {
+                mentionRanges.append(i..<end)
+            }
+            i = end
+        }
+        for range in mentionRanges {
+            if let attrRange = Range(range, in: base) {
+                base[attrRange].foregroundColor = .blue
+                base[attrRange].font = .subheadline.bold()
+            }
+        }
+        return base
     }
 }

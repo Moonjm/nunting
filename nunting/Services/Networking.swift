@@ -14,6 +14,9 @@ enum NetworkError: Error, LocalizedError {
 
 struct Networking {
     static let userAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+    /// Desktop UA for endpoints that serve a JS-redirect to mobile when given
+    /// a mobile UA (e.g. ppomppu's `www.` host).
+    static let desktopUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
 
     static let sharedCache: URLCache = {
         let cache = URLCache(
@@ -35,8 +38,12 @@ struct Networking {
         return URLSession(configuration: config)
     }()
 
-    static func fetchHTML(url: URL, encoding: String.Encoding = .utf8) async throws -> String {
-        let (data, response) = try await session.data(from: url)
+    static func fetchHTML(url: URL, encoding: String.Encoding = .utf8, userAgent: String? = nil) async throws -> String {
+        var request = URLRequest(url: url)
+        if let userAgent {
+            request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        }
+        let (data, response) = try await session.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             throw NetworkError.badResponse(http.statusCode)
         }

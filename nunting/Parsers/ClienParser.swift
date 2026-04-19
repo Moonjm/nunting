@@ -9,6 +9,14 @@ struct ClienParser: BoardParser {
         let rows = try doc.select("a.list_item.symph-row")
 
         return try rows.compactMap { row -> Post? in
+            // Skip pinned notice rows (jirum's "알리정보" sponsored items
+            // appear with class "list_item notice symph-row" containing a
+            // `<div class="ad">알리정보</div>` badge — not real posts).
+            let classAttr = (try? row.attr("class")) ?? ""
+            let classTokens = classAttr.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+            if classTokens.contains("notice") { return nil }
+            if try !row.select("div.ad").isEmpty() { return nil }
+
             let href = try row.attr("href")
             guard !href.isEmpty,
                   let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL

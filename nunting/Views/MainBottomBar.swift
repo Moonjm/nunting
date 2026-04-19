@@ -3,24 +3,13 @@ import SwiftUI
 struct MainBottomBar: View {
     let board: Board
     let favorites: FavoritesStore
-    let onSiteTap: () -> Void
+    let onBoardTap: () -> Void
     let onSearch: () -> Void
-    let onMore: () -> Void
+    let onPrev: () -> Void
+    let onNext: () -> Void
 
     var body: some View {
         HStack(spacing: 0) {
-            barButton {
-                VStack(spacing: 2) {
-                    Circle()
-                        .fill(board.site.accentColor)
-                        .frame(width: 6, height: 6)
-                    Text(board.site.displayName)
-                        .font(.caption2.weight(.medium))
-                }
-            } action: {
-                onSiteTap()
-            }
-
             barButton {
                 Image(systemName: "magnifyingglass")
                     .font(.callout)
@@ -28,14 +17,26 @@ struct MainBottomBar: View {
                 onSearch()
             }
 
+            // Board name area: tap to open drawer, horizontal swipe to step
+            // through the current site's boards.
             barButton {
                 Text(board.name)
                     .font(.caption.weight(.medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
             } action: {
-                onSiteTap()
+                onBoardTap()
             }
+            // High priority so the parent drawer-pan gesture in ContentView
+                // doesn't swallow the swipe before it can reach the bar.
+                .highPriorityGesture(
+                    DragGesture(minimumDistance: 30)
+                        .onEnded { value in
+                            let dx = value.translation.width
+                            if dx < -40 { onNext() }
+                            else if dx > 40 { onPrev() }
+                        }
+                )
 
             barButton {
                 Image(systemName: favorites.isFavorite(board) ? "star.fill" : "star")
@@ -43,13 +44,6 @@ struct MainBottomBar: View {
                     .foregroundStyle(favorites.isFavorite(board) ? Color.yellow : Color.primary)
             } action: {
                 favorites.toggle(board)
-            }
-
-            barButton {
-                Image(systemName: "ellipsis")
-                    .font(.callout)
-            } action: {
-                onMore()
             }
         }
         .frame(height: 50)
