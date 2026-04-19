@@ -27,7 +27,11 @@ struct SafariView: UIViewControllerRepresentable {
 }
 
 /// Wrapper that makes a URL `Identifiable` for SwiftUI's `sheet(item:)`.
-struct WebBrowserItem: Identifiable, Hashable {
+/// `id` is a fresh UUID per instance so repeatedly tapping the same URL
+/// re-presents the sheet; using the URL itself as the identity would make
+/// `sheet(item:)` skip the second presentation because the diff reports
+/// "same item" and SwiftUI coalesces it with the previous dismissal.
+struct WebBrowserItem: Identifiable {
+    let id = UUID()
     let url: URL
-    var id: URL { url }
 }

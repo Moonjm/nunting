@@ -60,11 +60,14 @@ struct PostDetailView: View {
                 }
             }
         }
-        // Intercept every link tap inside the detail view (body links,
-        // comment @mentions, dealLink banners, YouTube thumbnails…) and
-        // route http/https targets through SFSafariViewController instead of
+        // Intercept every link tap inside the detail view (body anchor
+        // tags, NSDataDetector-autolinked URLs, comment body markdown links,
+        // DealLinkBanner, YouTubeBanner, source badges…) and route
+        // http/https targets through SFSafariViewController instead of
         // bouncing to the system Safari app. Non-web schemes fall through to
-        // system handling so `tel:` / `mailto:` still work.
+        // system handling so `tel:` / `mailto:` still work. Comment
+        // @mentions are text-styled (not assigned a `.link` attribute), so
+        // they don't fire `openURL` and aren't affected.
         .environment(\.openURL, OpenURLAction { url in
             if let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
                 webItem = WebBrowserItem(url: url)
