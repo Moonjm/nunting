@@ -317,11 +317,24 @@ struct InvenParser: BoardParser {
     }
 
     private func cleanCommentText(_ raw: String) -> String {
-        // SwiftSoup decodes both named and numeric entities while building the DOM,
-        // and walking the DOM lets us drop tags without inventing rules for &amp; / &lt; / etc.
-        guard let doc = try? SwiftSoup.parseBodyFragment(raw),
+        // Inven sometimes ships HTML that's been entity-encoded one or more
+        // times (e.g. sticker comments come back as `&lt;div class=...&gt;`).
+        // Each SwiftSoup pass decodes one layer of entities; iterate until the
+        // text no longer looks like HTML, capped at 3 to avoid infinite loops.
+        var working = raw
+        for _ in 0..<3 {
+            guard working.contains("<") || working.contains("&") else { break }
+            guard let stepDoc = try? SwiftSoup.parseBodyFragment(working),
+                  let stepText = try? stepDoc.body()?.text(),
+                  stepText != working
+            else { break }
+            working = stepText
+        }
+
+        // Final pass: parse as HTML so block tags get the newline marker treatment.
+        guard let doc = try? SwiftSoup.parseBodyFragment(working),
               let body = doc.body()
-        else { return raw }
+        else { return working }
 
         // Stamp a non-whitespace marker before block-level breaks so they survive
         // SwiftSoup's text() whitespace collapsing; we replace it with \n afterwards.

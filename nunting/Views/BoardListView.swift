@@ -5,6 +5,7 @@ struct BoardListView: View {
     var filter: BoardFilter? = nil
     var searchQuery: String? = nil
     var scrollLocked: Bool = false
+    let readStore: ReadStore
     let onSelectPost: (Post) -> Void
 
     @State private var posts: [Post] = []
@@ -103,6 +104,7 @@ struct BoardListView: View {
     @ViewBuilder
     private func postRow(post: Post) -> some View {
         let isAagag = post.site == .aagag
+        let isRead = readStore.isRead(post)
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 if isAagag, let lv = post.levelText, !lv.isEmpty {
@@ -131,11 +133,13 @@ struct BoardListView: View {
             .lineLimit(1)
             .truncationMode(.tail)
         }
+        .opacity(isRead ? 0.45 : 1.0)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .onTapGesture { onSelectPost(post) }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
+        .accessibilityValue(isRead ? "읽음" : "")
     }
 
     private func load() async {

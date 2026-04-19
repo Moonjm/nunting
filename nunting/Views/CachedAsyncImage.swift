@@ -11,22 +11,28 @@ struct CachedAsyncImage: View {
     @Environment(\.displayScale) private var displayScale
 
     var body: some View {
-        Group {
+        // Single ZStack keeps the view identity stable so SwiftUI doesn't
+        // play its default slide/fade transition when the image swaps in
+        // for the placeholder. Suppressing the inherited animation also
+        // stops the visible "slide-from-right" jank during loading.
+        ZStack {
+            if image == nil && !failed {
+                Color(uiColor: .secondarySystemBackground)
+                    .overlay(ProgressView())
+            }
             if let image {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFit()
-                    .frame(maxWidth: .infinity)
-            } else if failed {
+            }
+            if failed {
                 Image(systemName: "photo")
                     .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 80)
-            } else {
-                Color(uiColor: .secondarySystemBackground)
-                    .overlay(ProgressView())
-                    .frame(maxWidth: .infinity, minHeight: 120)
             }
         }
+        .frame(maxWidth: .infinity)
+        .frame(minHeight: image == nil ? 120 : nil)
+        .transaction { $0.animation = nil }
         .task(id: url) { await load() }
     }
 
@@ -41,6 +47,11 @@ struct CachedAsyncImage: View {
 
         let scale = displayScale
         let limit = maxDimension
+
+        // Limit concurrent decodes globally so opening a 20-image post
+        // doesn't spike the main thread with rapid-fire @State updates.
+        await ImageDecodeThrottle.shared.acquire()
+        defer { Task { await ImageDecodeThrottle.shared.release() } }
 
         do {
             let (data, response) = try await Networking.session.data(for: URLRequest(url: url))
@@ -90,6 +101,40 @@ struct CachedAsyncImage: View {
               let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
         else { return nil }
         return UIImage(cgImage: cg, scale: scale, orientation: .up)
+    }
+}
+
+/// Caps the number of in-flight image decodes. Prevents a 20-image post from
+/// firing all decodes simultaneously, which spammed the main thread with
+/// `@State image` updates and stuttered the open animation.
+actor ImageDecodeThrottle {
+    static let shared = ImageDecodeThrottle()
+    private let maxConcurrent = 3
+    private var inFlight = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if inFlight < maxConcurrent {
+            inFlight += 1
+            return
+        }
+        // The releaser hands its slot to us via resume() without decrementing
+        // inFlight, so the count already reflects this acquire — do NOT bump
+        // it here or the gate drifts upward by one per release-with-waiter.
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            waiters.append(cont)
+        }
+    }
+
+    func release() {
+        if let next = waiters.first {
+            // Hand the slot directly to the next waiter — keeps inFlight
+            // pinned at maxConcurrent until the queue drains.
+            waiters.removeFirst()
+            next.resume()
+        } else {
+            inFlight -= 1
+        }
     }
 }
 

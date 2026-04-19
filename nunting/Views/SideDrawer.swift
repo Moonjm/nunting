@@ -2,9 +2,23 @@ import SwiftUI
 
 struct SideDrawer: View {
     let favorites: FavoritesStore
+    let catalog: BoardCatalogStore
+    let currentBoardID: String?
     @Binding var selectedSection: DrawerSection
     let onSelectBoard: (Board) -> Void
     let onClose: () -> Void
+
+    /// Per-section persistent expand/collapse state. Keyed by
+    /// `"<section.id>|<group.id>"`. JSON-encoded Set on disk; we keep an
+    /// in-memory Set so per-row `isCollapsed` reads stay O(1) instead of
+    /// re-parsing the raw string on every render pass.
+    @AppStorage("drawer.collapsedGroups.v2")
+    private var collapsedGroupsRaw: String = "[]"
+
+    @State private var collapsedGroups: Set<String> = []
+    @State private var collapsedHydrated: Bool = false
+
+    @State private var favoritesEditMode: EditMode = .inactive
 
     var body: some View {
         HStack(spacing: 0) {
@@ -13,6 +27,16 @@ struct SideDrawer: View {
             boardsPanel
         }
         .background(Color(uiColor: .systemBackground))
+        .task {
+            // Hydrate the in-memory Set once. Subsequent writes go through
+            // setCollapsed which keeps both copies in sync.
+            guard !collapsedHydrated else { return }
+            if let data = collapsedGroupsRaw.data(using: .utf8),
+               let decoded = try? JSONDecoder().decode([String].self, from: data) {
+                collapsedGroups = Set(decoded)
+            }
+            collapsedHydrated = true
+        }
     }
 
     private var siteRail: some View {
@@ -24,7 +48,7 @@ struct SideDrawer: View {
             }
             .padding(.vertical, 8)
         }
-        .frame(width: 64)
+        .frame(width: 48)
         .background(Color(uiColor: .secondarySystemBackground))
     }
 
@@ -40,7 +64,7 @@ struct SideDrawer: View {
                     .font(.caption.weight(isSelected ? .semibold : .regular))
                     .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
             }
-            .frame(width: 64, height: 56)
+            .frame(width: 48, height: 56)
             .background(
                 isSelected
                     ? Color.accentColor.opacity(0.15)
@@ -59,10 +83,67 @@ struct SideDrawer: View {
 
     private var boardsPanel: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text(selectedSection.label)
-                    .font(.headline)
-                Spacer()
+            panelHeader
+            Divider()
+
+            if case .site(let s) = selectedSection, let err = catalog.error(for: s) {
+                Text("메뉴 불러오기 실패: \(err)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+            }
+
+            let sectionGroups = currentGroups
+            if sectionGroups.allSatisfy({ $0.boards.isEmpty }) {
+                emptyState
+            } else if case .favorites = selectedSection {
+                favoritesList(boards: sectionGroups.flatMap(\.boards))
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(sectionGroups) { group in
+                            groupSection(group: group)
+                        }
+                    }
+                }
+            }
+        }
+        .task(id: selectedSection.id) {
+            if case .site(let s) = selectedSection {
+                await catalog.loadIfNeeded(s)
+                // Refresh persisted favorite snapshots in case the upstream
+                // catalog renamed or moved any matching board.
+                favorites.merge(boards: catalog.boards(for: s))
+            }
+        }
+        .onChange(of: selectedSection) { _, _ in
+            favoritesEditMode = .inactive
+        }
+    }
+
+    private var panelHeader: some View {
+        HStack {
+            Text(selectedSection.label)
+                .font(.headline)
+            if case .site(let s) = selectedSection, catalog.isLoading(s) {
+                ProgressView()
+                    .controlSize(.small)
+                    .padding(.leading, 4)
+            }
+            Spacer()
+            if case .favorites = selectedSection {
+                Button {
+                    withAnimation {
+                        favoritesEditMode = (favoritesEditMode == .active) ? .inactive : .active
+                    }
+                } label: {
+                    Text(favoritesEditMode == .active ? "완료" : "편집")
+                        .font(.subheadline)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(favoritesEditMode == .active ? "편집 완료" : "순서 편집")
+            } else {
                 Button(action: onClose) {
                     Image(systemName: "xmark")
                         .foregroundStyle(.secondary)
@@ -70,22 +151,103 @@ struct SideDrawer: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("닫기")
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            Divider()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
 
-            if boards.isEmpty {
-                emptyState
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(boards) { board in
-                            boardRow(board: board)
-                            Divider()
-                        }
-                    }
-                }
+    private func favoritesList(boards: [Board]) -> some View {
+        List {
+            ForEach(boards) { board in
+                boardRow(board: board)
+                    .listRowInsets(EdgeInsets(top: 2, leading: 4, bottom: 2, trailing: 4))
+                    .listRowSeparator(.hidden, edges: .top)
+                    // Hide the leading delete affordance — favorites are
+                    // managed via the star toggle, so the row only needs the
+                    // trailing reorder handle in edit mode. Tightens the row
+                    // chrome significantly.
+                    .deleteDisabled(true)
             }
+            .onMove { source, destination in
+                favorites.move(from: source, to: destination)
+            }
+        }
+        .listStyle(.plain)
+        .environment(\.editMode, $favoritesEditMode)
+        .environment(\.defaultMinListRowHeight, 32)
+    }
+
+    @ViewBuilder
+    private func groupSection(group: BoardGroup) -> some View {
+        if let name = group.name {
+            let collapsed = isCollapsed(group: group)
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    setCollapsed(!collapsed, group: group)
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 14)
+                    Text(name)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text("\(group.boards.count)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(Color(uiColor: .secondarySystemBackground))
+            }
+            .buttonStyle(.plain)
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel("\(name), \(group.boards.count)개, \(collapsed ? "접힘" : "펼침")")
+
+            if !collapsed {
+                ForEach(group.boards) { board in
+                    boardRow(board: board)
+                    Divider()
+                }
+            } else {
+                Divider()
+            }
+        } else {
+            ForEach(group.boards) { board in
+                boardRow(board: board)
+                Divider()
+            }
+        }
+    }
+
+    private var currentGroups: [BoardGroup] {
+        switch selectedSection {
+        case .favorites:
+            let favs = favorites.favoriteBoards()
+            return [BoardGroup(id: "favorites", name: nil, boards: favs)]
+        case .site(let s):
+            return catalog.groups(for: s)
+        }
+    }
+
+    private func collapseKey(_ group: BoardGroup) -> String {
+        "\(selectedSection.id)|\(group.id)"
+    }
+
+    private func isCollapsed(group: BoardGroup) -> Bool {
+        collapsedGroups.contains(collapseKey(group))
+    }
+
+    private func setCollapsed(_ collapsed: Bool, group: BoardGroup) {
+        let key = collapseKey(group)
+        if collapsed { collapsedGroups.insert(key) } else { collapsedGroups.remove(key) }
+        if let data = try? JSONEncoder().encode(collapsedGroups.sorted()),
+           let raw = String(data: data, encoding: .utf8) {
+            collapsedGroupsRaw = raw
         }
     }
 
@@ -112,19 +274,18 @@ struct SideDrawer: View {
         .frame(maxWidth: .infinity)
     }
 
-    private var boards: [Board] {
-        switch selectedSection {
-        case .favorites: favorites.favoriteBoards()
-        case .site(let s): Board.boards(for: s)
-        }
-    }
-
     private func boardRow(board: Board) -> some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 8) {
+        let isCurrent = currentBoardID == board.id
+        return HStack(spacing: 6) {
+            HStack(spacing: 6) {
+                if isCurrent {
+                    Image(systemName: "circle.fill")
+                        .font(.system(size: 6))
+                        .foregroundStyle(Color.accentColor)
+                }
                 Text(board.name)
-                    .font(.callout)
-                    .foregroundStyle(.primary)
+                    .font(.footnote.weight(isCurrent ? .semibold : .regular))
+                    .foregroundStyle(isCurrent ? Color.accentColor : Color.primary)
                 Spacer()
                 if showSiteBadge {
                     siteBadge(site: board.site)
@@ -135,21 +296,23 @@ struct SideDrawer: View {
             .onTapGesture { onSelectBoard(board) }
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.isButton)
+            .accessibilityValue(isCurrent ? "현재 보드" : "")
 
             Button {
                 favorites.toggle(board)
             } label: {
                 Image(systemName: favorites.isFavorite(board) ? "star.fill" : "star")
                     .foregroundStyle(favorites.isFavorite(board) ? Color.yellow : Color.secondary.opacity(0.6))
-                    .font(.callout)
-                    .frame(width: 36, height: 36)
+                    .font(.footnote)
+                    .frame(width: 28, height: 28)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.borderless)
             .accessibilityLabel(favorites.isFavorite(board) ? "즐겨찾기 해제" : "즐겨찾기 추가")
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(isCurrent ? Color.accentColor.opacity(0.10) : Color.clear)
     }
 
     private var showSiteBadge: Bool {
