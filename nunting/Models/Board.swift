@@ -86,8 +86,8 @@ struct Board: Identifiable, Hashable {
             "page"
         case .inven:
             "p"
-        case .humor:
-            // Mirror-only dispatch target — no direct browsing, no paging.
+        case .humor, .bobae:
+            // Mirror-only dispatch targets — no direct browsing, no paging.
             nil
         }
     }
@@ -104,7 +104,7 @@ struct Board: Identifiable, Hashable {
             "svalue"
         case .aagag:
             "word"
-        case .humor:
+        case .humor, .bobae:
             nil
         }
     }
@@ -117,7 +117,7 @@ struct Board: Identifiable, Hashable {
             return defaultSearchQueryName(for: site)
         case .ppomppu, .aagag:
             return provided ?? defaultSearchQueryName(for: site)
-        case .humor:
+        case .humor, .bobae:
             return nil
         }
     }
@@ -131,7 +131,7 @@ struct Board: Identifiable, Hashable {
             return [("sfl", "wr_subject")]
         case .inven:
             return [("stype", "subject")]
-        case .ppomppu, .aagag, .humor:
+        case .ppomppu, .aagag, .humor, .bobae:
             return []
         }
     }
@@ -140,7 +140,7 @@ struct Board: Identifiable, Hashable {
         switch site {
         case .clien:
             return "/service/search"
-        case .coolenjoy, .inven, .ppomppu, .aagag, .humor:
+        case .coolenjoy, .inven, .ppomppu, .aagag, .humor, .bobae:
             return listPath
         }
     }
@@ -149,7 +149,7 @@ struct Board: Identifiable, Hashable {
         switch site {
         case .clien:
             URL(string: "https://m.clien.net")!
-        case .coolenjoy, .inven, .ppomppu, .aagag, .humor:
+        case .coolenjoy, .inven, .ppomppu, .aagag, .humor, .bobae:
             site.baseURL
         }
     }
@@ -166,7 +166,7 @@ struct Board: Identifiable, Hashable {
         switch site {
         case .clien where isSearching:
             "p"
-        case .clien, .coolenjoy, .inven, .ppomppu, .aagag, .humor:
+        case .clien, .coolenjoy, .inven, .ppomppu, .aagag, .humor, .bobae:
             pageQueryName
         }
     }
@@ -176,7 +176,7 @@ struct Board: Identifiable, Hashable {
         case .clien:
             // Clien uses zero-based offsets: page 2 => po/p=1.
             page - 1
-        case .coolenjoy, .inven, .ppomppu, .aagag, .humor:
+        case .coolenjoy, .inven, .ppomppu, .aagag, .humor, .bobae:
             page
         }
     }
