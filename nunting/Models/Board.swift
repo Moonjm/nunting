@@ -86,6 +86,9 @@ struct Board: Identifiable, Hashable {
             "page"
         case .inven:
             "p"
+        case .humor:
+            // Mirror-only dispatch target — no direct browsing, no paging.
+            nil
         }
     }
 
@@ -101,6 +104,8 @@ struct Board: Identifiable, Hashable {
             "svalue"
         case .aagag:
             "word"
+        case .humor:
+            nil
         }
     }
 
@@ -112,6 +117,8 @@ struct Board: Identifiable, Hashable {
             return defaultSearchQueryName(for: site)
         case .ppomppu, .aagag:
             return provided ?? defaultSearchQueryName(for: site)
+        case .humor:
+            return nil
         }
     }
 
@@ -124,7 +131,7 @@ struct Board: Identifiable, Hashable {
             return [("sfl", "wr_subject")]
         case .inven:
             return [("stype", "subject")]
-        case .ppomppu, .aagag:
+        case .ppomppu, .aagag, .humor:
             return []
         }
     }
@@ -133,7 +140,7 @@ struct Board: Identifiable, Hashable {
         switch site {
         case .clien:
             return "/service/search"
-        case .coolenjoy, .inven, .ppomppu, .aagag:
+        case .coolenjoy, .inven, .ppomppu, .aagag, .humor:
             return listPath
         }
     }
@@ -142,7 +149,7 @@ struct Board: Identifiable, Hashable {
         switch site {
         case .clien:
             URL(string: "https://m.clien.net")!
-        case .coolenjoy, .inven, .ppomppu, .aagag:
+        case .coolenjoy, .inven, .ppomppu, .aagag, .humor:
             site.baseURL
         }
     }
@@ -159,7 +166,7 @@ struct Board: Identifiable, Hashable {
         switch site {
         case .clien where isSearching:
             "p"
-        case .clien, .coolenjoy, .inven, .ppomppu, .aagag:
+        case .clien, .coolenjoy, .inven, .ppomppu, .aagag, .humor:
             pageQueryName
         }
     }
@@ -169,7 +176,7 @@ struct Board: Identifiable, Hashable {
         case .clien:
             // Clien uses zero-based offsets: page 2 => po/p=1.
             page - 1
-        case .coolenjoy, .inven, .ppomppu, .aagag:
+        case .coolenjoy, .inven, .ppomppu, .aagag, .humor:
             page
         }
     }

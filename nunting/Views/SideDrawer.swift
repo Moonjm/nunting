@@ -362,7 +362,7 @@ struct SideDrawer: View {
             AagagSourceTag.info(for: "inven")
         case .ppomppu:
             AagagSourceTag.info(for: "ppomppu")
-        case .aagag:
+        case .aagag, .humor:
             AagagSourceTag.Info(label: site.displayName, color: site.accentColor, textColor: .white)
         }
     }

@@ -6,6 +6,9 @@ enum Site: String, CaseIterable, Identifiable, Codable {
     case inven
     case ppomppu
     case aagag
+    /// Aagag mirror-only target (no direct browsing). Added so `Site.detect`
+    /// can route humoruniv.com redirects to `HumorParser`.
+    case humor
 
     var id: String { rawValue }
 
@@ -16,6 +19,7 @@ enum Site: String, CaseIterable, Identifiable, Codable {
         case .inven: "인벤"
         case .ppomppu: "뽐뿌"
         case .aagag: "애객"
+        case .humor: "웃대"
         }
     }
 
@@ -26,12 +30,13 @@ enum Site: String, CaseIterable, Identifiable, Codable {
         case .inven: URL(string: "https://m.inven.co.kr")!
         case .ppomppu: URL(string: "https://m.ppomppu.co.kr")!
         case .aagag: URL(string: "https://aagag.com")!
+        case .humor: URL(string: "https://m.humoruniv.com")!
         }
     }
 
     var encoding: String.Encoding {
         switch self {
-        case .ppomppu:
+        case .ppomppu, .humor:
             // Server advertises EUC-KR but actually serves CP949 (Windows-949), which is a superset.
             // Decoding strictly as EUC-KR fails on extended characters.
             let cf = CFStringEncoding(CFStringEncodings.dosKorean.rawValue)
@@ -50,6 +55,7 @@ enum Site: String, CaseIterable, Identifiable, Codable {
         if host.hasSuffix("inven.co.kr") { return .inven }
         if host.hasSuffix("ppomppu.co.kr") { return .ppomppu }
         if host.hasSuffix("aagag.com") { return .aagag }
+        if host.hasSuffix("humoruniv.com") { return .humor }
         return nil
     }
 }

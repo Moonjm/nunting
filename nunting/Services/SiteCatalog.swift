@@ -18,7 +18,7 @@ enum SiteCatalogFactory {
         case .clien: return ClienCatalog()
         case .coolenjoy: return CoolenjoyCatalog()
         case .ppomppu: return PpomppuCatalog()
-        case .inven, .aagag: return nil
+        case .inven, .aagag, .humor: return nil
         }
     }
 }
