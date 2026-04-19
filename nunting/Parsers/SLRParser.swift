@@ -415,8 +415,17 @@ struct SLRParser: BoardParser {
             // Drop img/script/style — they're rendered separately or irrelevant.
             try body.select("img, script, style").remove()
             let collapsed = try body.text()
+            // After sentinel→newline, strip whitespace that SwiftSoup's
+            // `.text()` left on either side of the sentinel (it collapses
+            // `\n` / adjacent spaces to single spaces but keeps them). Without
+            // this, `좋아했는데<br />\n전기차로` becomes `좋아했는데\n 전기차로`
+            // — i.e. a visible leading space / indent on the new line.
             let text = collapsed
-                .replacingOccurrences(of: brSentinel, with: "\n")
+                .replacingOccurrences(
+                    of: "[ \t]*\(brSentinel)[ \t]*",
+                    with: "\n",
+                    options: .regularExpression
+                )
                 .replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             return (text, sticker)
