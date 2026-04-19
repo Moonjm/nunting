@@ -373,14 +373,29 @@ struct SLRParser: BoardParser {
     ///   - `<br>` becomes a real newline
     ///   - `<img>` gets hoisted out as an inline sticker URL (first match)
     ///   - all other tags get stripped so users don't see raw `<br />` in text
+    /// Private-use sentinel: SwiftSoup's `.text()` normalises whitespace (any
+    /// run of tabs/newlines/spaces collapses to a single space), so swapping
+    /// `<br>` for a TextNode `"\n"` actually produces a space in the output.
+    /// A private-use codepoint survives `.text()` untouched, so we sub it in
+    /// for the `<br>` runs before parsing and restore real newlines after.
+    private static let brSentinel = "\u{E000}"
+
     private static func renderMemo(_ memo: String) -> (text: String, sticker: URL?) {
         let raw = memo.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return ("", nil) }
         // Fast path: no tags at all → original trimmed text.
         if !raw.contains("<") { return (raw, nil) }
 
+        // Swap <br[/]>  → sentinel so the collapsed `.text()` pass preserves
+        // the line break. Regex covers `<br>`, `<br/>`, `<br />`, mixed case.
+        let prepped = raw.replacingOccurrences(
+            of: #"<\s*[Bb][Rr]\s*/?\s*>"#,
+            with: brSentinel,
+            options: .regularExpression
+        )
+
         do {
-            let doc = try SwiftSoup.parseBodyFragment(raw)
+            let doc = try SwiftSoup.parseBodyFragment(prepped)
             let body = doc.body() ?? doc
 
             var sticker: URL?
@@ -399,20 +414,21 @@ struct SLRParser: BoardParser {
 
             // Drop img/script/style — they're rendered separately or irrelevant.
             try body.select("img, script, style").remove()
-            // Convert <br> to literal newlines before calling .text() (which
-            // would otherwise collapse them to spaces).
-            try body.select("br").forEach { br in
-                try br.before(TextNode("\n", ""))
-            }
-            let text = try body.text().trimmingCharacters(in: .whitespacesAndNewlines)
+            let collapsed = try body.text()
+            let text = collapsed
+                .replacingOccurrences(of: brSentinel, with: "\n")
+                .replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             return (text, sticker)
         } catch {
-            // Bad markup → return the raw string stripped of the obvious
-            // `<br>` tokens so the user at least sees something readable.
+            // Bad markup → strip obvious `<br>` tokens directly so the user
+            // at least sees readable text instead of raw HTML.
             let stripped = raw
-                .replacingOccurrences(of: "<br />", with: "\n")
-                .replacingOccurrences(of: "<br/>", with: "\n")
-                .replacingOccurrences(of: "<br>", with: "\n")
+                .replacingOccurrences(
+                    of: #"<\s*[Bb][Rr]\s*/?\s*>"#,
+                    with: "\n",
+                    options: .regularExpression
+                )
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             return (stripped, nil)
         }
