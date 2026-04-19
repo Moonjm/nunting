@@ -8,6 +8,7 @@ struct PostDetailView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var selectedImage: ImageViewerItem?
+    @State private var webItem: WebBrowserItem?
 
     var body: some View {
         ScrollView {
@@ -52,11 +53,24 @@ struct PostDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Link(destination: post.url) {
+                Button {
+                    presentInBrowser(post.url)
+                } label: {
                     Image(systemName: "safari")
                 }
             }
         }
+        // Intercept every link tap inside the detail view (body anchor
+        // tags, NSDataDetector-autolinked URLs, comment body markdown links,
+        // DealLinkBanner, YouTubeBanner, source badges…) and route
+        // http/https targets through SFSafariViewController instead of
+        // bouncing to the system Safari app. Non-web schemes fall through to
+        // system handling so `tel:` / `mailto:` still work. Comment
+        // @mentions are text-styled (not assigned a `.link` attribute), so
+        // they don't fire `openURL` and aren't affected.
+        .environment(\.openURL, OpenURLAction { url in
+            presentInBrowser(url) ? .handled : .systemAction
+        })
         .task(id: post.id) {
             readStore.markRead(post)
             await load()
@@ -64,6 +78,23 @@ struct PostDetailView: View {
         .fullScreenCover(item: $selectedImage) { item in
             ImageViewer(url: item.url)
         }
+        .sheet(item: $webItem) { item in
+            SafariView(url: item.url)
+                .ignoresSafeArea()
+        }
+    }
+
+    /// Wraps the scheme gate + state assignment so the toolbar button and
+    /// the `openURL` environment override share one code path. Returns
+    /// whether the URL was routed in-app so the OpenURLAction can report
+    /// `.handled` vs `.systemAction` from the same check.
+    @discardableResult
+    private func presentInBrowser(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https"
+        else { return false }
+        webItem = WebBrowserItem(url: url)
+        return true
     }
 
     @ViewBuilder
