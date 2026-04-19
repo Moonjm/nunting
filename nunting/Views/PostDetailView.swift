@@ -49,6 +49,7 @@ struct PostDetailView: View {
             }
             .padding()
         }
+        .background(Color("AppSurface"))
         .navigationTitle(post.site.displayName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

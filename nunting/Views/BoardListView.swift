@@ -123,6 +123,8 @@ struct BoardListView: View {
             }
         }
         .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(Color("AppSurface"))
         .scrollDisabled(scrollLocked)
         .refreshable { await load() }
     }
@@ -143,6 +145,12 @@ struct BoardListView: View {
     private func postRow(post: Post) -> some View {
         let isAagag = post.site == .aagag
         let isRead = readStore.isRead(post)
+        postRowContent(post: post, isAagag: isAagag, isRead: isRead)
+            .listRowBackground(Color("AppSurface"))
+    }
+
+    @ViewBuilder
+    private func postRowContent(post: Post, isAagag: Bool, isRead: Bool) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 if isAagag, let lv = post.levelText, !lv.isEmpty {
