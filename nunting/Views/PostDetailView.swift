@@ -8,6 +8,7 @@ struct PostDetailView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var selectedImage: ImageViewerItem?
+    @State private var webItem: WebBrowserItem?
 
     var body: some View {
         ScrollView {
@@ -52,11 +53,25 @@ struct PostDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Link(destination: post.url) {
+                Button {
+                    presentInBrowser(post.url)
+                } label: {
                     Image(systemName: "safari")
                 }
             }
         }
+        // Intercept every link tap inside the detail view (body links,
+        // comment @mentions, dealLink banners, YouTube thumbnails…) and
+        // route http/https targets through SFSafariViewController instead of
+        // bouncing to the system Safari app. Non-web schemes fall through to
+        // system handling so `tel:` / `mailto:` still work.
+        .environment(\.openURL, OpenURLAction { url in
+            if let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
+                webItem = WebBrowserItem(url: url)
+                return .handled
+            }
+            return .systemAction
+        })
         .task(id: post.id) {
             readStore.markRead(post)
             await load()
@@ -64,6 +79,17 @@ struct PostDetailView: View {
         .fullScreenCover(item: $selectedImage) { item in
             ImageViewer(url: item.url)
         }
+        .sheet(item: $webItem) { item in
+            SafariView(url: item.url)
+                .ignoresSafeArea()
+        }
+    }
+
+    private func presentInBrowser(_ url: URL) {
+        guard let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https"
+        else { return }
+        webItem = WebBrowserItem(url: url)
     }
 
     @ViewBuilder
