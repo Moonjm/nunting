@@ -267,7 +267,7 @@ struct PpomppuParser: BoardParser {
         }
         if tag == "video" {
             if let url = try videoURL(from: element) {
-                blocks.append(.video(url))
+                blocks.append(.video(url, posterURL: try videoPoster(from: element)))
             }
             return
         }
@@ -297,7 +297,7 @@ struct PpomppuParser: BoardParser {
                 case "video":
                     flush()
                     if let url = try videoURL(from: el) {
-                        blocks.append(.video(url))
+                        blocks.append(.video(url, posterURL: try videoPoster(from: el)))
                     }
                 case "br":
                     inline.appendText("\n")
@@ -376,6 +376,19 @@ struct PpomppuParser: BoardParser {
         let el = try view.select("div.link-box a[href], li.topTitle-link a[href]").first()
         guard let el else { return nil }
         return try anchor(from: el)
+    }
+
+    /// HTML5 `<video poster="...">` — when present, parser passes it along so
+    /// the tap-to-play poster frame doesn't fall back to a plain black box.
+    private func videoPoster(from el: Element) throws -> URL? {
+        let raw = try el.attr("poster").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return nil }
+        let normalized = raw.hasPrefix("//") ? "https:" + raw : raw
+        guard let url = URL(string: normalized, relativeTo: site.baseURL)?.absoluteURL,
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https"
+        else { return nil }
+        return url
     }
 
     private func videoURL(from element: Element) throws -> URL? {

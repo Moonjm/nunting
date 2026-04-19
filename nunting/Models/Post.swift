@@ -57,7 +57,7 @@ struct ContentBlock: Identifiable, Hashable {
     enum Kind: Hashable {
         case richText([InlineSegment])
         case image(url: URL, aspectRatio: CGFloat?)
-        case video(URL)
+        case video(url: URL, posterURL: URL?)
         case dealLink(url: URL, label: String)
         case embed(provider: EmbedProvider, id: String)
     }
@@ -71,7 +71,9 @@ struct ContentBlock: Identifiable, Hashable {
     static func image(_ url: URL, aspectRatio: CGFloat? = nil) -> ContentBlock {
         .init(id: UUID(), kind: .image(url: url, aspectRatio: aspectRatio))
     }
-    static func video(_ url: URL) -> ContentBlock { .init(id: UUID(), kind: .video(url)) }
+    static func video(_ url: URL, posterURL: URL? = nil) -> ContentBlock {
+        .init(id: UUID(), kind: .video(url: url, posterURL: posterURL))
+    }
     static func dealLink(_ url: URL, label: String) -> ContentBlock {
         .init(id: UUID(), kind: .dealLink(url: url, label: label))
     }

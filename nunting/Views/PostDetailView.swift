@@ -10,6 +10,12 @@ struct PostDetailView: View {
     @State private var selectedImage: ImageViewerItem?
     @State private var webItem: WebBrowserItem?
 
+    /// iOS `UINavigationController` push animation is ~350ms; 150ms slack
+    /// covers SwiftUI settling + slower / thermally throttled devices so the
+    /// heavy parse+decode work never starts while the screen is still
+    /// sliding in.
+    private static let navPushAnimationBuffer: Duration = .milliseconds(500)
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -77,7 +83,7 @@ struct PostDetailView: View {
             // Let the native navigation push finish before kicking off detail
             // parsing and image work. Image-heavy posts can otherwise start
             // creating/decoding content while the screen is still sliding in.
-            try? await Task.sleep(for: .milliseconds(380))
+            try? await Task.sleep(for: Self.navPushAnimationBuffer)
             guard !Task.isCancelled else { return }
             await load()
         }
@@ -133,8 +139,8 @@ struct PostDetailView: View {
                         .onTapGesture {
                             selectedImage = ImageViewerItem(url: url)
                         }
-                    case .video(let url):
-                        InlineVideoPlayer(url: url)
+                    case .video(let url, let posterURL):
+                        InlineVideoPlayer(url: url, posterURL: posterURL)
                     case .dealLink(let url, let label):
                         DealLinkBanner(url: url, label: label)
                     case .embed(.youtube, let id):

@@ -214,7 +214,7 @@ struct SLRParser: BoardParser {
         case "video":
             if let url = try videoURL(from: el) {
                 flushInline(into: &blocks, inline: &inline)
-                blocks.append(.video(url))
+                blocks.append(.video(url, posterURL: try videoPoster(from: el)))
             }
             return
         case "iframe":
@@ -250,6 +250,19 @@ struct SLRParser: BoardParser {
         if src.isEmpty { src = try el.attr("data-original") }
         guard !src.isEmpty else { return nil }
         let normalized = src.hasPrefix("//") ? "https:" + src : src
+        guard let url = URL(string: normalized, relativeTo: site.baseURL)?.absoluteURL,
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https"
+        else { return nil }
+        return url
+    }
+
+    /// Preserve HTML5 `<video poster="...">` so the inline tap-to-play frame
+    /// shows the site thumbnail rather than a plain black rectangle.
+    private func videoPoster(from el: Element) throws -> URL? {
+        let raw = try el.attr("poster").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return nil }
+        let normalized = raw.hasPrefix("//") ? "https:" + raw : raw
         guard let url = URL(string: normalized, relativeTo: site.baseURL)?.absoluteURL,
               let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https"

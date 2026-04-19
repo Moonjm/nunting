@@ -4,6 +4,11 @@ import UIKit
 
 struct InlineVideoPlayer: View {
     let url: URL
+    /// Poster image the parser already discovered (e.g. HTML5
+    /// `<video poster="...">` or a site-specific CDN pattern). When nil the
+    /// view falls back to the aagag `/o/{q}.jpg` convention and, failing
+    /// that, a plain film-icon placeholder.
+    var posterURL: URL? = nil
 
     @State private var isPresented = false
 
@@ -14,8 +19,8 @@ struct InlineVideoPlayer: View {
             ZStack {
                 Color.black
 
-                if let posterURL {
-                    CachedAsyncImage(url: posterURL, maxDimension: 720)
+                if let resolvedPoster {
+                    CachedAsyncImage(url: resolvedPoster, maxDimension: 720)
                 } else {
                     Image(systemName: "film")
                         .font(.system(size: 42, weight: .regular))
@@ -43,8 +48,14 @@ struct InlineVideoPlayer: View {
         }
     }
 
-    /// Construct the poster URL from the aagag CDN's `/{q}.mp4` pattern.
-    private var posterURL: URL? {
+    /// Parser-supplied poster wins; otherwise fall back to the aagag CDN's
+    /// `/o/{q}.jpg` pattern, then to `nil` (→ film-icon placeholder).
+    private var resolvedPoster: URL? {
+        if let posterURL { return posterURL }
+        return aagagPosterFallback
+    }
+
+    private var aagagPosterFallback: URL? {
         guard url.host?.contains("aagag.com") == true else { return nil }
         let last = (url.path as NSString).lastPathComponent
         guard last.hasSuffix(".mp4") else { return nil }
@@ -92,9 +103,11 @@ private struct AVPlayerControllerView: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
-        if controller.player !== context.coordinator.player {
-            controller.player = context.coordinator.player
-        }
+        // URL is fixed for the lifetime of the fullScreenCover presentation
+        // (the sheet is tied to `isPresented`, not a dynamic item binding),
+        // so there's no URL-change path to reinstall a player here. Only the
+        // dismiss closure is worth refreshing in case SwiftUI rebuilds the
+        // parent and captures a new closure identity.
         context.coordinator.onDismiss = onDismiss
     }
 

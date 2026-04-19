@@ -72,14 +72,20 @@ struct CachedAsyncImage: View {
 
         // Limit concurrent decodes globally so opening a 20-image post
         // doesn't spike the main thread with rapid-fire @State updates.
+        //
+        // Release via an explicit async call at every exit path — the old
+        // `defer { Task { await release() } }` pattern spawned a detached
+        // task for the release, so release ordering relative to a sibling
+        // view's next `acquire` wasn't guaranteed and could subtly violate
+        // the `maxConcurrent` budget under cancellation.
         await ImageDecodeThrottle.shared.acquire()
-        defer { Task { await ImageDecodeThrottle.shared.release() } }
 
         do {
             let (data, response) = try await Networking.session.data(for: URLRequest(url: url))
             try Task.checkCancellation()
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 failed = true
+                await ImageDecodeThrottle.shared.release()
                 return
             }
 
@@ -92,10 +98,13 @@ struct CachedAsyncImage: View {
             } else {
                 failed = true
             }
+            await ImageDecodeThrottle.shared.release()
         } catch is CancellationError {
+            await ImageDecodeThrottle.shared.release()
             return
         } catch {
             failed = true
+            await ImageDecodeThrottle.shared.release()
         }
     }
 
