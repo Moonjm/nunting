@@ -11,6 +11,7 @@ enum ParserFactory {
         case .humor: return HumorParser()
         case .bobae: return BobaeParser()
         case .slr: return SLRParser()
+        case .ddanzi: return DdanziParser()
         }
     }
 }
