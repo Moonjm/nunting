@@ -111,7 +111,13 @@ struct PostDetailView: View {
         for segment in segments {
             switch segment {
             case .text(let s):
-                result.append(AttributedString(s))
+                // Source sites often paste URLs as plain text (ddanzi's
+                // `autolink` addon, for instance, only wraps them client-side
+                // so the server HTML still exposes the bare string). Run
+                // NSDataDetector so those become tappable too — explicit <a>
+                // tags go through the `.link` branch below and keep their
+                // original label.
+                result.append(Self.linkifyPlainText(s))
             case .link(let url, let label):
                 var part = AttributedString(label)
                 part.link = url
@@ -121,6 +127,33 @@ struct PostDetailView: View {
             }
         }
         return result
+    }
+
+    /// Shared across post renders; NSDataDetector is thread-safe once
+    /// constructed and allocating it per call would dwarf the actual
+    /// detection cost on long bodies.
+    private static let urlDetector: NSDataDetector? =
+        try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+
+    private static func linkifyPlainText(_ s: String) -> AttributedString {
+        var attr = AttributedString(s)
+        guard !s.isEmpty, let detector = urlDetector else { return attr }
+        let ns = s as NSString
+        let matches = detector.matches(in: s, range: NSRange(location: 0, length: ns.length))
+        guard !matches.isEmpty else { return attr }
+
+        for match in matches {
+            guard let url = match.url,
+                  let scheme = url.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https",
+                  let stringRange = Range(match.range, in: s),
+                  let attrRange = Range(stringRange, in: attr)
+            else { continue }
+            attr[attrRange].link = url
+            attr[attrRange].foregroundColor = .accentColor
+            attr[attrRange].underlineStyle = .single
+        }
+        return attr
     }
 
     private enum Dispatch {

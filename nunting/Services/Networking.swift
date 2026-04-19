@@ -135,10 +135,20 @@ struct Networking {
         return ResolvedRedirect(url: url, prefetchedBody: nil)
     }
 
-    static func postForm(url: URL, parameters: [String: String], referer: URL? = nil) async throws -> Data {
+    static func postForm(
+        url: URL,
+        parameters: [String: String],
+        referer: URL? = nil,
+        /// Override the outgoing `Content-Type` header for endpoints that
+        /// expect a value not matching the URL-encoded body shape. The
+        /// default is correct for normal form POSTs; only override when a
+        /// server specifically branches on this header. See `DdanziParser`
+        /// for the current caller that needs this.
+        contentType: String = "application/x-www-form-urlencoded; charset=utf-8"
+    ) async throws -> Data {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.setValue("application/x-www-form-urlencoded; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
         request.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
         if let referer {
             request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer")
