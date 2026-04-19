@@ -1,5 +1,6 @@
 import SwiftUI
 import AVKit
+import UIKit
 
 struct InlineVideoPlayer: View {
     let url: URL
@@ -22,14 +23,16 @@ struct InlineVideoPlayer: View {
                     .allowsHitTesting(false)
             }
 
-            VideoPlayer(player: player)
+            // `VideoPlayer` wraps `AVPlayerViewController`, whose gesture
+            // recognisers eat scroll touches the moment the player sits
+            // inside a parent ScrollView. Use a plain `AVPlayerLayer`-backed
+            // UIView instead — no built-in controls, no gesture recognisers,
+            // so the parent ScrollView receives every swipe. Forum videos
+            // here are short autoplay-muted loops, so native scrub/pause
+            // controls aren't worth the scroll freeze.
+            PlayerLayerView(player: player)
                 .opacity(isReady ? 1 : 0)
-                // VideoPlayer wraps AVPlayerViewController whose gesture
-                // recognisers eat scroll touches even with opacity 0 and a
-                // nil player. Block hit-testing until the asset is actually
-                // playable so the parent ScrollView still receives swipes
-                // while the video is loading.
-                .allowsHitTesting(isReady)
+                .allowsHitTesting(false)
 
             ProgressView()
                 .controlSize(.regular)
@@ -96,5 +99,31 @@ struct InlineVideoPlayer: View {
             self.isReady = true
             p.play()
         }
+    }
+}
+
+/// Minimal UIKit wrapper that hosts an `AVPlayerLayer` inside a plain
+/// `UIView`. Unlike `VideoPlayer` it installs no tap/scrub/pause gesture
+/// recognisers, so it never fights the parent ScrollView for touches.
+private struct PlayerLayerView: UIViewRepresentable {
+    let player: AVPlayer?
+
+    func makeUIView(context: Context) -> PlayerHostView {
+        let view = PlayerHostView()
+        view.backgroundColor = .black
+        view.playerLayer.videoGravity = .resizeAspectFill
+        view.playerLayer.player = player
+        return view
+    }
+
+    func updateUIView(_ uiView: PlayerHostView, context: Context) {
+        if uiView.playerLayer.player !== player {
+            uiView.playerLayer.player = player
+        }
+    }
+
+    final class PlayerHostView: UIView {
+        override class var layerClass: AnyClass { AVPlayerLayer.self }
+        var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
     }
 }

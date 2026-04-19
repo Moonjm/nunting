@@ -24,6 +24,11 @@ struct CachedAsyncImage: View {
             if image == nil && !failed && showsPlaceholder {
                 Color("AppSurface2")
                     .overlay(ProgressView())
+                    // Placeholder exists purely to fill the slot; without
+                    // this the Color absorbs the initial touch of a scroll
+                    // gesture and SwiftUI delays handing it back to the
+                    // parent ScrollView long enough to feel like a freeze.
+                    .allowsHitTesting(false)
             }
             if let image {
                 Image(uiImage: image)
