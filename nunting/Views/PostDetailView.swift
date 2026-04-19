@@ -69,11 +69,7 @@ struct PostDetailView: View {
         // @mentions are text-styled (not assigned a `.link` attribute), so
         // they don't fire `openURL` and aren't affected.
         .environment(\.openURL, OpenURLAction { url in
-            if let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {
-                webItem = WebBrowserItem(url: url)
-                return .handled
-            }
-            return .systemAction
+            presentInBrowser(url) ? .handled : .systemAction
         })
         .task(id: post.id) {
             readStore.markRead(post)
@@ -88,11 +84,17 @@ struct PostDetailView: View {
         }
     }
 
-    private func presentInBrowser(_ url: URL) {
+    /// Wraps the scheme gate + state assignment so the toolbar button and
+    /// the `openURL` environment override share one code path. Returns
+    /// whether the URL was routed in-app so the OpenURLAction can report
+    /// `.handled` vs `.systemAction` from the same check.
+    @discardableResult
+    private func presentInBrowser(_ url: URL) -> Bool {
         guard let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https"
-        else { return }
+        else { return false }
         webItem = WebBrowserItem(url: url)
+        return true
     }
 
     @ViewBuilder
