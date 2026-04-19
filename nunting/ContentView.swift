@@ -18,6 +18,10 @@ struct ContentView: View {
     /// Most recently opened post — re-pushed when the user swipes from the
     /// right edge toward the left, mirroring iOS's left-edge back-swipe.
     @State private var lastOpenedPost: Post?
+    /// Bump to force BoardListView to reload from scratch — used by the
+    /// bottom-bar board-name double-tap so users can pull fresh results
+    /// even when nothing else about the view state has changed.
+    @State private var reloadToken: Int = 0
 
     @State private var dragOffset: CGFloat = 0
     @State private var dragDirection: DragDirection?
@@ -96,6 +100,7 @@ struct ContentView: View {
                 filter: selectedFilter,
                 searchQuery: searchQuery,
                 scrollLocked: scrollLocked,
+                reloadToken: reloadToken,
                 readStore: readStore,
                 onSelectPost: { post in
                     lastOpenedPost = post
@@ -109,7 +114,10 @@ struct ContentView: View {
                 board: selectedBoard,
                 favorites: favorites,
                 onBoardTap: { openDrawer(targetSection: boardNavScope) },
-                onBoardDoubleTap: { searchQuery = nil },
+                onBoardDoubleTap: {
+                    searchQuery = nil
+                    reloadToken &+= 1
+                },
                 onSearch: { searchSheetPresented = true },
                 onPrev: { stepBoard(by: -1) },
                 onNext: { stepBoard(by: 1) }
