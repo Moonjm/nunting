@@ -326,32 +326,34 @@ struct HumorParser: BoardParser {
     private func extractCommentSticker(in li: Element) throws -> URL? {
         // Humor renders attached comment images via:
         //   <div class="comment_file">
+        //     <img src='/images/loading_bar2.gif' ...>          (progress bar)
         //     <img class="img_compress"
-        //          src="//timg.humoruniv.com/thumb.php?url=..."     (proxy thumb)
+        //          src="//timg.humoruniv.com/thumb.php?url=..." (proxy thumb)
         //          img_file_url="//down.humoruniv.com/.../r_r...jpg" (original)>
-        // The img_file_url attribute holds the untransformed URL, which gives
-        // better quality than the thumb proxy once the user taps to zoom.
-        guard let img = try li.select(".comment_file img.img_compress, .comment_file img").first()
-        else { return nil }
-        let candidates = [
-            try img.attr("img_file_url"),
-            try img.attr("data-original"),
-            try img.attr("src"),
-        ]
-        for raw in candidates {
-            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty,
-                  !trimmed.contains("loading_bar")
-            else { continue }
-            // Scheme-relative URLs ("//down.humoruniv.com/...") get a fixed
-            // https scheme so the image loader can resolve them without a
-            // relative base that might pick http.
-            let normalized = trimmed.hasPrefix("//") ? "https:" + trimmed : trimmed
-            guard let url = URL(string: normalized, relativeTo: site.baseURL)?.absoluteURL,
-                  let scheme = url.scheme?.lowercased(),
-                  scheme == "http" || scheme == "https"
-            else { continue }
-            return url
+        // We iterate every <img> in the comment_file wrapper so the progress
+        // bar doesn't shadow the real attachment, and we prefer img_file_url
+        // (untransformed original) over the thumb proxy for zoom quality.
+        for img in try li.select(".comment_file img") {
+            let candidates = [
+                try img.attr("img_file_url"),
+                try img.attr("data-original"),
+                try img.attr("src"),
+            ]
+            for raw in candidates {
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty,
+                      !trimmed.contains("loading_bar")
+                else { continue }
+                // Scheme-relative URLs ("//down.humoruniv.com/...") get a
+                // fixed https scheme so the image loader can resolve them
+                // without a relative base that might pick http.
+                let normalized = trimmed.hasPrefix("//") ? "https:" + trimmed : trimmed
+                guard let url = URL(string: normalized, relativeTo: site.baseURL)?.absoluteURL,
+                      let scheme = url.scheme?.lowercased(),
+                      scheme == "http" || scheme == "https"
+                else { continue }
+                return url
+            }
         }
         return nil
     }
