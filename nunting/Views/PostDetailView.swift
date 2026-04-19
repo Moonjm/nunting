@@ -137,10 +137,17 @@ struct PostDetailView: View {
     /// dispatch to a source parser if we recognise the host, else surface a
     /// "외부 사이트로 이동" banner.
     private func resolveDispatchedPost(_ post: Post) async throws -> Dispatch {
+        // Mirror detail URLs always live under /mirror/re and carry the item
+        // id in the `ss` query — matching the query is less brittle than a
+        // bare path suffix if aagag ever renames the redirect endpoint, and
+        // still rejects issue detail URLs (which use /issue/?idx=…).
         guard post.site == .aagag,
               let host = post.url.host?.lowercased(),
               host.hasSuffix("aagag.com"),
-              post.url.path.hasSuffix("/re") || post.url.path.hasSuffix("/mirror/re")
+              post.url.path.hasPrefix("/mirror/re"),
+              URLComponents(url: post.url, resolvingAgainstBaseURL: false)?
+                  .queryItems?
+                  .contains(where: { $0.name == "ss" }) == true
         else { return .parser(post, prefetched: nil) }
 
         let resolved = await Networking.resolveFinalURL(post.url)

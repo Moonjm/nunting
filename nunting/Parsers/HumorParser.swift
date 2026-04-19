@@ -151,7 +151,7 @@ struct HumorParser: BoardParser {
               let host = url.host
         else { return nil }
         let label = try anchor.text().trimmingCharacters(in: .whitespacesAndNewlines)
-        return PostSource(name: label.isEmpty ? host : host, url: url)
+        return PostSource(name: label.isEmpty ? host : label, url: url)
     }
 
     // MARK: - Body blocks
