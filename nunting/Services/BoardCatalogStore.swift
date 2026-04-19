@@ -30,9 +30,15 @@ final class BoardCatalogStore {
         errors[site] = nil
         defer { loading.remove(site) }
         do {
-            let result = try await catalog.fetchGroups { url, encoding in
-                try await Networking.fetchHTML(url: url, encoding: encoding)
-            }
+            // SwiftSoup parsing inside fetchGroups is non-trivial (ppomppu
+            // parses two HTML docs and runs three selector sets). Detach so
+            // the work runs off the main actor and the site rail tap doesn't
+            // hitch the UI.
+            let result = try await Task.detached(priority: .userInitiated) {
+                try await catalog.fetchGroups { url, encoding in
+                    try await Networking.fetchHTML(url: url, encoding: encoding)
+                }
+            }.value
             groups[site] = result
         } catch {
             errors[site] = error.localizedDescription

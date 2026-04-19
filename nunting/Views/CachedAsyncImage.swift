@@ -118,17 +118,22 @@ actor ImageDecodeThrottle {
             inFlight += 1
             return
         }
+        // The releaser hands its slot to us via resume() without decrementing
+        // inFlight, so the count already reflects this acquire — do NOT bump
+        // it here or the gate drifts upward by one per release-with-waiter.
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             waiters.append(cont)
         }
-        inFlight += 1
     }
 
     func release() {
-        inFlight -= 1
-        if !waiters.isEmpty {
-            let next = waiters.removeFirst()
+        if let next = waiters.first {
+            // Hand the slot directly to the next waiter — keeps inFlight
+            // pinned at maxConcurrent until the queue drains.
+            waiters.removeFirst()
             next.resume()
+        } else {
+            inFlight -= 1
         }
     }
 }

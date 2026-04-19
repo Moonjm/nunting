@@ -3,12 +3,13 @@ import SwiftSoup
 
 /// Per-site fetcher that returns the full board list. Each implementation
 /// knows the catalog URL on its own site and how to parse the menu HTML.
-protocol SiteCatalog {
+/// Sendable so we can run the heavy SwiftSoup parse off the main actor.
+protocol SiteCatalog: Sendable {
     var site: Site { get }
     /// Fetch + parse the catalog as one or more named groups. Sites without
     /// natural grouping return a single group with `name: nil` so the drawer
     /// renders a flat list.
-    func fetchGroups(html: (URL, String.Encoding) async throws -> String) async throws -> [BoardGroup]
+    func fetchGroups(html: @Sendable (URL, String.Encoding) async throws -> String) async throws -> [BoardGroup]
 }
 
 enum SiteCatalogFactory {
@@ -33,7 +34,7 @@ struct ClienCatalog: SiteCatalog {
         "sold",  // 회원중고장터
     ]
 
-    func fetchGroups(html fetcher: (URL, String.Encoding) async throws -> String) async throws -> [BoardGroup] {
+    func fetchGroups(html fetcher: @Sendable (URL, String.Encoding) async throws -> String) async throws -> [BoardGroup] {
         // Desktop home tags every board with the right class so we get the
         // exact 커뮤니티(`menu-list`) + 소모임(`menu-list somoim`) sets without
         // pulling in admin / sell / info-archive groups.
@@ -94,7 +95,7 @@ struct ClienCatalog: SiteCatalog {
 struct CoolenjoyCatalog: SiteCatalog {
     let site: Site = .coolenjoy
 
-    func fetchGroups(html fetcher: (URL, String.Encoding) async throws -> String) async throws -> [BoardGroup] {
+    func fetchGroups(html fetcher: @Sendable (URL, String.Encoding) async throws -> String) async throws -> [BoardGroup] {
         // Any board page exposes the full side menu via `a.me-a` items.
         guard let url = URL(string: "https://coolenjoy.net/bbs/freeboard2") else {
             return [BoardGroup(id: "coolenjoy", name: nil, boards: Board.boards(for: .coolenjoy))]
@@ -142,7 +143,7 @@ struct PpomppuCatalog: SiteCatalog {
     private static let homeURL = URL(string: "https://www.ppomppu.co.kr/")!
     private static let forumURL = URL(string: "https://www.ppomppu.co.kr/recent_forum_article.php")!
 
-    func fetchGroups(html fetcher: (URL, String.Encoding) async throws -> String) async throws -> [BoardGroup] {
+    func fetchGroups(html fetcher: @Sendable (URL, String.Encoding) async throws -> String) async throws -> [BoardGroup] {
         var seen = Set<String>()
         var deals: [Board] = []
         var community: [Board] = []
