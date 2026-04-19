@@ -24,6 +24,12 @@ struct InlineVideoPlayer: View {
 
             VideoPlayer(player: player)
                 .opacity(isReady ? 1 : 0)
+                // VideoPlayer wraps AVPlayerViewController whose gesture
+                // recognisers eat scroll touches even with opacity 0 and a
+                // nil player. Block hit-testing until the asset is actually
+                // playable so the parent ScrollView still receives swipes
+                // while the video is loading.
+                .allowsHitTesting(isReady)
 
             ProgressView()
                 .controlSize(.regular)
