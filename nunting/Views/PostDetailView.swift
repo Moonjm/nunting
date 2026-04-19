@@ -365,7 +365,10 @@ private struct CommentsSection: View {
                     .foregroundStyle(.secondary)
             }
 
-            VStack(alignment: .leading, spacing: 0) {
+            // LazyVStack so off-screen comments don't kick off markdown
+            // parses / image fetches / AVPlayer setup at the same time the
+            // user is trying to scroll the top of a long thread.
+            LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(comments.enumerated()), id: \.element.id) { index, comment in
                     CommentRow(comment: comment, onImageTap: onImageTap)
                     if index < comments.count - 1 {

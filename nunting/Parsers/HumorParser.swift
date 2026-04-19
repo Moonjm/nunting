@@ -42,6 +42,27 @@ struct HumorParser: BoardParser {
     func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
 
+        // Humoruniv redirects deleted/moved posts to /board/msg.html which
+        // has none of the usual detail markup. Returning an empty PostDetail
+        // looks like the app hung — emit an inline notice instead.
+        if try doc.select("#read_subject_div").isEmpty() {
+            let body = try doc.text()
+            let notice: String
+            if body.contains("삭제/이동된") || body.contains("삭제된 게시물") {
+                notice = "삭제되거나 이동된 게시물입니다."
+            } else {
+                notice = "게시물을 불러올 수 없습니다."
+            }
+            return PostDetail(
+                post: post,
+                blocks: [.text(notice)],
+                fullDateText: nil,
+                viewCount: nil,
+                source: nil,
+                comments: []
+            )
+        }
+
         let title = try extractTitle(in: doc, fallback: post.title)
         let author = try extractAuthor(in: doc, fallback: post.author)
         let fullDateText = try extractFullDate(in: doc)
