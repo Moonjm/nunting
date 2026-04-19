@@ -117,7 +117,7 @@ struct InvenParser: BoardParser {
         }
         if tag == "video" {
             if let url = try videoURL(from: element) {
-                blocks.append(.video(url))
+                blocks.append(.video(url, posterURL: try videoPoster(from: element)))
             }
             return
         }
@@ -144,7 +144,7 @@ struct InvenParser: BoardParser {
                 case "video":
                     flush()
                     if let url = try videoURL(from: el) {
-                        blocks.append(.video(url))
+                        blocks.append(.video(url, posterURL: try videoPoster(from: el)))
                     }
                 case "br":
                     inline.appendText("\n")
@@ -205,6 +205,19 @@ struct InvenParser: BoardParser {
         let src = try element.attr("src")
         guard !src.isEmpty,
               let url = URL(string: src, relativeTo: site.baseURL)?.absoluteURL,
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https"
+        else { return nil }
+        return url
+    }
+
+    /// Pick up HTML5 `<video poster="...">` so the tap-to-play frame shows
+    /// the site's intended thumbnail instead of a black placeholder.
+    private func videoPoster(from el: Element) throws -> URL? {
+        let raw = try el.attr("poster").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return nil }
+        let normalized = raw.hasPrefix("//") ? "https:" + raw : raw
+        guard let url = URL(string: normalized, relativeTo: site.baseURL)?.absoluteURL,
               let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https"
         else { return nil }

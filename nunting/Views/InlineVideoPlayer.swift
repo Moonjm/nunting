@@ -1,94 +1,163 @@
 import SwiftUI
 import AVKit
+import UIKit
 
 struct InlineVideoPlayer: View {
     let url: URL
+    /// Poster image the parser already discovered (e.g. HTML5
+    /// `<video poster="...">` or a site-specific CDN pattern). When nil the
+    /// view falls back to the aagag `/o/{q}.jpg` convention and, failing
+    /// that, a plain film-icon placeholder.
+    var posterURL: URL? = nil
 
-    @State private var player: AVPlayer?
-    @State private var playbackEndObserver: NSObjectProtocol?
-    @State private var isReady: Bool = false
+    @State private var isPresented = false
 
     var body: some View {
-        // Single stable ZStack — every layer is always present, just toggled
-        // by opacity. Avoids the SwiftUI view-identity swap that, combined
-        // with the parent ScrollView's implicit animation, made the player
-        // look like it was sliding in from the right while loading.
-        ZStack {
-            Color.black
+        Button {
+            isPresented = true
+        } label: {
+            ZStack {
+                Color.black
 
-            if let posterURL {
-                CachedAsyncImage(url: posterURL, maxDimension: 720)
-                    .opacity(isReady ? 0 : 1)
-                    .allowsHitTesting(false)
+                if let resolvedPoster {
+                    CachedAsyncImage(url: resolvedPoster, maxDimension: 720)
+                } else {
+                    Image(systemName: "film")
+                        .font(.system(size: 42, weight: .regular))
+                        .foregroundStyle(.white.opacity(0.55))
+                }
+
+                Circle()
+                    .fill(Color.black.opacity(0.58))
+                    .frame(width: 58, height: 58)
+
+                Image(systemName: "play.fill")
+                    .font(.system(size: 25, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .offset(x: 2)
             }
-
-            VideoPlayer(player: player)
-                .opacity(isReady ? 1 : 0)
-
-            ProgressView()
-                .controlSize(.regular)
-                .tint(.white)
-                .opacity(isReady ? 0 : 1)
+            .frame(maxWidth: .infinity)
+            .aspectRatio(16.0 / 9.0, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .contentShape(Rectangle())
         }
-        .frame(maxWidth: .infinity)
-        .aspectRatio(16.0 / 9.0, contentMode: .fit)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .transaction { $0.animation = nil }
-        .task(id: url) { await loadPlayer() }
-        .onDisappear {
-            if let playbackEndObserver {
-                NotificationCenter.default.removeObserver(playbackEndObserver)
-                self.playbackEndObserver = nil
-            }
-            player?.pause()
-            player = nil
-            isReady = false
+        .buttonStyle(.plain)
+        .accessibilityLabel("영상 재생")
+        .fullScreenCover(isPresented: $isPresented) {
+            FullscreenVideoPlayer(url: url)
         }
     }
 
-    /// Construct the poster URL from the aagag CDN's `/{q}.mp4` pattern.
-    private var posterURL: URL? {
+    /// Parser-supplied poster wins; otherwise fall back to the aagag CDN's
+    /// `/o/{q}.jpg` pattern, then to `nil` (→ film-icon placeholder).
+    private var resolvedPoster: URL? {
+        if let posterURL { return posterURL }
+        return aagagPosterFallback
+    }
+
+    private var aagagPosterFallback: URL? {
         guard url.host?.contains("aagag.com") == true else { return nil }
         let last = (url.path as NSString).lastPathComponent
         guard last.hasSuffix(".mp4") else { return nil }
         let q = String(last.dropLast(4))
         return URL(string: "https://i.aagag.com/o/\(q).jpg")
     }
+}
 
-    /// Load the asset off the main thread so VideoPlayer creation doesn't
-    /// block UI scroll. Once the asset reports playable, install the player
-    /// and start muted autoplay.
-    private func loadPlayer() async {
-        if Task.isCancelled { return }
-        let asset = AVURLAsset(url: url)
-        let playable: Bool
-        do {
-            playable = try await asset.load(.isPlayable)
-        } catch {
-            return
+private struct FullscreenVideoPlayer: View {
+    let url: URL
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        AVPlayerControllerView(url: url) {
+            dismiss()
         }
-        if Task.isCancelled || !playable { return }
+        .ignoresSafeArea()
+        .background(Color.black)
+    }
+}
 
-        let item = AVPlayerItem(asset: asset)
-        let p = AVPlayer(playerItem: item)
-        p.isMuted = true   // iOS blocks autoplay with sound
-        p.actionAtItemEnd = .none
+private struct AVPlayerControllerView: UIViewControllerRepresentable {
+    let url: URL
+    let onDismiss: () -> Void
 
-        // Clear isReady when item buffers far enough to start. The
-        // `timeControlStatus` observer would be more accurate but adds
-        // KVO plumbing — for now, flip it after the asset reports ready.
-        await MainActor.run {
-            playbackEndObserver = NotificationCenter.default.addObserver(
-                forName: .AVPlayerItemDidPlayToEndTime,
-                object: item,
-                queue: .main
-            ) { [weak p] _ in
-                p?.seek(to: .zero)
-                p?.play()
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onDismiss: onDismiss)
+    }
+
+    func makeUIViewController(context: Context) -> AVPlayerViewController {
+        let controller = AVPlayerViewController()
+        let player = AVPlayer(url: url)
+        context.coordinator.player = player
+
+        controller.player = player
+        controller.showsPlaybackControls = true
+        controller.videoGravity = .resizeAspect
+        controller.allowsPictureInPicturePlayback = true
+
+        context.coordinator.installDismissGesture(on: controller.view)
+
+        player.play()
+        return controller
+    }
+
+    func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
+        // URL is fixed for the lifetime of the fullScreenCover presentation
+        // (the sheet is tied to `isPresented`, not a dynamic item binding),
+        // so there's no URL-change path to reinstall a player here. Only the
+        // dismiss closure is worth refreshing in case SwiftUI rebuilds the
+        // parent and captures a new closure identity.
+        context.coordinator.onDismiss = onDismiss
+    }
+
+    static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: Coordinator) {
+        coordinator.player?.pause()
+        coordinator.player = nil
+        controller.player = nil
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var player: AVPlayer?
+        var onDismiss: () -> Void
+
+        private weak var dismissPan: UIPanGestureRecognizer?
+        private var hasDismissed = false
+
+        init(onDismiss: @escaping () -> Void) {
+            self.onDismiss = onDismiss
+        }
+
+        func installDismissGesture(on view: UIView) {
+            guard dismissPan == nil else { return }
+            let pan = UIPanGestureRecognizer(target: self, action: #selector(handleDismissPan(_:)))
+            pan.cancelsTouchesInView = false
+            pan.delegate = self
+            view.addGestureRecognizer(pan)
+            dismissPan = pan
+        }
+
+        @objc private func handleDismissPan(_ recognizer: UIPanGestureRecognizer) {
+            guard !hasDismissed else { return }
+            let translation = recognizer.translation(in: recognizer.view)
+            let velocity = recognizer.velocity(in: recognizer.view)
+
+            guard translation.y > 0, abs(translation.y) > abs(translation.x) else { return }
+
+            if recognizer.state == .ended || recognizer.state == .cancelled {
+                if translation.y > 70 || velocity.y > 550 {
+                    hasDismissed = true
+                    player?.pause()
+                    onDismiss()
+                }
             }
-            self.player = p
-            self.isReady = true
-            p.play()
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            true
         }
     }
 }

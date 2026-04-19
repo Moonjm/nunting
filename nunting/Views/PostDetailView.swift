@@ -5,10 +5,16 @@ struct PostDetailView: View {
     let readStore: ReadStore
 
     @State private var detail: PostDetail?
-    @State private var isLoading = false
+    @State private var isLoading = true
     @State private var errorMessage: String?
     @State private var selectedImage: ImageViewerItem?
     @State private var webItem: WebBrowserItem?
+
+    /// iOS `UINavigationController` push animation is ~350ms; 150ms slack
+    /// covers SwiftUI settling + slower / thermally throttled devices so the
+    /// heavy parse+decode work never starts while the screen is still
+    /// sliding in.
+    private static let navPushAnimationBuffer: Duration = .milliseconds(500)
 
     var body: some View {
         ScrollView {
@@ -49,6 +55,7 @@ struct PostDetailView: View {
             }
             .padding()
         }
+        .background(Color("AppSurface"))
         .navigationTitle(post.site.displayName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -73,6 +80,11 @@ struct PostDetailView: View {
         })
         .task(id: post.id) {
             readStore.markRead(post)
+            // Let the native navigation push finish before kicking off detail
+            // parsing and image work. Image-heavy posts can otherwise start
+            // creating/decoding content while the screen is still sliding in.
+            try? await Task.sleep(for: Self.navPushAnimationBuffer)
+            guard !Task.isCancelled else { return }
             await load()
         }
         .fullScreenCover(item: $selectedImage) { item in
@@ -115,14 +127,20 @@ struct PostDetailView: View {
                             .font(.body)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                    case .image(let url):
-                        CachedAsyncImage(url: url)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                selectedImage = ImageViewerItem(url: url)
-                            }
-                    case .video(let url):
-                        InlineVideoPlayer(url: url)
+                    case .image(let url, let aspectRatio):
+                        CachedAsyncImage(
+                            url: url,
+                            maxDimension: 1000,
+                            maxPixelArea: 8_000_000,
+                            aspectRatio: aspectRatio,
+                            cacheVariant: "article-inline"
+                        )
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            selectedImage = ImageViewerItem(url: url)
+                        }
+                    case .video(let url, let posterURL):
+                        InlineVideoPlayer(url: url, posterURL: posterURL)
                     case .dealLink(let url, let label):
                         DealLinkBanner(url: url, label: label)
                     case .embed(.youtube, let id):
@@ -390,7 +408,7 @@ private struct DealLinkBanner: View {
                     .foregroundStyle(.secondary)
             }
             .padding(12)
-            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+            .background(Color("AppSurface2"), in: RoundedRectangle(cornerRadius: 10))
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
@@ -414,7 +432,7 @@ private struct SourceBanner: View {
                     .foregroundStyle(.secondary)
             }
             .padding(12)
-            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+            .background(Color("AppSurface2"), in: RoundedRectangle(cornerRadius: 10))
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
