@@ -24,6 +24,14 @@ struct Cook82Parser: BoardParser {
         pattern: #"youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{11})"#,
         options: []
     )
+    /// Matches 82cook's comment timestamp shape (`'26.4.19 3:12 PM` or a bare
+    /// `HH:MM` in very recent posts). Used to pick the correct `<em>` inside
+    /// `.repleFunc` so a future admin/level badge `<em>` inserted before the
+    /// date doesn't silently become the displayed timestamp.
+    private static let commentTimeRegex = try! NSRegularExpression(
+        pattern: #"\d{1,2}:\d{2}|\d{1,2}\.\d{1,2}\.\d{1,2}"#,
+        options: []
+    )
 
     func parseList(html: String, board: Board) throws -> [Post] {
         // 82cook is aagag-dispatch-only; list parsing is never invoked.
@@ -262,20 +270,32 @@ struct Cook82Parser: BoardParser {
         let nodes = try doc.select("ul.reples > li.rp")
         var results: [Comment] = []
         for (idx, li) in nodes.enumerated() {
+            let rn = (try? li.attr("data-rn")) ?? ""
+            let cmtID = rn.isEmpty ? "idx\(idx)" : rn
+
+            // Soft-deleted comments (`rp delReple`) often drop their <p>
+            // body and sometimes the <h5> author too. Emit an explicit
+            // placeholder so users see the gap instead of a row that
+            // accidentally looks empty or misattributed.
+            if li.hasClass("delReple") {
+                results.append(Comment(
+                    id: "\(site.rawValue)-c-\(cmtID)",
+                    author: "",
+                    dateText: "",
+                    content: "삭제된 댓글입니다.",
+                    likeCount: 0,
+                    isReply: false
+                ))
+                continue
+            }
+
             // Drop the leading sequence number (`<span>1.</span>`) so the
             // author text comes back as just the nickname.
             let author = try li.select("h5 strong").first()?.text()
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-            // First <em> inside .repleFunc is the date (the second one
-            // carries class="ip"; others may follow).
-            let dateText = try li.select(".repleFunc > em:not(.ip)").first()?.text()
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
+            let dateText = try extractCommentDate(li: li)
             let content = try renderCommentContent(li: li)
-
-            let rn = (try? li.attr("data-rn")) ?? "idx\(idx)"
-            let cmtID = rn.isEmpty ? "idx\(idx)" : rn
 
             if author.isEmpty, content.isEmpty { continue }
 
@@ -291,11 +311,32 @@ struct Cook82Parser: BoardParser {
         return results
     }
 
+    /// `.repleFunc` packs the date and the writer's IP inside sibling `<em>`
+    /// tags. Picking positionally is brittle — future template tweaks (admin
+    /// badges, level chips) can slot extra `<em>`s in. Validate each candidate
+    /// against a time-shaped regex so only the real timestamp wins.
+    private func extractCommentDate(li: Element) throws -> String {
+        for em in try li.select(".repleFunc em") {
+            let cls = (try? em.attr("class")) ?? ""
+            if cls.contains("ip") { continue }
+            let text = try em.text().trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+            let ns = text as NSString
+            if Self.commentTimeRegex.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)) != nil {
+                return text
+            }
+        }
+        return ""
+    }
+
     /// SwiftSoup's `.text()` collapses `<br>` runs to spaces, losing the
     /// visible line breaks 82cook's comments rely on. Walk the `<p>` manually
     /// to preserve newlines exactly as rendered.
     private func renderCommentContent(li: Element) throws -> String {
-        guard let p = try li.select("p").first() else { return "" }
+        // Scope to a direct `<p>` child of the `<li>` so a future wrapper
+        // (quote panel, announcement badge…) that itself contains a `<p>`
+        // doesn't hijack the comment body.
+        guard let p = try li.select("> p").first() else { return "" }
         var output = ""
         try walk(p, into: &output)
         return output
