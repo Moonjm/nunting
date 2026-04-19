@@ -380,14 +380,14 @@ private struct CommentRow: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 if let levelURL = comment.levelIconURL {
-                    CachedAsyncImage(url: levelURL, maxDimension: 48)
+                    CachedAsyncImage(url: levelURL, maxDimension: 48, showsPlaceholder: false)
                         .frame(width: 16, height: 16)
                 }
                 Text(comment.author)
                     .font(.caption)
                     .fontWeight(.medium)
                 if let iconURL = comment.authIconURL {
-                    CachedAsyncImage(url: iconURL, maxDimension: 48)
+                    CachedAsyncImage(url: iconURL, maxDimension: 48, showsPlaceholder: false)
                         .frame(width: 14, height: 14)
                 }
                 Text(comment.dateText)

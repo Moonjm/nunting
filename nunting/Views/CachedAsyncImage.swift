@@ -5,6 +5,11 @@ import ImageIO
 struct CachedAsyncImage: View {
     let url: URL
     var maxDimension: CGFloat = 1200
+    /// When false, the loading state renders as an empty transparent view
+    /// rather than the gray-box + spinner placeholder. Use this for small
+    /// inline icons (comment level/auth icons) where the placeholder visibly
+    /// flashes in and looks worse than a blank spot.
+    var showsPlaceholder: Bool = true
 
     @State private var image: UIImage?
     @State private var failed = false
@@ -16,7 +21,7 @@ struct CachedAsyncImage: View {
         // for the placeholder. Suppressing the inherited animation also
         // stops the visible "slide-from-right" jank during loading.
         ZStack {
-            if image == nil && !failed {
+            if image == nil && !failed && showsPlaceholder {
                 Color(uiColor: .secondarySystemBackground)
                     .overlay(ProgressView())
             }
@@ -31,7 +36,7 @@ struct CachedAsyncImage: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .frame(minHeight: image == nil ? 120 : nil)
+        .frame(minHeight: image == nil && showsPlaceholder ? 120 : nil)
         .transaction { $0.animation = nil }
         .task(id: url) { await load() }
     }
