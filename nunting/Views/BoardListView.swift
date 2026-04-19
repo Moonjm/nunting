@@ -66,6 +66,7 @@ struct BoardListView: View {
                            hasMorePages,
                            !isLoadingMore,
                            !loadMoreError,
+                           !isInvenSearch,
                            post.id == posts.last?.id {
                             Task { await loadMore() }
                         }
@@ -119,10 +120,6 @@ struct BoardListView: View {
                 .buttonStyle(.plain)
                 .padding(.vertical, 12)
                 .listRowSeparator(.hidden)
-                .onAppear {
-                    guard hasMorePages, !isLoadingMore, !loadMoreError else { return }
-                    Task { await loadMore() }
-                }
             }
         }
         .listStyle(.plain)
@@ -132,6 +129,14 @@ struct BoardListView: View {
 
     private var shouldShowLoadMorePrompt: Bool {
         board.site == .inven && nextSearchURL != nil && hasMorePages
+    }
+
+    /// Inven search results require a tap-to-load-more flow rather than the
+    /// scroll-triggered auto-paging used elsewhere, so duplicate-heavy pages
+    /// can't chain into a runaway burst of background requests.
+    private var isInvenSearch: Bool {
+        board.site == .inven
+            && searchQuery?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
 
     @ViewBuilder
