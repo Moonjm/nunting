@@ -379,8 +379,22 @@ struct PpomppuParser: BoardParser {
     }
 
     private func videoURL(from element: Element) throws -> URL? {
+        // Ppomppu ships bodies with the standard <video><source src="..."></video>
+        // shape (the mp4 URL lives on the child <source>). Fall back to
+        // data-src / src on <video> itself for compatibility with older posts.
         let dataSrc = try element.attr("data-src")
-        let raw = dataSrc.isEmpty ? try element.attr("src") : dataSrc
+        let direct = try element.attr("src")
+        var raw = !dataSrc.isEmpty ? dataSrc : direct
+        if raw.isEmpty, let source = try element.select("source").first() {
+            let sData = try source.attr("data-src")
+            let sSrc = try source.attr("src")
+            raw = !sData.isEmpty ? sData : sSrc
+        }
+        // Drop media fragments like "#t=0.05" so URL() doesn't attach them
+        // to AVPlayer asset URLs.
+        if let hash = raw.firstIndex(of: "#") {
+            raw = String(raw[raw.startIndex..<hash])
+        }
         guard !raw.isEmpty,
               let url = URL(string: raw, relativeTo: site.baseURL)?.absoluteURL,
               let scheme = url.scheme?.lowercased(),
