@@ -249,14 +249,16 @@ struct BobaeParser: BoardParser {
     private func extractComments(in doc: Document) throws -> [Comment] {
         // Bobaedream's comment markup:
         //   <div class="reple_body"><ul class="list">
-        //     <li class="best"> ... </li>      (top-voted comments, duplicated below)
-        //     <li> ... </li>                   (normal comments)
-        //     <div id="re_NNNN"></div>         (reply placeholder, AJAX-loaded)
+        //     <li class="best"> ... </li>      (top-voted, duplicated in normal list)
+        //     <li> <div class="ico_area">댓글</div> ... </li>   (reply to above)
+        //     <li> ... </li>                                     (top-level comment)
+        //     <div id="re_NNNN"></div>                           (empty AJAX slot for login-gated reply inserts)
         //
-        // Replies are fetched via a separate JS call, so only top-level
-        // entries appear here. Also skip `.best` rows since they are a
-        // duplicated preview — they render again in the main list and would
-        // show as copies otherwise.
+        // Replies inherit the same <li> shape as top-level comments and are
+        // server-rendered inline — the only structural marker that flags a
+        // reply is the leading `<div class="ico_area">댓글</div>` badge.
+        // Best entries are a duplicated preview of top-voted items from the
+        // main list; skip them so we don't render each one twice.
         let nodes = try doc.select(".reple_body > ul.list > li")
         var results: [Comment] = []
         for (idx, li) in nodes.enumerated() {
@@ -264,6 +266,7 @@ struct BobaeParser: BoardParser {
             if classAttr.contains("best") { continue }
 
             guard let replyEl = try li.select(".con_area > .reply").first() else { continue }
+            let isReply = try !li.select("> .ico_area").isEmpty()
             let content = try extractCommentContent(replyEl)
 
             let utilEl = try li.select(".con_area > .util").first()
@@ -283,7 +286,7 @@ struct BobaeParser: BoardParser {
                 dateText: dateText,
                 content: content,
                 likeCount: likeCount,
-                isReply: false,
+                isReply: isReply,
                 stickerURL: stickerURL,
                 videoURL: nil,
                 authIconURL: nil,
