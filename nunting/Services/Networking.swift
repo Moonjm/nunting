@@ -38,11 +38,19 @@ struct Networking {
         return URLSession(configuration: config)
     }()
 
-    static func fetchHTML(url: URL, encoding: String.Encoding = .utf8, userAgent: String? = nil) async throws -> String {
+    static func fetchHTML(
+        url: URL,
+        encoding: String.Encoding = .utf8,
+        userAgent: String? = nil,
+        handlesCookies: Bool = true
+    ) async throws -> String {
         var request = URLRequest(url: url)
+        request.httpShouldHandleCookies = handlesCookies
         if let userAgent {
             request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         }
+        request.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
+        request.setValue("ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7", forHTTPHeaderField: "Accept-Language")
         let (data, response) = try await session.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             throw NetworkError.badResponse(http.statusCode)

@@ -2,10 +2,12 @@ import SwiftUI
 
 struct PostDetailView: View {
     let post: Post
+    let readStore: ReadStore
 
     @State private var detail: PostDetail?
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var selectedImage: ImageViewerItem?
 
     var body: some View {
         ScrollView {
@@ -52,7 +54,13 @@ struct PostDetailView: View {
                 }
             }
         }
-        .task(id: post.id) { await load() }
+        .task(id: post.id) {
+            readStore.markRead(post)
+            await load()
+        }
+        .fullScreenCover(item: $selectedImage) { item in
+            ImageViewer(url: item.url)
+        }
     }
 
     @ViewBuilder
@@ -75,6 +83,10 @@ struct PostDetailView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     case .image(let url):
                         CachedAsyncImage(url: url)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                selectedImage = ImageViewerItem(url: url)
+                            }
                     case .video(let url):
                         InlineVideoPlayer(url: url)
                     case .dealLink(let url, let label):
@@ -368,14 +380,14 @@ private struct CommentRow: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 if let levelURL = comment.levelIconURL {
-                    CachedAsyncImage(url: levelURL, maxDimension: 48)
+                    CachedAsyncImage(url: levelURL, maxDimension: 48, showsPlaceholder: false)
                         .frame(width: 16, height: 16)
                 }
                 Text(comment.author)
                     .font(.caption)
                     .fontWeight(.medium)
                 if let iconURL = comment.authIconURL {
-                    CachedAsyncImage(url: iconURL, maxDimension: 48)
+                    CachedAsyncImage(url: iconURL, maxDimension: 48, showsPlaceholder: false)
                         .frame(width: 14, height: 14)
                 }
                 Text(comment.dateText)

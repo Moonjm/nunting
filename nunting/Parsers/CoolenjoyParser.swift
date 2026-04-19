@@ -4,6 +4,8 @@ import SwiftSoup
 struct CoolenjoyParser: BoardParser {
     let site: Site = .coolenjoy
 
+    nonisolated init() {}
+
     func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
         let rows = try doc.select("ul.na-table > li.d-md-table-row")

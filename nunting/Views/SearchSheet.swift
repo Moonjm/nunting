@@ -77,7 +77,7 @@ struct SearchSheet: View {
                 }
             }
         }
-        .presentationDetents([.medium])
+        .presentationDetents([.large])
         .onAppear {
             query = initialQuery
             if board.supportsSearch { focused = true }

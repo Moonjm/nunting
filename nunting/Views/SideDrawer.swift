@@ -160,8 +160,10 @@ struct SideDrawer: View {
         List {
             ForEach(boards) { board in
                 boardRow(board: board)
-                    .listRowInsets(EdgeInsets(top: 2, leading: 4, bottom: 2, trailing: 4))
-                    .listRowSeparator(.hidden, edges: .top)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 4, bottom: 8, trailing: 4))
+                    .listRowBackground(rowBackground(for: board))
+                    .listRowSeparator(.visible, edges: .bottom)
+                    .listRowSeparatorTint(Color(uiColor: .separator).opacity(0.45))
                     // Hide the leading delete affordance — favorites are
                     // managed via the star toggle, so the row only needs the
                     // trailing reorder handle in edit mode. Tightens the row
@@ -174,7 +176,7 @@ struct SideDrawer: View {
         }
         .listStyle(.plain)
         .environment(\.editMode, $favoritesEditMode)
-        .environment(\.defaultMinListRowHeight, 32)
+        .environment(\.defaultMinListRowHeight, 48)
     }
 
     @ViewBuilder
@@ -278,13 +280,8 @@ struct SideDrawer: View {
         let isCurrent = currentBoardID == board.id
         return HStack(spacing: 6) {
             HStack(spacing: 6) {
-                if isCurrent {
-                    Image(systemName: "circle.fill")
-                        .font(.system(size: 6))
-                        .foregroundStyle(Color.accentColor)
-                }
                 Text(board.name)
-                    .font(.footnote.weight(isCurrent ? .semibold : .regular))
+                    .font(boardNameFont(isCurrent: isCurrent))
                     .foregroundStyle(isCurrent ? Color.accentColor : Color.primary)
                 Spacer()
                 if showSiteBadge {
@@ -298,21 +295,46 @@ struct SideDrawer: View {
             .accessibilityAddTraits(.isButton)
             .accessibilityValue(isCurrent ? "현재 보드" : "")
 
-            Button {
-                favorites.toggle(board)
-            } label: {
-                Image(systemName: favorites.isFavorite(board) ? "star.fill" : "star")
-                    .foregroundStyle(favorites.isFavorite(board) ? Color.yellow : Color.secondary.opacity(0.6))
-                    .font(.footnote)
-                    .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
+            if showFavoriteButton {
+                Button {
+                    favorites.toggle(board)
+                } label: {
+                    Image(systemName: favorites.isFavorite(board) ? "star.fill" : "star")
+                        .foregroundStyle(favorites.isFavorite(board) ? Color.yellow : Color.secondary.opacity(0.6))
+                        .font(.footnote)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(favorites.isFavorite(board) ? "즐겨찾기 해제" : "즐겨찾기 추가")
             }
-            .buttonStyle(.borderless)
-            .accessibilityLabel(favorites.isFavorite(board) ? "즐겨찾기 해제" : "즐겨찾기 추가")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
-        .background(isCurrent ? Color.accentColor.opacity(0.10) : Color.clear)
+        .background(rowContentBackground(for: board))
+    }
+
+    private func rowBackground(for board: Board) -> Color {
+        currentBoardID == board.id ? Color.accentColor.opacity(0.10) : Color.clear
+    }
+
+    private func rowContentBackground(for board: Board) -> Color {
+        if case .favorites = selectedSection {
+            return .clear
+        }
+        return rowBackground(for: board)
+    }
+
+    private var showFavoriteButton: Bool {
+        if case .favorites = selectedSection { return false }
+        return true
+    }
+
+    private func boardNameFont(isCurrent: Bool) -> Font {
+        if case .favorites = selectedSection {
+            return .subheadline.weight(isCurrent ? .semibold : .regular)
+        }
+        return .footnote.weight(isCurrent ? .semibold : .regular)
     }
 
     private var showSiteBadge: Bool {
@@ -321,12 +343,31 @@ struct SideDrawer: View {
     }
 
     private func siteBadge(site: Site) -> some View {
-        Text(site.displayName)
+        let info = siteBadgeInfo(site: site)
+        return Text(siteBadgeLabel(site: site))
             .font(.caption2.weight(.medium))
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(site.accentColor.opacity(0.18), in: Capsule())
-            .foregroundStyle(site.accentColor)
+            .background(info.color, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+            .foregroundStyle(info.textColor)
+    }
+
+    private func siteBadgeInfo(site: Site) -> AagagSourceTag.Info {
+        switch site {
+        case .clien:
+            AagagSourceTag.info(for: "clien")
+        case .coolenjoy:
+            AagagSourceTag.info(for: "coolenjoy")
+        case .inven:
+            AagagSourceTag.info(for: "inven")
+        case .ppomppu:
+            AagagSourceTag.info(for: "ppomppu")
+        case .aagag:
+            AagagSourceTag.Info(label: site.displayName, color: site.accentColor, textColor: .white)
+        }
+    }
+
+    private func siteBadgeLabel(site: Site) -> String {
+        DrawerSection.site(site).shortLabel
     }
 }
-

@@ -4,6 +4,8 @@ import SwiftSoup
 struct PpomppuParser: BoardParser {
     let site: Site = .ppomppu
 
+    nonisolated init() {}
+
     private static let blockTags: Set<String> = [
         "p", "div", "li", "blockquote",
         "h1", "h2", "h3", "h4", "h5", "h6",
