@@ -106,10 +106,13 @@ struct DdanziParser: BoardParser {
             return []
         }
 
-        // 2) XE exec_json POSTs to the site root with form-encoded params
-        //    (content-type lies as `application/json` in the XE JS, but the
-        //    body is URL-encoded — `Networking.postForm` already does the
-        //    right thing).
+        // 2) XE `exec_json` is a quirk: the JS library sets the request's
+        //    `Content-Type` to `application/json` but still sends the params
+        //    URL-encoded in the body. The server-side handler branches on
+        //    the `Content-Type` header to decide whether to emit JSON or
+        //    render the full HTML layout — so sending
+        //    `x-www-form-urlencoded` returns the login / view page instead
+        //    of the JSON payload we need here.
         let endpoint = URL(string: "https://www.ddanzi.com/")!
         let data = try await Networking.postForm(
             url: endpoint,
@@ -120,7 +123,8 @@ struct DdanziParser: BoardParser {
                 "document_srl": params.documentSrl,
                 "cpage": "0",
             ],
-            referer: post.url
+            referer: post.url,
+            contentType: "application/json"
         )
 
         return Self.decodeComments(data: data)

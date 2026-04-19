@@ -135,10 +135,21 @@ struct Networking {
         return ResolvedRedirect(url: url, prefetchedBody: nil)
     }
 
-    static func postForm(url: URL, parameters: [String: String], referer: URL? = nil) async throws -> Data {
+    static func postForm(
+        url: URL,
+        parameters: [String: String],
+        referer: URL? = nil,
+        /// Override for endpoints that require a specific `Content-Type`
+        /// header that doesn't match the URL-encoded body (e.g. XE's
+        /// `exec_json` handler on ddanzi.com checks for
+        /// `application/json` but still wants URL-encoded params — sending
+        /// `x-www-form-urlencoded` makes the server return the normal HTML
+        /// page instead of the JSON payload).
+        contentType: String = "application/x-www-form-urlencoded; charset=utf-8"
+    ) async throws -> Data {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.setValue("application/x-www-form-urlencoded; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
         request.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
         if let referer {
             request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer")
