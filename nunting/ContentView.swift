@@ -84,7 +84,7 @@ struct ContentView: View {
             .onPreferenceChange(ContainerHeightKey.self) { containerHeight = $0 }
             .simultaneousGesture(panGesture)
             .navigationDestination(for: Post.self) { post in
-                PostDetailView(post: post)
+                PostDetailView(post: post, readStore: readStore)
             }
         }
     }
@@ -100,10 +100,6 @@ struct ContentView: View {
                 onSelectPost: { post in
                     lastOpenedPost = post
                     navigationPath.append(post)
-                    Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: 350_000_000)
-                        readStore.markRead(post)
-                    }
                 }
             )
             if !selectedBoard.filters.isEmpty {
@@ -112,6 +108,7 @@ struct ContentView: View {
             MainBottomBar(
                 board: selectedBoard,
                 favorites: favorites,
+                onBoardTap: { openDrawer(targetSection: boardNavScope) },
                 onBoardDoubleTap: { searchQuery = nil },
                 onSearch: { searchSheetPresented = true },
                 onPrev: { stepBoard(by: -1) },

@@ -3,6 +3,7 @@ import SwiftUI
 struct MainBottomBar: View {
     let board: Board
     let favorites: FavoritesStore
+    let onBoardTap: () -> Void
     let onBoardDoubleTap: () -> Void
     let onSearch: () -> Void
     let onPrev: () -> Void
@@ -17,8 +18,11 @@ struct MainBottomBar: View {
                 onSearch()
             }
 
-            // Board name area: double tap clears search, horizontal swipe steps
-            // through the current site's boards.
+            // Board name area: single tap opens the side drawer, double tap
+            // clears the active search, horizontal swipe steps through the
+            // current scope's boards. The double-tap recognizer is declared
+            // first so iOS waits for a potential second tap before firing the
+            // single-tap handler.
             Group {
                 Text(board.name)
                     .font(.caption.weight(.medium))
@@ -29,6 +33,9 @@ struct MainBottomBar: View {
             .contentShape(Rectangle())
             .onTapGesture(count: 2) {
                 onBoardDoubleTap()
+            }
+            .onTapGesture {
+                onBoardTap()
             }
             // High priority so the parent drawer-pan gesture in ContentView
             // doesn't swallow the swipe before it can reach the bar.

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct PostDetailView: View {
     let post: Post
+    let readStore: ReadStore
 
     @State private var detail: PostDetail?
     @State private var isLoading = false
@@ -54,11 +55,7 @@ struct PostDetailView: View {
             }
         }
         .task(id: post.id) {
-            // Let the navigation push animation finish before mutating detail
-            // state or starting parser/network work. Doing this immediately can
-            // hitch the right-to-left transition on image-heavy or large posts.
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            guard !Task.isCancelled else { return }
+            readStore.markRead(post)
             await load()
         }
         .fullScreenCover(item: $selectedImage) { item in

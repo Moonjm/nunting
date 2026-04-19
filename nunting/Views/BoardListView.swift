@@ -270,6 +270,9 @@ struct BoardListView: View {
             return try await Networking.fetchHTML(url: url, encoding: board.site.encoding)
         } catch NetworkError.badResponse(400)
             where board.site == .clien && searchQuery?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            // Clien's /service/search returns HTTP 400 when the shared session
+            // cookie carries residual state from a prior search (sort/boardCd
+            // sticky values). A clean, cookieless request recovers.
             return try await Networking.fetchHTML(
                 url: url,
                 encoding: board.site.encoding,

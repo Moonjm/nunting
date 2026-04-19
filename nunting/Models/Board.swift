@@ -1,6 +1,10 @@
 import Foundation
 
-struct Board: Identifiable, Hashable, Codable {
+/// Runtime board value. Persistence goes through `FavoriteBoardSnapshot`,
+/// which rebuilds a `Board` via the designated initializer so the
+/// `normalizedSearchQueryName` / default-page-query migration always runs.
+/// Intentionally non-`Codable` to prevent bypassing that migration path.
+struct Board: Identifiable, Hashable {
     let id: String
     let site: Site
     let name: String
