@@ -136,7 +136,17 @@ struct HumorParser: BoardParser {
     // MARK: - Body blocks
 
     private func extractBlocks(in doc: Document) throws -> [ContentBlock] {
-        guard let wrap = try doc.select("#wrap_copy").first() else { return [] }
+        // The article body is nested under <wrap_copy id="wrap_copy"> whose
+        // closing tag in the source is a typo (</warp_copy>). SwiftSoup can't
+        // match the close, so the custom element may end up empty or swallow
+        // the rest of the page. Prefer standard wrappers when they're
+        // present and fall back to the id-based selector.
+        let candidates: [Element?] = [
+            try doc.select("div.daum-wm-content").first(),
+            try doc.select("#wrap_copy").first(),
+            try doc.select("div.wrap_body").first(),
+        ]
+        guard let wrap = candidates.compactMap({ $0 }).first else { return [] }
         var blocks: [ContentBlock] = []
         var inline = InlineAccumulator()
         try collectBlocks(from: wrap, into: &blocks, inline: &inline)
@@ -277,8 +287,17 @@ struct HumorParser: BoardParser {
             let likeText = try li.select("[id^=comm_ok_div_]").first()?.text() ?? "0"
             let likeCount = Int(likeText.filter(\.isNumber)) ?? 0
 
-            let content = try li.select(".comment_text").first()?.text()
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            // Top-level comments put content inside .comment_text, but
+            // sub_comm_block replies put it in a plain <span style="">
+            // inside .comment_body. Selecting .comment_body and stripping
+            // the vote/reply UI works for both shapes.
+            let content: String = try {
+                guard let bodyEl = try li.select(".comment_body").first(),
+                      let copy = bodyEl.copy() as? Element
+                else { return "" }
+                try copy.select(".recomm_btn, [id^=comm_ok_ment_], [id^=poncomm]").remove()
+                return try copy.text().trimmingCharacters(in: .whitespacesAndNewlines)
+            }()
 
             let authIconURL = try extractAuthIcon(in: li)
 
@@ -301,8 +320,11 @@ struct HumorParser: BoardParser {
 
     private func extractAuthIcon(in li: Element) throws -> URL? {
         // Profile image is the first .hu_icon img inside the info header's <a>.
-        // Skip humor's default anonymous/site icons since they add noise.
-        guard let img = try li.select(".info a img.hu_icon").first() else { return nil }
+        // Top-level comments wrap it in .info, replies wrap it in
+        // .sub_comm_info — fall back across both shapes. Skip humor's
+        // default anonymous/site icons since they add noise.
+        guard let img = try li.select(".info a img.hu_icon, .sub_comm_info a img.hu_icon").first()
+        else { return nil }
         let src = try img.attr("src")
         guard !src.isEmpty,
               !src.contains("icon-humoruniv"),
