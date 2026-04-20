@@ -6,6 +6,15 @@ struct InvenParser: BoardParser {
 
     nonisolated init() {}
 
+    /// Matches decimal (`&#1234;`) and hexadecimal (`&#xAF;`) HTML numeric
+    /// character references. Hoisted because `cleanCommentText` runs once per
+    /// Inven comment; per-call `NSRegularExpression` construction showed up on
+    /// long threads.
+    private static let numericEntityRegex = try! NSRegularExpression(
+        pattern: #"&#(x?)([0-9a-fA-F]+);"#,
+        options: [.caseInsensitive]
+    )
+
     func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
         let rows = try doc.select("section.mo-board-list li.list")
@@ -267,24 +276,20 @@ struct InvenParser: BoardParser {
             .map { $0.attr.titlenum }
 
         let blocks: [InvenCommentBlock]
-        let authIconURLString: String?
         if collapsed.isEmpty {
             blocks = firstResponse.commentlist
-            authIconURLString = firstResponse.authicon
         } else {
             var paramsWithTitles = baseParams
             paramsWithTitles["titles"] = collapsed.map(String.init).joined(separator: "|")
             let extraData = try await Networking.postForm(url: apiURL, parameters: paramsWithTitles, referer: post.url)
             let extraResponse = try JSONDecoder().decode(InvenCommentResponse.self, from: extraData)
             blocks = extraResponse.commentlist
-            authIconURLString = extraResponse.authicon ?? firstResponse.authicon
         }
 
-        let authIconURL = authIconURLString.flatMap { URL(string: $0) }
-        return convertToComments(blocks: blocks, authIconURL: authIconURL)
+        return convertToComments(blocks: blocks)
     }
 
-    private func convertToComments(blocks: [InvenCommentBlock], authIconURL: URL?) -> [Comment] {
+    private func convertToComments(blocks: [InvenCommentBlock]) -> [Comment] {
         // titlenum 0 = latest block; positive titlenums are older slices ordered ascending.
         let sortedBlocks = blocks.sorted { lhs, rhs in
             let l = lhs.attr.titlenum == 0 ? Int.max : lhs.attr.titlenum
@@ -299,8 +304,6 @@ struct InvenParser: BoardParser {
                 let content = cleanCommentText(raw.comment)
                 guard !content.isEmpty || stickerURL != nil else { continue }
                 let isReply = raw.attr.cmtidx != raw.attr.cmtpidx
-                let perCommentAuthIcon: URL? = (raw.authicon == true) ? authIconURL : nil
-                let levelIconURL = Self.levelIconURL(level: raw.level)
                 results.append(Comment(
                     id: "\(site.rawValue)-c-\(raw.attr.cmtidx)",
                     author: raw.name,
@@ -308,9 +311,7 @@ struct InvenParser: BoardParser {
                     content: content,
                     likeCount: raw.recommend,
                     isReply: isReply,
-                    stickerURL: stickerURL,
-                    authIconURL: perCommentAuthIcon,
-                    levelIconURL: levelIconURL
+                    stickerURL: stickerURL
                 ))
             }
         }
@@ -334,16 +335,15 @@ struct InvenParser: BoardParser {
     private func cleanCommentText(_ raw: String) -> String {
         // Inven sometimes ships HTML that's been entity-encoded one or more
         // times (e.g. sticker comments come back as `&lt;div class=...&gt;`).
-        // Each SwiftSoup pass decodes one layer of entities; iterate until the
-        // text no longer looks like HTML, capped at 3 to avoid infinite loops.
+        // Peel layers with a cheap string-level entity decoder so we avoid
+        // running a full SwiftSoup parse per layer (each pass used to dominate
+        // long-thread CPU profiles). Capped at 3 to bound worst case.
         var working = raw
         for _ in 0..<3 {
-            guard working.contains("<") || working.contains("&") else { break }
-            guard let stepDoc = try? SwiftSoup.parseBodyFragment(working),
-                  let stepText = try? stepDoc.body()?.text(),
-                  stepText != working
-            else { break }
-            working = stepText
+            guard working.contains("&") else { break }
+            let decoded = Self.decodeHTMLEntities(working)
+            if decoded == working { break }
+            working = decoded
         }
 
         // Final pass: parse as HTML so block tags get the newline marker treatment.
@@ -366,8 +366,48 @@ struct InvenParser: BoardParser {
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Decodes one layer of HTML character references without invoking a
+    /// full HTML parse. Handles the named entities Inven comments actually
+    /// emit plus decimal/hex numeric references. `&amp;` is processed last
+    /// so `&amp;lt;` decodes to `&lt;` this pass and unwraps further on
+    /// subsequent iterations instead of collapsing in one step.
+    private static func decodeHTMLEntities(_ input: String) -> String {
+        guard input.contains("&") else { return input }
+
+        // First, rewrite numeric refs via regex so decimal/hex are both covered.
+        let ns = input as NSString
+        let fullRange = NSRange(location: 0, length: ns.length)
+        var numericReplaced = ""
+        numericReplaced.reserveCapacity(input.count)
+        var cursor = 0
+        numericEntityRegex.enumerateMatches(in: input, options: [], range: fullRange) { match, _, _ in
+            guard let match else { return }
+            let matchRange = match.range
+            numericReplaced.append(ns.substring(with: NSRange(location: cursor, length: matchRange.location - cursor)))
+            let isHex = match.range(at: 1).length > 0
+            let digits = ns.substring(with: match.range(at: 2))
+            let codepoint: Int? = isHex ? Int(digits, radix: 16) : Int(digits)
+            if let cp = codepoint, let scalar = Unicode.Scalar(cp) {
+                numericReplaced.append(Character(scalar))
+            } else {
+                numericReplaced.append(ns.substring(with: matchRange))
+            }
+            cursor = matchRange.location + matchRange.length
+        }
+        if cursor < ns.length {
+            numericReplaced.append(ns.substring(with: NSRange(location: cursor, length: ns.length - cursor)))
+        }
+
+        return numericReplaced
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&apos;", with: "'")
+            .replacingOccurrences(of: "&nbsp;", with: " ")
+            .replacingOccurrences(of: "&amp;", with: "&")
+    }
+
     private struct InvenCommentResponse: Decodable {
-        let authicon: String?
         let commentlist: [InvenCommentBlock]
     }
 
@@ -391,8 +431,6 @@ struct InvenParser: BoardParser {
         let name: String
         let comment: String
         let recommend: Int
-        let authicon: Bool?
-        let level: String?
 
         enum CodingKeys: String, CodingKey {
             case attr = "__attr__"
@@ -400,14 +438,7 @@ struct InvenParser: BoardParser {
             case name = "o_name"
             case comment = "o_comment"
             case recommend = "o_recommend"
-            case authicon
-            case level = "o_level"
         }
-    }
-
-    private static func levelIconURL(level: String?) -> URL? {
-        guard let level, !level.isEmpty else { return nil }
-        return URL(string: "https://static.inven.co.kr/image_2011/member/level/1202/\(level).gif")
     }
 
     private struct InvenCommentAttr: Decodable {
