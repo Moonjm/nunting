@@ -6,6 +6,11 @@ import Foundation
 /// restores the article instantly. The cache is intentionally not persisted
 /// to disk: a cold start drops it, so users who relaunch get fresh content
 /// automatically.
+/// `@MainActor` so the unsynchronised `entries` / `order` dictionary can't
+/// be reached from a background task by accident. All current call sites
+/// (PostDetailView's `.task`, load path, ContentView State init) are already
+/// main-actor, so this is an isolation seal rather than a behaviour change.
+@MainActor
 final class PostDetailCache {
     struct Entry {
         let detail: PostDetail

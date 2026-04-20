@@ -312,6 +312,10 @@ struct AagagParser: BoardParser {
     /// path (`stripCommentHTML`) drops all tags for rendering, so the image
     /// needs a separate pass to surface as `Comment.stickerURL`.
     private func extractCommentImageURL(from rawHTML: String) -> URL? {
+        // Cheap prefilter: the vast majority of text-only comments never
+        // even mention "<img", and spinning up SwiftSoup once per comment
+        // dominates the parse budget on long threads otherwise.
+        guard rawHTML.contains("<img") else { return nil }
         guard let doc = try? SwiftSoup.parseBodyFragment(rawHTML),
               let img = try? doc.select("img").first(),
               let src = try? img.attr("src"),

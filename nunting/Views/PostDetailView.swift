@@ -293,6 +293,7 @@ struct PostDetailView: View {
                     comments: []
                 )
                 await Self.awaitRenderReady(renderReadyAt)
+                try Task.checkCancellation()
                 // Toggle isLoading in the same runloop as the detail write so
                 // `articleContent`'s `if isLoading` branch doesn't keep the
                 // spinner up after we already have content.
@@ -363,6 +364,12 @@ struct PostDetailView: View {
                     )
                     detail = parsed
                 }
+                // Stale-load guard: a popped-and-re-entered view triggers
+                // `.task` cancellation, but `await commentsTask` above sits
+                // on `try?` so a cancelled parent task silently falls
+                // through. Re-check before the cache write so an in-flight
+                // old load can't clobber the new view's fresher cache entry.
+                try Task.checkCancellation()
                 // Cache the final state so re-entering this post (via a
                 // fresh tap or the right-edge forward-swipe that re-pushes
                 // `lastOpenedPost`) skips network + parse entirely.

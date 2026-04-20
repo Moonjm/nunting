@@ -36,6 +36,13 @@ struct Networking {
     /// use of a secure connection." All boards we scrape serve HTTPS on the
     /// same host, so a blind upgrade is safe and avoids an ATS exception.
     private final class RedirectHTTPSUpgrader: NSObject, URLSessionTaskDelegate {
+        // `session.data(for:)` (the async API) invokes this task-level
+        // delegate method on the session's delegate when the session was
+        // constructed with one — documented behaviour since iOS 15. Do not
+        // "fix" this by migrating to per-task `URLSessionTaskDelegate`
+        // arguments; we need the single shared upgrader to cover every
+        // caller (`fetchHTML`, `postForm`, `resolveFinalURL`) without
+        // touching each one.
         func urlSession(
             _ session: URLSession,
             task: URLSessionTask,
