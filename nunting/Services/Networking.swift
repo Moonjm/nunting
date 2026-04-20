@@ -28,6 +28,41 @@ struct Networking {
         return cache
     }()
 
+    /// Rewrites `http://` redirect targets to `https://` before URLSession
+    /// follows them. Some upstream sites (observed on Clien when the guest
+    /// session cookie is stale) issue a 30x with an `http://` Location, which
+    /// App Transport Security then blocks and surfaces as "The resource could
+    /// not be loaded because the App Transport Security policy requires the
+    /// use of a secure connection." All boards we scrape serve HTTPS on the
+    /// same host, so a blind upgrade is safe and avoids an ATS exception.
+    private final class RedirectHTTPSUpgrader: NSObject, URLSessionTaskDelegate {
+        func urlSession(
+            _ session: URLSession,
+            task: URLSessionTask,
+            willPerformHTTPRedirection response: HTTPURLResponse,
+            newRequest request: URLRequest,
+            completionHandler: @escaping (URLRequest?) -> Void
+        ) {
+            guard let url = request.url,
+                  url.scheme?.lowercased() == "http",
+                  var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            else {
+                completionHandler(request)
+                return
+            }
+            comps.scheme = "https"
+            guard let upgraded = comps.url else {
+                completionHandler(request)
+                return
+            }
+            var upgradedRequest = request
+            upgradedRequest.url = upgraded
+            completionHandler(upgradedRequest)
+        }
+    }
+
+    private static let redirectUpgrader = RedirectHTTPSUpgrader()
+
     static let session: URLSession = {
         _ = sharedCache
         let config = URLSessionConfiguration.default
@@ -35,7 +70,7 @@ struct Networking {
         config.timeoutIntervalForRequest = 15
         config.urlCache = sharedCache
         config.requestCachePolicy = .useProtocolCachePolicy
-        return URLSession(configuration: config)
+        return URLSession(configuration: config, delegate: redirectUpgrader, delegateQueue: nil)
     }()
 
     static func fetchHTML(
