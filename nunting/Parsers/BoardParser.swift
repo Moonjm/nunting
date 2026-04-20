@@ -74,7 +74,19 @@ struct InlineAccumulator {
         var out = input
 
         func collapse(_ s: String) -> String {
-            s.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
+            // Strip spaces/tabs immediately surrounding a newline first:
+            // HTML pretty-print indentation leaks in via text nodes as
+            // `"\n    "`, and block-boundary / <br> handlers emit explicit
+            // `\n`, so the combination produces visible per-line indentation
+            // when rendered. Browser HTML collapses that whitespace; we
+            // match that by dropping it before normalising blank-line runs.
+            var s = s.replacingOccurrences(
+                of: #"[ \t]*\n[ \t]*"#,
+                with: "\n",
+                options: .regularExpression
+            )
+            s = s.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
+            return s
         }
 
         if let first = out.first, case .text(let s) = first {
@@ -90,7 +102,6 @@ struct InlineAccumulator {
             }
             if end == collapsed.startIndex { out.removeLast() } else { out[out.count - 1] = .text(String(collapsed[..<end])) }
         }
-        // Collapse any internal text segments' triple-newlines.
         out = out.map { seg in
             if case .text(let s) = seg { return .text(collapse(s)) }
             return seg

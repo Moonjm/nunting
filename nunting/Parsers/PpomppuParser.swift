@@ -474,6 +474,14 @@ struct PpomppuParser: BoardParser {
         }
         let text = try copy.text()
         var result = text.replacingOccurrences(of: blockMarker, with: "\n")
+        // SwiftSoup's `text()` puts whitespace around the injected marker,
+        // so each post-replace newline ends up with leading/trailing spaces
+        // that show as per-line indentation. Strip that.
+        result = result.replacingOccurrences(
+            of: #"[ \t]*\n[ \t]*"#,
+            with: "\n",
+            options: .regularExpression
+        )
         result = result.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
