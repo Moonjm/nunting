@@ -418,7 +418,7 @@ struct SLRParser: BoardParser {
                 if src.isEmpty { src = try img.attr("data-src") }
                 if !src.isEmpty {
                     let normalized = src.hasPrefix("//") ? "https:" + src : src
-                    if let url = URL(string: normalized, relativeTo: URL(string: "https://m.slrclub.com")!)?.absoluteURL,
+                    if let url = URL(string: normalized, relativeTo: Site.slr.baseURL)?.absoluteURL,
                        let scheme = url.scheme?.lowercased(),
                        scheme == "http" || scheme == "https" {
                         sticker = url
@@ -443,7 +443,7 @@ struct SLRParser: BoardParser {
                 }
                 if !vidSrc.isEmpty {
                     let normalized = vidSrc.hasPrefix("//") ? "https:" + vidSrc : vidSrc
-                    if let url = URL(string: normalized, relativeTo: URL(string: "https://m.slrclub.com")!)?.absoluteURL,
+                    if let url = URL(string: normalized, relativeTo: Site.slr.baseURL)?.absoluteURL,
                        let scheme = url.scheme?.lowercased(),
                        scheme == "http" || scheme == "https" {
                         video = url
