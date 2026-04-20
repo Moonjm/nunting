@@ -4,6 +4,9 @@ struct ContentView: View {
     @State private var favorites: FavoritesStore
     @State private var catalog = BoardCatalogStore()
     @State private var readStore = ReadStore()
+    /// Session cache so re-entering a post (fresh tap, or forward-swipe
+    /// re-push of `lastOpenedPost`) skips the network + parse.
+    @State private var detailCache = PostDetailCache()
     @State private var selectedBoard: Board
     @State private var selectedFilter: BoardFilter? = nil
     @State private var searchQuery: String? = nil
@@ -28,6 +31,7 @@ struct ContentView: View {
     @State private var dragLockBaseline: CGFloat = 0
     @State private var scrollLocked = false
     @State private var containerHeight: CGFloat = 0
+    @State private var containerWidth: CGFloat = 0
 
     private let drawerWidth: CGFloat = 300
     /// Height of the bottom bar area (bar + filter chips + safe area buffer)
@@ -79,17 +83,33 @@ struct ContentView: View {
                 )
                 .frame(width: drawerWidth)
                 .offset(x: drawerXOffset)
+
+                // Right-edge forward-swipe preview: a lightweight detail-page
+                // header that slides in from the right tracking the finger
+                // while the gesture is active and eligible. On commit it's
+                // dropped synchronously and the NavigationStack's push
+                // animation takes over (the real PostDetailView then reads
+                // PostDetailCache for instant restore).
+                if forwardPreviewActive, let preview = lastOpenedPost {
+                    forwardPreviewCard(for: preview)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .offset(x: containerWidth + forwardPeekOffset)
+                        .allowsHitTesting(false)
+                }
             }
             .ignoresSafeArea(.keyboard)
             .background(
                 GeometryReader { proxy in
-                    Color.clear.preference(key: ContainerHeightKey.self, value: proxy.size.height)
+                    Color.clear
+                        .preference(key: ContainerHeightKey.self, value: proxy.size.height)
+                        .preference(key: ContainerWidthKey.self, value: proxy.size.width)
                 }
             )
             .onPreferenceChange(ContainerHeightKey.self) { containerHeight = $0 }
+            .onPreferenceChange(ContainerWidthKey.self) { containerWidth = $0 }
             .simultaneousGesture(panGesture)
             .navigationDestination(for: Post.self) { post in
-                PostDetailView(post: post, readStore: readStore)
+                PostDetailView(post: post, readStore: readStore, cache: detailCache)
             }
         }
     }
@@ -157,6 +177,71 @@ struct ContentView: View {
         -drawerWidth + drawerWidth * drawerProgress
     }
 
+    /// How far the forward-swipe preview card has been pulled in from the
+    /// right edge. Negative values mean the card has advanced leftward; 0
+    /// pins it fully offscreen right. Clamped so the card can't overshoot
+    /// the container width while the finger keeps moving.
+    private var forwardPeekOffset: CGFloat {
+        guard forwardPreviewActive else { return 0 }
+        let maxPeek = max(containerWidth * 0.85, 200)
+        return max(dragOffset, -maxPeek)
+    }
+
+    /// Gesture is eligible to re-push the last viewed post and the finger
+    /// is currently pulling leftward — show the preview card.
+    private var forwardPreviewActive: Bool {
+        !drawerOpen
+            && dragOffset < 0
+            && navigationPath.isEmpty
+            && lastOpenedPost != nil
+    }
+
+    /// Lightweight stand-in for the incoming detail page. Not a real
+    /// `PostDetailView` so we avoid duplicating its `.task` side effects
+    /// (markRead, cache read/write) or fighting its `.toolbar` setup
+    /// outside a navigation destination. Renders just enough chrome —
+    /// hidden-back chevron, site title, post header — that the card reads
+    /// as "the detail view arriving" while the user drags.
+    @ViewBuilder
+    private func forwardPreviewCard(for post: Post) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.left")
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(.secondary)
+                Text(post.site.displayName)
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(Color("AppSurface"))
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(post.title)
+                    .font(.title3.weight(.semibold))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 10) {
+                    Text(post.author)
+                    Text(post.dateText)
+                    if post.commentCount > 0 {
+                        Text("💬 \(post.commentCount)")
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            .padding(16)
+
+            Divider()
+
+            Spacer(minLength: 0)
+        }
+        .background(Color("AppSurface"))
+    }
+
     private var panGesture: some Gesture {
         DragGesture(minimumDistance: 6)
             .onChanged { value in
@@ -205,8 +290,11 @@ struct ContentView: View {
                     shouldOpen = !(traveled < -drawerWidth / 3 || velocity < -150)
                 } else {
                     // Leftward swipe with no drawer open → re-push the last
-                    // opened post (right-edge "forward" gesture).
-                    if (traveled < -120 || velocity < -250),
+                    // opened post (right-edge "forward" gesture). Threshold
+                    // mirrors the drawer-open gesture's sensitivity so both
+                    // directions feel equally responsive; `forwardPeekOffset`
+                    // provides the interactive follow-through during drag.
+                    if (traveled < -50 || velocity < -180),
                        navigationPath.isEmpty,
                        let last = lastOpenedPost {
                         navigationPath.append(last)
@@ -279,6 +367,13 @@ private enum DragDirection {
 }
 
 private struct ContainerHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct ContainerWidthKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())

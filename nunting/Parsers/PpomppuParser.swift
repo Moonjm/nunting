@@ -12,7 +12,15 @@ struct PpomppuParser: BoardParser {
         "section", "article", "tr",
     ]
 
-    private static let skipTags: Set<String> = ["script", "style", "iframe", "noscript"]
+    private static let skipTags: Set<String> = ["script", "style", "noscript"]
+
+    /// Matches the canonical YouTube embed URL shape — `/embed/{11-char id}`
+    /// on `youtube.com` or the no-cookie variant. Shared by all YouTube
+    /// `<iframe>` handling in this parser.
+    private static let youtubeIDRegex = try! NSRegularExpression(
+        pattern: #"youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{11})"#,
+        options: []
+    )
 
     func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
@@ -213,8 +221,9 @@ struct PpomppuParser: BoardParser {
             let contentEl = try node.select("[id^=ctx_]").first()
             let content = try contentEl.map { try cleanCommentText(from: $0) } ?? ""
             let stickerURL = try contentEl.flatMap { try extractStickerURL(from: $0) }
+            let videoURL = try contentEl.flatMap { try extractCommentVideoURL(from: $0) }
 
-            guard !content.isEmpty || stickerURL != nil else { continue }
+            guard !content.isEmpty || stickerURL != nil || videoURL != nil else { continue }
 
             results.append(Comment(
                 id: "\(site.rawValue)-c-\(cmtID)",
@@ -224,6 +233,7 @@ struct PpomppuParser: BoardParser {
                 likeCount: likeCount,
                 isReply: isReply,
                 stickerURL: stickerURL,
+                videoURL: videoURL,
                 authIconURL: nil,
                 levelIconURL: levelIconURL
             ))
@@ -299,6 +309,15 @@ struct PpomppuParser: BoardParser {
                     if let url = try videoURL(from: el) {
                         blocks.append(.video(url, posterURL: try videoPoster(from: el)))
                     }
+                case "iframe":
+                    // YouTube embeds arrive as <iframe src=".../embed/{id}">.
+                    // Promote to an inline `.embed(.youtube, id:)` block so
+                    // the detail view renders the real thumbnail + tap-to-open
+                    // affordance instead of the iframe being silently dropped.
+                    if let id = youtubeID(from: (try? el.attr("src")) ?? "") {
+                        flush()
+                        blocks.append(.embed(.youtube, id: id))
+                    }
                 case "br":
                     inline.appendText("\n")
                 case "a":
@@ -313,8 +332,9 @@ struct PpomppuParser: BoardParser {
                     if Self.skipTags.contains(childTag) { continue }
                     let nestedImgs = try el.select("img")
                     let nestedVideos = try el.select("video")
+                    let nestedIframes = try el.select("iframe")
                     let isBlock = Self.blockTags.contains(childTag)
-                    if !nestedImgs.isEmpty() || !nestedVideos.isEmpty() {
+                    if !nestedImgs.isEmpty() || !nestedVideos.isEmpty() || !nestedIframes.isEmpty() {
                         flush()
                         try collectBlocks(from: el, skipping: skipURL, into: &blocks)
                     } else {
@@ -358,16 +378,28 @@ struct PpomppuParser: BoardParser {
     }
 
     private func imageURL(from element: Element) throws -> URL? {
-        var src = try element.attr("src")
-        if src.isEmpty {
-            src = try element.attr("data-src")
+        // Match the comment-image attribute priority so body GIFs that use
+        // the same lazy-loading pattern as comments (src = placeholder like
+        // `/images/gif_load.gif`, `data-original` = real CDN URL) aren't
+        // silently rendered as the placeholder or dropped.
+        let candidates = [
+            try element.attr("data-original"),
+            try element.attr("data-src"),
+            try element.attr("src"),
+        ]
+        for raw in candidates {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty,
+                  !trimmed.contains("lazyloading"),
+                  !trimmed.contains("/images/gif_load")
+            else { continue }
+            guard let url = URL(string: trimmed, relativeTo: site.baseURL)?.absoluteURL,
+                  let scheme = url.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https"
+            else { continue }
+            return url
         }
-        guard !src.isEmpty,
-              let url = URL(string: src, relativeTo: site.baseURL)?.absoluteURL,
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https"
-        else { return nil }
-        return url
+        return nil
     }
 
     private func dealAnchor(from view: Element) throws -> (url: URL, label: String)? {
@@ -376,6 +408,21 @@ struct PpomppuParser: BoardParser {
         let el = try view.select("div.link-box a[href], li.topTitle-link a[href]").first()
         guard let el else { return nil }
         return try anchor(from: el)
+    }
+
+    /// Extract a YouTube video ID from an `<iframe src>` value. Returns nil
+    /// when the URL doesn't match YouTube's canonical embed shape, so callers
+    /// can fall through to the generic skip-or-recurse path for iframes of
+    /// unrelated providers (Twitter, Naver blog, etc.).
+    private func youtubeID(from src: String) -> String? {
+        let ns = src as NSString
+        guard let match = Self.youtubeIDRegex.firstMatch(
+                in: src,
+                range: NSRange(location: 0, length: ns.length)
+              ),
+              match.numberOfRanges >= 2
+        else { return nil }
+        return ns.substring(with: match.range(at: 1))
     }
 
     /// HTML5 `<video poster="...">` — when present, parser passes it along so
@@ -437,6 +484,29 @@ struct PpomppuParser: BoardParser {
         return nil
     }
 
+    /// Inline `<video>` attachments inside a Ppomppu comment — the site
+    /// wraps uploaded mp4s in `<div class="wrapper_video"><video><source
+    /// src="..."></video></div>`. Without this, `cleanCommentText` strips
+    /// the `<video>` from the rendered text and nothing surfaces in the UI.
+    private func extractCommentVideoURL(from element: Element) throws -> URL? {
+        guard let vid = try element.select("video").first() else { return nil }
+        var src = try vid.attr("src")
+        if src.isEmpty, let source = try vid.select("source").first() {
+            src = try source.attr("src")
+        }
+        if src.isEmpty { src = try vid.attr("data-src") }
+        // Drop AVPlayer-unfriendly fragment identifiers (`#t=0.05` etc.).
+        if let hash = src.firstIndex(of: "#") {
+            src = String(src[..<hash])
+        }
+        guard !src.isEmpty,
+              let url = URL(string: src, relativeTo: site.baseURL)?.absoluteURL,
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https"
+        else { return nil }
+        return url
+    }
+
     private func commentImageURL(from el: Element) throws -> URL? {
         let candidates = [
             try el.attr("data-original"),
@@ -474,6 +544,14 @@ struct PpomppuParser: BoardParser {
         }
         let text = try copy.text()
         var result = text.replacingOccurrences(of: blockMarker, with: "\n")
+        // SwiftSoup's `text()` puts whitespace around the injected marker,
+        // so each post-replace newline ends up with leading/trailing spaces
+        // that show as per-line indentation. Strip that.
+        result = result.replacingOccurrences(
+            of: #"[ \t]*\n[ \t]*"#,
+            with: "\n",
+            options: .regularExpression
+        )
         result = result.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }

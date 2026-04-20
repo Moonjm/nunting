@@ -353,6 +353,14 @@ struct Cook82Parser: BoardParser {
         var output = ""
         try walk(p, into: &output)
         return output
+            // Raw text-node content carries 82cook's pretty-print indentation
+            // (`"\n    "` between block children). Strip spaces/tabs around
+            // every newline so it doesn't show as per-line indentation.
+            .replacingOccurrences(
+                of: #"[ \t]*\n[ \t]*"#,
+                with: "\n",
+                options: .regularExpression
+            )
             .replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }

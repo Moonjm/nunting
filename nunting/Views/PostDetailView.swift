@@ -3,6 +3,7 @@ import SwiftUI
 struct PostDetailView: View {
     let post: Post
     let readStore: ReadStore
+    let cache: PostDetailCache
 
     @State private var detail: PostDetail?
     @State private var isLoading = true
@@ -84,6 +85,16 @@ struct PostDetailView: View {
         })
         .task(id: post.id) {
             readStore.markRead(post)
+            // Cache hit → restore instantly with no render gate. The push
+            // animation isn't at risk when the image subtree was already
+            // materialised (and then dropped) once this session; cached
+            // URLs are warm in `CachedAsyncImage`'s own store and decoding
+            // stays off the main thread.
+            if let entry = cache.get(id: post.id) {
+                detail = entry.detail
+                isLoading = false
+                return
+            }
             // Anchor the commit gate at view appearance; load() starts work
             // immediately and only waits on this deadline before writing
             // image-heavy state.
@@ -282,11 +293,13 @@ struct PostDetailView: View {
                     comments: []
                 )
                 await Self.awaitRenderReady(renderReadyAt)
+                try Task.checkCancellation()
                 // Toggle isLoading in the same runloop as the detail write so
                 // `articleContent`'s `if isLoading` branch doesn't keep the
                 // spinner up after we already have content.
                 isLoading = false
                 detail = placeholder
+                cache.put(id: post.id, detail: placeholder)
                 return
 
             case .parser(let resolved, let prefetched):
@@ -351,6 +364,16 @@ struct PostDetailView: View {
                     )
                     detail = parsed
                 }
+                // Stale-load guard: a popped-and-re-entered view triggers
+                // `.task` cancellation, but `await commentsTask` above sits
+                // on `try?` so a cancelled parent task silently falls
+                // through. Re-check before the cache write so an in-flight
+                // old load can't clobber the new view's fresher cache entry.
+                try Task.checkCancellation()
+                // Cache the final state so re-entering this post (via a
+                // fresh tap or the right-edge forward-swipe that re-pushes
+                // `lastOpenedPost`) skips network + parse entirely.
+                cache.put(id: post.id, detail: parsed)
             }
         } catch is CancellationError {
             return

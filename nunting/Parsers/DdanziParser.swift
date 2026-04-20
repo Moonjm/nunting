@@ -417,6 +417,14 @@ struct DdanziParser: BoardParser {
         var output = ""
         try walk(copy, into: &output)
         let trimmed = output
+            // Raw text-node content leaks the source's pretty-print
+            // indentation (`"\n    "` between block children) into the
+            // rendered text. Strip spaces/tabs around every newline.
+            .replacingOccurrences(
+                of: #"[ \t]*\n[ \t]*"#,
+                with: "\n",
+                options: .regularExpression
+            )
             .replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed
