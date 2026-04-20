@@ -4,6 +4,9 @@ struct ContentView: View {
     @State private var favorites: FavoritesStore
     @State private var catalog = BoardCatalogStore()
     @State private var readStore = ReadStore()
+    /// Session cache so re-entering a post (fresh tap, or forward-swipe
+    /// re-push of `lastOpenedPost`) skips the network + parse.
+    @State private var detailCache = PostDetailCache()
     @State private var selectedBoard: Board
     @State private var selectedFilter: BoardFilter? = nil
     @State private var searchQuery: String? = nil
@@ -89,7 +92,7 @@ struct ContentView: View {
             .onPreferenceChange(ContainerHeightKey.self) { containerHeight = $0 }
             .simultaneousGesture(panGesture)
             .navigationDestination(for: Post.self) { post in
-                PostDetailView(post: post, readStore: readStore)
+                PostDetailView(post: post, readStore: readStore, cache: detailCache)
             }
         }
     }
