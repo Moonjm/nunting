@@ -319,9 +319,22 @@ struct InvenParser: BoardParser {
     }
 
     private func extractStickerURL(from rawHTML: String) -> URL? {
-        // SwiftSoup decodes entities while parsing, so the raw entity-encoded payload
-        // works directly without a manual decode pass.
-        guard let doc = try? SwiftSoup.parseBodyFragment(rawHTML),
+        // Inven ships sticker comments as entity-encoded HTML
+        // (`&lt;div class=...&gt;&lt;img src=...&gt;&lt;/div&gt;`). SwiftSoup
+        // decodes entities inside text/attribute values but does NOT re-parse
+        // those decoded strings as markup — so `parseBodyFragment` on the raw
+        // payload sees no img tag and returns nil. Peel the entity layers
+        // with the same cheap decoder `cleanCommentText` uses before looking
+        // for an image.
+        var working = rawHTML
+        for _ in 0..<3 {
+            guard working.contains("&") else { break }
+            let decoded = Self.decodeHTMLEntities(working)
+            if decoded == working { break }
+            working = decoded
+        }
+
+        guard let doc = try? SwiftSoup.parseBodyFragment(working),
               let img = try? doc.select("img").first(),
               let src = try? img.attr("src"),
               !src.isEmpty,

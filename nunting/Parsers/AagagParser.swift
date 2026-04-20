@@ -300,11 +300,27 @@ struct AagagParser: BoardParser {
                 content: stripCommentHTML(raw.w_content),
                 likeCount: raw.w_good,
                 isReply: (raw.w_cmt_reply ?? "").isEmpty == false,
-                stickerURL: nil,
+                stickerURL: extractCommentImageURL(from: raw.w_content),
                 authIconURL: nil,
                 levelIconURL: nil
             )
         }
+    }
+
+    /// Aagag comment HTML can include inline `<img>` attachments (e.g.
+    /// 이슈모음 where the comment body is a meme/sticker image). The text
+    /// path (`stripCommentHTML`) drops all tags for rendering, so the image
+    /// needs a separate pass to surface as `Comment.stickerURL`.
+    private func extractCommentImageURL(from rawHTML: String) -> URL? {
+        guard let doc = try? SwiftSoup.parseBodyFragment(rawHTML),
+              let img = try? doc.select("img").first(),
+              let src = try? img.attr("src"),
+              !src.isEmpty,
+              let url = URL(string: src, relativeTo: site.baseURL)?.absoluteURL,
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https"
+        else { return nil }
+        return url
     }
 
     private func stripCommentHTML(_ raw: String) -> String {
