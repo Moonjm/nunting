@@ -10,11 +10,15 @@ struct PostDetailView: View {
     @State private var selectedImage: ImageViewerItem?
     @State private var webItem: WebBrowserItem?
 
-    /// iOS `UINavigationController` push animation is ~350ms; 150ms slack
-    /// covers SwiftUI settling + slower / thermally throttled devices so the
-    /// heavy parse+decode work never starts while the screen is still
-    /// sliding in.
-    private static let navPushAnimationBuffer: Duration = .milliseconds(500)
+    /// Minimum wall-clock delay between view appearance and the first
+    /// `detail = ...` commit. Must exceed the iOS push animation (~350ms);
+    /// committing earlier causes SwiftUI to build the image-heavy subtree
+    /// on top of still-running animation frames and the push visibly
+    /// stutters. Network fetch + SwiftSoup parse + comments fetch all run
+    /// in parallel during this window, so the gate is "free" whenever
+    /// load work is slower than animation; when load is faster, we pay the
+    /// remainder to protect the animation.
+    private static let renderCommitDelay: Duration = .milliseconds(400)
 
     var body: some View {
         ScrollView {
@@ -80,12 +84,11 @@ struct PostDetailView: View {
         })
         .task(id: post.id) {
             readStore.markRead(post)
-            // Let the native navigation push finish before kicking off detail
-            // parsing and image work. Image-heavy posts can otherwise start
-            // creating/decoding content while the screen is still sliding in.
-            try? await Task.sleep(for: Self.navPushAnimationBuffer)
-            guard !Task.isCancelled else { return }
-            await load()
+            // Anchor the commit gate at view appearance; load() starts work
+            // immediately and only waits on this deadline before writing
+            // image-heavy state.
+            let renderReadyAt = ContinuousClock.now.advanced(by: Self.renderCommitDelay)
+            await load(renderReadyAt: renderReadyAt)
         }
         .fullScreenCover(item: $selectedImage) { item in
             ImageViewer(url: item.url)
@@ -257,7 +260,7 @@ struct PostDetailView: View {
         return .parser(dispatched, prefetched: resolved.prefetchedBody)
     }
 
-    private func load() async {
+    private func load(renderReadyAt: ContinuousClock.Instant) async {
         guard !Task.isCancelled else { return }
         isLoading = true
         errorMessage = nil
@@ -270,7 +273,7 @@ struct PostDetailView: View {
 
             switch dispatch {
             case .external(let externalURL):
-                detail = PostDetail(
+                let placeholder = PostDetail(
                     post: post,
                     blocks: [.dealLink(externalURL, label: "외부 사이트로 이동: \(externalURL.host ?? externalURL.absoluteString)")],
                     fullDateText: post.dateText,
@@ -278,6 +281,12 @@ struct PostDetailView: View {
                     source: nil,
                     comments: []
                 )
+                await Self.awaitRenderReady(renderReadyAt)
+                // Toggle isLoading in the same runloop as the detail write so
+                // `articleContent`'s `if isLoading` branch doesn't keep the
+                // spinner up after we already have content.
+                isLoading = false
+                detail = placeholder
                 return
 
             case .parser(let resolved, let prefetched):
@@ -289,43 +298,74 @@ struct PostDetailView: View {
                     html = try await Networking.fetchHTML(url: resolved.url, encoding: resolved.site.encoding)
                 }
                 try Task.checkCancellation()
-                // Run the heavy SwiftSoup parse + per-chunk text stripping off
-                // the main actor so opening an image-heavy post doesn't freeze
-                // the scroll for hundreds of milliseconds.
+
+                // Kick comment fetch off in parallel with the detached detail
+                // parse. Parse is CPU-bound, comment fetch is network-bound,
+                // so overlapping them shaves the comment leg off the critical
+                // path for every site that has an override (Coolenjoy, Inven,
+                // Ppomppu, Aagag, SLR, Ddanzi). Parsers without a comments URL
+                // keep the detail-embedded comments returned by parseDetail.
+                // Caveat: Ppomppu/SLR/Ddanzi implement `fetchAllComments` by
+                // re-fetching `post.url` to extract AJAX params. Running that
+                // concurrently with our own `fetchHTML` above means both
+                // requests are in flight simultaneously, so URLCache can't
+                // coalesce them — those sites pay 2× request cost here.
+                // Accepted for now; fixing would require threading the
+                // already-fetched HTML through the parser protocol.
                 let parsedHTML = html
                 let parsedPost = resolved
-                var parsed = try await Task.detached(priority: .userInitiated) {
+                let postSite = resolved.site
+                async let parsedTask: PostDetail = Task.detached(priority: .userInitiated) {
                     try parser.parseDetail(html: parsedHTML, post: parsedPost)
                 }.value
-
-                // Always run fetchAllComments when the parser provides a comments URL — the
-                // default protocol impl returns [] for parsers without a real override (Clien),
-                // so detail-page comments survive. Parsers with overrides (Coolenjoy, Inven,
-                // Ppomppu) handle pagination authoritatively.
-                if parser.commentsURL(for: resolved) != nil {
-                    let postSite = resolved.site
-                    let extras = try? await parser.fetchAllComments(for: resolved) { url in
+                async let commentsTask: [Comment]? = {
+                    guard parser.commentsURL(for: resolved) != nil else { return nil }
+                    return try? await parser.fetchAllComments(for: resolved) { url in
                         try await Networking.fetchHTML(url: url, encoding: postSite.encoding)
                     }
-                    if let extras, !extras.isEmpty {
-                        parsed = PostDetail(
-                            post: parsed.post,
-                            blocks: parsed.blocks,
-                            fullDateText: parsed.fullDateText,
-                            viewCount: parsed.viewCount,
-                            source: parsed.source,
-                            comments: extras
-                        )
-                    }
-                }
+                }()
 
+                var parsed = try await parsedTask
+                try Task.checkCancellation()
+
+                // Gate the first render commit so SwiftUI isn't building an
+                // image-heavy subtree during the first animation frames.
+                // When parse is slower than the gate this is a no-op.
+                await Self.awaitRenderReady(renderReadyAt)
+                // Flip isLoading in the same runloop as the detail write so
+                // the spinner disappears the moment the article is ready —
+                // otherwise `defer` keeps isLoading=true until the comments
+                // leg finishes and the two-phase commit collapses back into
+                // a single-flash render.
+                isLoading = false
                 detail = parsed
+
+                if let extras = await commentsTask, !extras.isEmpty {
+                    parsed = PostDetail(
+                        post: parsed.post,
+                        blocks: parsed.blocks,
+                        fullDateText: parsed.fullDateText,
+                        viewCount: parsed.viewCount,
+                        source: parsed.source,
+                        comments: extras
+                    )
+                    detail = parsed
+                }
             }
         } catch is CancellationError {
             return
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// Sleep until `deadline` if it's in the future; no-op otherwise. Used to
+    /// keep state mutations that trigger image-subtree construction out of
+    /// the navigation push animation's opening frames.
+    private static func awaitRenderReady(_ deadline: ContinuousClock.Instant) async {
+        let remaining = deadline - ContinuousClock.now
+        guard remaining > .zero else { return }
+        try? await Task.sleep(for: remaining)
     }
 }
 
