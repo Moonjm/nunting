@@ -12,7 +12,15 @@ struct PpomppuParser: BoardParser {
         "section", "article", "tr",
     ]
 
-    private static let skipTags: Set<String> = ["script", "style", "iframe", "noscript"]
+    private static let skipTags: Set<String> = ["script", "style", "noscript"]
+
+    /// Matches the canonical YouTube embed URL shape — `/embed/{11-char id}`
+    /// on `youtube.com` or the no-cookie variant. Shared by all YouTube
+    /// `<iframe>` handling in this parser.
+    private static let youtubeIDRegex = try! NSRegularExpression(
+        pattern: #"youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{11})"#,
+        options: []
+    )
 
     func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
@@ -299,6 +307,15 @@ struct PpomppuParser: BoardParser {
                     if let url = try videoURL(from: el) {
                         blocks.append(.video(url, posterURL: try videoPoster(from: el)))
                     }
+                case "iframe":
+                    // YouTube embeds arrive as <iframe src=".../embed/{id}">.
+                    // Promote to an inline `.embed(.youtube, id:)` block so
+                    // the detail view renders the real thumbnail + tap-to-open
+                    // affordance instead of the iframe being silently dropped.
+                    if let id = youtubeID(from: (try? el.attr("src")) ?? "") {
+                        flush()
+                        blocks.append(.embed(.youtube, id: id))
+                    }
                 case "br":
                     inline.appendText("\n")
                 case "a":
@@ -313,8 +330,9 @@ struct PpomppuParser: BoardParser {
                     if Self.skipTags.contains(childTag) { continue }
                     let nestedImgs = try el.select("img")
                     let nestedVideos = try el.select("video")
+                    let nestedIframes = try el.select("iframe")
                     let isBlock = Self.blockTags.contains(childTag)
-                    if !nestedImgs.isEmpty() || !nestedVideos.isEmpty() {
+                    if !nestedImgs.isEmpty() || !nestedVideos.isEmpty() || !nestedIframes.isEmpty() {
                         flush()
                         try collectBlocks(from: el, skipping: skipURL, into: &blocks)
                     } else {
@@ -358,16 +376,28 @@ struct PpomppuParser: BoardParser {
     }
 
     private func imageURL(from element: Element) throws -> URL? {
-        var src = try element.attr("src")
-        if src.isEmpty {
-            src = try element.attr("data-src")
+        // Match the comment-image attribute priority so body GIFs that use
+        // the same lazy-loading pattern as comments (src = placeholder like
+        // `/images/gif_load.gif`, `data-original` = real CDN URL) aren't
+        // silently rendered as the placeholder or dropped.
+        let candidates = [
+            try element.attr("data-original"),
+            try element.attr("data-src"),
+            try element.attr("src"),
+        ]
+        for raw in candidates {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty,
+                  !trimmed.contains("lazyloading"),
+                  !trimmed.contains("/images/gif_load")
+            else { continue }
+            guard let url = URL(string: trimmed, relativeTo: site.baseURL)?.absoluteURL,
+                  let scheme = url.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https"
+            else { continue }
+            return url
         }
-        guard !src.isEmpty,
-              let url = URL(string: src, relativeTo: site.baseURL)?.absoluteURL,
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https"
-        else { return nil }
-        return url
+        return nil
     }
 
     private func dealAnchor(from view: Element) throws -> (url: URL, label: String)? {
@@ -376,6 +406,21 @@ struct PpomppuParser: BoardParser {
         let el = try view.select("div.link-box a[href], li.topTitle-link a[href]").first()
         guard let el else { return nil }
         return try anchor(from: el)
+    }
+
+    /// Extract a YouTube video ID from an `<iframe src>` value. Returns nil
+    /// when the URL doesn't match YouTube's canonical embed shape, so callers
+    /// can fall through to the generic skip-or-recurse path for iframes of
+    /// unrelated providers (Twitter, Naver blog, etc.).
+    private func youtubeID(from src: String) -> String? {
+        let ns = src as NSString
+        guard let match = Self.youtubeIDRegex.firstMatch(
+                in: src,
+                range: NSRange(location: 0, length: ns.length)
+              ),
+              match.numberOfRanges >= 2
+        else { return nil }
+        return ns.substring(with: match.range(at: 1))
     }
 
     /// HTML5 `<video poster="...">` — when present, parser passes it along so
