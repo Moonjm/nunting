@@ -221,8 +221,9 @@ struct PpomppuParser: BoardParser {
             let contentEl = try node.select("[id^=ctx_]").first()
             let content = try contentEl.map { try cleanCommentText(from: $0) } ?? ""
             let stickerURL = try contentEl.flatMap { try extractStickerURL(from: $0) }
+            let videoURL = try contentEl.flatMap { try extractCommentVideoURL(from: $0) }
 
-            guard !content.isEmpty || stickerURL != nil else { continue }
+            guard !content.isEmpty || stickerURL != nil || videoURL != nil else { continue }
 
             results.append(Comment(
                 id: "\(site.rawValue)-c-\(cmtID)",
@@ -232,6 +233,7 @@ struct PpomppuParser: BoardParser {
                 likeCount: likeCount,
                 isReply: isReply,
                 stickerURL: stickerURL,
+                videoURL: videoURL,
                 authIconURL: nil,
                 levelIconURL: levelIconURL
             ))
@@ -480,6 +482,29 @@ struct PpomppuParser: BoardParser {
             }
         }
         return nil
+    }
+
+    /// Inline `<video>` attachments inside a Ppomppu comment — the site
+    /// wraps uploaded mp4s in `<div class="wrapper_video"><video><source
+    /// src="..."></video></div>`. Without this, `cleanCommentText` strips
+    /// the `<video>` from the rendered text and nothing surfaces in the UI.
+    private func extractCommentVideoURL(from element: Element) throws -> URL? {
+        guard let vid = try element.select("video").first() else { return nil }
+        var src = try vid.attr("src")
+        if src.isEmpty, let source = try vid.select("source").first() {
+            src = try source.attr("src")
+        }
+        if src.isEmpty { src = try vid.attr("data-src") }
+        // Drop AVPlayer-unfriendly fragment identifiers (`#t=0.05` etc.).
+        if let hash = src.firstIndex(of: "#") {
+            src = String(src[..<hash])
+        }
+        guard !src.isEmpty,
+              let url = URL(string: src, relativeTo: site.baseURL)?.absoluteURL,
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https"
+        else { return nil }
+        return url
     }
 
     private func commentImageURL(from el: Element) throws -> URL? {

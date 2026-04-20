@@ -374,7 +374,8 @@ struct SLRParser: BoardParser {
                 content: rendered.text,
                 likeCount: entry.vt ?? 0,
                 isReply: entry.th != nil,
-                stickerURL: rendered.sticker
+                stickerURL: rendered.sticker,
+                videoURL: rendered.video
             ))
         }
         return results
@@ -393,11 +394,11 @@ struct SLRParser: BoardParser {
     /// for the `<br>` runs before parsing and restore real newlines after.
     private static let brSentinel = "\u{E000}"
 
-    private static func renderMemo(_ memo: String) -> (text: String, sticker: URL?) {
+    private static func renderMemo(_ memo: String) -> (text: String, sticker: URL?, video: URL?) {
         let raw = memo.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else { return ("", nil) }
+        guard !raw.isEmpty else { return ("", nil, nil) }
         // Fast path: no tags at all → original trimmed text.
-        if !raw.contains("<") { return (raw, nil) }
+        if !raw.contains("<") { return (raw, nil, nil) }
 
         // Swap <br[/]>  → sentinel so the collapsed `.text()` pass preserves
         // the line break. Regex covers `<br>`, `<br/>`, `<br />`, mixed case.
@@ -425,8 +426,36 @@ struct SLRParser: BoardParser {
                 }
             }
 
-            // Drop img/script/style — they're rendered separately or irrelevant.
-            try body.select("img, script, style").remove()
+            // SLR ships GIF-heavy comments as inline `<video>` (often with an
+            // mp4 `<source>` child) so the detail view can replay them via
+            // `InlineVideoPlayer`. Mirror the body-level videoURL extraction
+            // shape here; without it, the video is invisible and its HTML
+            // fallback message ("Your browser does not support...") leaks
+            // into the comment text below.
+            var video: URL?
+            if let vid = try body.select("video").first() {
+                var vidSrc = try vid.attr("src")
+                if vidSrc.isEmpty, let source = try vid.select("source").first() {
+                    vidSrc = try source.attr("src")
+                }
+                if let hash = vidSrc.firstIndex(of: "#") {
+                    vidSrc = String(vidSrc[..<hash])
+                }
+                if !vidSrc.isEmpty {
+                    let normalized = vidSrc.hasPrefix("//") ? "https:" + vidSrc : vidSrc
+                    if let url = URL(string: normalized, relativeTo: URL(string: "https://m.slrclub.com")!)?.absoluteURL,
+                       let scheme = url.scheme?.lowercased(),
+                       scheme == "http" || scheme == "https" {
+                        video = url
+                    }
+                }
+            }
+
+            // Drop img/video/script/style — they're rendered separately
+            // (sticker/video URLs above) or irrelevant. Dropping <video> also
+            // prevents the browser-fallback text ("Your browser does not
+            // support the video tag.") from leaking into the comment body.
+            try body.select("img, video, source, script, style").remove()
             let collapsed = try body.text()
             // After sentinel→newline, strip whitespace that SwiftSoup's
             // `.text()` left on either side of the sentinel (it collapses
@@ -441,7 +470,7 @@ struct SLRParser: BoardParser {
                 )
                 .replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            return (text, sticker)
+            return (text, sticker, video)
         } catch {
             // Bad markup → strip obvious `<br>` tokens directly so the user
             // at least sees readable text instead of raw HTML.
@@ -452,7 +481,7 @@ struct SLRParser: BoardParser {
                     options: .regularExpression
                 )
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            return (stripped, nil)
+            return (stripped, nil, nil)
         }
     }
 }
