@@ -282,6 +282,10 @@ struct PostDetailView: View {
                     comments: []
                 )
                 await Self.awaitRenderReady(renderReadyAt)
+                // Toggle isLoading in the same runloop as the detail write so
+                // `articleContent`'s `if isLoading` branch doesn't keep the
+                // spinner up after we already have content.
+                isLoading = false
                 detail = placeholder
                 return
 
@@ -301,6 +305,13 @@ struct PostDetailView: View {
                 // path for every site that has an override (Coolenjoy, Inven,
                 // Ppomppu, Aagag, SLR, Ddanzi). Parsers without a comments URL
                 // keep the detail-embedded comments returned by parseDetail.
+                // Caveat: Ppomppu/SLR/Ddanzi implement `fetchAllComments` by
+                // re-fetching `post.url` to extract AJAX params. Running that
+                // concurrently with our own `fetchHTML` above means both
+                // requests are in flight simultaneously, so URLCache can't
+                // coalesce them — those sites pay 2× request cost here.
+                // Accepted for now; fixing would require threading the
+                // already-fetched HTML through the parser protocol.
                 let parsedHTML = html
                 let parsedPost = resolved
                 let postSite = resolved.site
@@ -321,6 +332,12 @@ struct PostDetailView: View {
                 // image-heavy subtree during the first animation frames.
                 // When parse is slower than the gate this is a no-op.
                 await Self.awaitRenderReady(renderReadyAt)
+                // Flip isLoading in the same runloop as the detail write so
+                // the spinner disappears the moment the article is ready —
+                // otherwise `defer` keeps isLoading=true until the comments
+                // leg finishes and the two-phase commit collapses back into
+                // a single-flash render.
+                isLoading = false
                 detail = parsed
 
                 if let extras = await commentsTask, !extras.isEmpty {
