@@ -66,7 +66,18 @@ struct PostDetailView: View {
                 .padding()
             }
         }
-        .background(Color("AppSurface"))
+        // Fill the hosted container even when the SwiftUI ideal size would
+        // otherwise be smaller — UIHostingController inside our overlay
+        // representable sizes to its SwiftUI ideal by default, which left
+        // the VStack vertically centered within a larger ZStack frame and
+        // exposed the list underneath at the top/bottom bands.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        // Background spans the full frame including under the status
+        // bar / notch so the list screen beneath the overlay doesn't
+        // peek through the top safe area. The header VStack still
+        // respects safe area, so the chevron / site name land below
+        // the status bar as expected.
+        .background(Color("AppSurface").ignoresSafeArea())
         // Intercept every link tap inside the detail view (body anchor
         // tags, NSDataDetector-autolinked URLs, comment body markdown links,
         // DealLinkBanner, YouTubeBanner, source badges…) and route

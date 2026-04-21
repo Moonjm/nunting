@@ -132,6 +132,14 @@ struct ContentView: View {
                 }
                 .id(post.id)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Extend the hosted container edge-to-edge so the
+                // UIHostingController's view covers the status-bar /
+                // notch band. Without this the ZStack clips the overlay
+                // to the ContentView's safe area and the list underneath
+                // shows through the top of the detail. The PostDetailView
+                // root inside still respects safe area for its header, so
+                // the chevron still lands below the status bar.
+                .ignoresSafeArea()
                 .offset(x: detailOffset)
                 .zIndex(10)
             }
@@ -293,13 +301,21 @@ struct ContentView: View {
                 }
                 if dragDirection == .horizontal {
                     dragOffset = value.translation.width - dragLockBaseline
-                    // Forward-swipe reveal only: overlay hidden at drag start
-                    // and finger moving leftward. Back-swipe is owned by the
-                    // edge strip; rightward drags while the overlay is
-                    // hidden fall through to drawer logic via
-                    // `drawerApplicableDrag`.
-                    if activePost != nil && detailOffsetBase >= containerWidth && dragOffset < 0 {
-                        detailOffset = max(0, min(containerWidth, containerWidth + dragOffset))
+                    // Forward-swipe reveal: overlay hidden at drag start and
+                    // finger moving leftward pulls it in. If the finger
+                    // reverses back rightward past the start, snap the
+                    // overlay fully hidden again — otherwise a subsequent
+                    // drawer-open commit would leave `detailOffset` parked
+                    // at a partial reveal, and the next left-swipe would
+                    // lock with `detailOffsetBase < containerWidth` and
+                    // never re-enter forward-reveal mode. Back-swipe is
+                    // owned by the overlay's UIKit recognizer.
+                    if activePost != nil && detailOffsetBase >= containerWidth {
+                        if dragOffset < 0 {
+                            detailOffset = max(0, min(containerWidth, containerWidth + dragOffset))
+                        } else {
+                            detailOffset = containerWidth
+                        }
                     }
                 }
             }
@@ -359,6 +375,13 @@ struct ContentView: View {
                 withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
                     drawerOpen = shouldOpen
                     dragOffset = 0
+                    // If forward-reveal was mid-drag and the user reversed
+                    // into a drawer gesture, the overlay may still sit at a
+                    // partial reveal from `onChanged`. Snap it fully hidden
+                    // here so the next forward-swipe sees the expected base.
+                    if hasActive && base >= containerWidth && detailOffset != containerWidth {
+                        detailOffset = containerWidth
+                    }
                 }
             }
     }
@@ -481,6 +504,25 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
             onChange: onChange,
             shouldDismiss: shouldDismiss,
             onEnd: onEnd
+        )
+    }
+
+    /// Accept the parent's size proposal verbatim so the representable
+    /// fills the overlay slot in the ContentView ZStack instead of
+    /// collapsing to the hosted SwiftUI view's ideal size (which left the
+    /// detail vertically centred and leaked the list through the top/bottom
+    /// bands). Returning the proposal is the documented way to tell
+    /// SwiftUI "I'll take whatever you give me" — default sizing falls back
+    /// to preferredContentSize, which for a ScrollView-inside-VStack is
+    /// ambiguous and can end up shorter than the container.
+    func sizeThatFits(
+        _ proposal: ProposedViewSize,
+        uiViewController: Host<Content>,
+        context: Context
+    ) -> CGSize? {
+        CGSize(
+            width: proposal.width ?? UIView.noIntrinsicMetric,
+            height: proposal.height ?? UIView.noIntrinsicMetric
         )
     }
 
