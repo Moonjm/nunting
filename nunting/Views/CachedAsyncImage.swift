@@ -330,7 +330,7 @@ private struct AnimatedImageUIView: UIViewRepresentable {
     let duration: TimeInterval
 
     func makeUIView(context: Context) -> FlexibleAnimatedImageView {
-        let v = FlexibleAnimatedImageView()
+        let v = FlexibleAnimatedImageView(frame: .zero)
         v.contentMode = .scaleAspectFit
         v.clipsToBounds = true
         v.image = frames.first

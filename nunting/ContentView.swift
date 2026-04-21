@@ -513,19 +513,16 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
     /// fills the overlay slot in the ContentView ZStack instead of
     /// collapsing to the hosted SwiftUI view's ideal size (which left the
     /// detail vertically centred and leaked the list through the top/bottom
-    /// bands). Returning the proposal is the documented way to tell
-    /// SwiftUI "I'll take whatever you give me" — default sizing falls back
-    /// to preferredContentSize, which for a ScrollView-inside-VStack is
-    /// ambiguous and can end up shorter than the container.
+    /// bands). `replacingUnspecifiedDimensions()` resolves nil dimensions
+    /// to SwiftUI's documented fallback (10×10) rather than
+    /// `UIView.noIntrinsicMetric` — the latter is -1 and trips layout math
+    /// that assumes a non-negative extent.
     func sizeThatFits(
         _ proposal: ProposedViewSize,
         uiViewController: Host<Content>,
         context: Context
     ) -> CGSize? {
-        CGSize(
-            width: proposal.width ?? UIView.noIntrinsicMetric,
-            height: proposal.height ?? UIView.noIntrinsicMetric
-        )
+        proposal.replacingUnspecifiedDimensions()
     }
 
     final class Host<V: View>: UIHostingController<V> {

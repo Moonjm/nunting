@@ -170,9 +170,12 @@ struct PostDetailView: View {
         } else if let errorMessage {
             ContentUnavailableView("불러오기 실패", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
         } else if let detail {
-            // Keep eager so the ScrollView's contentSize stays stable while
-            // the keep-alive detail view is being swiped horizontally.
-            VStack(alignment: .leading, spacing: 12) {
+            // Lazy so only blocks near the viewport materialise — avoids
+            // a 20-image post kicking off simultaneous fetches / decodes
+            // when the view opens. The horizontal back-swipe doesn't need
+            // contentSize stability here because `SwipeToDismissOverlay`
+            // animates a UIKit snapshot while the live tree is offscreen.
+            LazyVStack(alignment: .leading, spacing: 12) {
                 ForEach(detail.blocks) { block in
                     switch block.kind {
                     case .richText(let segments):
@@ -558,10 +561,12 @@ private struct CommentsSection: View {
                     .foregroundStyle(.secondary)
             }
 
-            // Keep comments eager. Long comment tails are where SwiftUI's
-            // LazyVStack keeps revising contentSize during horizontal
-            // back-swipe gestures, which moves the apparent scroll position.
-            VStack(alignment: .leading, spacing: 0) {
+            // LazyVStack so off-screen comments don't kick off markdown
+            // parses / image fetches / AVPlayer setup at the same time
+            // the user is trying to scroll the top of a long thread. The
+            // back-swipe uses a UIKit snapshot, so contentSize churn as
+            // new rows materialise doesn't bleed into the drag.
+            LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(comments.enumerated()), id: \.element.id) { index, comment in
                     CommentRow(comment: comment, onImageTap: onImageTap)
                     if index < comments.count - 1 {
