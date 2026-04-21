@@ -4,6 +4,9 @@ struct PostDetailView: View {
     let post: Post
     let readStore: ReadStore
     let cache: PostDetailCache
+    /// Invoked from the custom back button in the header. The parent owns the
+    /// overlay offset animation; this view just asks to be dismissed.
+    let onDismiss: () -> Void
 
     @State private var detail: PostDetail?
     @State private var isLoading = true
@@ -22,56 +25,48 @@ struct PostDetailView: View {
     private static let renderCommitDelay: Duration = .milliseconds(400)
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Text(post.title)
-                    .font(.title3)
-                    .fontWeight(.semibold)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(spacing: 0) {
+            detailHeader
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(post.title)
+                        .font(.title3)
+                        .fontWeight(.semibold)
+                        .frame(maxWidth: .infinity, alignment: .leading)
 
-                HStack(spacing: 10) {
-                    Text(post.author)
-                    Text(detail?.fullDateText ?? post.dateText)
-                    if let views = detail?.viewCount {
-                        Text("👁 \(views)")
+                    HStack(spacing: 10) {
+                        Text(post.author)
+                        Text(detail?.fullDateText ?? post.dateText)
+                        if let views = detail?.viewCount {
+                            Text("👁 \(views)")
+                        }
+                        if post.commentCount > 0 {
+                            Text("💬 \(post.commentCount)")
+                        }
                     }
-                    if post.commentCount > 0 {
-                        Text("💬 \(post.commentCount)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                    if let source = detail?.source {
+                        SourceBanner(source: source)
+                    }
+
+                    Divider()
+
+                    articleContent
+
+                    if let comments = detail?.comments, !comments.isEmpty {
+                        CommentsSection(
+                            comments: comments,
+                            onImageTap: { url in selectedImage = ImageViewerItem(url: url) }
+                        )
+                            .padding(.top, 8)
                     }
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-                if let source = detail?.source {
-                    SourceBanner(source: source)
-                }
-
-                Divider()
-
-                articleContent
-
-                if let comments = detail?.comments, !comments.isEmpty {
-                    CommentsSection(
-                        comments: comments,
-                        onImageTap: { url in selectedImage = ImageViewerItem(url: url) }
-                    )
-                        .padding(.top, 8)
-                }
+                .padding()
             }
-            .padding()
         }
         .background(Color("AppSurface"))
-        .navigationTitle(post.site.displayName)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    presentInBrowser(post.url)
-                } label: {
-                    Image(systemName: "safari")
-                }
-            }
-        }
         // Intercept every link tap inside the detail view (body anchor
         // tags, NSDataDetector-autolinked URLs, comment body markdown links,
         // DealLinkBanner, YouTubeBanner, source badges…) and route
@@ -110,7 +105,41 @@ struct PostDetailView: View {
         }
     }
 
-    /// Wraps the scheme gate + state assignment so the toolbar button and
+    /// Custom top bar. We present this view as a ZStack overlay (not through
+    /// NavigationStack), so `.navigationTitle`/`.toolbar` have no effect and
+    /// we render chrome ourselves. Fixed-width side buttons keep the site
+    /// name visually centred.
+    private var detailHeader: some View {
+        HStack(spacing: 0) {
+            Button(action: onDismiss) {
+                Image(systemName: "chevron.left")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 44, height: 44, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            Spacer(minLength: 0)
+            Text(post.site.displayName)
+                .font(.headline)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            Button {
+                presentInBrowser(post.url)
+            } label: {
+                Image(systemName: "safari")
+                    .font(.body)
+                    .foregroundStyle(.primary)
+                    .frame(width: 44, height: 44, alignment: .trailing)
+                    .contentShape(Rectangle())
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 44)
+        .background(Color("AppSurface"))
+        .overlay(Divider(), alignment: .bottom)
+    }
+
+    /// Wraps the scheme gate + state assignment so the header button and
     /// the `openURL` environment override share one code path. Returns
     /// whether the URL was routed in-app so the OpenURLAction can report
     /// `.handled` vs `.systemAction` from the same check.
@@ -130,10 +159,9 @@ struct PostDetailView: View {
         } else if let errorMessage {
             ContentUnavailableView("불러오기 실패", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
         } else if let detail {
-            // Lazy so only the blocks near the viewport materialise — keeps
-            // image-heavy posts from kicking off ~20 simultaneous fetches and
-            // decode passes the moment the screen opens.
-            LazyVStack(alignment: .leading, spacing: 12) {
+            // Keep eager so the ScrollView's contentSize stays stable while
+            // the keep-alive detail view is being swiped horizontally.
+            VStack(alignment: .leading, spacing: 12) {
                 ForEach(detail.blocks) { block in
                     switch block.kind {
                     case .richText(let segments):
@@ -371,8 +399,10 @@ struct PostDetailView: View {
                 // old load can't clobber the new view's fresher cache entry.
                 try Task.checkCancellation()
                 // Cache the final state so re-entering this post (via a
-                // fresh tap or the right-edge forward-swipe that re-pushes
-                // `lastOpenedPost`) skips network + parse entirely.
+                // fresh tap after the overlay was replaced) skips network +
+                // parse entirely. The overlay itself keeps the rendered view
+                // alive across back-swipes, so this cache is really just for
+                // when the active post gets evicted by a different tap.
                 cache.put(id: post.id, detail: parsed)
             }
         } catch is CancellationError {
@@ -517,10 +547,10 @@ private struct CommentsSection: View {
                     .foregroundStyle(.secondary)
             }
 
-            // LazyVStack so off-screen comments don't kick off markdown
-            // parses / image fetches / AVPlayer setup at the same time the
-            // user is trying to scroll the top of a long thread.
-            LazyVStack(alignment: .leading, spacing: 0) {
+            // Keep comments eager. Long comment tails are where SwiftUI's
+            // LazyVStack keeps revising contentSize during horizontal
+            // back-swipe gestures, which moves the apparent scroll position.
+            VStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(comments.enumerated()), id: \.element.id) { index, comment in
                     CommentRow(comment: comment, onImageTap: onImageTap)
                     if index < comments.count - 1 {

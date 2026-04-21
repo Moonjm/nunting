@@ -1,11 +1,12 @@
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     @State private var favorites: FavoritesStore
     @State private var catalog = BoardCatalogStore()
     @State private var readStore = ReadStore()
-    /// Session cache so re-entering a post (fresh tap, or forward-swipe
-    /// re-push of `lastOpenedPost`) skips the network + parse.
+    /// Session cache so a freshly-opened post (one whose overlay wasn't the
+    /// keep-alive target) skips the network + parse on first render.
     @State private var detailCache = PostDetailCache()
     @State private var selectedBoard: Board
     @State private var selectedFilter: BoardFilter? = nil
@@ -16,11 +17,21 @@ struct ContentView: View {
     /// a specific site's catalog). Updated whenever the user taps a board
     /// in the drawer.
     @State private var boardNavScope: DrawerSection = .favorites
-    @State private var navigationPath = NavigationPath()
     @State private var searchSheetPresented = false
-    /// Most recently opened post — re-pushed when the user swipes from the
-    /// right edge toward the left, mirroring iOS's left-edge back-swipe.
-    @State private var lastOpenedPost: Post?
+    /// Most recently opened post. Kept alive as a ZStack overlay so the
+    /// rendered view, scroll position, image state, and video playback all
+    /// survive back-swipes. A right-edge leftward drag re-slides the same
+    /// view back in; tapping a different post rebuilds the overlay via
+    /// `.id(post.id)` (old view destroyed, data still hot in `detailCache`).
+    @State private var activePost: Post?
+    /// 0 = overlay fully shown; `containerWidth` = fully hidden off the right
+    /// edge. Animated by `showDetail`/`hideDetail` on tap/back, dragged
+    /// directly in the pan handler during interactive swipes.
+    @State private var detailOffset: CGFloat = 0
+    /// `detailOffset` at the moment the horizontal drag lock engages. Used
+    /// to classify the drag as back-swipe (base 0) vs forward-reveal (base
+    /// containerWidth) regardless of how far the finger has travelled.
+    @State private var detailOffsetBase: CGFloat = 0
     /// Bumped on bottom-bar double-tap. Attached to `mainScreen` via `.id()`
     /// so the whole list + filter bar + bottom bar subtree is rebuilt,
     /// triggering a fresh load regardless of current search/filter state.
@@ -57,61 +68,92 @@ struct ContentView: View {
     }
 
     var body: some View {
-        NavigationStack(path: $navigationPath) {
-            ZStack(alignment: .leading) {
-                mainScreen
-                    .id(reloadToken)
-                    .toolbar(.hidden, for: .navigationBar)
+        ZStack(alignment: .leading) {
+            mainScreen
+                .id(reloadToken)
 
-                Color.black
-                    .opacity(0.3 * drawerProgress)
-                    .ignoresSafeArea()
-                    .allowsHitTesting(drawerOpen)
-                    .onTapGesture { closeDrawer() }
+            Color.black
+                .opacity(0.3 * drawerProgress)
+                .ignoresSafeArea()
+                .allowsHitTesting(drawerOpen)
+                .onTapGesture { closeDrawer() }
 
-                SideDrawer(
-                    favorites: favorites,
-                    catalog: catalog,
-                    currentBoardID: selectedBoard.id,
-                    selectedSection: $drawerSection,
-                    onSelectBoard: { board in
-                        selectedBoard = board
-                        boardNavScope = drawerSection
-                        closeDrawer()
-                    },
-                    onClose: closeDrawer
-                )
-                .frame(width: drawerWidth)
-                .offset(x: drawerXOffset)
-
-                // Right-edge forward-swipe preview: a lightweight detail-page
-                // header that slides in from the right tracking the finger
-                // while the gesture is active and eligible. On commit it's
-                // dropped synchronously and the NavigationStack's push
-                // animation takes over (the real PostDetailView then reads
-                // PostDetailCache for instant restore).
-                if forwardPreviewActive, let preview = lastOpenedPost {
-                    forwardPreviewCard(for: preview)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .offset(x: containerWidth + forwardPeekOffset)
-                        .allowsHitTesting(false)
-                }
-            }
-            .ignoresSafeArea(.keyboard)
-            .background(
-                GeometryReader { proxy in
-                    Color.clear
-                        .preference(key: ContainerHeightKey.self, value: proxy.size.height)
-                        .preference(key: ContainerWidthKey.self, value: proxy.size.width)
-                }
+            SideDrawer(
+                favorites: favorites,
+                catalog: catalog,
+                currentBoardID: selectedBoard.id,
+                selectedSection: $drawerSection,
+                onSelectBoard: { board in
+                    selectedBoard = board
+                    boardNavScope = drawerSection
+                    closeDrawer()
+                },
+                onClose: closeDrawer
             )
-            .onPreferenceChange(ContainerHeightKey.self) { containerHeight = $0 }
-            .onPreferenceChange(ContainerWidthKey.self) { containerWidth = $0 }
-            .simultaneousGesture(panGesture)
-            .navigationDestination(for: Post.self) { post in
-                PostDetailView(post: post, readStore: readStore, cache: detailCache)
+            .frame(width: drawerWidth)
+            .offset(x: drawerXOffset)
+
+            // Keep-alive detail overlay. Once set, `activePost` stays
+            // non-nil so the rendered PostDetailView survives back-swipes
+            // (scroll state, image decode, video playback all preserved).
+            // `.id(post.id)` forces a rebuild only when a different post is
+            // opened, which is the sole case where we intentionally trade
+            // keep-alive for a fresh view.
+            if let post = activePost {
+                // Wrap the detail view in a UIHostingController whose root
+                // UIView carries a UIPanGestureRecognizer. SwiftUI's
+                // `.simultaneousGesture` alone doesn't fire reliably here
+                // because UIScrollView tends to claim the touch first. The
+                // UIKit recognizer stays simultaneous with the scroll pan,
+                // but only begins for clearly rightward horizontal drags.
+                // During the drag it moves a UIKit snapshot, avoiding
+                // per-frame SwiftUI state writes that can make long
+                // LazyVStack details blank or jump.
+                SwipeToDismissOverlay(
+                    onChange: { dx in
+                        detailOffset = max(0, min(containerWidth, dx))
+                    },
+                    shouldDismiss: { dx, velocityX in
+                        shouldDismissDetailSwipe(dx: dx, velocityX: velocityX)
+                    },
+                    onEnd: { dx, velocityX in
+                        let shouldDismiss = shouldDismissDetailSwipe(dx: dx, velocityX: velocityX)
+                        withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
+                            detailOffset = shouldDismiss ? containerWidth : 0
+                        }
+                    }
+                ) {
+                    PostDetailView(
+                        post: post,
+                        readStore: readStore,
+                        cache: detailCache,
+                        onDismiss: { hideDetail() }
+                    )
+                }
+                .id(post.id)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .offset(x: detailOffset)
+                .zIndex(10)
             }
         }
+        .ignoresSafeArea(.keyboard)
+        .background(
+            GeometryReader { proxy in
+                Color.clear
+                    .preference(key: ContainerHeightKey.self, value: proxy.size.height)
+                    .preference(key: ContainerWidthKey.self, value: proxy.size.width)
+            }
+        )
+        .onPreferenceChange(ContainerHeightKey.self) { containerHeight = $0 }
+        .onPreferenceChange(ContainerWidthKey.self) { newWidth in
+            // If the overlay was hidden at the previous width, keep it fully
+            // hidden at the new width — otherwise a rotation / window resize
+            // could leave a sliver of it visible on the right edge.
+            let wasHidden = detailOffset >= containerWidth - 0.5 && containerWidth > 0
+            containerWidth = newWidth
+            if wasHidden { detailOffset = newWidth }
+        }
+        .simultaneousGesture(panGesture)
     }
 
     private var mainScreen: some View {
@@ -123,8 +165,7 @@ struct ContentView: View {
                 scrollLocked: scrollLocked,
                 readStore: readStore,
                 onSelectPost: { post in
-                    lastOpenedPost = post
-                    navigationPath.append(post)
+                    showDetail(post)
                 }
             )
             if !selectedBoard.filters.isEmpty {
@@ -169,78 +210,68 @@ struct ContentView: View {
 
     private var drawerProgress: CGFloat {
         let base: CGFloat = drawerOpen ? drawerWidth : 0
-        let target = base + dragOffset
+        let target = base + drawerApplicableDrag
         return max(0, min(1, target / drawerWidth))
+    }
+
+    /// Portion of the current drag that should feed `drawerProgress`. Zero
+    /// whenever the drag is classified as a detail back/forward swipe, so
+    /// the drawer doesn't flash open while the detail overlay is tracking
+    /// the same finger.
+    private var drawerApplicableDrag: CGFloat {
+        guard activePost != nil else { return dragOffset }
+        // Overlay exists. Detail back-swipe (base 0) and forward-reveal
+        // (dragging left) both own the drag; only a rightward drag started
+        // while the overlay is hidden still belongs to the drawer.
+        if detailOffsetBase == 0 { return 0 }
+        return dragOffset > 0 ? dragOffset : 0
     }
 
     private var drawerXOffset: CGFloat {
         -drawerWidth + drawerWidth * drawerProgress
     }
 
-    /// How far the forward-swipe preview card has been pulled in from the
-    /// right edge. Negative values mean the card has advanced leftward; 0
-    /// pins it fully offscreen right. Clamped so the card can't overshoot
-    /// the container width while the finger keeps moving.
-    private var forwardPeekOffset: CGFloat {
-        guard forwardPreviewActive else { return 0 }
-        let maxPeek = max(containerWidth * 0.85, 200)
-        return max(dragOffset, -maxPeek)
-    }
-
-    /// Gesture is eligible to re-push the last viewed post and the finger
-    /// is currently pulling leftward — show the preview card.
-    private var forwardPreviewActive: Bool {
-        !drawerOpen
-            && dragOffset < 0
-            && navigationPath.isEmpty
-            && lastOpenedPost != nil
-    }
-
-    /// Lightweight stand-in for the incoming detail page. Not a real
-    /// `PostDetailView` so we avoid duplicating its `.task` side effects
-    /// (markRead, cache read/write) or fighting its `.toolbar` setup
-    /// outside a navigation destination. Renders just enough chrome —
-    /// hidden-back chevron, site title, post header — that the card reads
-    /// as "the detail view arriving" while the user drags.
-    @ViewBuilder
-    private func forwardPreviewCard(for post: Post) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 6) {
-                Image(systemName: "chevron.left")
-                    .font(.body.weight(.medium))
-                    .foregroundStyle(.secondary)
-                Text(post.site.displayName)
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
+    private func showDetail(_ post: Post) {
+        // Re-revealing the already-active post: keep-alive path. Just slide
+        // the existing overlay (which still holds its scroll/image state)
+        // back into view. `.id(post.id)` unchanged, so SwiftUI reuses the
+        // same PostDetailView instance and `.task(id:)` doesn't re-fire.
+        if activePost?.id == post.id {
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
+                detailOffset = 0
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .background(Color("AppSurface"))
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text(post.title)
-                    .font(.title3.weight(.semibold))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                HStack(spacing: 10) {
-                    Text(post.author)
-                    Text(post.dateText)
-                    if post.commentCount > 0 {
-                        Text("💬 \(post.commentCount)")
-                    }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-            .padding(16)
-
-            Divider()
-
-            Spacer(minLength: 0)
+            return
         }
-        .background(Color("AppSurface"))
+        // Different or first post: park the overlay offscreen right, swap
+        // `activePost` (forcing the view to rebuild), then animate in on
+        // the next runloop so SwiftUI actually observes the offscreen
+        // starting position. Coalescing all three into one transaction
+        // collapses the animation and the overlay pops in.
+        detailOffset = containerWidth > 0 ? containerWidth : 1000
+        activePost = post
+        DispatchQueue.main.async {
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
+                detailOffset = 0
+            }
+        }
     }
+
+    private func hideDetail() {
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
+            detailOffset = containerWidth
+        }
+        // Intentionally leaves `activePost` non-nil so the view survives and
+        // the next right-edge forward-swipe can restore it instantly.
+    }
+
+    private func shouldDismissDetailSwipe(dx: CGFloat, velocityX: CGFloat) -> Bool {
+        dx > detailSwipeDistanceThreshold || velocityX > 320
+    }
+
+    private var detailSwipeDistanceThreshold: CGFloat {
+        min(containerWidth * 0.12, 48)
+    }
+
 
     private var panGesture: some Gesture {
         DragGesture(minimumDistance: 6)
@@ -255,27 +286,33 @@ struct ContentView: View {
                         dragDirection = .horizontal
                         dragLockBaseline = value.translation.width
                         scrollLocked = true
+                        detailOffsetBase = detailOffset
                     } else if absH > 10 && absH > absW {
                         dragDirection = .vertical
                     }
                 }
                 if dragDirection == .horizontal {
                     dragOffset = value.translation.width - dragLockBaseline
+                    // Forward-swipe reveal only: overlay hidden at drag start
+                    // and finger moving leftward. Back-swipe is owned by the
+                    // edge strip; rightward drags while the overlay is
+                    // hidden fall through to drawer logic via
+                    // `drawerApplicableDrag`.
+                    if activePost != nil && detailOffsetBase >= containerWidth && dragOffset < 0 {
+                        detailOffset = max(0, min(containerWidth, containerWidth + dragOffset))
+                    }
                 }
             }
             .onEnded { value in
                 if startedInBottomBar(value) {
-                    dragDirection = nil
-                    dragLockBaseline = 0
-                    scrollLocked = false
-                    dragOffset = 0
+                    resetDragState()
                     return
                 }
                 let lockedHorizontal = dragDirection == .horizontal
                 let baseline = dragLockBaseline
-                dragDirection = nil
-                dragLockBaseline = 0
-                scrollLocked = false
+                let base = detailOffsetBase
+                let hasActive = activePost != nil
+                resetDragState()
 
                 guard lockedHorizontal else {
                     dragOffset = 0
@@ -285,28 +322,40 @@ struct ContentView: View {
                 let velocity = value.predictedEndTranslation.width - value.translation.width
                 let traveled = value.translation.width - baseline
 
+                // Detail overlay modes take precedence — the drag already
+                // moved `detailOffset` interactively, so committing the
+                // correct end state here preserves continuity with the
+                // finger's position.
+                if hasActive && base == 0 {
+                    // Overlay visible: back-swipe is owned by the edge
+                    // strip, and this gesture fired either on a stray
+                    // horizontal drag that the ScrollView didn't consume
+                    // or from a simultaneous dispatch. Do nothing so we
+                    // don't double-commit an animation the edge gesture
+                    // already handled.
+                    dragOffset = 0
+                    return
+                }
+                if hasActive && base >= containerWidth && traveled < 0 {
+                    // Forward-swipe reveal: low threshold matches the old
+                    // lastOpenedPost re-push so a light flick from the right
+                    // edge is enough to pull the overlay back in.
+                    let shouldReveal = traveled < -50 || velocity < -180
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
+                        detailOffset = shouldReveal ? 0 : containerWidth
+                        dragOffset = 0
+                    }
+                    return
+                }
+
+                // Drawer commit (overlay absent, or overlay hidden + drag
+                // went rightward).
                 let shouldOpen: Bool
                 if drawerOpen {
                     shouldOpen = !(traveled < -drawerWidth / 3 || velocity < -150)
                 } else {
-                    // Leftward swipe with no drawer open → re-push the last
-                    // opened post (right-edge "forward" gesture). Threshold
-                    // mirrors the drawer-open gesture's sensitivity so both
-                    // directions feel equally responsive; `forwardPeekOffset`
-                    // provides the interactive follow-through during drag.
-                    if (traveled < -50 || velocity < -180),
-                       navigationPath.isEmpty,
-                       let last = lastOpenedPost {
-                        navigationPath.append(last)
-                        dragOffset = 0
-                        return
-                    }
-                    // Smaller distance + lower fling velocity → opens with a
-                    // quick flick instead of needing to drag a third of the
-                    // screen across.
                     shouldOpen = (traveled > 50 || velocity > 90)
                 }
-
                 withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
                     drawerOpen = shouldOpen
                     dragOffset = 0
@@ -314,11 +363,15 @@ struct ContentView: View {
             }
     }
 
-    private func openDrawer(targetSection: DrawerSection) {
-        drawerSection = targetSection
+    private func resetDragState() {
         dragDirection = nil
         dragLockBaseline = 0
         scrollLocked = false
+    }
+
+    private func openDrawer(targetSection: DrawerSection) {
+        drawerSection = targetSection
+        resetDragState()
         withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
             drawerOpen = true
             dragOffset = 0
@@ -351,9 +404,7 @@ struct ContentView: View {
     }
 
     private func closeDrawer() {
-        dragDirection = nil
-        dragLockBaseline = 0
-        scrollLocked = false
+        resetDragState()
         withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
             drawerOpen = false
             dragOffset = 0
@@ -382,4 +433,253 @@ private struct ContainerWidthKey: PreferenceKey {
 
 #Preview {
     ContentView()
+}
+
+/// Hosts the detail overlay inside a UIHostingController and attaches a
+/// UIKit pan recognizer that can recognize alongside the embedded
+/// UIScrollView's own pan. We deliberately avoid `require(toFail:)`:
+/// pinning the ScrollView pan in `.possible` caused long lazy-rendered
+/// detail pages to jump or temporarily blank near the comments tail. Once
+/// a rightward horizontal pan begins, we preserve the embedded
+/// ScrollView's offset and move a UIKit snapshot instead of the live SwiftUI
+/// tree. That keeps the page visually attached to the finger without
+/// invalidating a long LazyVStack on every drag frame.
+struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
+    let onChange: (CGFloat) -> Void
+    let shouldDismiss: (CGFloat, CGFloat) -> Bool
+    /// Called with (final translation.x, velocity.x in pts/sec) on the
+    /// recognizer's terminal state. Parent decides whether to commit the
+    /// dismiss based on distance + velocity.
+    let onEnd: (CGFloat, CGFloat) -> Void
+    @ViewBuilder let content: () -> Content
+
+    func makeUIViewController(context: Context) -> Host<Content> {
+        let host = Host(rootView: content())
+        host.view.backgroundColor = .clear
+        let pan = UIPanGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handle(_:))
+        )
+        pan.delegate = context.coordinator
+        // Taps on buttons/links inside the detail view must still reach
+        // their SwiftUI handlers, so don't swallow touches while the pan
+        // is merely "possible".
+        pan.cancelsTouchesInView = false
+        host.view.addGestureRecognizer(pan)
+        return host
+    }
+
+    func updateUIViewController(_ host: Host<Content>, context: Context) {
+        host.rootView = content()
+        context.coordinator.onChange = onChange
+        context.coordinator.shouldDismiss = shouldDismiss
+        context.coordinator.onEnd = onEnd
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(
+            onChange: onChange,
+            shouldDismiss: shouldDismiss,
+            onEnd: onEnd
+        )
+    }
+
+    final class Host<V: View>: UIHostingController<V> {
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var onChange: (CGFloat) -> Void
+        var shouldDismiss: (CGFloat, CGFloat) -> Bool
+        var onEnd: (CGFloat, CGFloat) -> Void
+        weak var lockedScrollView: UIScrollView?
+        var lockedContentOffset: CGPoint?
+        var lockedDistanceToBottom: CGFloat?
+        weak var snapshotContainer: UIView?
+        var dragSnapshot: UIView?
+        var liveViewAlphaBeforeSnapshot: CGFloat = 1
+
+        init(
+            onChange: @escaping (CGFloat) -> Void,
+            shouldDismiss: @escaping (CGFloat, CGFloat) -> Bool,
+            onEnd: @escaping (CGFloat, CGFloat) -> Void
+        ) {
+            self.onChange = onChange
+            self.shouldDismiss = shouldDismiss
+            self.onEnd = onEnd
+        }
+
+        func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
+            guard let pan = g as? UIPanGestureRecognizer,
+                  let view = pan.view
+            else { return true }
+            let v = pan.velocity(in: view)
+            let shouldBegin = v.x > 0 && abs(v.x) >= abs(v.y)
+            if shouldBegin, let scrollView = Self.findScrollView(in: view) {
+                lockScroll(scrollView)
+            }
+            return shouldBegin
+        }
+
+        func gestureRecognizer(
+            _ g: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+        ) -> Bool {
+            // Keep vertical scrolling and nested controls responsive. The
+            // back-swipe recognizer only begins for rightward horizontal
+            // drags, so simultaneity here is not allowed to pin the
+            // ScrollView's pan in a deferred state.
+            return true
+        }
+
+        @objc func handle(_ pan: UIPanGestureRecognizer) {
+            guard let view = pan.view else { return }
+            let t = pan.translation(in: view)
+            let v = pan.velocity(in: view)
+            switch pan.state {
+            case .began:
+                // Zero out so subsequent `.changed` translations are
+                // measured from the claim point — otherwise the overlay
+                // would jump by the 8pt classifier threshold the moment
+                // the swipe is recognised.
+                pan.setTranslation(.zero, in: view)
+                if lockedScrollView == nil, let scrollView = Self.findScrollView(in: view) {
+                    lockScroll(scrollView)
+                }
+                freezeScrollOffset()
+                beginSnapshot(for: view)
+            case .changed:
+                freezeScrollOffset()
+                updateSnapshot(dx: max(0, t.x))
+            case .ended, .cancelled:
+                freezeScrollOffset()
+                let dx = max(0, t.x)
+                let commitsDismiss = shouldDismiss(dx, v.x)
+                finishSnapshot(for: view, dx: dx, commitsDismiss: commitsDismiss)
+                restoreScroll()
+                if commitsDismiss {
+                    onEnd(dx, v.x)
+                } else {
+                    onEnd(0, 0)
+                }
+            case .failed:
+                cancelSnapshot(for: view)
+                restoreScroll()
+            default:
+                break
+            }
+        }
+
+        private func lockScroll(_ scrollView: UIScrollView) {
+            guard lockedScrollView == nil else { return }
+            lockedScrollView = scrollView
+            lockedContentOffset = scrollView.contentOffset
+            lockedDistanceToBottom = Self.distanceToBottom(in: scrollView)
+        }
+
+        private func beginSnapshot(for view: UIView) {
+            guard dragSnapshot == nil,
+                  let container = view.superview,
+                  let snapshot = view.snapshotView(afterScreenUpdates: false)
+            else { return }
+            snapshot.frame = view.frame
+            snapshot.isUserInteractionEnabled = false
+            container.addSubview(snapshot)
+            snapshotContainer = container
+            dragSnapshot = snapshot
+            liveViewAlphaBeforeSnapshot = view.alpha
+            view.alpha = 0
+        }
+
+        private func updateSnapshot(dx: CGFloat) {
+            dragSnapshot?.transform = CGAffineTransform(translationX: dx, y: 0)
+        }
+
+        private func finishSnapshot(for view: UIView, dx: CGFloat, commitsDismiss: Bool) {
+            onChange(commitsDismiss ? dx : 0)
+            view.alpha = liveViewAlphaBeforeSnapshot
+            dragSnapshot?.removeFromSuperview()
+            dragSnapshot = nil
+            snapshotContainer = nil
+            liveViewAlphaBeforeSnapshot = 1
+        }
+
+        private func cancelSnapshot(for view: UIView) {
+            view.alpha = liveViewAlphaBeforeSnapshot
+            dragSnapshot?.removeFromSuperview()
+            dragSnapshot = nil
+            snapshotContainer = nil
+            liveViewAlphaBeforeSnapshot = 1
+        }
+
+        private func freezeScrollOffset() {
+            guard let scrollView = lockedScrollView,
+                  let lockedOffset = lockedContentOffset
+            else { return }
+            let offset = resolvedLockedOffset(in: scrollView, fallback: lockedOffset)
+            guard scrollView.contentOffset != offset else { return }
+            scrollView.setContentOffset(offset, animated: false)
+        }
+
+        private func resolvedLockedOffset(in scrollView: UIScrollView, fallback: CGPoint) -> CGPoint {
+            guard let distanceToBottom = lockedDistanceToBottom else { return fallback }
+            let minY = -scrollView.adjustedContentInset.top
+            let maxY = Self.maxOffsetY(in: scrollView)
+            let targetY: CGFloat
+            if distanceToBottom <= 2 {
+                targetY = maxY
+            } else {
+                targetY = max(minY, min(maxY, fallback.y))
+            }
+            return CGPoint(x: fallback.x, y: targetY)
+        }
+
+        private func restoreScroll() {
+            freezeScrollOffset()
+            let scrollView = self.lockedScrollView
+            let targetOffset = self.lockedContentOffset
+            lockedScrollView = nil
+            lockedContentOffset = nil
+            let distanceToBottom = lockedDistanceToBottom
+            lockedDistanceToBottom = nil
+            DispatchQueue.main.async { [weak scrollView] in
+                guard let scrollView else { return }
+                let resolvedTarget: CGPoint?
+                if let targetOffset {
+                    if let distanceToBottom, distanceToBottom <= 2 {
+                        resolvedTarget = CGPoint(x: targetOffset.x, y: Self.maxOffsetY(in: scrollView))
+                    } else {
+                        let minY = -scrollView.adjustedContentInset.top
+                        resolvedTarget = CGPoint(
+                            x: targetOffset.x,
+                            y: max(minY, min(Self.maxOffsetY(in: scrollView), targetOffset.y))
+                        )
+                    }
+                } else {
+                    resolvedTarget = nil
+                }
+                if let resolvedTarget, scrollView.contentOffset != resolvedTarget {
+                    scrollView.setContentOffset(resolvedTarget, animated: false)
+                }
+            }
+        }
+
+        private static func distanceToBottom(in scrollView: UIScrollView) -> CGFloat {
+            maxOffsetY(in: scrollView) - scrollView.contentOffset.y
+        }
+
+        private static func maxOffsetY(in scrollView: UIScrollView) -> CGFloat {
+            max(
+                -scrollView.adjustedContentInset.top,
+                scrollView.contentSize.height + scrollView.adjustedContentInset.bottom - scrollView.bounds.height
+            )
+        }
+
+        private static func findScrollView(in v: UIView) -> UIScrollView? {
+            if let sv = v as? UIScrollView { return sv }
+            for sub in v.subviews {
+                if let found = findScrollView(in: sub) { return found }
+            }
+            return nil
+        }
+    }
 }
