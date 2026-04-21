@@ -375,6 +375,11 @@ struct InvenParser: BoardParser {
 
         let text = (try? body.text()) ?? raw
         var result = text.replacingOccurrences(of: blockMarker, with: "\n")
+        // SwiftSoup's text() leaves whitespace flanking the block marker,
+        // so once the marker becomes a newline each continuation line
+        // starts with a space and renders as a visible indent. Collapse
+        // any whitespace hugging a newline before the run-length cleanup.
+        result = result.replacingOccurrences(of: #"[ \t]*\n[ \t]*"#, with: "\n", options: .regularExpression)
         result = result.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }

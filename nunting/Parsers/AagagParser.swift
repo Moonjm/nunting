@@ -364,6 +364,12 @@ struct AagagParser: BoardParser {
         }
         let text = (try? body.text()) ?? raw
         var result = text.replacingOccurrences(of: blockMarker, with: "\n")
+        // SwiftSoup's text() inserts a space between inline and block
+        // siblings; once the marker turns into a newline those spaces sit
+        // flanking the newline and render as leading indentation on each
+        // line. Collapse any whitespace hugging a newline so multi-line
+        // comments read flush-left, matching the rest of the parsers.
+        result = result.replacingOccurrences(of: #"[ \t]*\n[ \t]*"#, with: "\n", options: .regularExpression)
         result = result.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
