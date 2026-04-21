@@ -47,8 +47,24 @@ struct CachedAsyncImage: View {
                     .scaledToFit()
             }
             if failed {
-                Image(systemName: "photo")
-                    .foregroundStyle(.secondary)
+                // Sporadic mid-post load misses are hard to reproduce, so
+                // surface a tap-to-retry affordance instead of leaving the
+                // slot stuck on the broken-image icon. Child tap wins over
+                // any parent `.onTapGesture` (e.g. PostDetailView's
+                // full-screen image viewer trigger) so a retry tap doesn't
+                // open the viewer on a missing image.
+                VStack(spacing: 6) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.title3)
+                    Text("다시 시도")
+                        .font(.caption2)
+                }
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, minHeight: 120)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    Task { await load() }
+                }
             }
         }
         .frame(maxWidth: .infinity)
