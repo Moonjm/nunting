@@ -86,8 +86,15 @@ struct CachedAsyncImage: View {
         // `defer { Task { await release() } }` pattern spawned a detached
         // task for the release, so release ordering relative to a sibling
         // view's next `acquire` wasn't guaranteed and could subtly violate
-        // the `maxConcurrent` budget under cancellation.
-        await ImageDecodeThrottle.shared.acquire()
+        // the `maxConcurrent` budget under cancellation. `acquire()` now
+        // throws on cancellation so a cancelled wait doesn't hold a slot
+        // — if it throws, we never entered the work block and must not
+        // call `release()`.
+        do {
+            try await ImageDecodeThrottle.shared.acquire()
+        } catch {
+            return
+        }
 
         do {
             let (data, response) = try await Networking.session.data(for: URLRequest(url: url))
@@ -188,6 +195,22 @@ struct CachedAsyncImage: View {
         return .still(UIImage(cgImage: cg, scale: 1, orientation: .up))
     }
 
+    /// Upper bound on how many decoded frames we keep resident for a single
+    /// animated source. Keep-alive overlays hold their GIFs for the
+    /// lifetime of the active post, so a 300-frame Twitch clip (surfaced
+    /// as a GIF embed) would otherwise sit on ~1GB of decoded pixels and
+    /// push the app toward jetsam. We subsample the source to fit this
+    /// cap — animation plays at a slightly lower frame rate but still
+    /// reads as motion.
+    private static let animatedFrameLimit = 60
+
+    /// Long-edge cap (pixels) applied to animated frames. Lower than the
+    /// still path's `maxDimension` to bound per-frame memory. Boards like
+    /// Ppomppu and Clien rarely ship retina-quality GIFs; 1080px stays
+    /// sharp on a 390pt column while cutting per-frame decode size by
+    /// roughly half vs the still ceiling.
+    private static let animatedLongEdgeCap: CGFloat = 1080
+
     /// Walks every frame of a multi-image source (animated GIF / APNG) and
     /// sums the per-frame delay metadata into a total duration for
     /// UIImageView's `animationDuration`. Falls back to a 0.1s / frame
@@ -200,25 +223,54 @@ struct CachedAsyncImage: View {
         downsampleRatio ratio: CGFloat,
         longSide: CGFloat
     ) -> DecodeResult? {
+        // Tighter long-edge cap than the still path — frames compound, and
+        // a keep-alive overlay sitting on 40 retina-scale frames adds up
+        // fast. `longSide` can be 0 when the source reports no pixel
+        // dimensions (corrupt header); clamp to the animated cap so we
+        // still produce a viewable image.
+        let targetLongSide = min(
+            longSide > 0 ? longSide : animatedLongEdgeCap,
+            animatedLongEdgeCap
+        )
         let thumbnailOptions: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceShouldCacheImmediately: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: longSide,
+            kCGImageSourceThumbnailMaxPixelSize: targetLongSide,
         ]
+
+        // Subsample stride when the source exceeds our frame budget. A
+        // 120-frame source maps to stride=2 (every other frame), yielding
+        // a 60-frame loop at half the frame rate. The window's delay is
+        // summed so the total loop duration stays close to the source's
+        // original playback speed.
+        let stride = max(1, (frameCount + animatedFrameLimit - 1) / animatedFrameLimit)
         var frames: [UIImage] = []
-        frames.reserveCapacity(frameCount)
+        frames.reserveCapacity(min(frameCount, animatedFrameLimit))
         var totalDuration: TimeInterval = 0
-        for i in 0..<frameCount {
+
+        var sampleIndex = 0
+        while sampleIndex < frameCount {
             let cg: CGImage?
-            if ratio >= 1 {
-                cg = CGImageSourceCreateImageAtIndex(source, i, nil)
+            if ratio >= 1 && targetLongSide >= max(longSide, 1) {
+                // Source already fits every cap — native decode preserves
+                // pixel fidelity (e.g. a small meme GIF doesn't get
+                // needlessly re-thumbnailed).
+                cg = CGImageSourceCreateImageAtIndex(source, sampleIndex, nil)
             } else {
-                cg = CGImageSourceCreateThumbnailAtIndex(source, i, thumbnailOptions as CFDictionary)
+                cg = CGImageSourceCreateThumbnailAtIndex(source, sampleIndex, thumbnailOptions as CFDictionary)
             }
-            guard let cg else { continue }
-            frames.append(UIImage(cgImage: cg, scale: 1, orientation: .up))
-            totalDuration += frameDelay(at: i, in: source)
+            if let cg {
+                frames.append(UIImage(cgImage: cg, scale: 1, orientation: .up))
+                // Sum the delays of every frame in this stride window so
+                // the rendered loop keeps the source's total duration
+                // instead of running stride× faster.
+                let windowEnd = Swift.min(sampleIndex + stride, frameCount)
+                for j in sampleIndex..<windowEnd {
+                    totalDuration += frameDelay(at: j, in: source)
+                }
+            }
+            sampleIndex += stride
         }
         guard !frames.isEmpty else { return nil }
         // Guard against degenerate sources whose per-frame delay values are
@@ -308,7 +360,39 @@ private struct AnimatedImageUIView: UIViewRepresentable {
 /// UIImageView that's the image's pixel dimensions — a big GIF would then
 /// try to be 900pt wide inside a 390pt column. Returning `noIntrinsicMetric`
 /// hands sizing back to SwiftUI's aspectRatio + frame modifiers.
+///
+/// Also listens for memory warnings so animated frame arrays can be
+/// released under pressure without taking the whole app down. The still
+/// `image` (first frame) stays set, so the post continues to render as a
+/// frozen poster instead of a blank box. A later `updateUIView` call with
+/// the same frames will rebind and restart animation — acceptable
+/// degradation that prioritises keeping the app alive.
 private final class FlexibleAnimatedImageView: UIImageView {
+    private var memoryWarningObserver: NSObjectProtocol?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        memoryWarningObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.stopAnimating()
+            self.animationImages = nil
+        }
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+    }
+
+    deinit {
+        if let memoryWarningObserver {
+            NotificationCenter.default.removeObserver(memoryWarningObserver)
+        }
+    }
+
     override var intrinsicContentSize: CGSize {
         CGSize(width: UIView.noIntrinsicMetric, height: UIView.noIntrinsicMetric)
     }
@@ -321,18 +405,33 @@ actor ImageDecodeThrottle {
     static let shared = ImageDecodeThrottle()
     private let maxConcurrent = 2
     private var inFlight = 0
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private struct Waiter {
+        let id: UUID
+        let cont: CheckedContinuation<Void, Error>
+    }
+    private var waiters: [Waiter] = []
 
-    func acquire() async {
+    /// Throws `CancellationError` when the caller's task is cancelled while
+    /// waiting for a slot. Previously this used a non-throwing continuation
+    /// with no cancellation hook, which could strand a cancelled waiter in
+    /// the queue until an unrelated future `release()` happened along — in
+    /// the worst case pinning `inFlight` at `maxConcurrent` indefinitely.
+    /// Callers must only pair a successful `acquire()` with `release()`.
+    func acquire() async throws {
         if inFlight < maxConcurrent {
             inFlight += 1
             return
         }
-        // The releaser hands its slot to us via resume() without decrementing
-        // inFlight, so the count already reflects this acquire — do NOT bump
-        // it here or the gate drifts upward by one per release-with-waiter.
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            waiters.append(cont)
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { cont in
+                waiters.append(Waiter(id: id, cont: cont))
+            }
+        } onCancel: {
+            // `onCancel` is nonisolated; hop back onto the actor to touch
+            // the waiter queue. If `release()` already resumed this waiter
+            // before we got here, `cancelWaiter` becomes a no-op.
+            Task { await self.cancelWaiter(id: id) }
         }
     }
 
@@ -341,10 +440,16 @@ actor ImageDecodeThrottle {
             // Hand the slot directly to the next waiter — keeps inFlight
             // pinned at maxConcurrent until the queue drains.
             waiters.removeFirst()
-            next.resume()
+            next.cont.resume()
         } else {
             inFlight -= 1
         }
+    }
+
+    private func cancelWaiter(id: UUID) {
+        guard let idx = waiters.firstIndex(where: { $0.id == id }) else { return }
+        let waiter = waiters.remove(at: idx)
+        waiter.cont.resume(throwing: CancellationError())
     }
 }
 
