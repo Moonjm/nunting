@@ -4,6 +4,14 @@ import SwiftSoup
 struct ClienParser: BoardParser {
     let site: Site = .clien
 
+    /// Matches the canonical YouTube embed URL shape — `/embed/{11-char id}`
+    /// on `youtube.com` or the no-cookie variant. Shared with every other
+    /// parser that promotes `<iframe>` to an inline YouTube block.
+    private static let youtubeIDRegex = try! NSRegularExpression(
+        pattern: #"youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{11})"#,
+        options: [.caseInsensitive]
+    )
+
     nonisolated init() {}
 
     func parseList(html: String, board: Board) throws -> [Post] {
@@ -154,6 +162,15 @@ struct ClienParser: BoardParser {
                     if let image = try image(from: el) {
                         blocks.append(.image(image.url, aspectRatio: image.aspectRatio))
                     }
+                case "iframe":
+                    // Clien embeds YouTube as <iframe src="…/embed/{id}">.
+                    // Promote to an inline `.embed(.youtube, id:)` block so
+                    // PostDetailView renders the thumbnail + tap-to-open
+                    // affordance instead of silently dropping the iframe.
+                    if let id = youtubeID(from: (try? el.attr("src")) ?? "") {
+                        flush()
+                        blocks.append(.embed(.youtube, id: id))
+                    }
                 case "br":
                     inline.appendText("\n")
                 case "a":
@@ -164,7 +181,8 @@ struct ClienParser: BoardParser {
                     }
                 default:
                     let nestedImgs = try el.select("img")
-                    if !nestedImgs.isEmpty() {
+                    let nestedIframes = try el.select("iframe")
+                    if !nestedImgs.isEmpty() || !nestedIframes.isEmpty() {
                         flush()
                         try collectBlocks(from: el, into: &blocks)
                     } else {
@@ -176,6 +194,20 @@ struct ClienParser: BoardParser {
             }
         }
         flush()
+    }
+
+    /// Extract a YouTube video ID from an `<iframe src>` value. Returns nil
+    /// for non-YouTube iframes so the default path can still recurse or
+    /// drop silently without surfacing a broken embed card.
+    private func youtubeID(from src: String) -> String? {
+        let ns = src as NSString
+        guard let match = Self.youtubeIDRegex.firstMatch(
+                in: src,
+                range: NSRange(location: 0, length: ns.length)
+              ),
+              match.numberOfRanges >= 2
+        else { return nil }
+        return ns.substring(with: match.range(at: 1))
     }
 
     private func collectInlines(from element: Element, into inline: inout InlineAccumulator) throws {

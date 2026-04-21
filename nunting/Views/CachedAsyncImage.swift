@@ -15,6 +15,8 @@ struct CachedAsyncImage: View {
     var showsPlaceholder: Bool = true
 
     @State private var image: UIImage?
+    @State private var animatedFrames: [UIImage]?
+    @State private var animatedDuration: TimeInterval = 0
     @State private var failed = false
     @Environment(\.displayScale) private var displayScale
 
@@ -24,7 +26,7 @@ struct CachedAsyncImage: View {
         // for the placeholder. Suppressing the inherited animation also
         // stops the visible "slide-from-right" jank during loading.
         let content = ZStack {
-            if image == nil && !failed && showsPlaceholder {
+            if image == nil && animatedFrames == nil && !failed && showsPlaceholder {
                 Color("AppSurface2")
                     .overlay(ProgressView())
                     // Placeholder exists purely to fill the slot; without
@@ -33,7 +35,12 @@ struct CachedAsyncImage: View {
                     // parent ScrollView long enough to feel like a freeze.
                     .allowsHitTesting(false)
             }
-            if let image {
+            if let frames = animatedFrames, !frames.isEmpty {
+                // SwiftUI's `Image(uiImage:)` renders only the first frame
+                // of a multi-frame UIImage, so animated GIFs need a
+                // UIImageView bridge to actually animate.
+                AnimatedImageView(frames: frames, duration: animatedDuration)
+            } else if let image {
                 Image(uiImage: image)
                     .resizable()
                     .interpolation(.high)
@@ -51,12 +58,14 @@ struct CachedAsyncImage: View {
         if let aspectRatio {
             content.aspectRatio(aspectRatio, contentMode: .fit)
         } else {
-            content.frame(minHeight: image == nil && showsPlaceholder ? 120 : nil)
+            content.frame(minHeight: image == nil && animatedFrames == nil && showsPlaceholder ? 120 : nil)
         }
     }
 
     private func load() async {
         image = nil
+        animatedFrames = nil
+        animatedDuration = 0
         failed = false
 
         let variant = cacheVariant
@@ -92,10 +101,17 @@ struct CachedAsyncImage: View {
             let decoded = try await decodeOffMain(data: data, limit: limit, maxPixelArea: areaLimit, scale: scale)
             try Task.checkCancellation()
 
-            if let decoded {
-                ImageCache.shared.store(decoded, for: url, variant: variant)
-                image = decoded
-            } else {
+            switch decoded {
+            case .still(let img):
+                ImageCache.shared.store(img, for: url, variant: variant)
+                image = img
+            case .animated(let frames, let duration):
+                // Animated GIFs aren't cached (the frame count × frame size
+                // can balloon past the 200MB NSCache budget quickly, and
+                // GIFs re-decode cheaply on re-entry).
+                animatedFrames = frames
+                animatedDuration = duration
+            case nil:
                 failed = true
             }
             await ImageDecodeThrottle.shared.release()
@@ -108,7 +124,7 @@ struct CachedAsyncImage: View {
         }
     }
 
-    private func decodeOffMain(data: Data, limit: CGFloat, maxPixelArea: CGFloat, scale: CGFloat) async throws -> UIImage? {
+    private func decodeOffMain(data: Data, limit: CGFloat, maxPixelArea: CGFloat, scale: CGFloat) async throws -> DecodeResult? {
         try await Task.detached(priority: .userInitiated) {
             try Task.checkCancellation()
             let img = Self.decode(data: data, maxDimension: limit, maxPixelArea: maxPixelArea, scale: scale)
@@ -117,7 +133,12 @@ struct CachedAsyncImage: View {
         }.value
     }
 
-    private static func decode(data: Data, maxDimension: CGFloat, maxPixelArea: CGFloat, scale: CGFloat) -> UIImage? {
+    fileprivate enum DecodeResult {
+        case still(UIImage)
+        case animated(frames: [UIImage], duration: TimeInterval)
+    }
+
+    private static func decode(data: Data, maxDimension: CGFloat, maxPixelArea: CGFloat, scale: CGFloat) -> DecodeResult? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
 
         // Fetch native dimensions up-front so we can cap by width + area
@@ -134,13 +155,23 @@ struct CachedAsyncImage: View {
         let sourceArea = max(sourceW * sourceH, 1)
         let areaRatio = sourceArea > maxPixelArea ? sqrt(maxPixelArea / sourceArea) : 1
         let ratio = min(widthRatio, areaRatio)
+        let longSide = max(sourceW, sourceH) * ratio
+
+        let frameCount = CGImageSourceGetCount(source)
+        if frameCount > 1 {
+            return decodeAnimated(
+                source: source,
+                frameCount: frameCount,
+                downsampleRatio: ratio,
+                longSide: longSide
+            )
+        }
 
         let cg: CGImage?
         if ratio >= 1 {
             // Source already fits both caps — full decode keeps native detail.
             cg = CGImageSourceCreateImageAtIndex(source, 0, nil)
         } else {
-            let longSide = max(sourceW, sourceH) * ratio
             let options: [CFString: Any] = [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
                 kCGImageSourceShouldCacheImmediately: true,
@@ -154,7 +185,132 @@ struct CachedAsyncImage: View {
         // size, so SwiftUI's scaledToFit downsamples large images cleanly and
         // upscales small ones (humoruniv 480px originals) without treating
         // them as already rendered for a 3x display.
-        return UIImage(cgImage: cg, scale: 1, orientation: .up)
+        return .still(UIImage(cgImage: cg, scale: 1, orientation: .up))
+    }
+
+    /// Walks every frame of a multi-image source (animated GIF / APNG) and
+    /// sums the per-frame delay metadata into a total duration for
+    /// UIImageView's `animationDuration`. Falls back to a 0.1s / frame
+    /// default when the source omits delay properties so the animation
+    /// still plays at a reasonable speed instead of flashing a single
+    /// composite frame.
+    private static func decodeAnimated(
+        source: CGImageSource,
+        frameCount: Int,
+        downsampleRatio ratio: CGFloat,
+        longSide: CGFloat
+    ) -> DecodeResult? {
+        let thumbnailOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: longSide,
+        ]
+        var frames: [UIImage] = []
+        frames.reserveCapacity(frameCount)
+        var totalDuration: TimeInterval = 0
+        for i in 0..<frameCount {
+            let cg: CGImage?
+            if ratio >= 1 {
+                cg = CGImageSourceCreateImageAtIndex(source, i, nil)
+            } else {
+                cg = CGImageSourceCreateThumbnailAtIndex(source, i, thumbnailOptions as CFDictionary)
+            }
+            guard let cg else { continue }
+            frames.append(UIImage(cgImage: cg, scale: 1, orientation: .up))
+            totalDuration += frameDelay(at: i, in: source)
+        }
+        guard !frames.isEmpty else { return nil }
+        // Guard against degenerate sources whose per-frame delay values are
+        // all zero — UIImageView treats duration = 0 as "render first frame
+        // only", which would look identical to the bug we're fixing.
+        let safeDuration = totalDuration > 0 ? totalDuration : Double(frames.count) * 0.1
+        return .animated(frames: frames, duration: safeDuration)
+    }
+
+    private static func frameDelay(at index: Int, in source: CGImageSource) -> TimeInterval {
+        guard let props = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any]
+        else { return 0.1 }
+        // GIF and APNG both surface delay metadata, but under their own
+        // dictionary keys. Check GIF first since it's the dominant animated
+        // image format on the boards we scrape.
+        let gif = props[kCGImagePropertyGIFDictionary] as? [CFString: Any]
+        let png = props[kCGImagePropertyPNGDictionary] as? [CFString: Any]
+        let unclamped = (gif?[kCGImagePropertyGIFUnclampedDelayTime] as? Double)
+            ?? (png?[kCGImagePropertyAPNGUnclampedDelayTime] as? Double)
+            ?? 0
+        let clamped = (gif?[kCGImagePropertyGIFDelayTime] as? Double)
+            ?? (png?[kCGImagePropertyAPNGDelayTime] as? Double)
+            ?? 0
+        let delay = unclamped > 0 ? unclamped : clamped
+        // Browsers clamp sub-20ms delays up to 100ms because many GIFs from
+        // the 90s shipped with 0ms "as fast as possible" frames that spin
+        // CPUs; mirror that behavior to keep animations from hogging the
+        // main thread when the decode budget is tight.
+        return delay < 0.02 ? 0.1 : delay
+    }
+}
+
+/// UIKit bridge that actually animates a multi-frame UIImage. SwiftUI's
+/// `Image(uiImage:)` quietly renders only the first frame of an animated
+/// UIImage, so detail views that relied on it showed every GIF as a still.
+private struct AnimatedImageView: View {
+    let frames: [UIImage]
+    let duration: TimeInterval
+
+    var body: some View {
+        // Apply the first frame's aspect ratio on the SwiftUI side so the
+        // view sizes itself against the available column width instead of
+        // inheriting the GIF's native pixel dimensions. Without this a
+        // 900×600 GIF in a ddanzi post pushed the detail ScrollView wider
+        // than the screen, which in turn made the horizontal back-swipe
+        // leave the overlay partially visible over the list on dismiss.
+        let first = frames.first
+        let aspect = first.map { $0.size.width / max($0.size.height, 1) } ?? 1
+        AnimatedImageUIView(frames: frames, duration: duration)
+            .aspectRatio(aspect, contentMode: .fit)
+            .frame(maxWidth: .infinity)
+    }
+}
+
+private struct AnimatedImageUIView: UIViewRepresentable {
+    let frames: [UIImage]
+    let duration: TimeInterval
+
+    func makeUIView(context: Context) -> FlexibleAnimatedImageView {
+        let v = FlexibleAnimatedImageView()
+        v.contentMode = .scaleAspectFit
+        v.clipsToBounds = true
+        v.image = frames.first
+        v.animationImages = frames
+        v.animationDuration = duration
+        v.animationRepeatCount = 0
+        v.startAnimating()
+        return v
+    }
+
+    func updateUIView(_ v: FlexibleAnimatedImageView, context: Context) {
+        // Only rebind the frames when the array identity changed — reusing
+        // the same arrays on unrelated re-renders would restart the
+        // animation from frame 0 and make the GIF visibly stutter.
+        guard v.animationImages?.first !== frames.first else { return }
+        v.stopAnimating()
+        v.image = frames.first
+        v.animationImages = frames
+        v.animationDuration = duration
+        v.startAnimating()
+    }
+}
+
+/// UIImageView that does *not* propagate its image's native pixel size as
+/// an intrinsic content size. SwiftUI reads `intrinsicContentSize` to
+/// compute a default frame for UIViewRepresentable, and for a regular
+/// UIImageView that's the image's pixel dimensions — a big GIF would then
+/// try to be 900pt wide inside a 390pt column. Returning `noIntrinsicMetric`
+/// hands sizing back to SwiftUI's aspectRatio + frame modifiers.
+private final class FlexibleAnimatedImageView: UIImageView {
+    override var intrinsicContentSize: CGSize {
+        CGSize(width: UIView.noIntrinsicMetric, height: UIView.noIntrinsicMetric)
     }
 }
 
