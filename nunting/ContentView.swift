@@ -459,14 +459,16 @@ private struct ContainerWidthKey: PreferenceKey {
 }
 
 /// Hosts the detail overlay inside a UIHostingController and attaches a
-/// UIKit pan recognizer that can recognize alongside the embedded
+/// UIKit pan recognizer that coexists with the embedded
 /// UIScrollView's own pan. We deliberately avoid `require(toFail:)`:
 /// pinning the ScrollView pan in `.possible` caused long lazy-rendered
 /// detail pages to jump or temporarily blank near the comments tail. Once
 /// a rightward horizontal pan begins, we preserve the embedded
-/// ScrollView's offset and move a UIKit snapshot instead of the live SwiftUI
+/// ScrollView's offset, stop that same scroll view's pan from recognizing
+/// simultaneously, and move a UIKit snapshot instead of the live SwiftUI
 /// tree. That keeps the page visually attached to the finger without
-/// invalidating a long LazyVStack on every drag frame.
+/// invalidating a long LazyVStack on every drag frame or letting a slightly
+/// diagonal back-swipe scroll the detail underneath.
 struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
     let onChange: (CGFloat) -> Void
     let shouldDismiss: (CGFloat, CGFloat) -> Bool
@@ -566,10 +568,14 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
             _ g: UIGestureRecognizer,
             shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
         ) -> Bool {
-            // Keep vertical scrolling and nested controls responsive. The
-            // back-swipe recognizer only begins for rightward horizontal
-            // drags, so simultaneity here is not allowed to pin the
-            // ScrollView's pan in a deferred state.
+            // Once the back-swipe has claimed a rightward horizontal drag,
+            // don't let the detail ScrollView's vertical pan also consume a
+            // small diagonal component. Other recognizers stay simultaneous
+            // so controls nested inside the detail view remain responsive.
+            if let scrollView = lockedScrollView,
+               other === scrollView.panGestureRecognizer {
+                return false
+            }
             return true
         }
 
