@@ -12,6 +12,17 @@ struct ClienParser: BoardParser {
         options: [.caseInsensitive]
     )
 
+    /// HTML elements that mark a paragraph / block boundary in Clien post
+    /// bodies. Trailing `\n` is appended after each such block so user-typed
+    /// Enter keystrokes (which the editor renders as separate `<p>` blocks)
+    /// survive into the rendered text instead of all collapsing into a
+    /// single line.
+    nonisolated private static let blockTags: Set<String> = [
+        "p", "div", "li", "blockquote", "tr",
+        "h1", "h2", "h3", "h4", "h5", "h6",
+        "section", "article",
+    ]
+
     /// `YYYY-MM-DD HH:MM(:SS)` — the timestamp Clien renders inside
     /// `div.post_date`. Used to slice out the modified timestamp when an
     /// edited post advertises both 등록일 and 수정일 in the same block.
@@ -224,6 +235,7 @@ struct ClienParser: BoardParser {
                         inline.appendText(try el.text())
                     }
                 default:
+                    let isBlock = Self.blockTags.contains(childTag)
                     let nestedImgs = try el.select("img")
                     let nestedIframes = try el.select("iframe")
                     if !nestedImgs.isEmpty() || !nestedIframes.isEmpty() {
@@ -231,6 +243,9 @@ struct ClienParser: BoardParser {
                         try collectBlocks(from: el, into: &blocks)
                     } else {
                         try collectInlines(from: el, into: &inline)
+                    }
+                    if isBlock {
+                        inline.appendText("\n")
                     }
                 }
             } else if let textNode = node as? TextNode {

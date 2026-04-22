@@ -6,6 +6,17 @@ struct CoolenjoyParser: BoardParser {
 
     nonisolated init() {}
 
+    /// HTML elements that mark a paragraph / block boundary in Coolenjoy
+    /// post bodies. Trailing `\n` is appended after each such block so
+    /// user-typed Enter keystrokes (rendered as separate `<p>` blocks)
+    /// survive into the displayed text instead of all collapsing into a
+    /// single line.
+    nonisolated private static let blockTags: Set<String> = [
+        "p", "div", "li", "blockquote", "tr",
+        "h1", "h2", "h3", "h4", "h5", "h6",
+        "section", "article",
+    ]
+
     nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
         let rows = try doc.select("ul.na-table > li.d-md-table-row")
@@ -301,12 +312,16 @@ struct CoolenjoyParser: BoardParser {
                         inline.appendText(try el.text())
                     }
                 default:
+                    let isBlock = Self.blockTags.contains(childTag)
                     let nestedImgs = try el.select("img")
                     if !nestedImgs.isEmpty() {
                         flush()
                         try collectBlocks(from: el, into: &blocks)
                     } else {
                         try collectInlines(from: el, into: &inline)
+                    }
+                    if isBlock {
+                        inline.appendText("\n")
                     }
                 }
             } else if let textNode = node as? TextNode {
