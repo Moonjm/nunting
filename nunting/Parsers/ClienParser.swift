@@ -99,6 +99,8 @@ struct ClienParser: BoardParser {
         // 12pt spacing — so the explicit-blank-line vs. paragraph-break
         // distinction encoded in the markup never reaches the renderer.
         var blocks: [ContentBlock] = []
+        // Mutates the SwiftSoup document in-place; safe because `doc` is
+        // local to this parse and never escapes.
         if skipFirstParagraph, let firstP = article.children().first() {
             try firstP.remove()
         }
