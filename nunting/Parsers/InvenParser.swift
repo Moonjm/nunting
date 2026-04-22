@@ -222,6 +222,9 @@ struct InvenParser: BoardParser {
                     continue
                 default:
                     try collectInlines(from: el, into: &inline)
+                    if Self.blockTags.contains(childTag) {
+                        inline.appendText("\n")
+                    }
                 }
             } else if let textNode = node as? TextNode {
                 inline.appendText(textNode.text())

@@ -392,6 +392,9 @@ struct PpomppuParser: BoardParser {
                     continue
                 default:
                     try collectInlines(from: el, skipping: skipURL, into: &inline)
+                    if Self.blockTags.contains(childTag) {
+                        inline.appendText("\n")
+                    }
                 }
             } else if let textNode = node as? TextNode {
                 inline.appendText(textNode.text())

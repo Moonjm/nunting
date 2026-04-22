@@ -345,7 +345,13 @@ struct CoolenjoyParser: BoardParser {
                         inline.appendText(try el.text())
                     }
                 default:
+                    // Append `\n` for block-level tags so nested `<p>` blocks
+                    // inside non-block wrappers (e.g. legacy table-based
+                    // editors) don't all collapse onto one line.
                     try collectInlines(from: el, into: &inline)
+                    if Self.blockTags.contains(childTag) {
+                        inline.appendText("\n")
+                    }
                 }
             } else if let textNode = node as? TextNode {
                 inline.appendText(textNode.text())

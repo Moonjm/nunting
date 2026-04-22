@@ -283,7 +283,19 @@ struct ClienParser: BoardParser {
                         inline.appendText(try el.text())
                     }
                 default:
+                    // Recurse first, then append `\n` for block-level tags so
+                    // user-typed Enter keystrokes nested inside non-block
+                    // wrappers (e.g. `<table><tr><td><p>...</p></td></tr>` —
+                    // Clien's legacy editor still emits these) survive into
+                    // the rendered text. Without this, `collectBlocks` only
+                    // adds the boundary `\n` for the OUTERMOST block whose
+                    // direct children we walk, and every nested `<p>` collapses
+                    // when the wrapper has no media to trip the `<table>` →
+                    // `collectBlocks` recursion path.
                     try collectInlines(from: el, into: &inline)
+                    if Self.blockTags.contains(childTag) {
+                        inline.appendText("\n")
+                    }
                 }
             } else if let textNode = node as? TextNode {
                 inline.appendText(textNode.text())
