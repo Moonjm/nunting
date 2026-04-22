@@ -199,7 +199,15 @@ struct CachedAsyncImage: View {
         let cg: CGImage?
         if ratio >= 1 {
             // Source already fits both caps — full decode keeps native detail.
-            cg = CGImageSourceCreateImageAtIndex(source, 0, nil)
+            // Pass `ShouldCacheImmediately` so the pixel decode happens here
+            // on the detached task; without it CGImage stays lazy and
+            // SwiftUI's first `Image(uiImage:)` render triggers the decode
+            // on the main actor, which stutters scroll / gesture delivery
+            // on large images.
+            let fullOptions: [CFString: Any] = [
+                kCGImageSourceShouldCacheImmediately: true,
+            ]
+            cg = CGImageSourceCreateImageAtIndex(source, 0, fullOptions as CFDictionary)
         } else {
             let options: [CFString: Any] = [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,

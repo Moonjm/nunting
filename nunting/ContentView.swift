@@ -191,16 +191,21 @@ struct ContentView: View {
             // TLS + HTTP/2 connections to every supported host so the
             // first real list/detail fetch per host skips the 300-700ms
             // handshake cost (measured in perf log as the dominant
-            // cold-hit outlier).
+            // cold-hit outlier). `ImageWarmup` primes ImageIO so the
+            // first real image decode doesn't pay the plugin cold-load
+            // (instrumentation showed a ~2.5 s main-actor stall after
+            // long background otherwise).
             Networking.prewarmConnections()
+            ImageWarmup.warm()
         }
         .onChange(of: scenePhase) { _, phase in
             // Re-warm on foreground re-entry: iOS may have torn down
-            // pooled connections during background time, so the first
-            // request after coming back pays the handshake again
-            // otherwise.
+            // pooled connections and evicted ImageIO plugins during
+            // background time, so the first request / decode after
+            // coming back pays the respective cold cost otherwise.
             if phase == .active {
                 Networking.prewarmConnections()
+                ImageWarmup.warm()
             }
         }
     }
