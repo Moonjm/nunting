@@ -57,6 +57,11 @@ struct ContentView: View {
     /// row's tap closure (which fires on the same touch-up) sees the
     /// blocked state before it clears.
     @State private var rowTapGate = RowTapGate()
+    /// Same shape as `rowTapGate` but driven by the detail overlay's UIKit
+    /// back-swipe recognizer. Read by image / video tap handlers inside
+    /// `PostDetailView` so a `→` back-swipe doesn't accidentally tap an
+    /// image or video sitting under the user's finger when they release.
+    @State private var detailMediaTapGate = TapSuppressionGate()
 
     private let drawerWidth: CGFloat = 300
     /// Height of the bottom bar area (bar + filter chips + safe area buffer)
@@ -135,12 +140,14 @@ struct ContentView: View {
                         withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
                             detailOffset = shouldDismiss ? containerWidth : 0
                         }
-                    }
+                    },
+                    tapGate: detailMediaTapGate
                 ) {
                     PostDetailView(
                         post: post,
                         readStore: readStore,
                         cache: detailCache,
+                        tapGate: detailMediaTapGate,
                         onDismiss: { hideDetail() }
                     )
                 }
@@ -508,13 +515,20 @@ private struct ContainerWidthKey: PreferenceKey {
     }
 }
 
-/// Reference-typed gate the panGesture uses to tell list rows
-/// "you just saw a horizontal drag — don't fire your tap on release".
-/// A class (not @State value type) so that mutating `suppressed` from
-/// the gesture closure doesn't invalidate the SwiftUI body.
-final class RowTapGate {
+/// Reference-typed gate that gestures use to tell child taps
+/// "you just saw a horizontal drag — don't fire on release". A class
+/// (not @State value type) so that mutating `suppressed` from a gesture
+/// closure doesn't invalidate the SwiftUI body. Used in two places:
+/// the list-row drag-vs-tap discriminator (driven by `panGesture`),
+/// and the detail overlay back-swipe suppressor for embedded image /
+/// video taps (driven by `SwipeToDismissOverlay.Coordinator`).
+final class TapSuppressionGate {
     var suppressed: Bool = false
 }
+
+/// Backwards-compatible typealias for the original list-row gate name —
+/// keeps any in-flight reference compiling without a sweeping rename.
+typealias RowTapGate = TapSuppressionGate
 
 private struct BottomAreaTopKey: PreferenceKey {
     static var defaultValue: CGFloat = .infinity
@@ -545,6 +559,10 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
     /// recognizer's terminal state. Parent decides whether to commit the
     /// dismiss based on distance + velocity.
     let onEnd: (CGFloat, CGFloat) -> Void
+    /// Flipped to `true` while the recognizer is actively tracking a
+    /// back-swipe so embedded image / video tap handlers can suppress
+    /// their action when the user releases their finger over media.
+    var tapGate: TapSuppressionGate? = nil
     @ViewBuilder let content: () -> Content
 
     func makeUIViewController(context: Context) -> Host<Content> {
@@ -568,13 +586,15 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
         context.coordinator.onChange = onChange
         context.coordinator.shouldDismiss = shouldDismiss
         context.coordinator.onEnd = onEnd
+        context.coordinator.tapGate = tapGate
     }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             onChange: onChange,
             shouldDismiss: shouldDismiss,
-            onEnd: onEnd
+            onEnd: onEnd,
+            tapGate: tapGate
         )
     }
 
@@ -601,6 +621,7 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
         var onChange: (CGFloat) -> Void
         var shouldDismiss: (CGFloat, CGFloat) -> Bool
         var onEnd: (CGFloat, CGFloat) -> Void
+        var tapGate: TapSuppressionGate?
         weak var lockedScrollView: UIScrollView?
         var lockedContentOffset: CGPoint?
         var lockedDistanceToBottom: CGFloat?
@@ -611,11 +632,13 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
         init(
             onChange: @escaping (CGFloat) -> Void,
             shouldDismiss: @escaping (CGFloat, CGFloat) -> Bool,
-            onEnd: @escaping (CGFloat, CGFloat) -> Void
+            onEnd: @escaping (CGFloat, CGFloat) -> Void,
+            tapGate: TapSuppressionGate? = nil
         ) {
             self.onChange = onChange
             self.shouldDismiss = shouldDismiss
             self.onEnd = onEnd
+            self.tapGate = tapGate
         }
 
         func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
@@ -651,6 +674,13 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
             let v = pan.velocity(in: view)
             switch pan.state {
             case .began:
+                // Pan recognized → block child taps for the rest of this
+                // touch sequence. `cancelsTouchesInView = false` lets the
+                // touch keep flowing to SwiftUI handlers, so we need this
+                // explicit gate to stop image / video taps from firing on
+                // touch-up just because the user happened to release over
+                // a media block.
+                tapGate?.suppressed = true
                 // Zero out so subsequent `.changed` translations are
                 // measured from the claim point — otherwise the overlay
                 // would jump by the 8pt classifier threshold the moment
@@ -675,9 +705,16 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
                 } else {
                     onEnd(0, 0)
                 }
+                // Defer the unblock until the next runloop so any tap
+                // closure firing on this same touch-up reads `true`
+                // before we clear it.
+                let gate = tapGate
+                DispatchQueue.main.async { gate?.suppressed = false }
             case .failed:
                 cancelSnapshot(for: view)
                 restoreScroll()
+                let gate = tapGate
+                DispatchQueue.main.async { gate?.suppressed = false }
             default:
                 break
             }

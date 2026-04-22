@@ -5,6 +5,11 @@ struct PostDetailView: View {
     let post: Post
     let readStore: ReadStore
     let cache: PostDetailCache
+    /// Set to `.suppressed = true` by `SwipeToDismissOverlay` while a back-
+    /// swipe is in flight, so an image / video tap firing on the same
+    /// touch-up doesn't open a viewer / fullscreen player when the user was
+    /// only trying to leave the detail screen.
+    var tapGate: TapSuppressionGate? = nil
     /// Invoked from the custom back button in the header. The parent owns the
     /// overlay offset animation; this view just asks to be dismissed.
     let onDismiss: () -> Void
@@ -57,7 +62,11 @@ struct PostDetailView: View {
                     if let comments = detail?.comments, !comments.isEmpty {
                         CommentsSection(
                             comments: comments,
-                            onImageTap: { url in selectedImage = ImageViewerItem(url: url) }
+                            tapGate: tapGate,
+                            onImageTap: { url in
+                                if tapGate?.suppressed == true { return }
+                                selectedImage = ImageViewerItem(url: url)
+                            }
                         )
                             .padding(.top, 8)
                     }
@@ -192,10 +201,11 @@ struct PostDetailView: View {
                         )
                         .contentShape(Rectangle())
                         .onTapGesture {
+                            if tapGate?.suppressed == true { return }
                             selectedImage = ImageViewerItem(url: url)
                         }
                     case .video(let url, let posterURL):
-                        InlineVideoPlayer(url: url, posterURL: posterURL)
+                        InlineVideoPlayer(url: url, posterURL: posterURL, tapGate: tapGate)
                     case .dealLink(let url, let label):
                         DealLinkBanner(url: url, label: label)
                     case .embed(.youtube, let id):
@@ -548,6 +558,7 @@ private struct SourceBanner: View {
 
 private struct CommentsSection: View {
     let comments: [Comment]
+    var tapGate: TapSuppressionGate? = nil
     let onImageTap: (URL) -> Void
 
     var body: some View {
@@ -567,7 +578,7 @@ private struct CommentsSection: View {
             // new rows materialise doesn't bleed into the drag.
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(comments.enumerated()), id: \.element.id) { index, comment in
-                    CommentRow(comment: comment, onImageTap: onImageTap)
+                    CommentRow(comment: comment, tapGate: tapGate, onImageTap: onImageTap)
                     if index < comments.count - 1 {
                         Divider().padding(.vertical, 2)
                     }
@@ -579,6 +590,7 @@ private struct CommentsSection: View {
 
 private struct CommentRow: View {
     let comment: Comment
+    var tapGate: TapSuppressionGate? = nil
     let onImageTap: (URL) -> Void
 
     var body: some View {
@@ -613,7 +625,7 @@ private struct CommentRow: View {
             }
             if let videoURL = comment.videoURL {
                 HStack(spacing: 0) {
-                    InlineVideoPlayer(url: videoURL)
+                    InlineVideoPlayer(url: videoURL, tapGate: tapGate)
                         .frame(maxWidth: 320, maxHeight: 240)
                     Spacer(minLength: 0)
                 }
