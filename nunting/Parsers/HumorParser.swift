@@ -46,6 +46,13 @@ struct HumorParser: BoardParser {
     nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
 
+        // 너굴맨(안심맨) 디코이 영역을 본문/댓글 양쪽에서 한 번에 정리.
+        // 마크업 형태가 동일하므로(`<div id="racy_show_X">` 디코이 + 형제
+        // `<div id="racy_hidden_X">` 실 이미지) doc 레벨에서 한 번에 떼면
+        // extractBlocks/extractComments 모두 자동으로 깨끗한 트리를 받음.
+        // racy_hidden_* 안의 "원본" 펼치기 버튼도 같은 이유로 함께 제거.
+        try doc.select("[id^=racy_show_], [id^=btn_nemo_expand_all]").remove()
+
         // Humoruniv redirects deleted/moved posts to /board/msg.html which
         // has none of the usual detail markup. Returning an empty PostDetail
         // looks like the app hung — emit an inline notice instead.
@@ -172,26 +179,8 @@ struct HumorParser: BoardParser {
             try doc.select("div.wrap_body").first(),
         ]
         guard let wrap = candidates.compactMap({ $0 }).first else { return [] }
-        // 너굴맨 (안심맨) 디코이 영역 통째로 제거.
-        //
-        //   <div class="simple_attach_img_div">
-        //     <div id="racy_show_X">          ← 너굴맨 이미지 + "히든처리" 안내문
-        //       ...                            + "이미지 보기"/"너굴맨 설정"/
-        //     </div>                           "본문 너굴맨 한꺼번에 제거" 버튼들
-        //     <div id="racy_hidden_X"         ← 실제 본문 이미지
-        //          style="display:none">       (display:none 이지만 우리는
-        //       <table>... real <img> ...      computed style 이 아니라 태그로
-        //       </table>                       추출하므로 그대로 살아남음)
-        //     </div>
-        //   </div>
-        //
-        // racy_show_* 안엔 앱에 띄울 콘텐츠가 하나도 없고, 진짜 이미지는
-        // 형제 racy_hidden_* 에 들어있어서 selector 한 줄로 정리.
-        try wrap.select("[id^=racy_show_]").remove()
-        // racy_hidden_* 안의 원본 펼치기 버튼 (`<a OnClick="expand_all()">`
-        // 안의 `<div id^="btn_nemo_expand_all">` → "원본" 라벨) 도 같이 제거.
-        // 우리는 항상 원본을 그대로 띄우니 인터랙션 자체가 의미 없음.
-        try wrap.select("[id^=btn_nemo_expand_all]").remove()
+        // 너굴맨(안심맨) 디코이 + "원본" 펼치기 버튼 정리는 parseDetail
+        // 진입 시 doc 레벨에서 이미 처리됨 (본문/댓글 공통).
         var blocks: [ContentBlock] = []
         var inline = InlineAccumulator()
         try collectBlocks(from: wrap, into: &blocks, inline: &inline)

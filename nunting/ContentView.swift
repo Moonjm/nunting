@@ -630,6 +630,14 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
         weak var lockedScrollView: UIScrollView?
         var lockedContentOffset: CGPoint?
         var lockedDistanceToBottom: CGFloat?
+        /// Captured at touch-down (`shouldReceive`) before the embedded
+        /// ScrollView has had a chance to nudge its `contentOffset` in
+        /// response to the touch's vertical component. `lockScroll` reads
+        /// from here so a tiny `→` drag's restore lands on the offset the
+        /// user was actually at, not the few-pt-drifted offset present
+        /// when `shouldBegin` finally fires.
+        weak var earliestScrollView: UIScrollView?
+        var earliestOffset: CGPoint?
         weak var snapshotContainer: UIView?
         var dragSnapshot: UIView?
         var liveViewAlphaBeforeSnapshot: CGFloat = 1
@@ -644,6 +652,23 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
             self.shouldDismiss = shouldDismiss
             self.onEnd = onEnd
             self.tapGate = tapGate
+        }
+
+        func gestureRecognizer(
+            _ g: UIGestureRecognizer,
+            shouldReceive touch: UITouch
+        ) -> Bool {
+            // Snapshot scroll position at touch-down — before the embedded
+            // ScrollView has had any chance to move in response to an
+            // initial vertical nudge. `lockScroll` consults this so a
+            // tiny `→` drag's restore lands on where the user actually
+            // was, not a drifted offset.
+            if let pan = g as? UIPanGestureRecognizer, let view = pan.view,
+               let scrollView = Self.findScrollView(in: view) {
+                earliestScrollView = scrollView
+                earliestOffset = scrollView.contentOffset
+            }
+            return true
         }
 
         func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
@@ -726,8 +751,23 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
         private func lockScroll(_ scrollView: UIScrollView) {
             guard lockedScrollView == nil else { return }
             lockedScrollView = scrollView
-            lockedContentOffset = scrollView.contentOffset
+            // Prefer the touch-down snapshot if we have one for the same
+            // scroll view — that's the position the user perceives as
+            // "where I was", before any vertical jitter nudged it.
+            let baseline: CGPoint
+            if let earliestOffset, earliestScrollView === scrollView {
+                baseline = earliestOffset
+            } else {
+                baseline = scrollView.contentOffset
+            }
+            lockedContentOffset = baseline
             lockedDistanceToBottom = Self.distanceToBottom(in: scrollView)
+            // If the scroll has already drifted from the baseline, snap
+            // it back immediately so the snapshot we're about to take
+            // mirrors the user's actual starting position.
+            if scrollView.contentOffset != baseline {
+                scrollView.setContentOffset(baseline, animated: false)
+            }
         }
 
         private func beginSnapshot(for view: UIView) {
@@ -795,6 +835,10 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
             lockedContentOffset = nil
             let distanceToBottom = lockedDistanceToBottom
             lockedDistanceToBottom = nil
+            // Drop the touch-down snapshot so the next touch re-samples
+            // rather than reusing a stale baseline.
+            earliestScrollView = nil
+            earliestOffset = nil
             DispatchQueue.main.async { [weak scrollView] in
                 guard let scrollView else { return }
                 let resolvedTarget: CGPoint?
