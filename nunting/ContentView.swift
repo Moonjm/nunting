@@ -630,6 +630,14 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
         weak var lockedScrollView: UIScrollView?
         var lockedContentOffset: CGPoint?
         var lockedDistanceToBottom: CGFloat?
+        /// Captured at touch-down (`shouldReceive`) before the embedded
+        /// ScrollView has had a chance to nudge its `contentOffset` in
+        /// response to the touch's vertical component. `lockScroll` reads
+        /// from here so a tiny `→` drag's restore lands on the offset the
+        /// user was actually at, not the few-pt-drifted offset present
+        /// when `shouldBegin` finally fires.
+        weak var earliestScrollView: UIScrollView?
+        var earliestOffset: CGPoint?
         weak var snapshotContainer: UIView?
         var dragSnapshot: UIView?
         var liveViewAlphaBeforeSnapshot: CGFloat = 1
@@ -644,6 +652,37 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
             self.shouldDismiss = shouldDismiss
             self.onEnd = onEnd
             self.tapGate = tapGate
+        }
+
+        func gestureRecognizer(
+            _ g: UIGestureRecognizer,
+            shouldReceive touch: UITouch
+        ) -> Bool {
+            // Snapshot scroll position at touch-down — before the embedded
+            // ScrollView has had any chance to move in response to an
+            // initial vertical nudge. `lockScroll` consults this so a
+            // tiny `→` drag's restore lands on where the user actually
+            // was, not a drifted offset.
+            //
+            // Scope the write to *our* back-swipe recognizer only. Today
+            // the coordinator is delegate for a single pan, but the guard
+            // defends against a future refactor attaching the same
+            // coordinator to another recognizer (e.g. a tap-gate) and
+            // accidentally capturing an unrelated touch's baseline.
+            // Also note: a capture here from one scroll view can leak
+            // across a navigation / sheet dismiss into the next
+            // presentation — that's why `lockScroll` re-checks with
+            // `earliestScrollView === scrollView` before trusting the
+            // snapshot, and falls back to the live `contentOffset` if
+            // they differ.
+            if let pan = g as? UIPanGestureRecognizer,
+               let view = pan.view,
+               pan.delegate === self,
+               let scrollView = Self.findScrollView(in: view) {
+                earliestScrollView = scrollView
+                earliestOffset = scrollView.contentOffset
+            }
+            return true
         }
 
         func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
@@ -726,8 +765,35 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
         private func lockScroll(_ scrollView: UIScrollView) {
             guard lockedScrollView == nil else { return }
             lockedScrollView = scrollView
-            lockedContentOffset = scrollView.contentOffset
+            // Prefer the touch-down snapshot if we have one for the same
+            // scroll view — that's the position the user perceives as
+            // "where I was", before any vertical jitter nudged it.
+            let baseline: CGPoint
+            if let earliestOffset, earliestScrollView === scrollView {
+                baseline = earliestOffset
+            } else {
+                baseline = scrollView.contentOffset
+            }
+            lockedContentOffset = baseline
             lockedDistanceToBottom = Self.distanceToBottom(in: scrollView)
+            // Force-cancel any in-flight pan / deceleration on the inner
+            // ScrollView so its state machine can't fire another
+            // `.changed` (or its deceleration runloop step) after we
+            // snap back to `baseline`. `gestureRecognizer(_:shouldRecognize
+            // SimultaneouslyWith:)` returning `false` only blocks *future*
+            // simultaneous arbitration — it doesn't interrupt a recognizer
+            // that's already mid-recognition, which is exactly the case
+            // when the initial touch had a small vertical component. The
+            // disable→enable toggle flips the recognizer to `.cancelled`,
+            // stopping its tracking + any momentum without preventing
+            // future touches from engaging it.
+            scrollView.panGestureRecognizer.isEnabled = false
+            scrollView.panGestureRecognizer.isEnabled = true
+            // Snap the live view to the remembered baseline now that
+            // nothing else will overwrite it.
+            if scrollView.contentOffset != baseline {
+                scrollView.setContentOffset(baseline, animated: false)
+            }
         }
 
         private func beginSnapshot(for view: UIView) {
@@ -795,6 +861,10 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
             lockedContentOffset = nil
             let distanceToBottom = lockedDistanceToBottom
             lockedDistanceToBottom = nil
+            // Drop the touch-down snapshot so the next touch re-samples
+            // rather than reusing a stale baseline.
+            earliestScrollView = nil
+            earliestOffset = nil
             DispatchQueue.main.async { [weak scrollView] in
                 guard let scrollView else { return }
                 let resolvedTarget: CGPoint?

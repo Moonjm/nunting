@@ -113,7 +113,13 @@ struct CachedAsyncImage: View {
         }
 
         do {
-            let (data, response) = try await Networking.session.data(for: URLRequest(url: url))
+            // Plain-`http://` image URLs → `https://` so App Transport
+            // Security doesn't block them. See `URL.atsSafe` for the
+            // upgrade rationale. Applied here so every caller (body
+            // images, comment stickers, auth icons, level icons, video
+            // posters) picks up the fix without touching each site's
+            // parser.
+            let (data, response) = try await Networking.session.data(for: URLRequest(url: url.atsSafe))
             try Task.checkCancellation()
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 failed = true
