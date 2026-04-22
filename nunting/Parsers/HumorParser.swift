@@ -172,6 +172,18 @@ struct HumorParser: BoardParser {
             try doc.select("div.wrap_body").first(),
         ]
         guard let wrap = candidates.compactMap({ $0 }).first else { return [] }
+        // 너굴맨 (안심맨) 디코이 노출 영역에서 가운데 안내문이 본문에 새어
+        // 들어가는 걸 막는다. 안내 div 의 마크업은 항상
+        // `<div class="gray">↑ 인공지능에 의해 히든처리 되었습니다.<br>
+        // 이미지를 보시려면 너굴맨을 클릭해 주세요.</div>` 형태로 racy_show_*
+        // 래퍼 안에 박혀 있고, 진짜 이미지는 같은 래퍼의 다른 자식이라 안내
+        // div 만 골라서 떼면 본문 이미지엔 영향 없음.
+        for div in try wrap.select("div.gray") {
+            let text = try div.text()
+            if text.contains("히든처리") || text.contains("너굴맨") {
+                try div.remove()
+            }
+        }
         var blocks: [ContentBlock] = []
         var inline = InlineAccumulator()
         try collectBlocks(from: wrap, into: &blocks, inline: &inline)
