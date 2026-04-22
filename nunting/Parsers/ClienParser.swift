@@ -26,6 +26,11 @@ struct ClienParser: BoardParser {
         "section", "article",
     ]
 
+    /// Tags the block-walker treats as "promote to a media block" markers.
+    /// Used by `hasAnyDescendant(of:taggedAnyOf:)` to decide whether a
+    /// wrapper element should recurse as blocks or flatten to inline text.
+    nonisolated private static let mediaTags: Set<String> = ["img", "iframe"]
+
     /// `YYYY-MM-DD HH:MM(:SS)` — the timestamp Clien renders inside
     /// `div.post_date`. Used to slice out the modified timestamp when an
     /// edited post advertises both 등록일 and 수정일 in the same block.
@@ -200,9 +205,7 @@ struct ClienParser: BoardParser {
             // the main child-walking loop below so the nested media becomes
             // a proper block AND sibling TextNodes still contribute text
             // via the existing TextNode branch.
-            let nestedImgs = try element.select("img")
-            let nestedIframes = try element.select("iframe")
-            if nestedImgs.isEmpty() && nestedIframes.isEmpty() {
+            if !hasAnyDescendant(of: element, taggedAnyOf: Self.mediaTags) {
                 if let resolved = try anchor(from: element) {
                     inline.appendLink(url: resolved.url, label: resolved.label)
                     flush()
@@ -236,9 +239,7 @@ struct ClienParser: BoardParser {
                     // the same recurse-as-block path the default case uses,
                     // so an inline GIF wrapped in a clickable link still
                     // renders as a media block instead of a bare link label.
-                    let nestedImgsInAnchor = try el.select("img")
-                    let nestedIframesInAnchor = try el.select("iframe")
-                    if !nestedImgsInAnchor.isEmpty() || !nestedIframesInAnchor.isEmpty() {
+                    if hasAnyDescendant(of: el, taggedAnyOf: Self.mediaTags) {
                         flush()
                         try collectBlocks(from: el, into: &blocks)
                     } else if let resolved = try anchor(from: el) {
@@ -247,9 +248,7 @@ struct ClienParser: BoardParser {
                         inline.appendText(try el.text())
                     }
                 default:
-                    let nestedImgs = try el.select("img")
-                    let nestedIframes = try el.select("iframe")
-                    if !nestedImgs.isEmpty() || !nestedIframes.isEmpty() {
+                    if hasAnyDescendant(of: el, taggedAnyOf: Self.mediaTags) {
                         flush()
                         try collectBlocks(from: el, into: &blocks)
                     } else {

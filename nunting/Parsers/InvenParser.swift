@@ -107,6 +107,11 @@ struct InvenParser: BoardParser {
         "p", "div", "li", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article",
     ]
 
+    /// Tags the block-walker promotes to a media block. Paired with
+    /// `hasAnyDescendant(of:taggedAnyOf:)` so wrapper elements decide
+    /// recurse-vs-inline without doing a full `select("img"|"video")` walk.
+    nonisolated private static let mediaTags: Set<String> = ["img", "video"]
+
     nonisolated private func collectBlocks(from element: Element, into blocks: inout [ContentBlock]) throws {
         var inline = InlineAccumulator()
 
@@ -137,9 +142,7 @@ struct InvenParser: BoardParser {
             // the main child-walking loop below so the nested media becomes
             // a proper block AND sibling TextNodes still contribute text
             // via the existing TextNode branch.
-            let nestedImgs = try element.select("img")
-            let nestedVideos = try element.select("video")
-            if nestedImgs.isEmpty() && nestedVideos.isEmpty() {
+            if !hasAnyDescendant(of: element, taggedAnyOf: Self.mediaTags) {
                 if let resolved = try anchor(from: element) {
                     inline.appendLink(url: resolved.url, label: resolved.label)
                     flush()
@@ -174,9 +177,7 @@ struct InvenParser: BoardParser {
                     // the same recurse-as-block path the default case uses,
                     // so an inline GIF wrapped in a clickable link still
                     // renders as a media block instead of a bare link label.
-                    let nestedImgsInAnchor = try el.select("img")
-                    let nestedVideosInAnchor = try el.select("video")
-                    if !nestedImgsInAnchor.isEmpty() || !nestedVideosInAnchor.isEmpty() {
+                    if hasAnyDescendant(of: el, taggedAnyOf: Self.mediaTags) {
                         flush()
                         try collectBlocks(from: el, into: &blocks)
                     } else if let resolved = try anchor(from: el) {
@@ -186,9 +187,7 @@ struct InvenParser: BoardParser {
                     }
                 default:
                     let isBlock = Self.blockTags.contains(childTag)
-                    let nestedImgs = try el.select("img")
-                    let nestedVideos = try el.select("video")
-                    if !nestedImgs.isEmpty() || !nestedVideos.isEmpty() {
+                    if hasAnyDescendant(of: el, taggedAnyOf: Self.mediaTags) {
                         flush()
                         try collectBlocks(from: el, into: &blocks)
                     } else {
