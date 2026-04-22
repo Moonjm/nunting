@@ -369,13 +369,12 @@ struct PostDetailView: View {
                 // path for every site that has an override (Coolenjoy, Inven,
                 // Ppomppu, Aagag, SLR, Ddanzi). Parsers without a comments URL
                 // keep the detail-embedded comments returned by parseDetail.
-                // Caveat: Ppomppu/SLR/Ddanzi implement `fetchAllComments` by
-                // re-fetching `post.url` to extract AJAX params. Running that
-                // concurrently with our own `fetchHTML` above means both
-                // requests are in flight simultaneously, so URLCache can't
-                // coalesce them — those sites pay 2× request cost here.
-                // Accepted for now; fixing would require threading the
-                // already-fetched HTML through the parser protocol.
+                //
+                // `detailHTML: html` threads the body we already fetched
+                // through the protocol, so Ppomppu / SLR / Ddanzi (which
+                // used to re-fetch `post.url` just to extract AJAX params
+                // or first-page comment DOM) can reuse it and skip the
+                // duplicate SwiftSoup parse their perf log sample showed.
                 let parsedHTML = html
                 let parsedPost = resolved
                 let postSite = resolved.site
@@ -384,7 +383,10 @@ struct PostDetailView: View {
                 }.value
                 async let commentsTask: [Comment]? = {
                     guard parser.commentsURL(for: resolved) != nil else { return nil }
-                    return try? await parser.fetchAllComments(for: resolved) { url in
+                    return try? await parser.fetchAllComments(
+                        for: resolved,
+                        detailHTML: parsedHTML
+                    ) { url in
                         try await Networking.fetchHTML(url: url, encoding: postSite.encoding)
                     }
                 }()

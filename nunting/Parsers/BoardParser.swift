@@ -7,14 +7,27 @@ protocol BoardParser: Sendable {
     nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail
     nonisolated func commentsURL(for post: Post) -> URL?
     nonisolated func parseComments(html: String) throws -> [Comment]
-    nonisolated func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment]
+    /// `detailHTML` is the body of `post.url` that the caller already
+    /// fetched for `parseDetail`. Ppomppu/SLR/Ddanzi use it to skip a
+    /// second `post.url` fetch they'd otherwise do just to pull AJAX
+    /// params / first-page comment DOM. Parsers that don't need it
+    /// ignore the argument.
+    nonisolated func fetchAllComments(
+        for post: Post,
+        detailHTML: String?,
+        fetcher: @escaping @Sendable (URL) async throws -> String
+    ) async throws -> [Comment]
 }
 
 extension BoardParser {
     nonisolated func commentsURL(for post: Post) -> URL? { nil }
     nonisolated func parseComments(html: String) throws -> [Comment] { [] }
 
-    nonisolated func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment] {
+    nonisolated func fetchAllComments(
+        for post: Post,
+        detailHTML: String?,
+        fetcher: @escaping @Sendable (URL) async throws -> String
+    ) async throws -> [Comment] {
         guard let url = commentsURL(for: post) else { return [] }
         let html = try await fetcher(url)
         return try parseComments(html: html)

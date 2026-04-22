@@ -270,7 +270,13 @@ struct InvenParser: BoardParser {
         URL(string: "https://www.inven.co.kr/common/board/comment.json.php")
     }
 
-    nonisolated func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment] {
+    nonisolated func fetchAllComments(
+        for post: Post,
+        detailHTML _: String?,
+        fetcher: @escaping @Sendable (URL) async throws -> String
+    ) async throws -> [Comment] {
+        // Inven comments live at a separate JSON endpoint, unrelated
+        // to the detail HTML — `detailHTML` is unused.
         let numericComponents = post.url.pathComponents.filter { $0.allSatisfy(\.isNumber) && !$0.isEmpty }
         guard numericComponents.count >= 2 else { return [] }
         let comeidx = numericComponents[numericComponents.count - 2]

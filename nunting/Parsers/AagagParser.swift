@@ -280,7 +280,14 @@ struct AagagParser: BoardParser {
         return URL(string: "https://aagag.com/api/cmt")
     }
 
-    nonisolated func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment] {
+    nonisolated func fetchAllComments(
+        for post: Post,
+        detailHTML _: String?,
+        fetcher: @escaping @Sendable (URL) async throws -> String
+    ) async throws -> [Comment] {
+        // Aagag POSTs to /api/cmt with an `idx` parameter pulled from
+        // the post URL — the detail body isn't needed, so `detailHTML`
+        // is ignored here.
         guard let idx = issueIdx(from: post),
               let apiURL = URL(string: "https://aagag.com/api/cmt")
         else { return [] }

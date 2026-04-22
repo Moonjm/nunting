@@ -59,7 +59,13 @@ struct CoolenjoyParser: BoardParser {
         return URL(string: "https://coolenjoy.net/nariya/bbs/comment_view.php?bo_table=\(boardTable)&wr_id=\(wrID)")
     }
 
-    nonisolated func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment] {
+    nonisolated func fetchAllComments(
+        for post: Post,
+        detailHTML _: String?,
+        fetcher: @escaping @Sendable (URL) async throws -> String
+    ) async throws -> [Comment] {
+        // Coolenjoy fetches its own paginated comment endpoint —
+        // detailHTML is unrelated and unused here.
         guard let baseURL = commentsURL(for: post) else { return [] }
 
         let firstPageURL = appendingPagingParams(to: baseURL, page: 1)

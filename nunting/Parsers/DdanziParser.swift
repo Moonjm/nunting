@@ -95,13 +95,20 @@ struct DdanziParser: BoardParser {
 
     nonisolated func fetchAllComments(
         for post: Post,
+        detailHTML: String?,
         fetcher: @escaping @Sendable (URL) async throws -> String
     ) async throws -> [Comment] {
         // 1) Detail HTML tells us mid + document_srl. URL-based parsing is
         //    brittle (some posts use the `/{srl}` shortcut without a mid),
-        //    so read both from the rendered detail page — the URL cache
-        //    typically serves this without a network hit.
-        let html = try await fetcher(post.url)
+        //    so read both from the rendered detail page. Caller threads
+        //    through the already-fetched body when it has one, so we
+        //    skip the redundant URLCache hit + SwiftSoup parse.
+        let html: String
+        if let detailHTML {
+            html = detailHTML
+        } else {
+            html = try await fetcher(post.url)
+        }
         guard let params = try Self.extractCommentParams(html: html) else {
             return []
         }
