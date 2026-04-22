@@ -169,12 +169,12 @@ struct PpomppuParser: BoardParser {
         return (1...totalPages).flatMap { pageMap[$0] ?? [] }
     }
 
-    func parseComments(html: String) throws -> [Comment] {
+    nonisolated func parseComments(html: String) throws -> [Comment] {
         let doc = try SwiftSoup.parse(html)
         return try parseComments(in: doc)
     }
 
-    private func parseComments(in doc: Document) throws -> [Comment] {
+    nonisolated private func parseComments(in doc: Document) throws -> [Comment] {
         let nodes = try doc.select("div.cmAr div[class*=sect-cmt]")
         var results: [Comment] = []
         for node in nodes {
@@ -562,7 +562,7 @@ struct PpomppuParser: BoardParser {
         let blockMarker = "\u{0001}NL\u{0001}"
         let blocks = try copy.select("br, p, div, li, blockquote, tr")
         for el in blocks where el.parent() != nil {
-            try? el.before(blockMarker)
+            _ = try? el.before(blockMarker)
         }
         let text = try copy.text()
         var result = text.replacingOccurrences(of: blockMarker, with: "\n")

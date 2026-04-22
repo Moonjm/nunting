@@ -161,7 +161,7 @@ struct CachedAsyncImage: View {
         case animated(frames: [UIImage], duration: TimeInterval)
     }
 
-    private static func decode(data: Data, maxDimension: CGFloat, maxPixelArea: CGFloat, scale: CGFloat) -> DecodeResult? {
+    nonisolated private static func decode(data: Data, maxDimension: CGFloat, maxPixelArea: CGFloat, scale: CGFloat) -> DecodeResult? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
 
         // Fetch native dimensions up-front so we can cap by width + area

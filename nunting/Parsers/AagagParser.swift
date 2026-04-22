@@ -359,7 +359,7 @@ struct AagagParser: BoardParser {
         let blockMarker = "\u{0001}NL\u{0001}"
         if let blocks = try? body.select("br, p, div, li, blockquote") {
             for el in blocks where el.parent() != nil {
-                try? el.before(blockMarker)
+                _ = try? el.before(blockMarker)
             }
         }
         let text = (try? body.text()) ?? raw

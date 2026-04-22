@@ -16,7 +16,7 @@ struct FavoriteBoardSnapshot: Codable, Hashable {
     let searchQueryName: String?
     let pageQueryName: String?
 
-    init(_ board: Board) {
+    nonisolated init(_ board: Board) {
         self.id = board.id
         self.siteRaw = board.site.rawValue
         self.name = board.name

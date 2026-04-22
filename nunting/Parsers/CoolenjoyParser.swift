@@ -99,7 +99,7 @@ struct CoolenjoyParser: BoardParser {
         return maxPage
     }
 
-    func parseComments(html: String) throws -> [Comment] {
+    nonisolated func parseComments(html: String) throws -> [Comment] {
         let doc = try SwiftSoup.parse(html)
         let articles = try doc.select("article[id^=c_]")
         var results: [Comment] = []
