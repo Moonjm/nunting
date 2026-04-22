@@ -14,16 +14,16 @@ struct SLRParser: BoardParser {
 
     nonisolated init() {}
 
-    private static let blockTags: Set<String> = [
+    nonisolated(unsafe) private static let blockTags: Set<String> = [
         "p", "div", "li", "blockquote",
         "h1", "h2", "h3", "h4", "h5", "h6",
         "section", "article", "tr",
     ]
-    private static let skipTags: Set<String> = ["script", "style", "noscript"]
+    nonisolated(unsafe) private static let skipTags: Set<String> = ["script", "style", "noscript"]
 
     /// Inline `<img>`/`<video>` inside a comment memo. Same shape as the body
     /// extractor but scoped to a single comment's HTML fragment.
-    private static let youtubeIDRegex = try! NSRegularExpression(
+    nonisolated(unsafe) private static let youtubeIDRegex = try! NSRegularExpression(
         pattern: #"youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{11})"#,
         options: []
     )
@@ -401,7 +401,7 @@ struct SLRParser: BoardParser {
     /// `<br>` for a TextNode `"\n"` actually produces a space in the output.
     /// A private-use codepoint survives `.text()` untouched, so we sub it in
     /// for the `<br>` runs before parsing and restore real newlines after.
-    private static let brSentinel = "\u{E000}"
+    nonisolated(unsafe) private static let brSentinel = "\u{E000}"
 
     nonisolated private static func renderMemo(_ memo: String) -> (text: String, sticker: URL?, video: URL?) {
         let raw = memo.trimmingCharacters(in: .whitespacesAndNewlines)

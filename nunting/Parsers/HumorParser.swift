@@ -8,17 +8,17 @@ struct HumorParser: BoardParser {
 
     nonisolated init() {}
 
-    private static let mp4ExpandRegex = try! NSRegularExpression(
+    nonisolated(unsafe) private static let mp4ExpandRegex = try! NSRegularExpression(
         pattern: #"comment_mp4_expand\s*\(\s*'[^']*'\s*,\s*'([^']+)'"#,
         options: []
     )
-    private static let youtubeIDRegex = try! NSRegularExpression(
+    nonisolated(unsafe) private static let youtubeIDRegex = try! NSRegularExpression(
         pattern: #"youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{11})"#,
         options: []
     )
     /// Source markers that identify non-content chrome (loading bars, UI icons,
     /// reaction buttons). Any <img> whose src hits one of these is dropped.
-    private static let skipImageMarkers: [String] = [
+    nonisolated(unsafe) private static let skipImageMarkers: [String] = [
         "loading_bar2.gif",
         "/images/ic_",
         "/images/icon-",
@@ -27,12 +27,12 @@ struct HumorParser: BoardParser {
         "/images/sendmemo",
     ]
 
-    private static let blockTags: Set<String> = [
+    nonisolated(unsafe) private static let blockTags: Set<String> = [
         "p", "div", "li", "blockquote",
         "h1", "h2", "h3", "h4", "h5", "h6",
         "section", "article", "tr",
     ]
-    private static let skipTags: Set<String> = ["script", "style", "noscript"]
+    nonisolated(unsafe) private static let skipTags: Set<String> = ["script", "style", "noscript"]
 
     nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         // Humoruniv is aagag-dispatch-only; list parsing is never invoked.

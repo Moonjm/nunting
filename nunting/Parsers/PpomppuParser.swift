@@ -6,18 +6,18 @@ struct PpomppuParser: BoardParser {
 
     nonisolated init() {}
 
-    private static let blockTags: Set<String> = [
+    nonisolated(unsafe) private static let blockTags: Set<String> = [
         "p", "div", "li", "blockquote",
         "h1", "h2", "h3", "h4", "h5", "h6",
         "section", "article", "tr",
     ]
 
-    private static let skipTags: Set<String> = ["script", "style", "noscript"]
+    nonisolated(unsafe) private static let skipTags: Set<String> = ["script", "style", "noscript"]
 
     /// Matches the canonical YouTube embed URL shape — `/embed/{11-char id}`
     /// on `youtube.com` or the no-cookie variant. Shared by all YouTube
     /// `<iframe>` handling in this parser.
-    private static let youtubeIDRegex = try! NSRegularExpression(
+    nonisolated(unsafe) private static let youtubeIDRegex = try! NSRegularExpression(
         pattern: #"youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{11})"#,
         options: []
     )
