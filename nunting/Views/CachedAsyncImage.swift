@@ -113,20 +113,13 @@ struct CachedAsyncImage: View {
         }
 
         do {
-            // Promote plain-`http://` image URLs to `https://` so App
-            // Transport Security doesn't block them. Some board editors
-            // (e.g. old Clien car posts with embedded carisyou images)
-            // still emit `http://` `<img src>` values; the upstream CDN
-            // almost always serves the same path on HTTPS too, so a
-            // blind upgrade succeeds and avoids a global ATS exception.
-            let fetchURL: URL = {
-                guard url.scheme?.lowercased() == "http",
-                      var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
-                else { return url }
-                comps.scheme = "https"
-                return comps.url ?? url
-            }()
-            let (data, response) = try await Networking.session.data(for: URLRequest(url: fetchURL))
+            // Plain-`http://` image URLs → `https://` so App Transport
+            // Security doesn't block them. See `URL.atsSafe` for the
+            // upgrade rationale. Applied here so every caller (body
+            // images, comment stickers, auth icons, level icons, video
+            // posters) picks up the fix without touching each site's
+            // parser.
+            let (data, response) = try await Networking.session.data(for: URLRequest(url: url.atsSafe))
             try Task.checkCancellation()
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 failed = true

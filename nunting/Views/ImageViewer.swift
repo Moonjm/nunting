@@ -91,7 +91,11 @@ struct ImageViewer: View {
         }
 
         do {
-            let (data, response) = try await Networking.session.data(for: URLRequest(url: url))
+            // Same `http://` → `https://` promotion as `CachedAsyncImage`;
+            // without this, a body image that loaded (because the inline
+            // view upgrades) fails on zoom because the viewer fetches
+            // independently.
+            let (data, response) = try await Networking.session.data(for: URLRequest(url: url.atsSafe))
             try Task.checkCancellation()
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 failed = true

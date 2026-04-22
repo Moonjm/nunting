@@ -1,5 +1,22 @@
 import Foundation
 
+extension URL {
+    /// Returns `https://<host>/<path>` when `self` is plain `http://`,
+    /// otherwise returns `self` unchanged. Lets ATS-clean hosts load
+    /// media (`<img>` / zoom viewer) without a global `NSAllowsArbitraryLoads`
+    /// exception. Most of the image CDNs embedded in community-board posts
+    /// (carisyou, tistory, etc.) serve the same path over HTTPS, so a
+    /// blind upgrade is safe; callers that need the original scheme
+    /// should not use this helper.
+    var atsSafe: URL {
+        guard scheme?.lowercased() == "http",
+              var comps = URLComponents(url: self, resolvingAgainstBaseURL: false)
+        else { return self }
+        comps.scheme = "https"
+        return comps.url ?? self
+    }
+}
+
 enum NetworkError: Error, LocalizedError {
     case badResponse(Int)
     case decodingFailed

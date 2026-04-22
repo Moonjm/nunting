@@ -663,7 +663,21 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
             // initial vertical nudge. `lockScroll` consults this so a
             // tiny `→` drag's restore lands on where the user actually
             // was, not a drifted offset.
-            if let pan = g as? UIPanGestureRecognizer, let view = pan.view,
+            //
+            // Scope the write to *our* back-swipe recognizer only. Today
+            // the coordinator is delegate for a single pan, but the guard
+            // defends against a future refactor attaching the same
+            // coordinator to another recognizer (e.g. a tap-gate) and
+            // accidentally capturing an unrelated touch's baseline.
+            // Also note: a capture here from one scroll view can leak
+            // across a navigation / sheet dismiss into the next
+            // presentation — that's why `lockScroll` re-checks with
+            // `earliestScrollView === scrollView` before trusting the
+            // snapshot, and falls back to the live `contentOffset` if
+            // they differ.
+            if let pan = g as? UIPanGestureRecognizer,
+               let view = pan.view,
+               pan.delegate === self,
                let scrollView = Self.findScrollView(in: view) {
                 earliestScrollView = scrollView
                 earliestOffset = scrollView.contentOffset
