@@ -218,14 +218,14 @@ struct CachedAsyncImage: View {
     /// push the app toward jetsam. We subsample the source to fit this
     /// cap — animation plays at a slightly lower frame rate but still
     /// reads as motion.
-    private static let animatedFrameLimit = 60
+    nonisolated private static let animatedFrameLimit = 60
 
     /// Long-edge cap (pixels) applied to animated frames. Lower than the
     /// still path's `maxDimension` to bound per-frame memory. Boards like
     /// Ppomppu and Clien rarely ship retina-quality GIFs; 1080px stays
     /// sharp on a 390pt column while cutting per-frame decode size by
     /// roughly half vs the still ceiling.
-    private static let animatedLongEdgeCap: CGFloat = 1080
+    nonisolated private static let animatedLongEdgeCap: CGFloat = 1080
 
     /// Walks every frame of a multi-image source (animated GIF / APNG) and
     /// sums the per-frame delay metadata into a total duration for
@@ -296,7 +296,7 @@ struct CachedAsyncImage: View {
         return .animated(frames: frames, duration: safeDuration)
     }
 
-    private static func frameDelay(at index: Int, in source: CGImageSource) -> TimeInterval {
+    nonisolated private static func frameDelay(at index: Int, in source: CGImageSource) -> TimeInterval {
         guard let props = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any]
         else { return 0.1 }
         // GIF and APNG both surface delay metadata, but under their own

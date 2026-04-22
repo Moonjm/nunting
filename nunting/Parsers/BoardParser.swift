@@ -36,34 +36,36 @@ extension BoardParser {
 
 /// Accumulates an `[InlineSegment]` for a single text block while a parser walks
 /// HTML nodes. Coalesces adjacent text characters into one `.text` segment.
-struct InlineAccumulator {
+struct InlineAccumulator: Sendable {
     private var segments: [InlineSegment] = []
     private var textBuffer: String = ""
 
-    mutating func appendText(_ s: String) {
+    nonisolated init() {}
+
+    nonisolated mutating func appendText(_ s: String) {
         textBuffer.append(s)
     }
 
-    mutating func appendLink(url: URL, label: String) {
+    nonisolated mutating func appendLink(url: URL, label: String) {
         flushText()
         segments.append(.link(url: url, label: label))
     }
 
-    mutating func flushText() {
+    nonisolated mutating func flushText() {
         if !textBuffer.isEmpty {
             segments.append(.text(textBuffer))
             textBuffer = ""
         }
     }
 
-    var isEmpty: Bool {
+    nonisolated var isEmpty: Bool {
         segments.isEmpty && textBuffer.isEmpty
     }
 
     /// Drain into a trimmed segment list ready for `ContentBlock.richText`.
     /// Trims leading/trailing whitespace from the first and last text segments,
     /// collapses runs of 3+ newlines into 2.
-    mutating func drain() -> [InlineSegment] {
+    nonisolated mutating func drain() -> [InlineSegment] {
         flushText()
         let result = segments
         segments = []
