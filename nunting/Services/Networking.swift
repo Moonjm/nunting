@@ -235,10 +235,15 @@ struct Networking {
     /// warm for ~60 s of idle anyway, so re-warming more often than
     /// once every 30 s is pure noise.
     nonisolated static func prewarmConnections(hosts: [URL] = Site.allCases.map(\.baseURL)) {
+        // Dedup as a defensive step — all 10 current `Site` cases have
+        // distinct base hosts, but a future case sharing a host (or an
+        // override caller passing duplicates) shouldn't fire the same
+        // HEAD twice.
+        let uniqueHosts = Set(hosts)
         Task.detached(priority: .utility) {
             guard await PrewarmThrottle.shared.claimRun() else { return }
             await withTaskGroup(of: Void.self) { group in
-                for host in hosts {
+                for host in uniqueHosts {
                     group.addTask {
                         var request = URLRequest(url: host)
                         request.httpMethod = "HEAD"
