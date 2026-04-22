@@ -88,7 +88,8 @@ private struct AVPlayerControllerView: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let controller = AVPlayerViewController()
-        let player = AVPlayer(url: url)
+        let item = AVPlayerItem(url: url)
+        let player = AVPlayer(playerItem: item)
         context.coordinator.player = player
 
         controller.player = player
@@ -98,7 +99,13 @@ private struct AVPlayerControllerView: UIViewControllerRepresentable {
 
         context.coordinator.installDismissGesture(on: controller.view)
 
-        player.play()
+        // Calling `play()` synchronously here starts the audio decoder
+        // before AVPlayerViewController has materialised its render layer,
+        // which is exactly the "black frame + sound only" case the user
+        // reported. Defer the first `play()` until the underlying item
+        // reports `.readyToPlay` (its first video sample is decoded), so
+        // image and audio kick off together.
+        context.coordinator.startPlaybackWhenReady(item: item)
         return controller
     }
 
@@ -123,9 +130,30 @@ private struct AVPlayerControllerView: UIViewControllerRepresentable {
 
         private weak var dismissPan: UIPanGestureRecognizer?
         private var hasDismissed = false
+        private var statusObservation: NSKeyValueObservation?
 
         init(onDismiss: @escaping () -> Void) {
             self.onDismiss = onDismiss
+        }
+
+        deinit {
+            statusObservation?.invalidate()
+        }
+
+        /// Hold off on `play()` until the AVPlayerItem reports it can deliver
+        /// frames, so audio doesn't race ahead of the first decoded picture.
+        /// `.initial` covers the rare case where the item is already
+        /// `.readyToPlay` by the time we attach (cached/short clips).
+        func startPlaybackWhenReady(item: AVPlayerItem) {
+            statusObservation?.invalidate()
+            statusObservation = item.observe(\.status, options: [.new, .initial]) { [weak self] item, _ in
+                guard item.status == .readyToPlay else { return }
+                DispatchQueue.main.async {
+                    self?.player?.play()
+                    self?.statusObservation?.invalidate()
+                    self?.statusObservation = nil
+                }
+            }
         }
 
         func installDismissGesture(on view: UIView) {
