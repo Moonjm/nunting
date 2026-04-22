@@ -19,7 +19,7 @@ struct ClienParser: BoardParser {
 
     nonisolated init() {}
 
-    func parseList(html: String, board: Board) throws -> [Post] {
+    nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
         let rows = try doc.select("a.list_item.symph-row")
 
@@ -68,7 +68,7 @@ struct ClienParser: BoardParser {
         }
     }
 
-    func parseDetail(html: String, post: Post) throws -> PostDetail {
+    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
         guard let article = try doc.select("div.post_article").first() else {
             throw ParserError.structureChanged("post_article 없음")
@@ -106,7 +106,7 @@ struct ClienParser: BoardParser {
     /// stamp in that case so the header reads cleanly; pass through any
     /// other shape (single date, no edit) unchanged after light whitespace
     /// normalization.
-    private func collapsePostDate(_ raw: String) -> String {
+    nonisolated private func collapsePostDate(_ raw: String) -> String {
         let normalized = raw
             .replacingOccurrences(of: "\u{00A0}", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -121,7 +121,7 @@ struct ClienParser: BoardParser {
         return normalized
     }
 
-    private func extractSource(from article: Element) throws -> (source: PostSource?, skipFirstParagraph: Bool) {
+    nonisolated private func extractSource(from article: Element) throws -> (source: PostSource?, skipFirstParagraph: Bool) {
         guard let firstP = article.children().first(),
               firstP.tagName().lowercased() == "p"
         else { return (nil, false) }
@@ -153,7 +153,7 @@ struct ClienParser: BoardParser {
         return (PostSource(name: afterPipe, url: url), true)
     }
 
-    private func collectBlocks(from element: Element, into blocks: inout [ContentBlock]) throws {
+    nonisolated private func collectBlocks(from element: Element, into blocks: inout [ContentBlock]) throws {
         var inline = InlineAccumulator()
 
         func flush() {
@@ -243,7 +243,7 @@ struct ClienParser: BoardParser {
     /// Extract a YouTube video ID from an `<iframe src>` value. Returns nil
     /// for non-YouTube iframes so the default path can still recurse or
     /// drop silently without surfacing a broken embed card.
-    private func youtubeID(from src: String) -> String? {
+    nonisolated private func youtubeID(from src: String) -> String? {
         let ns = src as NSString
         guard let match = Self.youtubeIDRegex.firstMatch(
                 in: src,
@@ -254,7 +254,7 @@ struct ClienParser: BoardParser {
         return ns.substring(with: match.range(at: 1))
     }
 
-    private func collectInlines(from element: Element, into inline: inout InlineAccumulator) throws {
+    nonisolated private func collectInlines(from element: Element, into inline: inout InlineAccumulator) throws {
         for node in element.getChildNodes() {
             if let el = node as? Element {
                 let childTag = el.tagName().lowercased()
@@ -276,7 +276,7 @@ struct ClienParser: BoardParser {
         }
     }
 
-    private func image(from element: Element) throws -> (url: URL, aspectRatio: CGFloat?)? {
+    nonisolated private func image(from element: Element) throws -> (url: URL, aspectRatio: CGFloat?)? {
         let src = try element.attr("src")
         guard !src.isEmpty,
               let url = URL(string: src, relativeTo: site.baseURL)?.absoluteURL,
@@ -290,7 +290,7 @@ struct ClienParser: BoardParser {
         return (url, aspectRatio)
     }
 
-    private func parseComments(doc: Document) throws -> [Comment] {
+    nonisolated private func parseComments(doc: Document) throws -> [Comment] {
         let rows = try doc.select("div.comment_row[data-role=comment-row]")
         var results: [Comment] = []
 
@@ -336,7 +336,7 @@ struct ClienParser: BoardParser {
         return results
     }
 
-    private func firstInteger(in text: String) -> Int? {
+    nonisolated private func firstInteger(in text: String) -> Int? {
         var digits = ""
         for char in text {
             if char.isNumber {

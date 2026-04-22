@@ -6,7 +6,7 @@ struct CoolenjoyParser: BoardParser {
 
     nonisolated init() {}
 
-    func parseList(html: String, board: Board) throws -> [Post] {
+    nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
         let rows = try doc.select("ul.na-table > li.d-md-table-row")
 
@@ -78,7 +78,7 @@ struct CoolenjoyParser: BoardParser {
         return (1...totalPages).flatMap { pageMap[$0] ?? [] }
     }
 
-    private func appendingPagingParams(to url: URL, page: Int) -> URL {
+    nonisolated private func appendingPagingParams(to url: URL, page: Int) -> URL {
         guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
         var items = (comps.queryItems ?? []).filter { $0.name != "page" && $0.name != "cob" }
         items.append(URLQueryItem(name: "cob", value: "old"))
@@ -87,7 +87,7 @@ struct CoolenjoyParser: BoardParser {
         return comps.url ?? url
     }
 
-    private func totalCommentPages(html: String) throws -> Int {
+    nonisolated private func totalCommentPages(html: String) throws -> Int {
         let doc = try SwiftSoup.parse(html)
         let items = try doc.select("ul.pagination li.page-item:not(.page-first):not(.page-prev):not(.page-next):not(.page-last)")
         var maxPage = 1
@@ -133,7 +133,7 @@ struct CoolenjoyParser: BoardParser {
         return results
     }
 
-    func parseDetail(html: String, post: Post) throws -> PostDetail {
+    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
         guard let article = try doc.select("article#bo_v").first() else {
             throw ParserError.structureChanged("article#bo_v 없음")
@@ -162,7 +162,7 @@ struct CoolenjoyParser: BoardParser {
         )
     }
 
-    private func resolvePostURL(titleEl: Element, row: Element) throws -> URL? {
+    nonisolated private func resolvePostURL(titleEl: Element, row: Element) throws -> URL? {
         let href = try titleEl.attr("href")
         if !href.isEmpty && href != "#",
            let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL,
@@ -178,20 +178,20 @@ struct CoolenjoyParser: BoardParser {
         return nil
     }
 
-    private static func extractLocationHref(from onclick: String) -> String? {
+    nonisolated private static func extractLocationHref(from onclick: String) -> String? {
         guard let start = onclick.range(of: "location.href='")?.upperBound,
               let end = onclick[start...].range(of: "'")?.lowerBound
         else { return nil }
         return String(onclick[start..<end])
     }
 
-    private func cleanedTitle(from anchor: Element) throws -> String {
+    nonisolated private func cleanedTitle(from anchor: Element) throws -> String {
         try anchor.select("span.sr-only").remove()
         let text = try anchor.text().trimmingCharacters(in: .whitespacesAndNewlines)
         return text
     }
 
-    private func authorName(from row: Element) throws -> String {
+    nonisolated private func authorName(from row: Element) throws -> String {
         if let memberEl = try row.select("a.sv_member").first() {
             let titleAttr = try memberEl.attr("title")
             if let stripped = stripSuffix(titleAttr, suffix: " 자기소개"), !stripped.isEmpty {
@@ -203,7 +203,7 @@ struct CoolenjoyParser: BoardParser {
         return ""
     }
 
-    private func metaValue(from row: Element, label: String) throws -> String? {
+    nonisolated private func metaValue(from row: Element, label: String) throws -> String? {
         let cells = try row.select("div.d-md-table-cell")
         for cell in cells {
             let srOnly = try cell.select("span.sr-only").first()
@@ -218,14 +218,14 @@ struct CoolenjoyParser: BoardParser {
         return nil
     }
 
-    private func commentCountValue(from row: Element) throws -> Int {
+    nonisolated private func commentCountValue(from row: Element) throws -> Int {
         guard let countEl = try row.select("span.count-plus").first() else { return 0 }
         let raw = try countEl.text()
         let digits = raw.filter(\.isNumber)
         return Int(digits) ?? 0
     }
 
-    private func metaValueInArticle(article: Element, label: String) throws -> String? {
+    nonisolated private func metaValueInArticle(article: Element, label: String) throws -> String? {
         let srOnlies = try article.select("span.sr-only")
         for sr in srOnlies {
             if try sr.text() == label {
@@ -241,7 +241,7 @@ struct CoolenjoyParser: BoardParser {
         return nil
     }
 
-    private func collectBlocks(from element: Element, into blocks: inout [ContentBlock]) throws {
+    nonisolated private func collectBlocks(from element: Element, into blocks: inout [ContentBlock]) throws {
         var inline = InlineAccumulator()
 
         func flush() {
@@ -316,7 +316,7 @@ struct CoolenjoyParser: BoardParser {
         flush()
     }
 
-    private func collectInlines(from element: Element, into inline: inout InlineAccumulator) throws {
+    nonisolated private func collectInlines(from element: Element, into inline: inout InlineAccumulator) throws {
         for node in element.getChildNodes() {
             if let el = node as? Element {
                 let childTag = el.tagName().lowercased()
@@ -338,7 +338,7 @@ struct CoolenjoyParser: BoardParser {
         }
     }
 
-    private func imageURL(from element: Element) throws -> URL? {
+    nonisolated private func imageURL(from element: Element) throws -> URL? {
         let src = try element.attr("src")
         guard !src.isEmpty,
               let url = URL(string: src, relativeTo: site.baseURL)?.absoluteURL,
@@ -348,7 +348,7 @@ struct CoolenjoyParser: BoardParser {
         return url
     }
 
-    private func firstInteger(in text: String) -> Int? {
+    nonisolated private func firstInteger(in text: String) -> Int? {
         var digits = ""
         for char in text {
             if char.isNumber {
@@ -360,7 +360,7 @@ struct CoolenjoyParser: BoardParser {
         return digits.isEmpty ? nil : Int(digits)
     }
 
-    private func stripSuffix(_ s: String, suffix: String) -> String? {
+    nonisolated private func stripSuffix(_ s: String, suffix: String) -> String? {
         guard s.hasSuffix(suffix) else { return nil }
         return String(s.dropLast(suffix.count))
     }

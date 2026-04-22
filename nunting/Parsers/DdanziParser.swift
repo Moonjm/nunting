@@ -27,12 +27,12 @@ struct DdanziParser: BoardParser {
         options: []
     )
 
-    func parseList(html: String, board: Board) throws -> [Post] {
+    nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         // Ddanzi is aagag-dispatch-only; list parsing is never invoked.
         []
     }
 
-    func parseDetail(html: String, post: Post) throws -> PostDetail {
+    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
 
         // Deleted posts replace the boardR wrapper with an error notice.
@@ -131,31 +131,31 @@ struct DdanziParser: BoardParser {
 
     // MARK: - Field extraction
 
-    private func extractTitle(in doc: Document, fallback: String) throws -> String {
+    nonisolated private func extractTitle(in doc: Document, fallback: String) throws -> String {
         let text = try doc.select(".boardR .top_title h1").first()?.text()
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return text.isEmpty ? fallback : text
     }
 
-    private func extractAuthor(in doc: Document, fallback: String) throws -> String {
+    nonisolated private func extractAuthor(in doc: Document, fallback: String) throws -> String {
         let text = try doc.select(".boardR .top_title .right .author").first()?.text()
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return text.isEmpty ? fallback : text
     }
 
-    private func extractDate(in doc: Document) throws -> String? {
+    nonisolated private func extractDate(in doc: Document) throws -> String? {
         let text = try doc.select(".boardR .top_title .right .time").first()?.text()
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return text.isEmpty ? nil : text
     }
 
-    private func extractViewCount(in doc: Document) throws -> Int? {
+    nonisolated private func extractViewCount(in doc: Document) throws -> Int? {
         guard let el = try doc.select(".boardR .meta .sum .read").first() else { return nil }
         let raw = try el.text().filter(\.isNumber)
         return raw.isEmpty ? nil : Int(raw)
     }
 
-    private func extractRecommend(in doc: Document) throws -> Int? {
+    nonisolated private func extractRecommend(in doc: Document) throws -> Int? {
         // `.sum .voteWrap .vote` contains the `icon_good.png` img plus count.
         guard let el = try doc.select(".boardR .meta .voteWrap .vote").first() else { return nil }
         let raw = try el.text().filter(\.isNumber)
@@ -164,7 +164,7 @@ struct DdanziParser: BoardParser {
 
     // MARK: - Body blocks
 
-    private func extractBlocks(in doc: Document) throws -> [ContentBlock] {
+    nonisolated private func extractBlocks(in doc: Document) throws -> [ContentBlock] {
         guard let wrap = try doc.select(".read_content .xe_content").first() else { return [] }
         var blocks: [ContentBlock] = []
         var inline = InlineAccumulator()
@@ -173,14 +173,14 @@ struct DdanziParser: BoardParser {
         return blocks
     }
 
-    private func flushInline(into blocks: inout [ContentBlock], inline: inout InlineAccumulator) {
+    nonisolated private func flushInline(into blocks: inout [ContentBlock], inline: inout InlineAccumulator) {
         let segments = inline.drain()
         if !segments.isEmpty {
             blocks.append(.richText(segments))
         }
     }
 
-    private func collectBlocks(from element: Element, into blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
+    nonisolated private func collectBlocks(from element: Element, into blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
         for node in element.getChildNodes() {
             if let child = node as? Element {
                 try handleElement(child, blocks: &blocks, inline: &inline)
@@ -191,7 +191,7 @@ struct DdanziParser: BoardParser {
         }
     }
 
-    private func handleElement(_ el: Element, blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
+    nonisolated private func handleElement(_ el: Element, blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
         let tag = el.tagName().lowercased()
         if Self.skipTags.contains(tag) { return }
 
@@ -244,7 +244,7 @@ struct DdanziParser: BoardParser {
         }
     }
 
-    private func realImageURL(from el: Element) throws -> URL? {
+    nonisolated private func realImageURL(from el: Element) throws -> URL? {
         var src = try el.attr("src")
         if src.isEmpty { src = try el.attr("data-src") }
         if src.isEmpty { src = try el.attr("data-original") }
@@ -259,7 +259,7 @@ struct DdanziParser: BoardParser {
 
     /// Forward HTML5 `<video poster="...">` to the player so the inline
     /// tap-to-play frame shows the site's poster thumbnail.
-    private func videoPoster(from el: Element) throws -> URL? {
+    nonisolated private func videoPoster(from el: Element) throws -> URL? {
         let raw = try el.attr("poster").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return nil }
         let normalized = raw.hasPrefix("//") ? "https:" + raw : raw
@@ -270,7 +270,7 @@ struct DdanziParser: BoardParser {
         return url
     }
 
-    private func videoURL(from el: Element) throws -> URL? {
+    nonisolated private func videoURL(from el: Element) throws -> URL? {
         var raw = try el.attr("src")
         if raw.isEmpty, let source = try el.select("source").first() {
             raw = try source.attr("src")
@@ -287,7 +287,7 @@ struct DdanziParser: BoardParser {
         return url
     }
 
-    private func youtubeID(from src: String) -> String? {
+    nonisolated private func youtubeID(from src: String) -> String? {
         let ns = src as NSString
         guard let match = Self.youtubeIDRegex.firstMatch(in: src, range: NSRange(location: 0, length: ns.length)),
               match.numberOfRanges >= 2
@@ -297,12 +297,12 @@ struct DdanziParser: BoardParser {
 
     // MARK: - Comment AJAX params
 
-    private struct CommentParams {
+    nonisolated private struct CommentParams {
         let mid: String
         let documentSrl: String
     }
 
-    private static func extractCommentParams(html: String) throws -> CommentParams? {
+    nonisolated private static func extractCommentParams(html: String) throws -> CommentParams? {
         let doc = try SwiftSoup.parse(html)
         // Bail if the article body is missing — ddanzi's login-required /
         // private-post error pages still ship with widgets that include
@@ -345,11 +345,11 @@ struct DdanziParser: BoardParser {
     /// </li>
     /// <li id="comment_NNN" class="re_comment" style="padding-left:20px">…</li>
     /// ```
-    private struct CommentResponse: Decodable {
+    nonisolated private struct CommentResponse: Decodable {
         let commentHtml: String?
     }
 
-    private static func decodeComments(data: Data) -> [Comment] {
+    nonisolated private static func decodeComments(data: Data) -> [Comment] {
         guard let payload = try? JSONDecoder().decode(CommentResponse.self, from: data),
               let fragment = payload.commentHtml,
               !fragment.isEmpty
@@ -399,7 +399,7 @@ struct DdanziParser: BoardParser {
 
     /// Pull the first inline image out as a sticker URL so the comment
     /// renders as `[text] + image` the same way other parsers do.
-    private static func extractCommentSticker(in li: Element) throws -> URL? {
+    nonisolated private static func extractCommentSticker(in li: Element) throws -> URL? {
         guard let img = try li.select(".fdComment .xe_content img").first() else { return nil }
         var src = try img.attr("src")
         if src.isEmpty { src = try img.attr("data-src") }
@@ -418,7 +418,7 @@ struct DdanziParser: BoardParser {
     /// `.re_com_nickname` (the "@targetUser" prefix bubble) from the text
     /// — leaving it in duplicates information the reply indentation already
     /// communicates, and makes every reply look like it starts with `@…`.
-    private static func renderCommentContent(in li: Element) throws -> String {
+    nonisolated private static func renderCommentContent(in li: Element) throws -> String {
         guard let content = try li.select(".fdComment .xe_content").first() else { return "" }
         guard let copy = content.copy() as? Element else { return "" }
         try copy.select(".re_com_nickname, img, script, style").remove()
@@ -439,7 +439,7 @@ struct DdanziParser: BoardParser {
         return trimmed
     }
 
-    private static func walk(_ element: Element, into output: inout String) throws {
+    nonisolated private static func walk(_ element: Element, into output: inout String) throws {
         for node in element.getChildNodes() {
             if let text = node as? TextNode {
                 output += text.text()

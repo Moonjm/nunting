@@ -1,10 +1,10 @@
 import Foundation
 import SwiftSoup
 
-protocol BoardParser {
-    var site: Site { get }
+protocol BoardParser: Sendable {
+    nonisolated var site: Site { get }
     nonisolated func parseList(html: String, board: Board) throws -> [Post]
-    func parseDetail(html: String, post: Post) throws -> PostDetail
+    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail
     nonisolated func commentsURL(for post: Post) -> URL?
     nonisolated func parseComments(html: String) throws -> [Comment]
     nonisolated func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment]
@@ -22,7 +22,7 @@ extension BoardParser {
 
     /// Resolve an `<a href>` element to a `(url, label)` pair, or nil if the link is
     /// non-http(s). Whitespace-only labels fall back to the URL string.
-    func anchor(from element: Element) throws -> (url: URL, label: String)? {
+    nonisolated func anchor(from element: Element) throws -> (url: URL, label: String)? {
         let href = try element.attr("href")
         guard !href.isEmpty,
               let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL,
@@ -70,7 +70,7 @@ struct InlineAccumulator {
         return InlineAccumulator.trimmed(result)
     }
 
-    private static func trimmed(_ input: [InlineSegment]) -> [InlineSegment] {
+    nonisolated private static func trimmed(_ input: [InlineSegment]) -> [InlineSegment] {
         var out = input
 
         func collapse(_ s: String) -> String {

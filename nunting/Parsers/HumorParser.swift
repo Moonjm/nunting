@@ -34,12 +34,12 @@ struct HumorParser: BoardParser {
     ]
     private static let skipTags: Set<String> = ["script", "style", "noscript"]
 
-    func parseList(html: String, board: Board) throws -> [Post] {
+    nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         // Humoruniv is aagag-dispatch-only; list parsing is never invoked.
         []
     }
 
-    func parseDetail(html: String, post: Post) throws -> PostDetail {
+    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
 
         // Humoruniv redirects deleted/moved posts to /board/msg.html which
@@ -103,19 +103,19 @@ struct HumorParser: BoardParser {
 
     // MARK: - Field extraction
 
-    private func extractTitle(in doc: Document, fallback: String) throws -> String {
+    nonisolated private func extractTitle(in doc: Document, fallback: String) throws -> String {
         let text = try doc.select("#read_subject_div h2 a").first()?.text()
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return text.isEmpty ? fallback : text
     }
 
-    private func extractAuthor(in doc: Document, fallback: String) throws -> String {
+    nonisolated private func extractAuthor(in doc: Document, fallback: String) throws -> String {
         let text = try doc.select("#read_profile_td .nick .hu_nick_txt").first()?.text()
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return text.isEmpty ? fallback : text
     }
 
-    private func extractFullDate(in doc: Document) throws -> String? {
+    nonisolated private func extractFullDate(in doc: Document) throws -> String? {
         guard let el = try doc.select("#read_profile_desc span.etc").first() else { return nil }
         let text = try el.text().trimmingCharacters(in: .whitespacesAndNewlines)
         if text.hasPrefix("작성") {
@@ -125,13 +125,13 @@ struct HumorParser: BoardParser {
         return text.isEmpty ? nil : text
     }
 
-    private func extractRecommend(in doc: Document) throws -> Int? {
+    nonisolated private func extractRecommend(in doc: Document) throws -> Int? {
         guard let el = try doc.select("#ok_div").first() else { return nil }
         let raw = try el.text().filter(\.isNumber)
         return raw.isEmpty ? nil : Int(raw)
     }
 
-    private func extractViewCount(in doc: Document) throws -> Int? {
+    nonisolated private func extractViewCount(in doc: Document) throws -> Int? {
         // The profile desc has "<img src=...ic_view.png> 12,121" — the parent
         // span of that img carries the count as its text.
         guard let img = try doc.select("#read_profile_desc img[src*=ic_view]").first(),
@@ -141,7 +141,7 @@ struct HumorParser: BoardParser {
         return raw.isEmpty ? nil : Int(raw)
     }
 
-    private func extractSource(in doc: Document) throws -> PostSource? {
+    nonisolated private func extractSource(in doc: Document) throws -> PostSource? {
         guard let anchor = try doc.select(".ct_info_sale a[href]").first() else { return nil }
         let href = try anchor.attr("href")
         guard !href.isEmpty,
@@ -156,7 +156,7 @@ struct HumorParser: BoardParser {
 
     // MARK: - Body blocks
 
-    private func extractBlocks(in doc: Document) throws -> [ContentBlock] {
+    nonisolated private func extractBlocks(in doc: Document) throws -> [ContentBlock] {
         // The article body is nested under <wrap_copy id="wrap_copy"> whose
         // closing tag in the source is a typo (</warp_copy>). SwiftSoup can't
         // match the close, so the custom element may end up empty or swallow
@@ -175,14 +175,14 @@ struct HumorParser: BoardParser {
         return blocks
     }
 
-    private func flushInline(into blocks: inout [ContentBlock], inline: inout InlineAccumulator) {
+    nonisolated private func flushInline(into blocks: inout [ContentBlock], inline: inout InlineAccumulator) {
         let segments = inline.drain()
         if !segments.isEmpty {
             blocks.append(.richText(segments))
         }
     }
 
-    private func collectBlocks(from element: Element, into blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
+    nonisolated private func collectBlocks(from element: Element, into blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
         for node in element.getChildNodes() {
             if let child = node as? Element {
                 try handleElement(child, blocks: &blocks, inline: &inline)
@@ -193,7 +193,7 @@ struct HumorParser: BoardParser {
         }
     }
 
-    private func handleElement(_ el: Element, blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
+    nonisolated private func handleElement(_ el: Element, blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
         let tag = el.tagName().lowercased()
 
         if Self.skipTags.contains(tag) { return }
@@ -253,7 +253,7 @@ struct HumorParser: BoardParser {
         }
     }
 
-    private func realImageURL(from el: Element) throws -> URL? {
+    nonisolated private func realImageURL(from el: Element) throws -> URL? {
         var src = try el.attr("src")
         if src.isEmpty {
             src = try el.attr("data-src")
@@ -267,7 +267,7 @@ struct HumorParser: BoardParser {
         return url
     }
 
-    private func parseMp4Click(_ onclick: String) throws -> URL? {
+    nonisolated private func parseMp4Click(_ onclick: String) throws -> URL? {
         let ns = onclick as NSString
         guard let match = Self.mp4ExpandRegex.firstMatch(in: onclick, range: NSRange(location: 0, length: ns.length)),
               match.numberOfRanges >= 2
@@ -281,7 +281,7 @@ struct HumorParser: BoardParser {
         return url
     }
 
-    private func youtubeID(from src: String) -> String? {
+    nonisolated private func youtubeID(from src: String) -> String? {
         let ns = src as NSString
         guard let match = Self.youtubeIDRegex.firstMatch(in: src, range: NSRange(location: 0, length: ns.length)),
               match.numberOfRanges >= 2
@@ -291,7 +291,7 @@ struct HumorParser: BoardParser {
 
     // MARK: - Comments
 
-    private func extractComments(in doc: Document) throws -> [Comment] {
+    nonisolated private func extractComments(in doc: Document) throws -> [Comment] {
         let nodes = try doc.select("#comment li[id^=comment_li_]")
         var results: [Comment] = []
         for li in nodes {
@@ -359,7 +359,7 @@ struct HumorParser: BoardParser {
         return results
     }
 
-    private func extractCommentVideo(in li: Element) throws -> URL? {
+    nonisolated private func extractCommentVideo(in li: Element) throws -> URL? {
         // Inline mp4/gif attachments live on an outer wrapper that carries
         // the same OnClick="comment_mp4_expand('id', 'URL', 'THUMB', ...)"
         // handler the body uses. Walk every element under the comment_file
@@ -372,7 +372,7 @@ struct HumorParser: BoardParser {
         return nil
     }
 
-    private func extractCommentSticker(in li: Element) throws -> URL? {
+    nonisolated private func extractCommentSticker(in li: Element) throws -> URL? {
         // Humor renders attached comment images via:
         //   <div class="comment_file">
         //     <img src='/images/loading_bar2.gif' ...>          (progress bar)
@@ -407,7 +407,7 @@ struct HumorParser: BoardParser {
         return nil
     }
 
-    private func extractAuthIcon(in li: Element) throws -> URL? {
+    nonisolated private func extractAuthIcon(in li: Element) throws -> URL? {
         // Profile image is the first .hu_icon img inside the info header's <a>.
         // Top-level comments wrap it in .info, replies wrap it in
         // .sub_comm_info — fall back across both shapes. Skip humor's

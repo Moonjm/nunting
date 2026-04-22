@@ -30,12 +30,12 @@ struct BobaeParser: BoardParser {
     ]
     private static let skipTags: Set<String> = ["script", "style", "noscript"]
 
-    func parseList(html: String, board: Board) throws -> [Post] {
+    nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         // Bobaedream is aagag-dispatch-only; list parsing is never invoked.
         []
     }
 
-    func parseDetail(html: String, post: Post) throws -> PostDetail {
+    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         // Bobaedream signals deleted / invalid posts with a 200 response whose
         // body is literally a single `<script>alert('삭제된 글 입니다.');
         // history.back();</script>`. Detect that BEFORE parsing the DOM, so a
@@ -94,20 +94,20 @@ struct BobaeParser: BoardParser {
 
     // MARK: - Field extraction
 
-    private func extractTitle(in doc: Document, fallback: String) throws -> String {
+    nonisolated private func extractTitle(in doc: Document, fallback: String) throws -> String {
         let text = try doc.select("article.article h3.subject").first()?.text()
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return text.isEmpty ? fallback : text
     }
 
-    private func extractAuthor(in doc: Document, fallback: String) throws -> String {
+    nonisolated private func extractAuthor(in doc: Document, fallback: String) throws -> String {
         // <div class="info"><span>작성자</span> <button>작성글보기</button></div>
         let text = try doc.select("article.article .util2 .info span").first()?.text()
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return text.isEmpty ? fallback : text
     }
 
-    private func extractFullDate(in doc: Document) throws -> String? {
+    nonisolated private func extractFullDate(in doc: Document) throws -> String? {
         guard let el = try doc.select("article.article .util time").first() else { return nil }
         let date = try el.attr("datetime").trimmingCharacters(in: .whitespacesAndNewlines)
         let time = try el.text().trimmingCharacters(in: .whitespacesAndNewlines)
@@ -120,14 +120,14 @@ struct BobaeParser: BoardParser {
         }
     }
 
-    private func extractRecommend(in doc: Document) throws -> Int? {
+    nonisolated private func extractRecommend(in doc: Document) throws -> Int? {
         // `<span class="data3">추천 183</span>`
         guard let el = try doc.select("article.article .util .data3").first() else { return nil }
         let raw = try el.text().filter(\.isNumber)
         return raw.isEmpty ? nil : Int(raw)
     }
 
-    private func extractViewCount(in doc: Document) throws -> Int? {
+    nonisolated private func extractViewCount(in doc: Document) throws -> Int? {
         // `<span class="data4">조회 10639</span>`
         guard let el = try doc.select("article.article .util .data4").first() else { return nil }
         let raw = try el.text().filter(\.isNumber)
@@ -136,7 +136,7 @@ struct BobaeParser: BoardParser {
 
     // MARK: - Body blocks
 
-    private func extractBlocks(in doc: Document) throws -> [ContentBlock] {
+    nonisolated private func extractBlocks(in doc: Document) throws -> [ContentBlock] {
         // Fallback chain for the body wrapper. Bobaedream currently renders
         // `.article-body` on mobile, but older posts / migrated articles /
         // subtle server-side A/B variants sometimes drop the wrapper and
@@ -156,14 +156,14 @@ struct BobaeParser: BoardParser {
         return blocks
     }
 
-    private func flushInline(into blocks: inout [ContentBlock], inline: inout InlineAccumulator) {
+    nonisolated private func flushInline(into blocks: inout [ContentBlock], inline: inout InlineAccumulator) {
         let segments = inline.drain()
         if !segments.isEmpty {
             blocks.append(.richText(segments))
         }
     }
 
-    private func collectBlocks(from element: Element, into blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
+    nonisolated private func collectBlocks(from element: Element, into blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
         for node in element.getChildNodes() {
             if let child = node as? Element {
                 try handleElement(child, blocks: &blocks, inline: &inline)
@@ -174,7 +174,7 @@ struct BobaeParser: BoardParser {
         }
     }
 
-    private func handleElement(_ el: Element, blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
+    nonisolated private func handleElement(_ el: Element, blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
         let tag = el.tagName().lowercased()
 
         if Self.skipTags.contains(tag) { return }
@@ -229,7 +229,7 @@ struct BobaeParser: BoardParser {
         }
     }
 
-    private func realImageURL(from el: Element) throws -> URL? {
+    nonisolated private func realImageURL(from el: Element) throws -> URL? {
         var src = try el.attr("src")
         if src.isEmpty { src = try el.attr("data-src") }
         if src.isEmpty { src = try el.attr("data-original") }
@@ -245,7 +245,7 @@ struct BobaeParser: BoardParser {
     /// HTML5 `<video poster="...">` — forum posts often ship it so the player
     /// shows something before the user taps, and the tap-to-fullscreen flow
     /// only reveals black otherwise.
-    private func videoPoster(from el: Element) throws -> URL? {
+    nonisolated private func videoPoster(from el: Element) throws -> URL? {
         let raw = try el.attr("poster").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return nil }
         let normalized = raw.hasPrefix("//") ? "https:" + raw : raw
@@ -256,7 +256,7 @@ struct BobaeParser: BoardParser {
         return url
     }
 
-    private func videoURL(from el: Element) throws -> URL? {
+    nonisolated private func videoURL(from el: Element) throws -> URL? {
         var raw = try el.attr("src")
         if raw.isEmpty, let source = try el.select("source").first() {
             raw = try source.attr("src")
@@ -276,7 +276,7 @@ struct BobaeParser: BoardParser {
         return url
     }
 
-    private func youtubeID(from src: String) -> String? {
+    nonisolated private func youtubeID(from src: String) -> String? {
         let ns = src as NSString
         guard let match = Self.youtubeIDRegex.firstMatch(in: src, range: NSRange(location: 0, length: ns.length)),
               match.numberOfRanges >= 2
@@ -286,7 +286,7 @@ struct BobaeParser: BoardParser {
 
     // MARK: - Comments
 
-    private func extractComments(in doc: Document) throws -> [Comment] {
+    nonisolated private func extractComments(in doc: Document) throws -> [Comment] {
         // Bobaedream's comment markup:
         //   <div class="reple_body"><ul class="list">
         //     <li class="best"> ... </li>      (top-voted, duplicated in normal list)
@@ -349,7 +349,7 @@ struct BobaeParser: BoardParser {
         return results
     }
 
-    private func extractCommentContent(_ replyEl: Element) throws -> String {
+    nonisolated private func extractCommentContent(_ replyEl: Element) throws -> String {
         guard let copy = replyEl.copy() as? Element else { return "" }
         // Strip the "베플" (best comment) badge and any inline images so the
         // text reads cleanly. Line breaks in the DOM come from <br>, which
@@ -361,7 +361,7 @@ struct BobaeParser: BoardParser {
         return try copy.text().trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func extractCommentDate(_ util: Element?) throws -> String {
+    nonisolated private func extractCommentDate(_ util: Element?) throws -> String {
         // `<div class="util"><span class="data4">author</span><span>14:12</span>...`
         // The time is the bare-span sibling between the author (`.data4`) and
         // the report anchor. Picking "the first non-author, non-anchor span"
@@ -384,14 +384,14 @@ struct BobaeParser: BoardParser {
         return ""
     }
 
-    private func extractCommentLikes(in li: Element) throws -> Int {
+    nonisolated private func extractCommentLikes(in li: Element) throws -> Int {
         // `<div class="util3"><button class="good">37</button><button class="bad">1</button>`
         guard let good = try li.select(".util3 .good").first() else { return 0 }
         let raw = try good.text().filter(\.isNumber)
         return Int(raw) ?? 0
     }
 
-    private func extractCommentSticker(in replyEl: Element) throws -> URL? {
+    nonisolated private func extractCommentSticker(in replyEl: Element) throws -> URL? {
         // Comment images — bobaedream renders attached images inline within
         // the .reply div. Strip loading/icon chrome the same way humor does.
         for img in try replyEl.select("img") {
@@ -418,7 +418,7 @@ struct BobaeParser: BoardParser {
         return nil
     }
 
-    private func extractCommentID(from li: Element) -> String? {
+    nonisolated private func extractCommentID(from li: Element) -> String? {
         // Bobaedream doesn't put the comment id on the <li> — it lives on a
         // sibling `#repl_NNNN` input or in the onclick `cmt_ok('xxx', 'NNNN', ...)`.
         // Prefer the `repl_` input since it's stable and present on every

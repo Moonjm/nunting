@@ -28,12 +28,12 @@ struct SLRParser: BoardParser {
         options: []
     )
 
-    func parseList(html: String, board: Board) throws -> [Post] {
+    nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         // SLR is aagag-dispatch-only; list parsing is never invoked.
         []
     }
 
-    func parseDetail(html: String, post: Post) throws -> PostDetail {
+    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
 
         // SLR replies "이동되었거나 삭제된 게시물입니다" on deleted posts —
@@ -127,7 +127,7 @@ struct SLRParser: BoardParser {
 
     // MARK: - Field extraction
 
-    private func extractTitle(in doc: Document, fallback: String) throws -> String {
+    nonisolated private func extractTitle(in doc: Document, fallback: String) throws -> String {
         let text = try doc.select(".subject").first()?.text()
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return text.isEmpty ? fallback : text
@@ -137,7 +137,7 @@ struct SLRParser: BoardParser {
     /// `.info-wrap` block separated by `|`. Split and filter on the leading
     /// Korean keyword so future layout tweaks (extra badges, dropped fields)
     /// don't desynchronise the positional parse.
-    private func extractMeta(in doc: Document) throws -> (author: String, date: String?, view: Int?, recommend: Int?) {
+    nonisolated private func extractMeta(in doc: Document) throws -> (author: String, date: String?, view: Int?, recommend: Int?) {
         guard let wrap = try doc.select(".info-wrap").first() else {
             return ("", nil, nil, nil)
         }
@@ -173,7 +173,7 @@ struct SLRParser: BoardParser {
 
     // MARK: - Body blocks
 
-    private func extractBlocks(in doc: Document) throws -> [ContentBlock] {
+    nonisolated private func extractBlocks(in doc: Document) throws -> [ContentBlock] {
         guard let wrap = try doc.select("#userct").first() else { return [] }
         var blocks: [ContentBlock] = []
         var inline = InlineAccumulator()
@@ -182,14 +182,14 @@ struct SLRParser: BoardParser {
         return blocks
     }
 
-    private func flushInline(into blocks: inout [ContentBlock], inline: inout InlineAccumulator) {
+    nonisolated private func flushInline(into blocks: inout [ContentBlock], inline: inout InlineAccumulator) {
         let segments = inline.drain()
         if !segments.isEmpty {
             blocks.append(.richText(segments))
         }
     }
 
-    private func collectBlocks(from element: Element, into blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
+    nonisolated private func collectBlocks(from element: Element, into blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
         for node in element.getChildNodes() {
             if let child = node as? Element {
                 try handleElement(child, blocks: &blocks, inline: &inline)
@@ -200,7 +200,7 @@ struct SLRParser: BoardParser {
         }
     }
 
-    private func handleElement(_ el: Element, blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
+    nonisolated private func handleElement(_ el: Element, blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
         let tag = el.tagName().lowercased()
         if Self.skipTags.contains(tag) { return }
 
@@ -253,7 +253,7 @@ struct SLRParser: BoardParser {
         }
     }
 
-    private func realImageURL(from el: Element) throws -> URL? {
+    nonisolated private func realImageURL(from el: Element) throws -> URL? {
         var src = try el.attr("src")
         if src.isEmpty { src = try el.attr("data-src") }
         if src.isEmpty { src = try el.attr("data-original") }
@@ -268,7 +268,7 @@ struct SLRParser: BoardParser {
 
     /// Preserve HTML5 `<video poster="...">` so the inline tap-to-play frame
     /// shows the site thumbnail rather than a plain black rectangle.
-    private func videoPoster(from el: Element) throws -> URL? {
+    nonisolated private func videoPoster(from el: Element) throws -> URL? {
         let raw = try el.attr("poster").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return nil }
         let normalized = raw.hasPrefix("//") ? "https:" + raw : raw
@@ -279,7 +279,7 @@ struct SLRParser: BoardParser {
         return url
     }
 
-    private func videoURL(from el: Element) throws -> URL? {
+    nonisolated private func videoURL(from el: Element) throws -> URL? {
         var raw = try el.attr("src")
         if raw.isEmpty, let source = try el.select("source").first() {
             raw = try source.attr("src")
@@ -296,7 +296,7 @@ struct SLRParser: BoardParser {
         return url
     }
 
-    private func youtubeID(from src: String) -> String? {
+    nonisolated private func youtubeID(from src: String) -> String? {
         let ns = src as NSString
         guard let match = Self.youtubeIDRegex.firstMatch(in: src, range: NSRange(location: 0, length: ns.length)),
               match.numberOfRanges >= 2
@@ -306,7 +306,7 @@ struct SLRParser: BoardParser {
 
     // MARK: - Comment AJAX params
 
-    private struct CommentParams {
+    nonisolated private struct CommentParams {
         let bbsid: String
         let tos: String
         let cmrno: String
@@ -314,7 +314,7 @@ struct SLRParser: BoardParser {
         let splno: String
     }
 
-    private static func extractCommentParams(html: String) throws -> CommentParams? {
+    nonisolated private static func extractCommentParams(html: String) throws -> CommentParams? {
         let doc = try SwiftSoup.parse(html)
         guard let box = try doc.select("#comment_box").first() else { return nil }
         let bbsid = try box.attr("data-bbsid")
@@ -348,11 +348,11 @@ struct SLRParser: BoardParser {
     /// - `th != null` signals a reply (the thread id of its parent).
     /// - `vt` is the net vote score SLR renders next to the like button.
     /// - `del == 1` is a soft-deleted row we drop outright.
-    private struct SLRJSON: Decodable {
+    nonisolated private struct SLRJSON: Decodable {
         let c: [SLRComment]?
     }
 
-    private struct SLRComment: Decodable {
+    nonisolated private struct SLRComment: Decodable {
         let pk: String?
         let name: String?
         let memo: String?
@@ -363,7 +363,7 @@ struct SLRParser: BoardParser {
         let del: Int?
     }
 
-    private static func decodeComments(data: Data) -> [Comment] {
+    nonisolated private static func decodeComments(data: Data) -> [Comment] {
         guard let payload = try? JSONDecoder().decode(SLRJSON.self, from: data),
               let entries = payload.c
         else { return [] }
@@ -403,7 +403,7 @@ struct SLRParser: BoardParser {
     /// for the `<br>` runs before parsing and restore real newlines after.
     private static let brSentinel = "\u{E000}"
 
-    private static func renderMemo(_ memo: String) -> (text: String, sticker: URL?, video: URL?) {
+    nonisolated private static func renderMemo(_ memo: String) -> (text: String, sticker: URL?, video: URL?) {
         let raw = memo.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return ("", nil, nil) }
         // Fast path: no tags at all → original trimmed text.

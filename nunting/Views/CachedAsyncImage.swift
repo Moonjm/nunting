@@ -233,7 +233,7 @@ struct CachedAsyncImage: View {
     /// default when the source omits delay properties so the animation
     /// still plays at a reasonable speed instead of flashing a single
     /// composite frame.
-    private static func decodeAnimated(
+    nonisolated private static func decodeAnimated(
         source: CGImageSource,
         frameCount: Int,
         downsampleRatio ratio: CGFloat,

@@ -20,7 +20,7 @@ struct AagagParser: BoardParser {
     )
     private static let numericEntityRegex = try! NSRegularExpression(pattern: #"&#(x?)([0-9a-fA-F]+);"#)
 
-    func parseList(html: String, board: Board) throws -> [Post] {
+    nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
         // Restrict to actual data tables (`table.aalist` minus the `.header` and minus
         // sidebar `div.aalist.layer` previews/sliders).
@@ -107,7 +107,7 @@ struct AagagParser: BoardParser {
         return results
     }
 
-    func parseDetail(html: String, post: Post) throws -> PostDetail {
+    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
         let titleEl = try doc.select("h1.title").first()
         let title = try titleEl?.text().trimmingCharacters(in: .whitespacesAndNewlines) ?? post.title
@@ -146,7 +146,7 @@ struct AagagParser: BoardParser {
         )
     }
 
-    private func findContentScript(in doc: Document) throws -> String? {
+    nonisolated private func findContentScript(in doc: Document) throws -> String? {
         // Capture the entire string literal body via NSRegularExpression's
         // capture group. The character class `[^"\\]|\\.` matches any non-quote/
         // non-backslash char OR a backslash-escape pair, so we don't trip over
@@ -166,7 +166,7 @@ struct AagagParser: BoardParser {
         return nil
     }
 
-    private static func unescapeJSString(_ s: String) -> String {
+    nonisolated private static func unescapeJSString(_ s: String) -> String {
         var out = ""
         out.reserveCapacity(s.count)
         var iter = s.makeIterator()
@@ -199,7 +199,7 @@ struct AagagParser: BoardParser {
     /// Parse the AAGAG_AA.content string: text + `[sTag]{json}[/sTag]` payloads.
     /// Uses split-based scanning instead of `String.range` index math, which
     /// avoided some subtle off-by issues we hit on real posts.
-    private func blocksFromContentString(_ content: String) -> [ContentBlock] {
+    nonisolated private func blocksFromContentString(_ content: String) -> [ContentBlock] {
         var blocks: [ContentBlock] = []
 
         func appendText(_ raw: String) {
@@ -232,7 +232,7 @@ struct AagagParser: BoardParser {
         return blocks
     }
 
-    private func stripHTML(_ s: String) -> String {
+    nonisolated private func stripHTML(_ s: String) -> String {
         // Pure-Swift strip: regex tag removal + small entity table. Avoids
         // SwiftSoup parseBodyFragment per chunk so image-heavy posts don't
         // pay an SwiftSoup parse cost N times on the main thread.
@@ -251,7 +251,7 @@ struct AagagParser: BoardParser {
 
     /// Decode the entity set we actually see in aagag content. Avoids pulling
     /// SwiftSoup just for `&amp;` / `&nbsp;` decoding.
-    private static func decodeBasicEntities(_ input: String) -> String {
+    nonisolated private static func decodeBasicEntities(_ input: String) -> String {
         var out = input
             .replacingOccurrences(of: "&nbsp;", with: " ")
             .replacingOccurrences(of: "&lt;", with: "<")
@@ -399,7 +399,7 @@ struct AagagParser: BoardParser {
     /// any payload with `mp4_seq` (or related mp4_* fields) as a video, regardless
     /// of `m`. Image URL has `/o/` prefix, video URL does not.
     /// External embeds (`ytb`, `insta`) become tappable deal-link banners.
-    private func stagBlock(from payload: String) -> ContentBlock? {
+    nonisolated private func stagBlock(from payload: String) -> ContentBlock? {
         guard let data = payload.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
@@ -442,7 +442,7 @@ struct AagagParser: BoardParser {
         return .image(url)
     }
 
-    private func absolutize(_ s: String) -> String {
+    nonisolated private func absolutize(_ s: String) -> String {
         if s.hasPrefix("//") { return "https:\(s)" }
         return s
     }

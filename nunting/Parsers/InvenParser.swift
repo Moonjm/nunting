@@ -15,7 +15,7 @@ struct InvenParser: BoardParser {
         options: [.caseInsensitive]
     )
 
-    func parseList(html: String, board: Board) throws -> [Post] {
+    nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
         let rows = try doc.select("section.mo-board-list li.list")
 
@@ -73,7 +73,7 @@ struct InvenParser: BoardParser {
         }
     }
 
-    func parseDetail(html: String, post: Post) throws -> PostDetail {
+    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
         guard let section = try doc.select("section.mo-board-view").first() else {
             throw ParserError.structureChanged("mo-board-view 없음")
@@ -107,7 +107,7 @@ struct InvenParser: BoardParser {
         "p", "div", "li", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article",
     ]
 
-    private func collectBlocks(from element: Element, into blocks: inout [ContentBlock]) throws {
+    nonisolated private func collectBlocks(from element: Element, into blocks: inout [ContentBlock]) throws {
         var inline = InlineAccumulator()
 
         func flush() {
@@ -205,7 +205,7 @@ struct InvenParser: BoardParser {
         flush()
     }
 
-    private func collectInlines(from element: Element, into inline: inout InlineAccumulator) throws {
+    nonisolated private func collectInlines(from element: Element, into inline: inout InlineAccumulator) throws {
         for node in element.getChildNodes() {
             if let el = node as? Element {
                 let childTag = el.tagName().lowercased()
@@ -229,7 +229,7 @@ struct InvenParser: BoardParser {
         }
     }
 
-    private func imageURL(from element: Element) throws -> URL? {
+    nonisolated private func imageURL(from element: Element) throws -> URL? {
         let src = try element.attr("src")
         guard !src.isEmpty,
               let url = URL(string: src, relativeTo: site.baseURL)?.absoluteURL,
@@ -241,7 +241,7 @@ struct InvenParser: BoardParser {
 
     /// Pick up HTML5 `<video poster="...">` so the tap-to-play frame shows
     /// the site's intended thumbnail instead of a black placeholder.
-    private func videoPoster(from el: Element) throws -> URL? {
+    nonisolated private func videoPoster(from el: Element) throws -> URL? {
         let raw = try el.attr("poster").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return nil }
         let normalized = raw.hasPrefix("//") ? "https:" + raw : raw
@@ -252,7 +252,7 @@ struct InvenParser: BoardParser {
         return url
     }
 
-    private func videoURL(from element: Element) throws -> URL? {
+    nonisolated private func videoURL(from element: Element) throws -> URL? {
         let dataSrc = try element.attr("data-src")
         let raw = dataSrc.isEmpty ? try element.attr("src") : dataSrc
         guard !raw.isEmpty,
@@ -308,7 +308,7 @@ struct InvenParser: BoardParser {
         return convertToComments(blocks: blocks)
     }
 
-    private func convertToComments(blocks: [InvenCommentBlock]) -> [Comment] {
+    nonisolated private func convertToComments(blocks: [InvenCommentBlock]) -> [Comment] {
         // titlenum 0 = latest block; positive titlenums are older slices ordered ascending.
         let sortedBlocks = blocks.sorted { lhs, rhs in
             let l = lhs.attr.titlenum == 0 ? Int.max : lhs.attr.titlenum
@@ -337,7 +337,7 @@ struct InvenParser: BoardParser {
         return results
     }
 
-    private func extractStickerURL(from rawHTML: String) -> URL? {
+    nonisolated private func extractStickerURL(from rawHTML: String) -> URL? {
         // Inven ships sticker comments as entity-encoded HTML
         // (`&lt;div class=...&gt;&lt;img src=...&gt;&lt;/div&gt;`). SwiftSoup
         // decodes entities inside text/attribute values but does NOT re-parse
@@ -364,7 +364,7 @@ struct InvenParser: BoardParser {
         return url
     }
 
-    private func cleanCommentText(_ raw: String) -> String {
+    nonisolated private func cleanCommentText(_ raw: String) -> String {
         // Inven sometimes ships HTML that's been entity-encoded one or more
         // times (e.g. sticker comments come back as `&lt;div class=...&gt;`).
         // Peel layers with a cheap string-level entity decoder so we avoid
@@ -408,7 +408,7 @@ struct InvenParser: BoardParser {
     /// emit plus decimal/hex numeric references. `&amp;` is processed last
     /// so `&amp;lt;` decodes to `&lt;` this pass and unwraps further on
     /// subsequent iterations instead of collapsing in one step.
-    private static func decodeHTMLEntities(_ input: String) -> String {
+    nonisolated private static func decodeHTMLEntities(_ input: String) -> String {
         guard input.contains("&") else { return input }
 
         // First, rewrite numeric refs via regex so decimal/hex are both covered.
@@ -444,11 +444,11 @@ struct InvenParser: BoardParser {
             .replacingOccurrences(of: "&amp;", with: "&")
     }
 
-    private struct InvenCommentResponse: Decodable {
+    nonisolated private struct InvenCommentResponse: Decodable {
         let commentlist: [InvenCommentBlock]
     }
 
-    private struct InvenCommentBlock: Decodable {
+    nonisolated private struct InvenCommentBlock: Decodable {
         let attr: InvenBlockAttr
         let list: [InvenComment]
 
@@ -458,11 +458,11 @@ struct InvenParser: BoardParser {
         }
     }
 
-    private struct InvenBlockAttr: Decodable {
+    nonisolated private struct InvenBlockAttr: Decodable {
         let titlenum: Int
     }
 
-    private struct InvenComment: Decodable {
+    nonisolated private struct InvenComment: Decodable {
         let attr: InvenCommentAttr
         let date: String
         let name: String
@@ -478,7 +478,7 @@ struct InvenParser: BoardParser {
         }
     }
 
-    private struct InvenCommentAttr: Decodable {
+    nonisolated private struct InvenCommentAttr: Decodable {
         let cmtidx: Int
         let cmtpidx: Int
     }
