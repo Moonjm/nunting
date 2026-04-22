@@ -76,13 +76,20 @@ struct CachedAsyncImage: View {
                     .interpolation(.high)
                     .scaledToFit()
             }
-            if failed {
+            if failed && showsPlaceholder {
                 // Sporadic mid-post load misses are hard to reproduce, so
                 // surface a tap-to-retry affordance instead of leaving the
                 // slot stuck on the broken-image icon. Child tap wins over
                 // any parent `.onTapGesture` (e.g. PostDetailView's
                 // full-screen image viewer trigger) so a retry tap doesn't
                 // open the viewer on a missing image.
+                //
+                // Only shown when `showsPlaceholder == true` (body images).
+                // Decorative icons (`false`) — comment level / auth badges —
+                // render empty on failure instead, matching the broken-
+                // `<img>` behaviour in mobile browsers for sources that
+                // 200 with the wrong bytes (e.g. Humor's `icon-file` serving
+                // an MP4 container under `image/jpeg`).
                 VStack(spacing: 6) {
                     Image(systemName: "arrow.clockwise")
                         .font(.title3)
