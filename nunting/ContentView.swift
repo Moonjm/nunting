@@ -187,8 +187,8 @@ struct ContentView: View {
                 filter: selectedFilter,
                 searchQuery: searchQuery,
                 scrollLocked: scrollLocked,
-                readStore: readStore,
                 shouldSuppressRowTap: { [rowTapGate] in rowTapGate.suppressed },
+                readStore: readStore,
                 onSelectPost: { post in
                     showDetail(post)
                 }
