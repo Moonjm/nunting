@@ -17,6 +17,11 @@ struct CoolenjoyParser: BoardParser {
         "section", "article",
     ]
 
+    /// Tags the block-walker promotes to a media block. Paired with
+    /// `hasAnyDescendant(of:taggedAnyOf:)` so wrapper elements decide
+    /// recurse-vs-inline without doing a full `select("img")` walk.
+    nonisolated private static let mediaTags: Set<String> = ["img"]
+
     nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
         let rows = try doc.select("ul.na-table > li.d-md-table-row")
@@ -284,8 +289,7 @@ struct CoolenjoyParser: BoardParser {
             // child-walking loop below so the nested image becomes a proper
             // block AND sibling TextNodes still contribute text via the
             // existing TextNode branch.
-            let nestedImgs = try element.select("img")
-            if nestedImgs.isEmpty() {
+            if !hasAnyDescendant(of: element, taggedAnyOf: Self.mediaTags) {
                 if let resolved = try anchor(from: element) {
                     inline.appendLink(url: resolved.url, label: resolved.label)
                     flush()
@@ -310,8 +314,7 @@ struct CoolenjoyParser: BoardParser {
                     // recurse-as-block path the default case uses, so an
                     // inline GIF inside a clickable link still renders as
                     // a media block instead of a bare link label.
-                    let nestedImgsInAnchor = try el.select("img")
-                    if !nestedImgsInAnchor.isEmpty() {
+                    if hasAnyDescendant(of: el, taggedAnyOf: Self.mediaTags) {
                         flush()
                         try collectBlocks(from: el, into: &blocks)
                     } else if let resolved = try anchor(from: el) {
@@ -321,8 +324,7 @@ struct CoolenjoyParser: BoardParser {
                     }
                 default:
                     let isBlock = Self.blockTags.contains(childTag)
-                    let nestedImgs = try el.select("img")
-                    if !nestedImgs.isEmpty() {
+                    if hasAnyDescendant(of: el, taggedAnyOf: Self.mediaTags) {
                         flush()
                         try collectBlocks(from: el, into: &blocks)
                     } else {

@@ -26,6 +26,11 @@ struct ClienParser: BoardParser {
         "section", "article",
     ]
 
+    /// Tags the block-walker treats as "promote to a media block" markers.
+    /// Used by `hasAnyDescendant(of:taggedAnyOf:)` to decide whether a
+    /// wrapper element should recurse as blocks or flatten to inline text.
+    nonisolated private static let mediaTags: Set<String> = ["img", "iframe"]
+
     /// `YYYY-MM-DD HH:MM(:SS)` — the timestamp Clien renders inside
     /// `div.post_date`. Used to slice out the modified timestamp when an
     /// edited post advertises both 등록일 and 수정일 in the same block.
@@ -200,9 +205,7 @@ struct ClienParser: BoardParser {
             // the main child-walking loop below so the nested media becomes
             // a proper block AND sibling TextNodes still contribute text
             // via the existing TextNode branch.
-            let nestedImgs = try element.select("img")
-            let nestedIframes = try element.select("iframe")
-            if nestedImgs.isEmpty() && nestedIframes.isEmpty() {
+            if !hasAnyDescendant(of: element, taggedAnyOf: Self.mediaTags) {
                 if let resolved = try anchor(from: element) {
                     inline.appendLink(url: resolved.url, label: resolved.label)
                     flush()
@@ -236,9 +239,7 @@ struct ClienParser: BoardParser {
                     // the same recurse-as-block path the default case uses,
                     // so an inline GIF wrapped in a clickable link still
                     // renders as a media block instead of a bare link label.
-                    let nestedImgsInAnchor = try el.select("img")
-                    let nestedIframesInAnchor = try el.select("iframe")
-                    if !nestedImgsInAnchor.isEmpty() || !nestedIframesInAnchor.isEmpty() {
+                    if hasAnyDescendant(of: el, taggedAnyOf: Self.mediaTags) {
                         flush()
                         try collectBlocks(from: el, into: &blocks)
                     } else if let resolved = try anchor(from: el) {
@@ -247,9 +248,7 @@ struct ClienParser: BoardParser {
                         inline.appendText(try el.text())
                     }
                 default:
-                    let nestedImgs = try el.select("img")
-                    let nestedIframes = try el.select("iframe")
-                    if !nestedImgs.isEmpty() || !nestedIframes.isEmpty() {
+                    if hasAnyDescendant(of: el, taggedAnyOf: Self.mediaTags) {
                         flush()
                         try collectBlocks(from: el, into: &blocks)
                     } else {
@@ -311,9 +310,29 @@ struct ClienParser: BoardParser {
     }
 
     nonisolated private func image(from element: Element) throws -> (url: URL, aspectRatio: CGFloat?)? {
-        let src = try element.attr("src")
-        guard !src.isEmpty,
-              let url = URL(string: src, relativeTo: site.baseURL)?.absoluteURL,
+        let rawSrc = try element.attr("src")
+        let srcset = try element.attr("srcset")
+
+        // Some Clien posts paste WordPress/Froala markup where the editor
+        // rewrote `src` to the *article's* HTML page URL (e.g.
+        // `https://www.carscoops.com/2026/04/foo-bar/`) while the real image
+        // URLs survived in `srcset`. Loading the HTML page as an image fails
+        // decode and the slot stays on the broken placeholder. When `src`
+        // doesn't look like an image URL, fall back to the best `srcset`
+        // entry so the post actually renders.
+        let chosenString: String
+        if !rawSrc.isEmpty,
+           let rawURL = URL(string: rawSrc, relativeTo: site.baseURL)?.absoluteURL,
+           looksLikeImageURL(rawURL) {
+            chosenString = rawSrc
+        } else if let best = bestSrcsetURL(srcset) {
+            chosenString = best
+        } else {
+            chosenString = rawSrc
+        }
+
+        guard !chosenString.isEmpty,
+              let url = URL(string: chosenString, relativeTo: site.baseURL)?.absoluteURL,
               let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https"
         else { return nil }
@@ -322,6 +341,42 @@ struct ClienParser: BoardParser {
         let height = CGFloat(Double(try element.attr("data-img-height")) ?? 0)
         let aspectRatio = width > 0 && height > 0 ? width / height : nil
         return (url, aspectRatio)
+    }
+
+    nonisolated private static let imageExtensions: Set<String> = [
+        "jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "heic", "heif", "avif",
+    ]
+
+    nonisolated private func looksLikeImageURL(_ url: URL) -> Bool {
+        let ext = url.pathExtension.lowercased()
+        return !ext.isEmpty && Self.imageExtensions.contains(ext)
+    }
+
+    /// Parse an HTML `srcset` attribute and pick a URL appropriate for a
+    /// phone column. Prefers the smallest entry ≥ 1024w (the WordPress
+    /// mobile-friendly size), falling back to the largest entry when every
+    /// candidate is below that threshold.
+    nonisolated private func bestSrcsetURL(_ srcset: String) -> String? {
+        guard !srcset.isEmpty else { return nil }
+        var candidates: [(url: String, width: Int)] = []
+        for raw in srcset.split(separator: ",") {
+            let entry = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let parts = entry.split(whereSeparator: { $0.isWhitespace })
+            guard let first = parts.first else { continue }
+            let urlText = String(first)
+            if urlText.isEmpty { continue }
+            var width = 0
+            if parts.count >= 2, parts[1].hasSuffix("w") {
+                width = Int(parts[1].dropLast()) ?? 0
+            }
+            candidates.append((urlText, width))
+        }
+        guard !candidates.isEmpty else { return nil }
+        let sorted = candidates.sorted { $0.width < $1.width }
+        if let pick = sorted.first(where: { $0.width >= 1024 }) {
+            return pick.url
+        }
+        return sorted.last?.url
     }
 
     nonisolated private func parseComments(doc: Document) throws -> [Comment] {

@@ -45,6 +45,23 @@ extension BoardParser {
         let raw = try element.text().trimmingCharacters(in: .whitespacesAndNewlines)
         return (url, raw.isEmpty ? url.absoluteString : raw)
     }
+
+    /// Depth-first descendant walk that short-circuits on the first tag-name
+    /// match. Replaces the `try el.select("img").isEmpty()` pattern used by
+    /// `collectBlocks` / `collectInlines` in the heavier parsers. `select`
+    /// parses a CSS selector and always walks every descendant, so a block
+    /// that re-checks 2–3 tags against every non-media child pays an
+    /// O(descendants × tags) tax per call. The walker visits each node at
+    /// most once and exits the moment any tag matches, which matters for
+    /// deeply-nested legacy editor output (`<table><tr><td><p>...</p>`).
+    nonisolated func hasAnyDescendant(of element: Element, taggedAnyOf tags: Set<String>) -> Bool {
+        for node in element.getChildNodes() {
+            guard let child = node as? Element else { continue }
+            if tags.contains(child.tagName().lowercased()) { return true }
+            if hasAnyDescendant(of: child, taggedAnyOf: tags) { return true }
+        }
+        return false
+    }
 }
 
 /// Accumulates an `[InlineSegment]` for a single text block while a parser walks

@@ -14,6 +14,11 @@ struct PpomppuParser: BoardParser {
 
     nonisolated private static let skipTags: Set<String> = ["script", "style", "noscript"]
 
+    /// Tags the block-walker promotes to a media block. Paired with
+    /// `hasAnyDescendant(of:taggedAnyOf:)` so wrapper elements decide
+    /// recurse-vs-inline without doing three separate `select()` walks.
+    nonisolated private static let mediaTags: Set<String> = ["img", "video", "iframe"]
+
     /// Matches the canonical YouTube embed URL shape — `/embed/{11-char id}`
     /// on `youtube.com` or the no-cookie variant. Shared by all YouTube
     /// `<iframe>` handling in this parser.
@@ -302,10 +307,7 @@ struct PpomppuParser: BoardParser {
             // below so the nested media becomes a proper block AND sibling
             // TextNodes still contribute text via the existing TextNode
             // branch.
-            let nestedImgs = try element.select("img")
-            let nestedVideos = try element.select("video")
-            let nestedIframes = try element.select("iframe")
-            if nestedImgs.isEmpty() && nestedVideos.isEmpty() && nestedIframes.isEmpty() {
+            if !hasAnyDescendant(of: element, taggedAnyOf: Self.mediaTags) {
                 if let resolved = try anchor(from: element) {
                     if resolved.url != skipURL {
                         inline.appendLink(url: resolved.url, label: resolved.label)
@@ -350,10 +352,7 @@ struct PpomppuParser: BoardParser {
                     // recurse-as-block path the default case uses, so an
                     // inline GIF wrapped in a clickable link still renders
                     // as a media block instead of a bare link label.
-                    let nestedImgsInAnchor = try el.select("img")
-                    let nestedVideosInAnchor = try el.select("video")
-                    let nestedIframesInAnchor = try el.select("iframe")
-                    if !nestedImgsInAnchor.isEmpty() || !nestedVideosInAnchor.isEmpty() || !nestedIframesInAnchor.isEmpty() {
+                    if hasAnyDescendant(of: el, taggedAnyOf: Self.mediaTags) {
                         flush()
                         try collectBlocks(from: el, skipping: skipURL, into: &blocks)
                     } else if let resolved = try anchor(from: el) {
@@ -365,11 +364,8 @@ struct PpomppuParser: BoardParser {
                     }
                 default:
                     if Self.skipTags.contains(childTag) { continue }
-                    let nestedImgs = try el.select("img")
-                    let nestedVideos = try el.select("video")
-                    let nestedIframes = try el.select("iframe")
                     let isBlock = Self.blockTags.contains(childTag)
-                    if !nestedImgs.isEmpty() || !nestedVideos.isEmpty() || !nestedIframes.isEmpty() {
+                    if hasAnyDescendant(of: el, taggedAnyOf: Self.mediaTags) {
                         flush()
                         try collectBlocks(from: el, skipping: skipURL, into: &blocks)
                     } else {

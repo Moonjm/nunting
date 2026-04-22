@@ -95,23 +95,23 @@ struct CachedAsyncImage: View {
         let limit = maxDimension
         let areaLimit = maxPixelArea
 
-        // Limit concurrent decodes globally so opening a 20-image post
-        // doesn't spike the main thread with rapid-fire @State updates.
-        //
-        // Release via an explicit async call at every exit path — the old
-        // `defer { Task { await release() } }` pattern spawned a detached
-        // task for the release, so release ordering relative to a sibling
-        // view's next `acquire` wasn't guaranteed and could subtly violate
-        // the `maxConcurrent` budget under cancellation. `acquire()` now
-        // throws on cancellation so a cancelled wait doesn't hold a slot
-        // — if it throws, we never entered the work block and must not
-        // call `release()`.
+        // Fetch throttle is separate from decode (see `ImageThrottle`) so
+        // I/O and CPU overlap instead of sharing one 2-slot queue. The
+        // release is an explicit async call on every exit path — async
+        // functions can't run `defer` over `await`, and deferring the
+        // release through a detached `Task { await release() }` breaks
+        // ordering vs the next waiter's `acquire` and can violate the
+        // `maxConcurrent` budget under cancellation. `acquire()` throws
+        // on cancellation, so a cancelled wait holds no slot and must
+        // not `release()`.
         do {
-            try await ImageDecodeThrottle.shared.acquire()
+            try await ImageThrottle.fetch.acquire()
         } catch {
             return
         }
 
+        let data: Data
+        let response: URLResponse
         do {
             // Plain-`http://` image URLs → `https://` so App Transport
             // Security doesn't block them. See `URL.atsSafe` for the
@@ -119,14 +119,30 @@ struct CachedAsyncImage: View {
             // images, comment stickers, auth icons, level icons, video
             // posters) picks up the fix without touching each site's
             // parser.
-            let (data, response) = try await Networking.session.data(for: URLRequest(url: url.atsSafe))
+            (data, response) = try await Networking.session.data(for: URLRequest(url: url.atsSafe))
             try Task.checkCancellation()
-            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                failed = true
-                await ImageDecodeThrottle.shared.release()
-                return
-            }
+            await ImageThrottle.fetch.release()
+        } catch is CancellationError {
+            await ImageThrottle.fetch.release()
+            return
+        } catch {
+            await ImageThrottle.fetch.release()
+            failed = true
+            return
+        }
 
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            failed = true
+            return
+        }
+
+        do {
+            try await ImageThrottle.decode.acquire()
+        } catch {
+            return
+        }
+
+        do {
             let decoded = try await decodeOffMain(data: data, limit: limit, maxPixelArea: areaLimit, scale: scale)
             try Task.checkCancellation()
 
@@ -143,13 +159,13 @@ struct CachedAsyncImage: View {
             case nil:
                 failed = true
             }
-            await ImageDecodeThrottle.shared.release()
+            await ImageThrottle.decode.release()
         } catch is CancellationError {
-            await ImageDecodeThrottle.shared.release()
+            await ImageThrottle.decode.release()
             return
         } catch {
+            await ImageThrottle.decode.release()
             failed = true
-            await ImageDecodeThrottle.shared.release()
         }
     }
 
@@ -428,12 +444,12 @@ private final class FlexibleAnimatedImageView: UIImageView {
     }
 }
 
-/// Caps the number of in-flight image decodes. Prevents a 20-image post from
-/// firing all decodes simultaneously, which spammed the main thread with
-/// `@State image` updates and stuttered the open animation.
-actor ImageDecodeThrottle {
-    static let shared = ImageDecodeThrottle()
-    private let maxConcurrent = 2
+/// Bounded async semaphore with cancellation-safe waiters. Used by image
+/// loading to cap concurrent network fetches and CPU decodes separately —
+/// separating the two budgets lets I/O and CPU overlap rather than
+/// serialising both through one queue.
+actor AsyncSemaphore {
+    let maxConcurrent: Int
     private var inFlight = 0
     private struct Waiter {
         let id: UUID
@@ -441,12 +457,16 @@ actor ImageDecodeThrottle {
     }
     private var waiters: [Waiter] = []
 
+    init(maxConcurrent: Int) {
+        self.maxConcurrent = maxConcurrent
+    }
+
     /// Throws `CancellationError` when the caller's task is cancelled while
-    /// waiting for a slot. Previously this used a non-throwing continuation
-    /// with no cancellation hook, which could strand a cancelled waiter in
-    /// the queue until an unrelated future `release()` happened along — in
-    /// the worst case pinning `inFlight` at `maxConcurrent` indefinitely.
-    /// Callers must only pair a successful `acquire()` with `release()`.
+    /// waiting for a slot. A non-throwing continuation with no cancellation
+    /// hook would strand a cancelled waiter in the queue until an unrelated
+    /// future `release()` happened along — worst case pinning `inFlight` at
+    /// `maxConcurrent` indefinitely. Callers must only pair a successful
+    /// `acquire()` with `release()`.
     func acquire() async throws {
         if inFlight < maxConcurrent {
             inFlight += 1
@@ -481,6 +501,23 @@ actor ImageDecodeThrottle {
         let waiter = waiters.remove(at: idx)
         waiter.cont.resume(throwing: CancellationError())
     }
+}
+
+enum ImageThrottle {
+    /// Concurrent `session.data(for:)` image fetches. Widened to 4 because
+    /// after scene-phase returns from background the URLSession pool is
+    /// stale; letting only 2 images handshake in parallel stretched the
+    /// "gestures unresponsive" window to several seconds on a 20+-image
+    /// detail page (observed on Humor posts after ~10 min backgrounded).
+    /// Splitting fetch from decode lets I/O overlap with CPU so the total
+    /// loading window contracts.
+    static let fetch = AsyncSemaphore(maxConcurrent: 4)
+
+    /// Concurrent CPU-heavy decodes. Kept at 2 so a detail-view open doesn't
+    /// spike the main thread with rapid-fire `@State image` updates as
+    /// decodes complete. Decode is ~50–100 ms per frame; any higher and the
+    /// open animation stuttered in the original measurement.
+    static let decode = AsyncSemaphore(maxConcurrent: 2)
 }
 
 // maxDimension 1200pt × scale 3 = 3600px on the long edge — overkill for an
