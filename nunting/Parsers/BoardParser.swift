@@ -87,7 +87,15 @@ struct InlineAccumulator: Sendable {
                 with: "\n",
                 options: .regularExpression
             )
-            s = s.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
+            // Cap at 3 consecutive `\n` (= up to 2 blank lines) so an
+            // explicit user-typed blank paragraph (`<p><br></p>` between
+            // two `<p>` blocks → ≥5 newlines) survives as 2 blank lines
+            // instead of being squashed down to 1. Plain paragraph breaks
+            // (2 newlines) still render as 1 blank line — the gap between
+            // a regular `<p>A</p><p>B</p>` and an `<p>A</p><p><br></p><p>B</p>`
+            // is preserved, matching the visual difference the editor
+            // intends. 4+ blank lines (very rare) get capped to 2.
+            s = s.replacingOccurrences(of: "\n{4,}", with: "\n\n\n", options: .regularExpression)
             return s
         }
 
