@@ -15,14 +15,14 @@ struct DdanziParser: BoardParser {
 
     nonisolated init() {}
 
-    nonisolated(unsafe) private static let blockTags: Set<String> = [
+    nonisolated private static let blockTags: Set<String> = [
         "p", "div", "li", "blockquote",
         "h1", "h2", "h3", "h4", "h5", "h6",
         "section", "article", "tr",
     ]
-    nonisolated(unsafe) private static let skipTags: Set<String> = ["script", "style", "noscript"]
+    nonisolated private static let skipTags: Set<String> = ["script", "style", "noscript"]
 
-    nonisolated(unsafe) private static let youtubeIDRegex = try! NSRegularExpression(
+    nonisolated private static let youtubeIDRegex = try! NSRegularExpression(
         pattern: #"youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{11})"#,
         options: []
     )

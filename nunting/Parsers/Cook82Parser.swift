@@ -13,14 +13,14 @@ struct Cook82Parser: BoardParser {
 
     nonisolated init() {}
 
-    nonisolated(unsafe) private static let blockTags: Set<String> = [
+    nonisolated private static let blockTags: Set<String> = [
         "p", "div", "li", "blockquote",
         "h1", "h2", "h3", "h4", "h5", "h6",
         "section", "article", "tr",
     ]
-    nonisolated(unsafe) private static let skipTags: Set<String> = ["script", "style", "noscript"]
+    nonisolated private static let skipTags: Set<String> = ["script", "style", "noscript"]
 
-    nonisolated(unsafe) private static let youtubeIDRegex = try! NSRegularExpression(
+    nonisolated private static let youtubeIDRegex = try! NSRegularExpression(
         pattern: #"youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{11})"#,
         options: []
     )
@@ -28,7 +28,7 @@ struct Cook82Parser: BoardParser {
     /// `HH:MM` in very recent posts). Used to pick the correct `<em>` inside
     /// `.repleFunc` so a future admin/level badge `<em>` inserted before the
     /// date doesn't silently become the displayed timestamp.
-    nonisolated(unsafe) private static let commentTimeRegex = try! NSRegularExpression(
+    nonisolated private static let commentTimeRegex = try! NSRegularExpression(
         pattern: #"\d{1,2}:\d{2}|\d{1,2}\.\d{1,2}\.\d{1,2}"#,
         options: []
     )

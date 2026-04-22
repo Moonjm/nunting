@@ -6,19 +6,19 @@ struct AagagParser: BoardParser {
 
     nonisolated init() {}
 
-    nonisolated(unsafe) private static let imageHost = "https://i.aagag.com"
+    nonisolated private static let imageHost = "https://i.aagag.com"
     // YouTube IDs are exactly 11 chars from [A-Za-z0-9_-].
-    nonisolated(unsafe) private static let youtubeIDRegex = try! NSRegularExpression(pattern: #"^[A-Za-z0-9_-]{11}$"#)
+    nonisolated private static let youtubeIDRegex = try! NSRegularExpression(pattern: #"^[A-Za-z0-9_-]{11}$"#)
     // Instagram shortcodes are 5+ chars from [A-Za-z0-9_-].
-    nonisolated(unsafe) private static let instaIDRegex = try! NSRegularExpression(pattern: #"^[A-Za-z0-9_-]+$"#)
+    nonisolated private static let instaIDRegex = try! NSRegularExpression(pattern: #"^[A-Za-z0-9_-]+$"#)
     // Hoisted regexes — these run on every detail parse and per stripHTML
     // chunk respectively, so per-call NSRegularExpression construction
     // showed up as measurable overhead on image-heavy posts.
-    nonisolated(unsafe) private static let contentScriptRegex = try! NSRegularExpression(
+    nonisolated private static let contentScriptRegex = try! NSRegularExpression(
         pattern: #"AAGAG_AA\.content\s*=\s*"((?:[^"\\]|\\.)*)""#,
         options: [.dotMatchesLineSeparators]
     )
-    nonisolated(unsafe) private static let numericEntityRegex = try! NSRegularExpression(pattern: #"&#(x?)([0-9a-fA-F]+);"#)
+    nonisolated private static let numericEntityRegex = try! NSRegularExpression(pattern: #"&#(x?)([0-9a-fA-F]+);"#)
 
     nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)

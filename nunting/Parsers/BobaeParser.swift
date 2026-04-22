@@ -10,7 +10,7 @@ struct BobaeParser: BoardParser {
 
     nonisolated init() {}
 
-    nonisolated(unsafe) private static let youtubeIDRegex = try! NSRegularExpression(
+    nonisolated private static let youtubeIDRegex = try! NSRegularExpression(
         pattern: #"youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{11})"#,
         options: []
     )
@@ -18,17 +18,17 @@ struct BobaeParser: BoardParser {
     /// `HH:MM` for same-day comments and `YYYY.MM.DD HH:MM` for older ones.
     /// Used to filter the util row's spans so an added badge / IP indicator
     /// doesn't silently replace the timestamp.
-    nonisolated(unsafe) private static let commentTimeRegex = try! NSRegularExpression(
+    nonisolated private static let commentTimeRegex = try! NSRegularExpression(
         pattern: #"\d{1,2}:\d{2}|\d{4}\.\d{1,2}\.\d{1,2}"#,
         options: []
     )
 
-    nonisolated(unsafe) private static let blockTags: Set<String> = [
+    nonisolated private static let blockTags: Set<String> = [
         "p", "div", "li", "blockquote",
         "h1", "h2", "h3", "h4", "h5", "h6",
         "section", "article", "tr",
     ]
-    nonisolated(unsafe) private static let skipTags: Set<String> = ["script", "style", "noscript"]
+    nonisolated private static let skipTags: Set<String> = ["script", "style", "noscript"]
 
     nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         // Bobaedream is aagag-dispatch-only; list parsing is never invoked.

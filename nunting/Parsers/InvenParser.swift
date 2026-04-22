@@ -10,7 +10,7 @@ struct InvenParser: BoardParser {
     /// character references. Hoisted because `cleanCommentText` runs once per
     /// Inven comment; per-call `NSRegularExpression` construction showed up on
     /// long threads.
-    nonisolated(unsafe) private static let numericEntityRegex = try! NSRegularExpression(
+    nonisolated private static let numericEntityRegex = try! NSRegularExpression(
         pattern: #"&#(x?)([0-9a-fA-F]+);"#,
         options: [.caseInsensitive]
     )
@@ -103,7 +103,7 @@ struct InvenParser: BoardParser {
         )
     }
 
-    nonisolated(unsafe) private static let blockTags: Set<String> = [
+    nonisolated private static let blockTags: Set<String> = [
         "p", "div", "li", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article",
     ]
 

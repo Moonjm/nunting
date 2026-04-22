@@ -7,7 +7,7 @@ struct ClienParser: BoardParser {
     /// Matches the canonical YouTube embed URL shape — `/embed/{11-char id}`
     /// on `youtube.com` or the no-cookie variant. Shared with every other
     /// parser that promotes `<iframe>` to an inline YouTube block.
-    nonisolated(unsafe) private static let youtubeIDRegex = try! NSRegularExpression(
+    nonisolated private static let youtubeIDRegex = try! NSRegularExpression(
         pattern: #"youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{11})"#,
         options: [.caseInsensitive]
     )
@@ -15,7 +15,7 @@ struct ClienParser: BoardParser {
     /// `YYYY-MM-DD HH:MM(:SS)` — the timestamp Clien renders inside
     /// `div.post_date`. Used to slice out the modified timestamp when an
     /// edited post advertises both 등록일 and 수정일 in the same block.
-    nonisolated(unsafe) private static let postDatePattern = #"\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}(?::\d{2})?"#
+    nonisolated private static let postDatePattern = #"\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}(?::\d{2})?"#
 
     nonisolated init() {}
 
