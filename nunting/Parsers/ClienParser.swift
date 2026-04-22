@@ -90,12 +90,19 @@ struct ClienParser: BoardParser {
 
         let (source, skipFirstParagraph) = try extractSource(from: article)
 
+        // Walk the article body via the shared collector so HTML
+        // pretty-print whitespace TextNodes between top-level `<p>` siblings
+        // reach the inline accumulator. Iterating `article.children()`
+        // (Elements only) and re-entering `collectBlocks` per child loses
+        // those TextNodes, splits each `<p>` into its own ContentBlock,
+        // and forces every paragraph gap down to the LazyVStack's fixed
+        // 12pt spacing — so the explicit-blank-line vs. paragraph-break
+        // distinction encoded in the markup never reaches the renderer.
         var blocks: [ContentBlock] = []
-        let children = article.children()
-        for (index, child) in children.enumerated() {
-            if skipFirstParagraph && index == 0 { continue }
-            try collectBlocks(from: child, into: &blocks)
+        if skipFirstParagraph, let firstP = article.children().first() {
+            try firstP.remove()
         }
+        try collectBlocks(from: article, into: &blocks)
 
         let rawDate = try doc.select("div.post_date").first()?.text() ?? ""
         let fullDateText = collapsePostDate(rawDate)

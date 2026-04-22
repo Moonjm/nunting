@@ -154,10 +154,12 @@ struct CoolenjoyParser: BoardParser {
             throw ParserError.structureChanged("view-content 없음")
         }
 
+        // collectBlocks(from: contentEl) (ONE call) walks getChildNodes()
+        // including TextNodes between siblings. Iterating children() loses
+        // those TextNodes and forces every <p> into its own ContentBlock,
+        // collapsing all paragraph spacing to the renderer's fixed gap.
         var blocks: [ContentBlock] = []
-        for child in contentEl.children() {
-            try collectBlocks(from: child, into: &blocks)
-        }
+        try collectBlocks(from: contentEl, into: &blocks)
 
         let fullDateText = try article.select("time").first()?.text()
             .trimmingCharacters(in: .whitespacesAndNewlines)
