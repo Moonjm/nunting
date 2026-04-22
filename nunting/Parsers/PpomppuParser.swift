@@ -282,29 +282,28 @@ struct PpomppuParser: BoardParser {
             return
         }
         if tag == "a" {
-            // Anchor wrapping `<img>` / `<video>` / `<iframe>` (forums often
-            // wrap inline GIFs in a clickable link). Recurse into the
-            // children so the nested media becomes a proper block instead
-            // of being swallowed by the link label.
+            // Pure anchor: no nested media → emit a single inline link (or
+            // fallback text) and return. When the anchor wraps `<img>` /
+            // `<video>` / `<iframe>` (forums often wrap inline GIFs in a
+            // clickable link), fall through to the main child-walking loop
+            // below so the nested media becomes a proper block AND sibling
+            // TextNodes still contribute text via the existing TextNode
+            // branch.
             let nestedImgs = try element.select("img")
             let nestedVideos = try element.select("video")
             let nestedIframes = try element.select("iframe")
-            if !nestedImgs.isEmpty() || !nestedVideos.isEmpty() || !nestedIframes.isEmpty() {
-                for child in element.children() {
-                    try collectBlocks(from: child, skipping: skipURL, into: &blocks)
+            if nestedImgs.isEmpty() && nestedVideos.isEmpty() && nestedIframes.isEmpty() {
+                if let resolved = try anchor(from: element) {
+                    if resolved.url != skipURL {
+                        inline.appendLink(url: resolved.url, label: resolved.label)
+                        flush()
+                    }
+                } else {
+                    inline.appendText(try element.text())
+                    flush()
                 }
                 return
             }
-            if let resolved = try anchor(from: element) {
-                if resolved.url != skipURL {
-                    inline.appendLink(url: resolved.url, label: resolved.label)
-                    flush()
-                }
-            } else {
-                inline.appendText(try element.text())
-                flush()
-            }
-            return
         }
         if Self.skipTags.contains(tag) { return }
 

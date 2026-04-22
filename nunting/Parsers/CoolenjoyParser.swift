@@ -259,22 +259,20 @@ struct CoolenjoyParser: BoardParser {
             return
         }
         if tag == "a" {
-            // Anchor wrapping `<img>` (forums often wrap inline GIFs in a
-            // clickable link). Recurse into the children so the nested
-            // image becomes a proper block instead of being swallowed by
-            // the link label.
+            // Pure anchor: no nested media → emit a single inline link and
+            // return. When the anchor wraps `<img>` (forums often wrap
+            // inline GIFs in a clickable link), fall through to the main
+            // child-walking loop below so the nested image becomes a proper
+            // block AND sibling TextNodes still contribute text via the
+            // existing TextNode branch.
             let nestedImgs = try element.select("img")
-            if !nestedImgs.isEmpty() {
-                for child in element.children() {
-                    try collectBlocks(from: child, into: &blocks)
+            if nestedImgs.isEmpty() {
+                if let resolved = try anchor(from: element) {
+                    inline.appendLink(url: resolved.url, label: resolved.label)
+                    flush()
                 }
                 return
             }
-            if let resolved = try anchor(from: element) {
-                inline.appendLink(url: resolved.url, label: resolved.label)
-                flush()
-            }
-            return
         }
 
         for node in element.getChildNodes() {

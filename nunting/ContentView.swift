@@ -166,8 +166,8 @@ struct ContentView: View {
             containerWidth = newWidth
             if wasHidden { detailOffset = newWidth }
         }
-        .onPreferenceChange(BottomAreaTopKey.self) { bottomAreaTopY = $0 }
         .coordinateSpace(name: "contentRoot")
+        .onPreferenceChange(BottomAreaTopKey.self) { bottomAreaTopY = $0 }
         .simultaneousGesture(panGesture)
     }
 

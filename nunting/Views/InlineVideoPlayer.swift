@@ -144,6 +144,12 @@ private struct AVPlayerControllerView: UIViewControllerRepresentable {
         /// frames, so audio doesn't race ahead of the first decoded picture.
         /// `.initial` covers the rare case where the item is already
         /// `.readyToPlay` by the time we attach (cached/short clips).
+        ///
+        /// Re-entry is harmless: if `.initial` fires already-ready and a
+        /// follow-up `.new` notification reaches the closure before the
+        /// dispatched main block runs, the second `play()` is idempotent on
+        /// an already-playing player and the second `invalidate()` is a
+        /// no-op on a nil observation.
         func startPlaybackWhenReady(item: AVPlayerItem) {
             statusObservation?.invalidate()
             statusObservation = item.observe(\.status, options: [.new, .initial]) { [weak self] item, _ in
