@@ -4,21 +4,51 @@ import ImageIO
 
 struct CachedAsyncImage: View {
     let url: URL
-    var maxDimension: CGFloat = 1600
-    var maxPixelArea: CGFloat = 20_000_000
-    var aspectRatio: CGFloat?
-    var cacheVariant: String = "default"
+    let maxDimension: CGFloat
+    let maxPixelArea: CGFloat
+    let aspectRatio: CGFloat?
+    let cacheVariant: String
     /// When false, the loading state renders as an empty transparent view
     /// rather than the gray-box + spinner placeholder. Use this for small
     /// inline icons (comment level/auth icons) where the placeholder visibly
     /// flashes in and looks worse than a blank spot.
-    var showsPlaceholder: Bool = true
+    let showsPlaceholder: Bool
 
     @State private var image: UIImage?
     @State private var animatedFrames: [UIImage]?
     @State private var animatedDuration: TimeInterval = 0
     @State private var failed = false
+    /// Aspect ratio discovered from the decoded image (or primed from the
+    /// session aspect cache on init). Used when the caller didn't supply an
+    /// explicit `aspectRatio` so the final-sized frame is reserved up-front
+    /// on re-appearances — stops the 120pt placeholder → natural-height
+    /// jump that shifts scroll position when images load.
+    @State private var intrinsicAspectRatio: CGFloat?
     @Environment(\.displayScale) private var displayScale
+
+    init(
+        url: URL,
+        maxDimension: CGFloat = 1600,
+        maxPixelArea: CGFloat = 20_000_000,
+        aspectRatio: CGFloat? = nil,
+        cacheVariant: String = "default",
+        showsPlaceholder: Bool = true
+    ) {
+        self.url = url
+        self.maxDimension = maxDimension
+        self.maxPixelArea = maxPixelArea
+        self.aspectRatio = aspectRatio
+        self.cacheVariant = cacheVariant
+        self.showsPlaceholder = showsPlaceholder
+        // Prime from the aspect cache so LazyVStack re-materialisation (and
+        // re-scroll over previously-decoded images) renders at final size
+        // on the FIRST layout pass instead of starting with a 120pt stub
+        // and jumping once the decode resolves.
+        _intrinsicAspectRatio = State(
+            initialValue: aspectRatio
+                ?? ImageCache.shared.aspectRatio(for: url, variant: cacheVariant)
+        )
+    }
 
     var body: some View {
         // Single ZStack keeps the view identity stable so SwiftUI doesn't
@@ -46,13 +76,20 @@ struct CachedAsyncImage: View {
                     .interpolation(.high)
                     .scaledToFit()
             }
-            if failed {
+            if failed && showsPlaceholder {
                 // Sporadic mid-post load misses are hard to reproduce, so
                 // surface a tap-to-retry affordance instead of leaving the
                 // slot stuck on the broken-image icon. Child tap wins over
                 // any parent `.onTapGesture` (e.g. PostDetailView's
                 // full-screen image viewer trigger) so a retry tap doesn't
                 // open the viewer on a missing image.
+                //
+                // Only shown when `showsPlaceholder == true` (body images).
+                // Decorative icons (`false`) — comment level / auth badges —
+                // render empty on failure instead, matching the broken-
+                // `<img>` behaviour in mobile browsers for sources that
+                // 200 with the wrong bytes (e.g. Humor's `icon-file` serving
+                // an MP4 container under `image/jpeg`).
                 VStack(spacing: 6) {
                     Image(systemName: "arrow.clockwise")
                         .font(.title3)
@@ -71,8 +108,9 @@ struct CachedAsyncImage: View {
         .transaction { $0.animation = nil }
         .task(id: url) { await load() }
 
-        if let aspectRatio {
-            content.aspectRatio(aspectRatio, contentMode: .fit)
+        let effective = aspectRatio ?? intrinsicAspectRatio
+        if let effective {
+            content.aspectRatio(effective, contentMode: .fit)
         } else {
             content.frame(minHeight: image == nil && animatedFrames == nil && showsPlaceholder ? 120 : nil)
         }
@@ -88,6 +126,9 @@ struct CachedAsyncImage: View {
 
         if let cached = ImageCache.shared.image(for: url, variant: variant) {
             image = cached
+            if intrinsicAspectRatio == nil, cached.size.height > 0 {
+                intrinsicAspectRatio = cached.size.width / cached.size.height
+            }
             return
         }
 
@@ -95,43 +136,17 @@ struct CachedAsyncImage: View {
         let limit = maxDimension
         let areaLimit = maxPixelArea
 
-        // Fetch throttle is separate from decode (see `ImageThrottle`) so
-        // I/O and CPU overlap instead of sharing one 2-slot queue. The
-        // release is an explicit async call on every exit path — async
-        // functions can't run `defer` over `await`, and deferring the
-        // release through a detached `Task { await release() }` breaks
-        // ordering vs the next waiter's `acquire` and can violate the
-        // `maxConcurrent` budget under cancellation. `acquire()` throws
-        // on cancellation, so a cancelled wait holds no slot and must
-        // not `release()`.
-        do {
-            try await ImageThrottle.fetch.acquire()
-        } catch {
-            return
-        }
-
-        let data: Data
-        let response: URLResponse
-        do {
-            // Plain-`http://` image URLs → `https://` so App Transport
-            // Security doesn't block them. See `URL.atsSafe` for the
-            // upgrade rationale. Applied here so every caller (body
-            // images, comment stickers, auth icons, level icons, video
-            // posters) picks up the fix without touching each site's
-            // parser.
-            (data, response) = try await Networking.session.data(for: URLRequest(url: url.atsSafe))
-            try Task.checkCancellation()
-            await ImageThrottle.fetch.release()
-        } catch is CancellationError {
-            await ImageThrottle.fetch.release()
-            return
-        } catch {
-            await ImageThrottle.fetch.release()
-            failed = true
-            return
-        }
-
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+        // `ImageDataLoader` deduplicates in-flight fetches by URL and runs
+        // the network leg on a detached, non-cancellable task. When the
+        // caller (this view's `.task(id: url)`) is cancelled — e.g. user
+        // taps a different post mid-load — we just stop awaiting; the
+        // shared fetch still completes and populates URLCache, so the next
+        // visit to the same post finds it cached instead of re-downloading.
+        // The loader also owns the `ImageThrottle.fetch` semaphore so we
+        // don't hold a slot while a cancelled view's Task is unwinding.
+        let data = await ImageDataLoader.shared.data(for: url.atsSafe)
+        guard !Task.isCancelled else { return }
+        guard let data else {
             failed = true
             return
         }
@@ -150,12 +165,21 @@ struct CachedAsyncImage: View {
             case .still(let img):
                 ImageCache.shared.store(img, for: url, variant: variant)
                 image = img
+                if img.size.height > 0 {
+                    intrinsicAspectRatio = img.size.width / img.size.height
+                }
             case .animated(let frames, let duration):
                 // Animated GIFs aren't cached (the frame count × frame size
                 // can balloon past the 200MB NSCache budget quickly, and
-                // GIFs re-decode cheaply on re-entry).
+                // GIFs re-decode cheaply on re-entry). Aspect is cached
+                // from the first frame so re-renders stay stable.
                 animatedFrames = frames
                 animatedDuration = duration
+                if let first = frames.first, first.size.height > 0 {
+                    let aspect = first.size.width / first.size.height
+                    intrinsicAspectRatio = aspect
+                    ImageCache.shared.storeAspectRatio(aspect, for: url, variant: variant)
+                }
             case nil:
                 failed = true
             }
@@ -503,6 +527,55 @@ actor AsyncSemaphore {
     }
 }
 
+/// Deduplicates in-flight image fetches by URL. When two views (e.g. the
+/// previous detail's `CachedAsyncImage` on teardown, and the new detail's
+/// on appear) ask for the same URL concurrently, they share one network
+/// request. The shared task is non-cancellable via a consumer's cancel —
+/// that matters because cancelling a mid-transfer download and immediately
+/// restarting it on the next view wastes the partial bytes and the TLS
+/// slot. Here, a cancelled consumer just stops awaiting; the shared task
+/// completes and URLCache stores the body so the next request is served
+/// from local cache.
+actor ImageDataLoader {
+    static let shared = ImageDataLoader()
+
+    private var inFlight: [URL: Task<Data?, Never>] = [:]
+
+    func data(for url: URL) async -> Data? {
+        if let existing = inFlight[url] {
+            return await existing.value
+        }
+        let task = Task<Data?, Never> {
+            defer {
+                Task { await ImageDataLoader.shared.cleanup(url: url) }
+            }
+            do {
+                try await ImageThrottle.fetch.acquire()
+            } catch {
+                return nil
+            }
+            let request = URLRequest(url: url)
+            do {
+                let (data, response) = try await Networking.session.data(for: request)
+                await ImageThrottle.fetch.release()
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    return nil
+                }
+                return data
+            } catch {
+                await ImageThrottle.fetch.release()
+                return nil
+            }
+        }
+        inFlight[url] = task
+        return await task.value
+    }
+
+    private func cleanup(url: URL) {
+        inFlight[url] = nil
+    }
+}
+
 enum ImageThrottle {
     /// Concurrent `session.data(for:)` image fetches. Widened to 4 because
     /// after scene-phase returns from background the URLSession pool is
@@ -533,8 +606,22 @@ final class ImageCache {
         return c
     }()
 
+    /// Session-scoped aspect ratio cache keyed by (variant, url). Survives
+    /// NSCache UIImage eviction so a recycled `CachedAsyncImage` can still
+    /// render at the right proportion on first layout even if the pixel
+    /// cache was flushed. Tiny footprint (8 bytes × 1000 entries).
+    private let aspects: NSCache<NSString, NSNumber> = {
+        let c = NSCache<NSString, NSNumber>()
+        c.countLimit = 1000
+        return c
+    }()
+
     func image(for url: URL, variant: String = "default") -> UIImage? {
         cache.object(forKey: key(for: url, variant: variant))
+    }
+
+    func aspectRatio(for url: URL, variant: String = "default") -> CGFloat? {
+        aspects.object(forKey: key(for: url, variant: variant)).map { CGFloat(truncating: $0) }
     }
 
     func store(_ image: UIImage, for url: URL, variant: String = "default") {
@@ -542,6 +629,17 @@ final class ImageCache {
         let pixelH = image.size.height * image.scale
         let cost = Int(pixelW * pixelH * 4)
         cache.setObject(image, forKey: key(for: url, variant: variant), cost: cost)
+        if pixelW > 0 && pixelH > 0 {
+            aspects.setObject(
+                NSNumber(value: Double(pixelW / pixelH)),
+                forKey: key(for: url, variant: variant)
+            )
+        }
+    }
+
+    func storeAspectRatio(_ ratio: CGFloat, for url: URL, variant: String = "default") {
+        guard ratio > 0, ratio.isFinite else { return }
+        aspects.setObject(NSNumber(value: Double(ratio)), forKey: key(for: url, variant: variant))
     }
 
     private func key(for url: URL, variant: String) -> NSString {
