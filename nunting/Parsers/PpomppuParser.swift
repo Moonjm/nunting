@@ -145,8 +145,21 @@ struct PpomppuParser: BoardParser {
         post.url
     }
 
-    nonisolated func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment] {
-        let firstHtml = try await fetcher(post.url)
+    nonisolated func fetchAllComments(
+        for post: Post,
+        detailHTML: String?,
+        fetcher: @escaping @Sendable (URL) async throws -> String
+    ) async throws -> [Comment] {
+        // Reuse the detail HTML the caller already fetched for
+        // `parseDetail` — Ppomppu's first-page comments live inside the
+        // detail DOM, so re-fetching `post.url` here only duplicates
+        // parse work.
+        let firstHtml: String
+        if let detailHTML {
+            firstHtml = detailHTML
+        } else {
+            firstHtml = try await fetcher(post.url)
+        }
         let firstDoc = try SwiftSoup.parse(firstHtml)
         let firstPage = try parseComments(in: firstDoc)
         let totalPages = try totalCommentPages(in: firstDoc)

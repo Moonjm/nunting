@@ -194,6 +194,31 @@ struct Networking {
         return ResolvedRedirect(url: url, prefetchedBody: nil)
     }
 
+    /// Fire a best-effort `HEAD /` to every supported-site host so the
+    /// shared `URLSession` opens a TLS + HTTP/2 connection pool entry
+    /// per host. Subsequent real requests (list / detail fetches) reuse
+    /// the pooled connection and skip the 300-700 ms TLS handshake that
+    /// the perf log showed on the first access per host per session.
+    ///
+    /// All requests run in parallel on a detached `.utility` task, have
+    /// a short 5-second timeout, and ignore errors — the worst case is
+    /// the same cold handshake the app used to pay, not a regression.
+    /// Call at app launch and on scenePhase `.active` transitions.
+    nonisolated static func prewarmConnections(hosts: [URL] = Site.allCases.map(\.baseURL)) {
+        Task.detached(priority: .utility) {
+            await withTaskGroup(of: Void.self) { group in
+                for host in hosts {
+                    group.addTask {
+                        var request = URLRequest(url: host)
+                        request.httpMethod = "HEAD"
+                        request.timeoutInterval = 5
+                        _ = try? await session.data(for: request)
+                    }
+                }
+            }
+        }
+    }
+
     static func postForm(
         url: URL,
         parameters: [String: String],

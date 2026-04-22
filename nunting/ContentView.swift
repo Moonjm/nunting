@@ -2,6 +2,7 @@ import SwiftUI
 import UIKit
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var favorites: FavoritesStore
     @State private var catalog = BoardCatalogStore()
     @State private var readStore = ReadStore()
@@ -185,6 +186,23 @@ struct ContentView: View {
         .coordinateSpace(name: "contentRoot")
         .onPreferenceChange(BottomAreaTopKey.self) { bottomAreaTopY = $0 }
         .simultaneousGesture(panGesture)
+        .task {
+            // One-shot on first view appearance per app launch — open
+            // TLS + HTTP/2 connections to every supported host so the
+            // first real list/detail fetch per host skips the 300-700ms
+            // handshake cost (measured in perf log as the dominant
+            // cold-hit outlier).
+            Networking.prewarmConnections()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // Re-warm on foreground re-entry: iOS may have torn down
+            // pooled connections during background time, so the first
+            // request after coming back pays the handshake again
+            // otherwise.
+            if phase == .active {
+                Networking.prewarmConnections()
+            }
+        }
     }
 
     private var mainScreen: some View {

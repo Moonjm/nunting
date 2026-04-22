@@ -95,11 +95,19 @@ struct SLRParser: BoardParser {
 
     nonisolated func fetchAllComments(
         for post: Post,
+        detailHTML: String?,
         fetcher: @escaping @Sendable (URL) async throws -> String
     ) async throws -> [Comment] {
-        // 1) Pull the detail HTML (URL cache usually serves this since the
-        //    view just fetched it) so we can extract the AJAX params.
-        let html = try await fetcher(post.url)
+        // 1) Pull the detail HTML so we can extract the AJAX params.
+        //    The caller already fetched it for `parseDetail` — reuse
+        //    that copy when it's threaded through so we don't
+        //    duplicate the fetch + SwiftSoup parse of the same body.
+        let html: String
+        if let detailHTML {
+            html = detailHTML
+        } else {
+            html = try await fetcher(post.url)
+        }
         guard let params = try Self.extractCommentParams(html: html) else {
             return []
         }
