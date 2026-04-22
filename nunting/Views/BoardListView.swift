@@ -151,38 +151,49 @@ struct BoardListView: View {
 
     @ViewBuilder
     private func postRowContent(post: Post, isAagag: Bool, isRead: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                if isAagag, let lv = post.levelText, !lv.isEmpty {
-                    AagagSourceTag(code: lv)
+        // Wrapping the row in a `Button` (instead of `.onTapGesture`) lets
+        // SwiftUI's built-in touch tracking cancel the action when the
+        // finger moves past its press-cancel threshold — so a `→` drag from
+        // a list row to open the side drawer no longer fires the row's
+        // navigation while the parent panGesture is still recognising the
+        // direction. `.plain` strips Button's default chrome so the row
+        // visuals stay identical to the previous tap-only implementation.
+        Button {
+            onSelectPost(post)
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    if isAagag, let lv = post.levelText, !lv.isEmpty {
+                        AagagSourceTag(code: lv)
+                    }
+                    Text(post.title).font(.body)
                 }
-                Text(post.title).font(.body)
+                HStack(spacing: 6) {
+                    Text(post.author)
+                    if !isAagag, let lv = post.levelText, !lv.isEmpty {
+                        Text(lv)
+                    }
+                    Text(post.dateText)
+                    if let views = post.viewCount {
+                        Text("조회 \(views)")
+                    }
+                    if let recos = post.recommendCount, recos > 0 {
+                        Text("추천 \(recos)").foregroundStyle(.pink)
+                    }
+                    if post.commentCount > 0 {
+                        Text("💬 \(post.commentCount)")
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
             }
-            HStack(spacing: 6) {
-                Text(post.author)
-                if !isAagag, let lv = post.levelText, !lv.isEmpty {
-                    Text(lv)
-                }
-                Text(post.dateText)
-                if let views = post.viewCount {
-                    Text("조회 \(views)")
-                }
-                if let recos = post.recommendCount, recos > 0 {
-                    Text("추천 \(recos)").foregroundStyle(.pink)
-                }
-                if post.commentCount > 0 {
-                    Text("💬 \(post.commentCount)")
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .truncationMode(.tail)
+            .opacity(isRead ? 0.45 : 1.0)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
-        .opacity(isRead ? 0.45 : 1.0)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-        .onTapGesture { onSelectPost(post) }
+        .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .accessibilityValue(isRead ? "읽음" : "")
