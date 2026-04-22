@@ -182,28 +182,9 @@ struct BoardListView: View {
         .opacity(isRead ? 0.45 : 1.0)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
-        // Tap-vs-drag discrimination: a `DragGesture(minimumDistance: 0)`
-        // captures the touch-down/touch-up cycle, and we only treat it as
-        // a row tap when the finger barely moved (≤ 6pt in either axis).
-        // This aligns with the parent `panGesture` in ContentView which
-        // locks `dragDirection = .horizontal` at ~10pt — so any drag that
-        // reaches the gesture's commit threshold (drawer open / detail
-        // forward-reveal) is past our tap threshold here, eliminating the
-        // accidental row tap during a `→` drawer-open swipe. Bare
-        // `.onTapGesture` and the previous `Button` wrapper both fired
-        // even when the parent gesture had already taken over.
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 0, coordinateSpace: .local)
-                .onEnded { value in
-                    if abs(value.translation.width) < 6
-                        && abs(value.translation.height) < 6 {
-                        onSelectPost(post)
-                    }
-                }
-        )
+        .onTapGesture { onSelectPost(post) }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
-        .accessibilityAction { onSelectPost(post) }
         .accessibilityValue(isRead ? "읽음" : "")
     }
 
