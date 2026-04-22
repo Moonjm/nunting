@@ -188,6 +188,10 @@ struct HumorParser: BoardParser {
         // racy_show_* 안엔 앱에 띄울 콘텐츠가 하나도 없고, 진짜 이미지는
         // 형제 racy_hidden_* 에 들어있어서 selector 한 줄로 정리.
         try wrap.select("[id^=racy_show_]").remove()
+        // racy_hidden_* 안의 원본 펼치기 버튼 (`<a OnClick="expand_all()">`
+        // 안의 `<div id^="btn_nemo_expand_all">` → "원본" 라벨) 도 같이 제거.
+        // 우리는 항상 원본을 그대로 띄우니 인터랙션 자체가 의미 없음.
+        try wrap.select("[id^=btn_nemo_expand_all]").remove()
         var blocks: [ContentBlock] = []
         var inline = InlineAccumulator()
         try collectBlocks(from: wrap, into: &blocks, inline: &inline)
