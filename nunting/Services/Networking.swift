@@ -1,5 +1,27 @@
 import Foundation
 
+/// Single-writer gate for `Networking.prewarmConnections`. Callers
+/// request `claimRun()`; the actor returns `true` only if enough time
+/// has passed since the last successful claim, which throttles scene-
+/// phase bounce-induced redundant HEAD bursts. An `actor` (not
+/// `@MainActor`) so the gate read/write stays off the main thread.
+actor PrewarmThrottle {
+    static let shared = PrewarmThrottle()
+    /// Any request within this interval of the last run is dropped.
+    /// Chosen to be well under the URLSession keep-alive window
+    /// (~60 s) so the pool is reliably warm between successful runs.
+    private let interval: TimeInterval = 30
+    private var lastRun: Date?
+
+    func claimRun(now: Date = Date()) -> Bool {
+        if let lastRun, now.timeIntervalSince(lastRun) < interval {
+            return false
+        }
+        lastRun = now
+        return true
+    }
+}
+
 extension URL {
     /// Returns `https://<host>/<path>` when `self` is plain `http://`,
     /// otherwise returns `self` unchanged. Lets ATS-clean hosts load
@@ -201,17 +223,27 @@ struct Networking {
     /// the perf log showed on the first access per host per session.
     ///
     /// All requests run in parallel on a detached `.utility` task, have
-    /// a short 5-second timeout, and ignore errors — the worst case is
-    /// the same cold handshake the app used to pay, not a regression.
-    /// Call at app launch and on scenePhase `.active` transitions.
+    /// a short 5-second timeout, ignore errors, and do *not* persist
+    /// cookies — the goal is TLS pool population, not populating the
+    /// shared `HTTPCookieStorage` with session trackers before the user
+    /// has navigated anywhere. Worst case on failure is the same cold
+    /// handshake the app used to pay, not a regression.
+    ///
+    /// Throttled via `PrewarmThrottle` to skip re-warming on rapid
+    /// scenePhase bounces (notification peek, Control Center pull-down,
+    /// quick foreground→background→foreground cycles). The pool stays
+    /// warm for ~60 s of idle anyway, so re-warming more often than
+    /// once every 30 s is pure noise.
     nonisolated static func prewarmConnections(hosts: [URL] = Site.allCases.map(\.baseURL)) {
         Task.detached(priority: .utility) {
+            guard await PrewarmThrottle.shared.claimRun() else { return }
             await withTaskGroup(of: Void.self) { group in
                 for host in hosts {
                     group.addTask {
                         var request = URLRequest(url: host)
                         request.httpMethod = "HEAD"
                         request.timeoutInterval = 5
+                        request.httpShouldHandleCookies = false
                         _ = try? await session.data(for: request)
                     }
                 }
