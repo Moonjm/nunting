@@ -48,6 +48,15 @@ struct ContentView: View {
     /// this line belong to the bar/chips, not the drawer/detail overlay.
     /// `.infinity` until first measurement so the fallback exclusion runs.
     @State private var bottomAreaTopY: CGFloat = .infinity
+    /// Lightweight gate the panGesture flips on whenever it sees any
+    /// horizontal-dominant movement, even below the drawer/detail commit
+    /// thresholds. Read by list rows in `onTapGesture` to suppress an
+    /// otherwise-firing tap when the user just intended a tiny `→` / `←`
+    /// drag — kept as a class instance so flipping it doesn't re-render
+    /// the whole tree, and reset asynchronously after `onEnded` so the
+    /// row's tap closure (which fires on the same touch-up) sees the
+    /// blocked state before it clears.
+    @State private var rowTapGate = RowTapGate()
 
     private let drawerWidth: CGFloat = 300
     /// Height of the bottom bar area (bar + filter chips + safe area buffer)
@@ -179,6 +188,7 @@ struct ContentView: View {
                 searchQuery: searchQuery,
                 scrollLocked: scrollLocked,
                 readStore: readStore,
+                shouldSuppressRowTap: { [rowTapGate] in rowTapGate.suppressed },
                 onSelectPost: { post in
                     showDetail(post)
                 }
@@ -304,9 +314,19 @@ struct ContentView: View {
                 // Don't fight the bottom-bar swipe (board step) when the drag
                 // started inside the bar's hit area.
                 if startedInBottomBar(value) { return }
+                let absW = abs(value.translation.width)
+                let absH = abs(value.translation.height)
+                // Block list-row taps as soon as we see *any* horizontal
+                // intent (≥ 4pt and dominant) — even a small `→` drag that
+                // never reaches the drawer commit threshold should not
+                // surface as a tap on the row underneath when the user
+                // releases. Reset is deferred until `onEnded`'s async
+                // hop so the row's `onTapGesture` (firing on the same
+                // touch-up) reads `true` before we clear it.
+                if absW >= 4 && absW >= absH {
+                    rowTapGate.suppressed = true
+                }
                 if dragDirection == nil {
-                    let absW = abs(value.translation.width)
-                    let absH = abs(value.translation.height)
                     if absW > 10 && absW >= absH {
                         dragDirection = .horizontal
                         dragLockBaseline = value.translation.width
@@ -337,6 +357,14 @@ struct ContentView: View {
                 }
             }
             .onEnded { value in
+                // Defer the row-tap unblock until after the row's
+                // `onTapGesture` (which fires on this same touch-up) has
+                // had a chance to read the gate. A direct synchronous
+                // reset would race the tap closure and let it through.
+                let gate = rowTapGate
+                DispatchQueue.main.async {
+                    gate.suppressed = false
+                }
                 if startedInBottomBar(value) {
                     resetDragState()
                     return
@@ -478,6 +506,14 @@ private struct ContainerWidthKey: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
     }
+}
+
+/// Reference-typed gate the panGesture uses to tell list rows
+/// "you just saw a horizontal drag — don't fire your tap on release".
+/// A class (not @State value type) so that mutating `suppressed` from
+/// the gesture closure doesn't invalidate the SwiftUI body.
+final class RowTapGate {
+    var suppressed: Bool = false
 }
 
 private struct BottomAreaTopKey: PreferenceKey {
