@@ -17,7 +17,10 @@ struct HumorParser: BoardParser {
         options: []
     )
     /// Source markers that identify non-content chrome (loading bars, UI icons,
-    /// reaction buttons). Any <img> whose src hits one of these is dropped.
+    /// reaction buttons, AI 너굴맨 / "안심맨" decoy that humoruniv injects
+    /// before every uploaded body image to thwart hot-linking — surfacing it
+    /// in the app doubles the visible image count). Any <img> whose src hits
+    /// one of these is dropped.
     nonisolated private static let skipImageMarkers: [String] = [
         "loading_bar2.gif",
         "/images/ic_",
@@ -25,6 +28,7 @@ struct HumorParser: BoardParser {
         "/images/cmt_",
         "/images/play_trans",
         "/images/sendmemo",
+        "/images/ai/ansim_man",
     ]
 
     nonisolated private static let blockTags: Set<String> = [
