@@ -263,11 +263,11 @@ struct InvenParser: BoardParser {
         return url
     }
 
-    func commentsURL(for post: Post) -> URL? {
+    nonisolated func commentsURL(for post: Post) -> URL? {
         URL(string: "https://www.inven.co.kr/common/board/comment.json.php")
     }
 
-    func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment] {
+    nonisolated func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment] {
         let numericComponents = post.url.pathComponents.filter { $0.allSatisfy(\.isNumber) && !$0.isEmpty }
         guard numericComponents.count >= 2 else { return [] }
         let comeidx = numericComponents[numericComponents.count - 2]

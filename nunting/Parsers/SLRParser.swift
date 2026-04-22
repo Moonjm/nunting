@@ -91,9 +91,9 @@ struct SLRParser: BoardParser {
     /// just fetched for `parseDetail`, so URLCache typically serves it —
     /// avoids duplicating the ParserFactory plumbing for a POST-only
     /// endpoint.
-    func commentsURL(for post: Post) -> URL? { post.url }
+    nonisolated func commentsURL(for post: Post) -> URL? { post.url }
 
-    func fetchAllComments(
+    nonisolated func fetchAllComments(
         for post: Post,
         fetcher: @escaping @Sendable (URL) async throws -> String
     ) async throws -> [Comment] {

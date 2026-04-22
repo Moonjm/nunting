@@ -40,7 +40,7 @@ struct CoolenjoyParser: BoardParser {
         }
     }
 
-    func commentsURL(for post: Post) -> URL? {
+    nonisolated func commentsURL(for post: Post) -> URL? {
         let comps = post.url.pathComponents
         guard comps.count >= 4 else { return nil }
         let boardTable = comps[2]
@@ -48,7 +48,7 @@ struct CoolenjoyParser: BoardParser {
         return URL(string: "https://coolenjoy.net/nariya/bbs/comment_view.php?bo_table=\(boardTable)&wr_id=\(wrID)")
     }
 
-    func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment] {
+    nonisolated func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment] {
         guard let baseURL = commentsURL(for: post) else { return [] }
 
         let firstPageURL = appendingPagingParams(to: baseURL, page: 1)

@@ -140,12 +140,12 @@ struct PpomppuParser: BoardParser {
         )
     }
 
-    func commentsURL(for post: Post) -> URL? {
+    nonisolated func commentsURL(for post: Post) -> URL? {
         // Comments are embedded in the detail page; pagination uses ?c_page=N on the same URL.
         post.url
     }
 
-    func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment] {
+    nonisolated func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment] {
         let firstHtml = try await fetcher(post.url)
         let firstDoc = try SwiftSoup.parse(firstHtml)
         let firstPage = try parseComments(in: firstDoc)

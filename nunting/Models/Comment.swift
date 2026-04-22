@@ -15,7 +15,7 @@ struct Comment: Identifiable, Hashable {
     let authIconURL: URL?
     let levelIconURL: URL?
 
-    init(
+    nonisolated init(
         id: String,
         author: String,
         dateText: String,

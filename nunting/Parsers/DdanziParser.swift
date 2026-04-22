@@ -91,9 +91,9 @@ struct DdanziParser: BoardParser {
     /// `fetchAllComments`. We need the detail HTML anyway to read
     /// `_document_srl` and `current_mid`, so reusing the injected fetcher
     /// keeps the dispatch pipeline consistent with other parsers.
-    func commentsURL(for post: Post) -> URL? { post.url }
+    nonisolated func commentsURL(for post: Post) -> URL? { post.url }
 
-    func fetchAllComments(
+    nonisolated func fetchAllComments(
         for post: Post,
         fetcher: @escaping @Sendable (URL) async throws -> String
     ) async throws -> [Comment] {

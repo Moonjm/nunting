@@ -275,12 +275,12 @@ struct AagagParser: BoardParser {
         return out
     }
 
-    func commentsURL(for post: Post) -> URL? {
+    nonisolated func commentsURL(for post: Post) -> URL? {
         guard issueIdx(from: post) != nil else { return nil }
         return URL(string: "https://aagag.com/api/cmt")
     }
 
-    func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment] {
+    nonisolated func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment] {
         guard let idx = issueIdx(from: post),
               let apiURL = URL(string: "https://aagag.com/api/cmt")
         else { return [] }
@@ -311,7 +311,7 @@ struct AagagParser: BoardParser {
     /// 이슈모음 where the comment body is a meme/sticker image). The text
     /// path (`stripCommentHTML`) drops all tags for rendering, so the image
     /// needs a separate pass to surface as `Comment.stickerURL`.
-    private func extractCommentImageURL(from rawHTML: String) -> URL? {
+    nonisolated private func extractCommentImageURL(from rawHTML: String) -> URL? {
         // Cheap prefilter: the vast majority of text-only comments never
         // even mention "<img", and spinning up SwiftSoup once per comment
         // dominates the parse budget on long threads otherwise.
@@ -327,7 +327,7 @@ struct AagagParser: BoardParser {
         return url
     }
 
-    private func stripCommentHTML(_ raw: String) -> String {
+    nonisolated private func stripCommentHTML(_ raw: String) -> String {
         guard let doc = try? SwiftSoup.parseBodyFragment(raw),
               let body = doc.body()
         else { return raw }
@@ -374,19 +374,19 @@ struct AagagParser: BoardParser {
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func issueIdx(from post: Post) -> String? {
+    nonisolated private func issueIdx(from post: Post) -> String? {
         URLComponents(url: post.url, resolvingAgainstBaseURL: false)?
             .queryItems?
             .first(where: { $0.name == "idx" })?
             .value
     }
 
-    private struct AagagCommentResponse: Decodable {
+    nonisolated private struct AagagCommentResponse: Decodable {
         let mode: String
         let comment: [AagagComment]
     }
 
-    private struct AagagComment: Decodable {
+    nonisolated private struct AagagComment: Decodable {
         let w_idx: Int
         let w_nick: String
         let w_content: String

@@ -99,7 +99,7 @@ struct HumorParser: BoardParser {
     }
 
     // Comments live in the same detail page — no separate fetch needed.
-    func commentsURL(for post: Post) -> URL? { nil }
+    nonisolated func commentsURL(for post: Post) -> URL? { nil }
 
     // MARK: - Field extraction
 
