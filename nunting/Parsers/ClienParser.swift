@@ -12,6 +12,11 @@ struct ClienParser: BoardParser {
         options: [.caseInsensitive]
     )
 
+    /// `YYYY-MM-DD HH:MM(:SS)` — the timestamp Clien renders inside
+    /// `div.post_date`. Used to slice out the modified timestamp when an
+    /// edited post advertises both 등록일 and 수정일 in the same block.
+    private static let postDatePattern = #"\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}(?::\d{2})?"#
+
     nonisolated init() {}
 
     func parseList(html: String, board: Board) throws -> [Post] {
@@ -78,9 +83,8 @@ struct ClienParser: BoardParser {
             try collectBlocks(from: child, into: &blocks)
         }
 
-        let fullDateText = try doc.select("div.post_date").first()?.text()
-            .replacingOccurrences(of: "\u{00A0}", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawDate = try doc.select("div.post_date").first()?.text() ?? ""
+        let fullDateText = collapsePostDate(rawDate)
         let viewCountText = try doc.select("div.view_count").first()?.text() ?? ""
         let viewCount = firstInteger(in: viewCountText)
 
@@ -94,6 +98,27 @@ struct ClienParser: BoardParser {
             source: source,
             comments: comments
         )
+    }
+
+    /// Clien stuffs the registered date and modified date into the same
+    /// `div.post_date` block when an article has been edited (both stamps
+    /// appear, separated by a "수정" label). Surface only the modified
+    /// stamp in that case so the header reads cleanly; pass through any
+    /// other shape (single date, no edit) unchanged after light whitespace
+    /// normalization.
+    private func collapsePostDate(_ raw: String) -> String {
+        let normalized = raw
+            .replacingOccurrences(of: "\u{00A0}", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let keyword = normalized.range(of: "수정"),
+           let date = normalized.range(
+               of: Self.postDatePattern,
+               options: .regularExpression,
+               range: keyword.upperBound..<normalized.endIndex
+           ) {
+            return String(normalized[date])
+        }
+        return normalized
     }
 
     private func extractSource(from article: Element) throws -> (source: PostSource?, skipFirstParagraph: Bool) {
@@ -146,6 +171,18 @@ struct ClienParser: BoardParser {
             return
         }
         if tag == "a" {
+            // Anchor wrapping an `<img>` / `<iframe>` (forums often wrap
+            // inline GIFs in a clickable link). Treat the same as the
+            // default branch below: recurse so nested media surfaces as a
+            // proper block instead of being swallowed by the link label.
+            let nestedImgs = try element.select("img")
+            let nestedIframes = try element.select("iframe")
+            if !nestedImgs.isEmpty() || !nestedIframes.isEmpty() {
+                for child in element.children() {
+                    try collectBlocks(from: child, into: &blocks)
+                }
+                return
+            }
             if let resolved = try anchor(from: element) {
                 inline.appendLink(url: resolved.url, label: resolved.label)
                 flush()
@@ -174,7 +211,16 @@ struct ClienParser: BoardParser {
                 case "br":
                     inline.appendText("\n")
                 case "a":
-                    if let resolved = try anchor(from: el) {
+                    // Anchor wrapping `<img>` / `<iframe>` falls through to
+                    // the same recurse-as-block path the default case uses,
+                    // so an inline GIF wrapped in a clickable link still
+                    // renders as a media block instead of a bare link label.
+                    let nestedImgsInAnchor = try el.select("img")
+                    let nestedIframesInAnchor = try el.select("iframe")
+                    if !nestedImgsInAnchor.isEmpty() || !nestedIframesInAnchor.isEmpty() {
+                        flush()
+                        try collectBlocks(from: el, into: &blocks)
+                    } else if let resolved = try anchor(from: el) {
                         inline.appendLink(url: resolved.url, label: resolved.label)
                     } else {
                         inline.appendText(try el.text())

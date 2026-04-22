@@ -131,6 +131,18 @@ struct InvenParser: BoardParser {
             return
         }
         if tag == "a" {
+            // Anchor wrapping `<img>` / `<video>` (forums often wrap inline
+            // GIFs in a clickable link). Recurse into the children so the
+            // nested media becomes a proper block instead of being
+            // swallowed by the link label.
+            let nestedImgs = try element.select("img")
+            let nestedVideos = try element.select("video")
+            if !nestedImgs.isEmpty() || !nestedVideos.isEmpty() {
+                for child in element.children() {
+                    try collectBlocks(from: child, into: &blocks)
+                }
+                return
+            }
             if let resolved = try anchor(from: element) {
                 inline.appendLink(url: resolved.url, label: resolved.label)
                 flush()
@@ -160,7 +172,16 @@ struct InvenParser: BoardParser {
                 case "script", "style", "iframe":
                     continue
                 case "a":
-                    if let resolved = try anchor(from: el) {
+                    // Anchor wrapping `<img>` / `<video>` falls through to
+                    // the same recurse-as-block path the default case uses,
+                    // so an inline GIF wrapped in a clickable link still
+                    // renders as a media block instead of a bare link label.
+                    let nestedImgsInAnchor = try el.select("img")
+                    let nestedVideosInAnchor = try el.select("video")
+                    if !nestedImgsInAnchor.isEmpty() || !nestedVideosInAnchor.isEmpty() {
+                        flush()
+                        try collectBlocks(from: el, into: &blocks)
+                    } else if let resolved = try anchor(from: el) {
                         inline.appendLink(url: resolved.url, label: resolved.label)
                     } else {
                         inline.appendText(try el.text())

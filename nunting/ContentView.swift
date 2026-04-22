@@ -43,6 +43,11 @@ struct ContentView: View {
     @State private var scrollLocked = false
     @State private var containerHeight: CGFloat = 0
     @State private var containerWidth: CGFloat = 0
+    /// Y position (in the body's coordinate space) where the combined
+    /// filter-bar + bottom-bar area begins. Drags that start at or below
+    /// this line belong to the bar/chips, not the drawer/detail overlay.
+    /// `.infinity` until first measurement so the fallback exclusion runs.
+    @State private var bottomAreaTopY: CGFloat = .infinity
 
     private let drawerWidth: CGFloat = 300
     /// Height of the bottom bar area (bar + filter chips + safe area buffer)
@@ -161,6 +166,8 @@ struct ContentView: View {
             containerWidth = newWidth
             if wasHidden { detailOffset = newWidth }
         }
+        .onPreferenceChange(BottomAreaTopKey.self) { bottomAreaTopY = $0 }
+        .coordinateSpace(name: "contentRoot")
         .simultaneousGesture(panGesture)
     }
 
@@ -176,20 +183,30 @@ struct ContentView: View {
                     showDetail(post)
                 }
             )
-            if !selectedBoard.filters.isEmpty {
-                BoardFilterBar(board: selectedBoard, selection: $selectedFilter)
+            VStack(spacing: 0) {
+                if !selectedBoard.filters.isEmpty {
+                    BoardFilterBar(board: selectedBoard, selection: $selectedFilter)
+                }
+                MainBottomBar(
+                    board: selectedBoard,
+                    favorites: favorites,
+                    onBoardTap: { openDrawer(targetSection: boardNavScope) },
+                    onBoardDoubleTap: {
+                        searchQuery = nil
+                        reloadToken &+= 1
+                    },
+                    onSearch: { searchSheetPresented = true },
+                    onPrev: { stepBoard(by: -1) },
+                    onNext: { stepBoard(by: 1) }
+                )
             }
-            MainBottomBar(
-                board: selectedBoard,
-                favorites: favorites,
-                onBoardTap: { openDrawer(targetSection: boardNavScope) },
-                onBoardDoubleTap: {
-                    searchQuery = nil
-                    reloadToken &+= 1
-                },
-                onSearch: { searchSheetPresented = true },
-                onPrev: { stepBoard(by: -1) },
-                onNext: { stepBoard(by: 1) }
+            .background(
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: BottomAreaTopKey.self,
+                        value: proxy.frame(in: .named("contentRoot")).minY
+                    )
+                }
             )
         }
         .onChange(of: selectedBoard) { _, _ in
@@ -360,6 +377,9 @@ struct ContentView: View {
                     withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
                         detailOffset = shouldReveal ? 0 : containerWidth
                         dragOffset = 0
+                        if shouldReveal && drawerOpen {
+                            drawerOpen = false
+                        }
                     }
                     return
                 }
@@ -402,6 +422,12 @@ struct ContentView: View {
     }
 
     private func startedInBottomBar(_ value: DragGesture.Value) -> Bool {
+        // Prefer the measured top of the filter+bar area so a tap-with-jitter
+        // on a chip ("10추", "이슈모음 전체", etc.) is always classified as
+        // belonging to the bar, regardless of chip height / Dynamic Type.
+        if bottomAreaTopY.isFinite {
+            return value.startLocation.y >= bottomAreaTopY
+        }
         guard containerHeight > 0 else { return false }
         return value.startLocation.y > containerHeight - bottomGestureExclusion
     }
@@ -451,6 +477,13 @@ private struct ContainerWidthKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
+    }
+}
+
+private struct BottomAreaTopKey: PreferenceKey {
+    static var defaultValue: CGFloat = .infinity
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = min(value, nextValue())
     }
 }
 

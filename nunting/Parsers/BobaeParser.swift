@@ -200,6 +200,16 @@ struct BobaeParser: BoardParser {
             }
             return
         case "a":
+            // Anchors wrapping `<img>` / `<video>` (Bobaedream wraps almost
+            // every inline GIF in a clickable link) would otherwise be
+            // consumed here as a bare link label, hiding the media. Recurse
+            // into the children first so the nested image becomes a proper
+            // block; only treat the anchor as a link/text segment when
+            // there's no media inside.
+            if try el.select("img, video").first() != nil {
+                try collectBlocks(from: el, into: &blocks, inline: &inline)
+                return
+            }
             if let resolved = try anchor(from: el) {
                 inline.appendLink(url: resolved.url, label: resolved.label)
             } else {

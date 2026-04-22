@@ -282,6 +282,19 @@ struct PpomppuParser: BoardParser {
             return
         }
         if tag == "a" {
+            // Anchor wrapping `<img>` / `<video>` / `<iframe>` (forums often
+            // wrap inline GIFs in a clickable link). Recurse into the
+            // children so the nested media becomes a proper block instead
+            // of being swallowed by the link label.
+            let nestedImgs = try element.select("img")
+            let nestedVideos = try element.select("video")
+            let nestedIframes = try element.select("iframe")
+            if !nestedImgs.isEmpty() || !nestedVideos.isEmpty() || !nestedIframes.isEmpty() {
+                for child in element.children() {
+                    try collectBlocks(from: child, skipping: skipURL, into: &blocks)
+                }
+                return
+            }
             if let resolved = try anchor(from: element) {
                 if resolved.url != skipURL {
                     inline.appendLink(url: resolved.url, label: resolved.label)
@@ -321,7 +334,17 @@ struct PpomppuParser: BoardParser {
                 case "br":
                     inline.appendText("\n")
                 case "a":
-                    if let resolved = try anchor(from: el) {
+                    // Anchor wrapping media falls through to the same
+                    // recurse-as-block path the default case uses, so an
+                    // inline GIF wrapped in a clickable link still renders
+                    // as a media block instead of a bare link label.
+                    let nestedImgsInAnchor = try el.select("img")
+                    let nestedVideosInAnchor = try el.select("video")
+                    let nestedIframesInAnchor = try el.select("iframe")
+                    if !nestedImgsInAnchor.isEmpty() || !nestedVideosInAnchor.isEmpty() || !nestedIframesInAnchor.isEmpty() {
+                        flush()
+                        try collectBlocks(from: el, skipping: skipURL, into: &blocks)
+                    } else if let resolved = try anchor(from: el) {
                         if resolved.url != skipURL {
                             inline.appendLink(url: resolved.url, label: resolved.label)
                         }
