@@ -15,7 +15,10 @@ enum ImageWarmup {
     /// Smallest valid PNG (1×1 transparent, 67 bytes). Exercises the same
     /// `CGImageSourceCreateWithData` + `CreateThumbnailAtIndex` path that
     /// `CachedAsyncImage.decode` uses, so the plugin load is comprehensive.
-    private static let tinyPNG: Data = Data([
+    /// `nonisolated` because the detached task reads it off the main actor;
+    /// the value is immutable `Data` (Sendable), so unsynchronised access
+    /// is safe.
+    nonisolated private static let tinyPNG: Data = Data([
         0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
         0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
         0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
@@ -29,7 +32,7 @@ enum ImageWarmup {
 
     /// Fire-and-forget. Safe to call on every foreground — subsequent
     /// calls cost ~1 ms because the framework is already warm.
-    static func warm() {
+    nonisolated static func warm() {
         Task.detached(priority: .userInitiated) {
             guard let src = CGImageSourceCreateWithData(tinyPNG as CFData, nil) else { return }
             let opts: [CFString: Any] = [
