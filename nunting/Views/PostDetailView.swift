@@ -636,9 +636,16 @@ private struct CommentRow: View {
         // parser preserved become real `.link` spans. Falls back to plain
         // text if the parser rejects the input. Then apply the @mention
         // coloring on top of whatever the markdown parser produced.
+        //
+        // Escape `~` before parsing so range notations like "1995~1996"
+        // don't trigger the markdown parser's strikethrough handling
+        // (which consumed the tilde and rendered the trailing digits with
+        // a line through them — Aagag comments use `~` for ranges/aliases
+        // far more often than they use intentional strikethrough).
+        let escaped = text.replacingOccurrences(of: "~", with: "\\~")
         var base: AttributedString
         if let attributed = try? AttributedString(
-            markdown: text,
+            markdown: escaped,
             options: AttributedString.MarkdownParsingOptions(
                 interpretedSyntax: .inlineOnlyPreservingWhitespace
             )
