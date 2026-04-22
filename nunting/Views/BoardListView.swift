@@ -5,6 +5,11 @@ struct BoardListView: View {
     var filter: BoardFilter? = nil
     var searchQuery: String? = nil
     var scrollLocked: Bool = false
+    /// Returns `true` when ContentView's panGesture has just observed any
+    /// horizontal-dominant movement. Row taps consult this so a tiny `→`
+    /// drag that doesn't reach the drawer commit threshold doesn't fall
+    /// through and trigger a row navigation on touch-up.
+    var shouldSuppressRowTap: () -> Bool = { false }
     let readStore: ReadStore
     let onSelectPost: (Post) -> Void
 
@@ -182,7 +187,10 @@ struct BoardListView: View {
         .opacity(isRead ? 0.45 : 1.0)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
-        .onTapGesture { onSelectPost(post) }
+        .onTapGesture {
+            if shouldSuppressRowTap() { return }
+            onSelectPost(post)
+        }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .accessibilityValue(isRead ? "읽음" : "")

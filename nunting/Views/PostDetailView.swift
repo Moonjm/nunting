@@ -1,9 +1,15 @@
 import SwiftUI
+import UIKit
 
 struct PostDetailView: View {
     let post: Post
     let readStore: ReadStore
     let cache: PostDetailCache
+    /// Set to `.suppressed = true` by `SwipeToDismissOverlay` while a back-
+    /// swipe is in flight, so an image / video tap firing on the same
+    /// touch-up doesn't open a viewer / fullscreen player when the user was
+    /// only trying to leave the detail screen.
+    var tapGate: TapSuppressionGate? = nil
     /// Invoked from the custom back button in the header. The parent owns the
     /// overlay offset animation; this view just asks to be dismissed.
     let onDismiss: () -> Void
@@ -29,9 +35,7 @@ struct PostDetailView: View {
             detailHeader
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text(post.title)
-                        .font(.title3)
-                        .fontWeight(.semibold)
+                    WrappingTitleLabel(text: post.title)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
                     HStack(spacing: 10) {
@@ -58,7 +62,11 @@ struct PostDetailView: View {
                     if let comments = detail?.comments, !comments.isEmpty {
                         CommentsSection(
                             comments: comments,
-                            onImageTap: { url in selectedImage = ImageViewerItem(url: url) }
+                            tapGate: tapGate,
+                            onImageTap: { url in
+                                if tapGate?.suppressed == true { return }
+                                selectedImage = ImageViewerItem(url: url)
+                            }
                         )
                             .padding(.top, 8)
                     }
@@ -193,10 +201,11 @@ struct PostDetailView: View {
                         )
                         .contentShape(Rectangle())
                         .onTapGesture {
+                            if tapGate?.suppressed == true { return }
                             selectedImage = ImageViewerItem(url: url)
                         }
                     case .video(let url, let posterURL):
-                        InlineVideoPlayer(url: url, posterURL: posterURL)
+                        InlineVideoPlayer(url: url, posterURL: posterURL, tapGate: tapGate)
                     case .dealLink(let url, let label):
                         DealLinkBanner(url: url, label: label)
                     case .embed(.youtube, let id):
@@ -549,6 +558,7 @@ private struct SourceBanner: View {
 
 private struct CommentsSection: View {
     let comments: [Comment]
+    var tapGate: TapSuppressionGate? = nil
     let onImageTap: (URL) -> Void
 
     var body: some View {
@@ -568,7 +578,7 @@ private struct CommentsSection: View {
             // new rows materialise doesn't bleed into the drag.
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(comments.enumerated()), id: \.element.id) { index, comment in
-                    CommentRow(comment: comment, onImageTap: onImageTap)
+                    CommentRow(comment: comment, tapGate: tapGate, onImageTap: onImageTap)
                     if index < comments.count - 1 {
                         Divider().padding(.vertical, 2)
                     }
@@ -580,6 +590,7 @@ private struct CommentsSection: View {
 
 private struct CommentRow: View {
     let comment: Comment
+    var tapGate: TapSuppressionGate? = nil
     let onImageTap: (URL) -> Void
 
     var body: some View {
@@ -614,7 +625,7 @@ private struct CommentRow: View {
             }
             if let videoURL = comment.videoURL {
                 HStack(spacing: 0) {
-                    InlineVideoPlayer(url: videoURL)
+                    InlineVideoPlayer(url: videoURL, tapGate: tapGate)
                         .frame(maxWidth: 320, maxHeight: 240)
                     Spacer(minLength: 0)
                 }
@@ -637,9 +648,16 @@ private struct CommentRow: View {
         // parser preserved become real `.link` spans. Falls back to plain
         // text if the parser rejects the input. Then apply the @mention
         // coloring on top of whatever the markdown parser produced.
+        //
+        // Escape `~` before parsing so range notations like "1995~1996"
+        // don't trigger the markdown parser's strikethrough handling
+        // (which consumed the tilde and rendered the trailing digits with
+        // a line through them — Aagag comments use `~` for ranges/aliases
+        // far more often than they use intentional strikethrough).
+        let escaped = text.replacingOccurrences(of: "~", with: "\\~")
         var base: AttributedString
         if let attributed = try? AttributedString(
-            markdown: text,
+            markdown: escaped,
             options: AttributedString.MarkdownParsingOptions(
                 interpretedSyntax: .inlineOnlyPreservingWhitespace
             )
@@ -684,5 +702,47 @@ private struct CommentRow: View {
             }
         }
         return base
+    }
+}
+
+/// Bridges to UILabel so the title can use `.lineBreakStrategy = .standard`,
+/// which SwiftUI `Text` doesn't expose. SwiftUI's default for Korean text
+/// keeps mixed-script tokens like "(gpt-image-2)" glued to the preceding
+/// Hangul word, leaving the previous line short. The standard strategy
+/// allows breaking between Hangul and adjacent punctuation/Latin tokens.
+struct WrappingTitleLabel: UIViewRepresentable {
+    let text: String
+
+    func makeUIView(context: Context) -> UILabel {
+        let label = UILabel()
+        label.numberOfLines = 0
+        label.lineBreakMode = .byWordWrapping
+        label.lineBreakStrategy = .standard
+        label.font = .preferredFont(forTextStyle: .headline)
+        label.adjustsFontForContentSizeCategory = true
+        label.textColor = .label
+        label.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        label.setContentCompressionResistancePriority(.required, for: .vertical)
+        return label
+    }
+
+    func updateUIView(_ label: UILabel, context: Context) {
+        if label.text != text {
+            label.text = text
+            label.invalidateIntrinsicContentSize()
+        }
+    }
+
+    func sizeThatFits(
+        _ proposal: ProposedViewSize,
+        uiView: UILabel,
+        context: Context
+    ) -> CGSize? {
+        let width = proposal.width ?? 0
+        guard width > 0 else { return nil }
+        let fitted = uiView.sizeThatFits(
+            CGSize(width: width, height: .greatestFiniteMagnitude)
+        )
+        return CGSize(width: width, height: ceil(fitted.height))
     }
 }

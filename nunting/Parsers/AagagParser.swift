@@ -6,21 +6,21 @@ struct AagagParser: BoardParser {
 
     nonisolated init() {}
 
-    private static let imageHost = "https://i.aagag.com"
+    nonisolated private static let imageHost = "https://i.aagag.com"
     // YouTube IDs are exactly 11 chars from [A-Za-z0-9_-].
-    private static let youtubeIDRegex = try! NSRegularExpression(pattern: #"^[A-Za-z0-9_-]{11}$"#)
+    nonisolated private static let youtubeIDRegex = try! NSRegularExpression(pattern: #"^[A-Za-z0-9_-]{11}$"#)
     // Instagram shortcodes are 5+ chars from [A-Za-z0-9_-].
-    private static let instaIDRegex = try! NSRegularExpression(pattern: #"^[A-Za-z0-9_-]+$"#)
+    nonisolated private static let instaIDRegex = try! NSRegularExpression(pattern: #"^[A-Za-z0-9_-]+$"#)
     // Hoisted regexes — these run on every detail parse and per stripHTML
     // chunk respectively, so per-call NSRegularExpression construction
     // showed up as measurable overhead on image-heavy posts.
-    private static let contentScriptRegex = try! NSRegularExpression(
+    nonisolated private static let contentScriptRegex = try! NSRegularExpression(
         pattern: #"AAGAG_AA\.content\s*=\s*"((?:[^"\\]|\\.)*)""#,
         options: [.dotMatchesLineSeparators]
     )
-    private static let numericEntityRegex = try! NSRegularExpression(pattern: #"&#(x?)([0-9a-fA-F]+);"#)
+    nonisolated private static let numericEntityRegex = try! NSRegularExpression(pattern: #"&#(x?)([0-9a-fA-F]+);"#)
 
-    func parseList(html: String, board: Board) throws -> [Post] {
+    nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
         // Restrict to actual data tables (`table.aalist` minus the `.header` and minus
         // sidebar `div.aalist.layer` previews/sliders).
@@ -107,7 +107,7 @@ struct AagagParser: BoardParser {
         return results
     }
 
-    func parseDetail(html: String, post: Post) throws -> PostDetail {
+    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
         let titleEl = try doc.select("h1.title").first()
         let title = try titleEl?.text().trimmingCharacters(in: .whitespacesAndNewlines) ?? post.title
@@ -146,7 +146,7 @@ struct AagagParser: BoardParser {
         )
     }
 
-    private func findContentScript(in doc: Document) throws -> String? {
+    nonisolated private func findContentScript(in doc: Document) throws -> String? {
         // Capture the entire string literal body via NSRegularExpression's
         // capture group. The character class `[^"\\]|\\.` matches any non-quote/
         // non-backslash char OR a backslash-escape pair, so we don't trip over
@@ -166,7 +166,7 @@ struct AagagParser: BoardParser {
         return nil
     }
 
-    private static func unescapeJSString(_ s: String) -> String {
+    nonisolated private static func unescapeJSString(_ s: String) -> String {
         var out = ""
         out.reserveCapacity(s.count)
         var iter = s.makeIterator()
@@ -199,7 +199,7 @@ struct AagagParser: BoardParser {
     /// Parse the AAGAG_AA.content string: text + `[sTag]{json}[/sTag]` payloads.
     /// Uses split-based scanning instead of `String.range` index math, which
     /// avoided some subtle off-by issues we hit on real posts.
-    private func blocksFromContentString(_ content: String) -> [ContentBlock] {
+    nonisolated private func blocksFromContentString(_ content: String) -> [ContentBlock] {
         var blocks: [ContentBlock] = []
 
         func appendText(_ raw: String) {
@@ -232,7 +232,7 @@ struct AagagParser: BoardParser {
         return blocks
     }
 
-    private func stripHTML(_ s: String) -> String {
+    nonisolated private func stripHTML(_ s: String) -> String {
         // Pure-Swift strip: regex tag removal + small entity table. Avoids
         // SwiftSoup parseBodyFragment per chunk so image-heavy posts don't
         // pay an SwiftSoup parse cost N times on the main thread.
@@ -251,7 +251,7 @@ struct AagagParser: BoardParser {
 
     /// Decode the entity set we actually see in aagag content. Avoids pulling
     /// SwiftSoup just for `&amp;` / `&nbsp;` decoding.
-    private static func decodeBasicEntities(_ input: String) -> String {
+    nonisolated private static func decodeBasicEntities(_ input: String) -> String {
         var out = input
             .replacingOccurrences(of: "&nbsp;", with: " ")
             .replacingOccurrences(of: "&lt;", with: "<")
@@ -275,12 +275,12 @@ struct AagagParser: BoardParser {
         return out
     }
 
-    func commentsURL(for post: Post) -> URL? {
+    nonisolated func commentsURL(for post: Post) -> URL? {
         guard issueIdx(from: post) != nil else { return nil }
         return URL(string: "https://aagag.com/api/cmt")
     }
 
-    func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment] {
+    nonisolated func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment] {
         guard let idx = issueIdx(from: post),
               let apiURL = URL(string: "https://aagag.com/api/cmt")
         else { return [] }
@@ -311,7 +311,7 @@ struct AagagParser: BoardParser {
     /// 이슈모음 where the comment body is a meme/sticker image). The text
     /// path (`stripCommentHTML`) drops all tags for rendering, so the image
     /// needs a separate pass to surface as `Comment.stickerURL`.
-    private func extractCommentImageURL(from rawHTML: String) -> URL? {
+    nonisolated private func extractCommentImageURL(from rawHTML: String) -> URL? {
         // Cheap prefilter: the vast majority of text-only comments never
         // even mention "<img", and spinning up SwiftSoup once per comment
         // dominates the parse budget on long threads otherwise.
@@ -327,7 +327,7 @@ struct AagagParser: BoardParser {
         return url
     }
 
-    private func stripCommentHTML(_ raw: String) -> String {
+    nonisolated private func stripCommentHTML(_ raw: String) -> String {
         guard let doc = try? SwiftSoup.parseBodyFragment(raw),
               let body = doc.body()
         else { return raw }
@@ -359,7 +359,7 @@ struct AagagParser: BoardParser {
         let blockMarker = "\u{0001}NL\u{0001}"
         if let blocks = try? body.select("br, p, div, li, blockquote") {
             for el in blocks where el.parent() != nil {
-                try? el.before(blockMarker)
+                _ = try? el.before(blockMarker)
             }
         }
         let text = (try? body.text()) ?? raw
@@ -374,19 +374,19 @@ struct AagagParser: BoardParser {
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func issueIdx(from post: Post) -> String? {
+    nonisolated private func issueIdx(from post: Post) -> String? {
         URLComponents(url: post.url, resolvingAgainstBaseURL: false)?
             .queryItems?
             .first(where: { $0.name == "idx" })?
             .value
     }
 
-    private struct AagagCommentResponse: Decodable {
+    nonisolated private struct AagagCommentResponse: Decodable {
         let mode: String
         let comment: [AagagComment]
     }
 
-    private struct AagagComment: Decodable {
+    nonisolated private struct AagagComment: Decodable {
         let w_idx: Int
         let w_nick: String
         let w_content: String
@@ -399,7 +399,7 @@ struct AagagParser: BoardParser {
     /// any payload with `mp4_seq` (or related mp4_* fields) as a video, regardless
     /// of `m`. Image URL has `/o/` prefix, video URL does not.
     /// External embeds (`ytb`, `insta`) become tappable deal-link banners.
-    private func stagBlock(from payload: String) -> ContentBlock? {
+    nonisolated private func stagBlock(from payload: String) -> ContentBlock? {
         guard let data = payload.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
@@ -442,7 +442,7 @@ struct AagagParser: BoardParser {
         return .image(url)
     }
 
-    private func absolutize(_ s: String) -> String {
+    nonisolated private func absolutize(_ s: String) -> String {
         if s.hasPrefix("//") { return "https:\(s)" }
         return s
     }

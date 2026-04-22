@@ -19,7 +19,7 @@ struct Post: Identifiable, Hashable {
     let levelText: String?
     let hasAuthIcon: Bool
 
-    init(
+    nonisolated init(
         id: String,
         site: Site,
         boardID: String,
@@ -62,22 +62,22 @@ struct ContentBlock: Identifiable, Hashable {
         case embed(provider: EmbedProvider, id: String)
     }
 
-    static func text(_ s: String) -> ContentBlock {
+    nonisolated static func text(_ s: String) -> ContentBlock {
         .init(id: UUID(), kind: .richText([.text(s)]))
     }
-    static func richText(_ segments: [InlineSegment]) -> ContentBlock {
+    nonisolated static func richText(_ segments: [InlineSegment]) -> ContentBlock {
         .init(id: UUID(), kind: .richText(segments))
     }
-    static func image(_ url: URL, aspectRatio: CGFloat? = nil) -> ContentBlock {
+    nonisolated static func image(_ url: URL, aspectRatio: CGFloat? = nil) -> ContentBlock {
         .init(id: UUID(), kind: .image(url: url, aspectRatio: aspectRatio))
     }
-    static func video(_ url: URL, posterURL: URL? = nil) -> ContentBlock {
+    nonisolated static func video(_ url: URL, posterURL: URL? = nil) -> ContentBlock {
         .init(id: UUID(), kind: .video(url: url, posterURL: posterURL))
     }
-    static func dealLink(_ url: URL, label: String) -> ContentBlock {
+    nonisolated static func dealLink(_ url: URL, label: String) -> ContentBlock {
         .init(id: UUID(), kind: .dealLink(url: url, label: label))
     }
-    static func embed(_ provider: EmbedProvider, id: String) -> ContentBlock {
+    nonisolated static func embed(_ provider: EmbedProvider, id: String) -> ContentBlock {
         .init(id: UUID(), kind: .embed(provider: provider, id: id))
     }
 }

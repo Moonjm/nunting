@@ -43,6 +43,25 @@ struct ContentView: View {
     @State private var scrollLocked = false
     @State private var containerHeight: CGFloat = 0
     @State private var containerWidth: CGFloat = 0
+    /// Y position (in the body's coordinate space) where the combined
+    /// filter-bar + bottom-bar area begins. Drags that start at or below
+    /// this line belong to the bar/chips, not the drawer/detail overlay.
+    /// `.infinity` until first measurement so the fallback exclusion runs.
+    @State private var bottomAreaTopY: CGFloat = .infinity
+    /// Lightweight gate the panGesture flips on whenever it sees any
+    /// horizontal-dominant movement, even below the drawer/detail commit
+    /// thresholds. Read by list rows in `onTapGesture` to suppress an
+    /// otherwise-firing tap when the user just intended a tiny `→` / `←`
+    /// drag — kept as a class instance so flipping it doesn't re-render
+    /// the whole tree, and reset asynchronously after `onEnded` so the
+    /// row's tap closure (which fires on the same touch-up) sees the
+    /// blocked state before it clears.
+    @State private var rowTapGate = TapSuppressionGate()
+    /// Same shape as `rowTapGate` but driven by the detail overlay's UIKit
+    /// back-swipe recognizer. Read by image / video tap handlers inside
+    /// `PostDetailView` so a `→` back-swipe doesn't accidentally tap an
+    /// image or video sitting under the user's finger when they release.
+    @State private var detailMediaTapGate = TapSuppressionGate()
 
     private let drawerWidth: CGFloat = 300
     /// Height of the bottom bar area (bar + filter chips + safe area buffer)
@@ -121,12 +140,14 @@ struct ContentView: View {
                         withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
                             detailOffset = shouldDismiss ? containerWidth : 0
                         }
-                    }
+                    },
+                    tapGate: detailMediaTapGate
                 ) {
                     PostDetailView(
                         post: post,
                         readStore: readStore,
                         cache: detailCache,
+                        tapGate: detailMediaTapGate,
                         onDismiss: { hideDetail() }
                     )
                 }
@@ -161,6 +182,8 @@ struct ContentView: View {
             containerWidth = newWidth
             if wasHidden { detailOffset = newWidth }
         }
+        .coordinateSpace(name: "contentRoot")
+        .onPreferenceChange(BottomAreaTopKey.self) { bottomAreaTopY = $0 }
         .simultaneousGesture(panGesture)
     }
 
@@ -171,25 +194,36 @@ struct ContentView: View {
                 filter: selectedFilter,
                 searchQuery: searchQuery,
                 scrollLocked: scrollLocked,
+                shouldSuppressRowTap: { [rowTapGate] in rowTapGate.suppressed },
                 readStore: readStore,
                 onSelectPost: { post in
                     showDetail(post)
                 }
             )
-            if !selectedBoard.filters.isEmpty {
-                BoardFilterBar(board: selectedBoard, selection: $selectedFilter)
+            VStack(spacing: 0) {
+                if !selectedBoard.filters.isEmpty {
+                    BoardFilterBar(board: selectedBoard, selection: $selectedFilter)
+                }
+                MainBottomBar(
+                    board: selectedBoard,
+                    favorites: favorites,
+                    onBoardTap: { openDrawer(targetSection: boardNavScope) },
+                    onBoardDoubleTap: {
+                        searchQuery = nil
+                        reloadToken &+= 1
+                    },
+                    onSearch: { searchSheetPresented = true },
+                    onPrev: { stepBoard(by: -1) },
+                    onNext: { stepBoard(by: 1) }
+                )
             }
-            MainBottomBar(
-                board: selectedBoard,
-                favorites: favorites,
-                onBoardTap: { openDrawer(targetSection: boardNavScope) },
-                onBoardDoubleTap: {
-                    searchQuery = nil
-                    reloadToken &+= 1
-                },
-                onSearch: { searchSheetPresented = true },
-                onPrev: { stepBoard(by: -1) },
-                onNext: { stepBoard(by: 1) }
+            .background(
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: BottomAreaTopKey.self,
+                        value: proxy.frame(in: .named("contentRoot")).minY
+                    )
+                }
             )
         }
         .onChange(of: selectedBoard) { _, _ in
@@ -287,9 +321,19 @@ struct ContentView: View {
                 // Don't fight the bottom-bar swipe (board step) when the drag
                 // started inside the bar's hit area.
                 if startedInBottomBar(value) { return }
+                let absW = abs(value.translation.width)
+                let absH = abs(value.translation.height)
+                // Block list-row taps as soon as we see *any* horizontal
+                // intent (≥ 4pt and dominant) — even a small `→` drag that
+                // never reaches the drawer commit threshold should not
+                // surface as a tap on the row underneath when the user
+                // releases. The gate uses a TTL deadline so we don't have
+                // to schedule a reset; if the gesture is cancelled and
+                // `onEnded` never fires, the deadline lapses on its own.
+                if absW >= 4 && absW >= absH {
+                    rowTapGate.suppress()
+                }
                 if dragDirection == nil {
-                    let absW = abs(value.translation.width)
-                    let absH = abs(value.translation.height)
                     if absW > 10 && absW >= absH {
                         dragDirection = .horizontal
                         dragLockBaseline = value.translation.width
@@ -320,6 +364,10 @@ struct ContentView: View {
                 }
             }
             .onEnded { value in
+                // No explicit gate reset — `TapSuppressionGate` uses a
+                // TTL deadline that lapses on its own (see the class
+                // doccomment for why this matters when `.onEnded` is
+                // skipped entirely).
                 if startedInBottomBar(value) {
                     resetDragState()
                     return
@@ -360,6 +408,9 @@ struct ContentView: View {
                     withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
                         detailOffset = shouldReveal ? 0 : containerWidth
                         dragOffset = 0
+                        if shouldReveal && drawerOpen {
+                            drawerOpen = false
+                        }
                     }
                     return
                 }
@@ -402,6 +453,12 @@ struct ContentView: View {
     }
 
     private func startedInBottomBar(_ value: DragGesture.Value) -> Bool {
+        // Prefer the measured top of the filter+bar area so a tap-with-jitter
+        // on a chip ("10추", "이슈모음 전체", etc.) is always classified as
+        // belonging to the bar, regardless of chip height / Dynamic Type.
+        if bottomAreaTopY.isFinite {
+            return value.startLocation.y >= bottomAreaTopY
+        }
         guard containerHeight > 0 else { return false }
         return value.startLocation.y > containerHeight - bottomGestureExclusion
     }
@@ -454,6 +511,37 @@ private struct ContainerWidthKey: PreferenceKey {
     }
 }
 
+/// Reference-typed gate that gestures use to tell child taps
+/// "you just saw a horizontal drag — don't fire on release". A class
+/// (not @State value type) so that mutating the deadline from a gesture
+/// closure doesn't invalidate the SwiftUI body. Used in two places:
+/// the list-row drag-vs-tap discriminator (driven by `panGesture`),
+/// and the detail overlay back-swipe suppressor for embedded image /
+/// video taps (driven by `SwipeToDismissOverlay.Coordinator`).
+///
+/// Stored as an absolute deadline (`suppressedUntil`) instead of a flat
+/// `Bool` so a missed reset (drag interrupted by a system alert / app
+/// backgrounding mid-gesture / SwiftUI gesture cancellation that doesn't
+/// fire `.onEnded`) can't strand the gate `true` and silently kill all
+/// future taps. The 250ms TTL covers the longest plausible gap between
+/// the last `onChanged` tick and the SwiftUI tap closure firing on the
+/// same touch-up — so nothing has to schedule an explicit unblock.
+final class TapSuppressionGate {
+    var suppressedUntil: Date = .distantPast
+    var suppressed: Bool { Date() < suppressedUntil }
+
+    func suppress(for duration: TimeInterval = 0.25) {
+        suppressedUntil = Date().addingTimeInterval(duration)
+    }
+}
+
+private struct BottomAreaTopKey: PreferenceKey {
+    static var defaultValue: CGFloat = .infinity
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = min(value, nextValue())
+    }
+}
+
 #Preview {
     ContentView()
 }
@@ -476,6 +564,10 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
     /// recognizer's terminal state. Parent decides whether to commit the
     /// dismiss based on distance + velocity.
     let onEnd: (CGFloat, CGFloat) -> Void
+    /// Flipped to `true` while the recognizer is actively tracking a
+    /// back-swipe so embedded image / video tap handlers can suppress
+    /// their action when the user releases their finger over media.
+    var tapGate: TapSuppressionGate? = nil
     @ViewBuilder let content: () -> Content
 
     func makeUIViewController(context: Context) -> Host<Content> {
@@ -499,13 +591,15 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
         context.coordinator.onChange = onChange
         context.coordinator.shouldDismiss = shouldDismiss
         context.coordinator.onEnd = onEnd
+        context.coordinator.tapGate = tapGate
     }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             onChange: onChange,
             shouldDismiss: shouldDismiss,
-            onEnd: onEnd
+            onEnd: onEnd,
+            tapGate: tapGate
         )
     }
 
@@ -532,6 +626,7 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
         var onChange: (CGFloat) -> Void
         var shouldDismiss: (CGFloat, CGFloat) -> Bool
         var onEnd: (CGFloat, CGFloat) -> Void
+        var tapGate: TapSuppressionGate?
         weak var lockedScrollView: UIScrollView?
         var lockedContentOffset: CGPoint?
         var lockedDistanceToBottom: CGFloat?
@@ -542,11 +637,13 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
         init(
             onChange: @escaping (CGFloat) -> Void,
             shouldDismiss: @escaping (CGFloat, CGFloat) -> Bool,
-            onEnd: @escaping (CGFloat, CGFloat) -> Void
+            onEnd: @escaping (CGFloat, CGFloat) -> Void,
+            tapGate: TapSuppressionGate? = nil
         ) {
             self.onChange = onChange
             self.shouldDismiss = shouldDismiss
             self.onEnd = onEnd
+            self.tapGate = tapGate
         }
 
         func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
@@ -582,6 +679,14 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
             let v = pan.velocity(in: view)
             switch pan.state {
             case .began:
+                // Pan recognized → block child taps for the rest of this
+                // touch sequence. `cancelsTouchesInView = false` lets the
+                // touch keep flowing to SwiftUI handlers, so we need this
+                // explicit gate to stop image / video taps from firing on
+                // touch-up just because the user happened to release over
+                // a media block. Re-suppress on every `.changed` so the
+                // 250ms TTL keeps refreshing while the drag is live.
+                tapGate?.suppress()
                 // Zero out so subsequent `.changed` translations are
                 // measured from the claim point — otherwise the overlay
                 // would jump by the 8pt classifier threshold the moment
@@ -593,6 +698,7 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
                 freezeScrollOffset()
                 beginSnapshot(for: view)
             case .changed:
+                tapGate?.suppress()
                 freezeScrollOffset()
                 updateSnapshot(dx: max(0, t.x))
             case .ended, .cancelled:
@@ -606,6 +712,9 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
                 } else {
                     onEnd(0, 0)
                 }
+                // No explicit unblock — the gate's TTL deadline (set in
+                // `.began` / `.changed`) lapses on its own, which also
+                // covers the missed-terminal-state edge case.
             case .failed:
                 cancelSnapshot(for: view)
                 restoreScroll()

@@ -8,38 +8,42 @@ struct HumorParser: BoardParser {
 
     nonisolated init() {}
 
-    private static let mp4ExpandRegex = try! NSRegularExpression(
+    nonisolated private static let mp4ExpandRegex = try! NSRegularExpression(
         pattern: #"comment_mp4_expand\s*\(\s*'[^']*'\s*,\s*'([^']+)'"#,
         options: []
     )
-    private static let youtubeIDRegex = try! NSRegularExpression(
+    nonisolated private static let youtubeIDRegex = try! NSRegularExpression(
         pattern: #"youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{11})"#,
         options: []
     )
     /// Source markers that identify non-content chrome (loading bars, UI icons,
-    /// reaction buttons). Any <img> whose src hits one of these is dropped.
-    private static let skipImageMarkers: [String] = [
+    /// reaction buttons, AI 너굴맨 / "안심맨" decoy that humoruniv injects
+    /// before every uploaded body image to thwart hot-linking — surfacing it
+    /// in the app doubles the visible image count). Any <img> whose src hits
+    /// one of these is dropped.
+    nonisolated private static let skipImageMarkers: [String] = [
         "loading_bar2.gif",
         "/images/ic_",
         "/images/icon-",
         "/images/cmt_",
         "/images/play_trans",
         "/images/sendmemo",
+        "/images/ai/ansim_man",
     ]
 
-    private static let blockTags: Set<String> = [
+    nonisolated private static let blockTags: Set<String> = [
         "p", "div", "li", "blockquote",
         "h1", "h2", "h3", "h4", "h5", "h6",
         "section", "article", "tr",
     ]
-    private static let skipTags: Set<String> = ["script", "style", "noscript"]
+    nonisolated private static let skipTags: Set<String> = ["script", "style", "noscript"]
 
-    func parseList(html: String, board: Board) throws -> [Post] {
+    nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         // Humoruniv is aagag-dispatch-only; list parsing is never invoked.
         []
     }
 
-    func parseDetail(html: String, post: Post) throws -> PostDetail {
+    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
 
         // Humoruniv redirects deleted/moved posts to /board/msg.html which
@@ -99,23 +103,23 @@ struct HumorParser: BoardParser {
     }
 
     // Comments live in the same detail page — no separate fetch needed.
-    func commentsURL(for post: Post) -> URL? { nil }
+    nonisolated func commentsURL(for post: Post) -> URL? { nil }
 
     // MARK: - Field extraction
 
-    private func extractTitle(in doc: Document, fallback: String) throws -> String {
+    nonisolated private func extractTitle(in doc: Document, fallback: String) throws -> String {
         let text = try doc.select("#read_subject_div h2 a").first()?.text()
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return text.isEmpty ? fallback : text
     }
 
-    private func extractAuthor(in doc: Document, fallback: String) throws -> String {
+    nonisolated private func extractAuthor(in doc: Document, fallback: String) throws -> String {
         let text = try doc.select("#read_profile_td .nick .hu_nick_txt").first()?.text()
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return text.isEmpty ? fallback : text
     }
 
-    private func extractFullDate(in doc: Document) throws -> String? {
+    nonisolated private func extractFullDate(in doc: Document) throws -> String? {
         guard let el = try doc.select("#read_profile_desc span.etc").first() else { return nil }
         let text = try el.text().trimmingCharacters(in: .whitespacesAndNewlines)
         if text.hasPrefix("작성") {
@@ -125,13 +129,13 @@ struct HumorParser: BoardParser {
         return text.isEmpty ? nil : text
     }
 
-    private func extractRecommend(in doc: Document) throws -> Int? {
+    nonisolated private func extractRecommend(in doc: Document) throws -> Int? {
         guard let el = try doc.select("#ok_div").first() else { return nil }
         let raw = try el.text().filter(\.isNumber)
         return raw.isEmpty ? nil : Int(raw)
     }
 
-    private func extractViewCount(in doc: Document) throws -> Int? {
+    nonisolated private func extractViewCount(in doc: Document) throws -> Int? {
         // The profile desc has "<img src=...ic_view.png> 12,121" — the parent
         // span of that img carries the count as its text.
         guard let img = try doc.select("#read_profile_desc img[src*=ic_view]").first(),
@@ -141,7 +145,7 @@ struct HumorParser: BoardParser {
         return raw.isEmpty ? nil : Int(raw)
     }
 
-    private func extractSource(in doc: Document) throws -> PostSource? {
+    nonisolated private func extractSource(in doc: Document) throws -> PostSource? {
         guard let anchor = try doc.select(".ct_info_sale a[href]").first() else { return nil }
         let href = try anchor.attr("href")
         guard !href.isEmpty,
@@ -156,7 +160,7 @@ struct HumorParser: BoardParser {
 
     // MARK: - Body blocks
 
-    private func extractBlocks(in doc: Document) throws -> [ContentBlock] {
+    nonisolated private func extractBlocks(in doc: Document) throws -> [ContentBlock] {
         // The article body is nested under <wrap_copy id="wrap_copy"> whose
         // closing tag in the source is a typo (</warp_copy>). SwiftSoup can't
         // match the close, so the custom element may end up empty or swallow
@@ -168,6 +172,26 @@ struct HumorParser: BoardParser {
             try doc.select("div.wrap_body").first(),
         ]
         guard let wrap = candidates.compactMap({ $0 }).first else { return [] }
+        // 너굴맨 (안심맨) 디코이 영역 통째로 제거.
+        //
+        //   <div class="simple_attach_img_div">
+        //     <div id="racy_show_X">          ← 너굴맨 이미지 + "히든처리" 안내문
+        //       ...                            + "이미지 보기"/"너굴맨 설정"/
+        //     </div>                           "본문 너굴맨 한꺼번에 제거" 버튼들
+        //     <div id="racy_hidden_X"         ← 실제 본문 이미지
+        //          style="display:none">       (display:none 이지만 우리는
+        //       <table>... real <img> ...      computed style 이 아니라 태그로
+        //       </table>                       추출하므로 그대로 살아남음)
+        //     </div>
+        //   </div>
+        //
+        // racy_show_* 안엔 앱에 띄울 콘텐츠가 하나도 없고, 진짜 이미지는
+        // 형제 racy_hidden_* 에 들어있어서 selector 한 줄로 정리.
+        try wrap.select("[id^=racy_show_]").remove()
+        // racy_hidden_* 안의 원본 펼치기 버튼 (`<a OnClick="expand_all()">`
+        // 안의 `<div id^="btn_nemo_expand_all">` → "원본" 라벨) 도 같이 제거.
+        // 우리는 항상 원본을 그대로 띄우니 인터랙션 자체가 의미 없음.
+        try wrap.select("[id^=btn_nemo_expand_all]").remove()
         var blocks: [ContentBlock] = []
         var inline = InlineAccumulator()
         try collectBlocks(from: wrap, into: &blocks, inline: &inline)
@@ -175,14 +199,14 @@ struct HumorParser: BoardParser {
         return blocks
     }
 
-    private func flushInline(into blocks: inout [ContentBlock], inline: inout InlineAccumulator) {
+    nonisolated private func flushInline(into blocks: inout [ContentBlock], inline: inout InlineAccumulator) {
         let segments = inline.drain()
         if !segments.isEmpty {
             blocks.append(.richText(segments))
         }
     }
 
-    private func collectBlocks(from element: Element, into blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
+    nonisolated private func collectBlocks(from element: Element, into blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
         for node in element.getChildNodes() {
             if let child = node as? Element {
                 try handleElement(child, blocks: &blocks, inline: &inline)
@@ -193,7 +217,7 @@ struct HumorParser: BoardParser {
         }
     }
 
-    private func handleElement(_ el: Element, blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
+    nonisolated private func handleElement(_ el: Element, blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
         let tag = el.tagName().lowercased()
 
         if Self.skipTags.contains(tag) { return }
@@ -223,6 +247,15 @@ struct HumorParser: BoardParser {
             }
             return
         case "a":
+            // Anchors wrapping `<img>` / `<video>` (forums often wrap inline
+            // GIFs in a clickable link) would otherwise be consumed here as
+            // a bare link label, hiding the media. Recurse into the children
+            // first so the nested image becomes a proper block; only treat
+            // the anchor as a link/text segment when there's no media inside.
+            if try el.select("img, video").first() != nil {
+                try collectBlocks(from: el, into: &blocks, inline: &inline)
+                return
+            }
             if let resolved = try anchor(from: el) {
                 inline.appendLink(url: resolved.url, label: resolved.label)
             } else {
@@ -244,7 +277,7 @@ struct HumorParser: BoardParser {
         }
     }
 
-    private func realImageURL(from el: Element) throws -> URL? {
+    nonisolated private func realImageURL(from el: Element) throws -> URL? {
         var src = try el.attr("src")
         if src.isEmpty {
             src = try el.attr("data-src")
@@ -258,7 +291,7 @@ struct HumorParser: BoardParser {
         return url
     }
 
-    private func parseMp4Click(_ onclick: String) throws -> URL? {
+    nonisolated private func parseMp4Click(_ onclick: String) throws -> URL? {
         let ns = onclick as NSString
         guard let match = Self.mp4ExpandRegex.firstMatch(in: onclick, range: NSRange(location: 0, length: ns.length)),
               match.numberOfRanges >= 2
@@ -272,7 +305,7 @@ struct HumorParser: BoardParser {
         return url
     }
 
-    private func youtubeID(from src: String) -> String? {
+    nonisolated private func youtubeID(from src: String) -> String? {
         let ns = src as NSString
         guard let match = Self.youtubeIDRegex.firstMatch(in: src, range: NSRange(location: 0, length: ns.length)),
               match.numberOfRanges >= 2
@@ -282,7 +315,7 @@ struct HumorParser: BoardParser {
 
     // MARK: - Comments
 
-    private func extractComments(in doc: Document) throws -> [Comment] {
+    nonisolated private func extractComments(in doc: Document) throws -> [Comment] {
         let nodes = try doc.select("#comment li[id^=comment_li_]")
         var results: [Comment] = []
         for li in nodes {
@@ -350,7 +383,7 @@ struct HumorParser: BoardParser {
         return results
     }
 
-    private func extractCommentVideo(in li: Element) throws -> URL? {
+    nonisolated private func extractCommentVideo(in li: Element) throws -> URL? {
         // Inline mp4/gif attachments live on an outer wrapper that carries
         // the same OnClick="comment_mp4_expand('id', 'URL', 'THUMB', ...)"
         // handler the body uses. Walk every element under the comment_file
@@ -363,7 +396,7 @@ struct HumorParser: BoardParser {
         return nil
     }
 
-    private func extractCommentSticker(in li: Element) throws -> URL? {
+    nonisolated private func extractCommentSticker(in li: Element) throws -> URL? {
         // Humor renders attached comment images via:
         //   <div class="comment_file">
         //     <img src='/images/loading_bar2.gif' ...>          (progress bar)
@@ -398,7 +431,7 @@ struct HumorParser: BoardParser {
         return nil
     }
 
-    private func extractAuthIcon(in li: Element) throws -> URL? {
+    nonisolated private func extractAuthIcon(in li: Element) throws -> URL? {
         // Profile image is the first .hu_icon img inside the info header's <a>.
         // Top-level comments wrap it in .info, replies wrap it in
         // .sub_comm_info — fall back across both shapes. Skip humor's

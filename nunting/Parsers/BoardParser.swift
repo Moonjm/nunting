@@ -1,20 +1,20 @@
 import Foundation
 import SwiftSoup
 
-protocol BoardParser {
-    var site: Site { get }
+protocol BoardParser: Sendable {
+    nonisolated var site: Site { get }
     nonisolated func parseList(html: String, board: Board) throws -> [Post]
-    func parseDetail(html: String, post: Post) throws -> PostDetail
-    func commentsURL(for post: Post) -> URL?
-    func parseComments(html: String) throws -> [Comment]
-    func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment]
+    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail
+    nonisolated func commentsURL(for post: Post) -> URL?
+    nonisolated func parseComments(html: String) throws -> [Comment]
+    nonisolated func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment]
 }
 
 extension BoardParser {
-    func commentsURL(for post: Post) -> URL? { nil }
-    func parseComments(html: String) throws -> [Comment] { [] }
+    nonisolated func commentsURL(for post: Post) -> URL? { nil }
+    nonisolated func parseComments(html: String) throws -> [Comment] { [] }
 
-    func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment] {
+    nonisolated func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment] {
         guard let url = commentsURL(for: post) else { return [] }
         let html = try await fetcher(url)
         return try parseComments(html: html)
@@ -22,7 +22,7 @@ extension BoardParser {
 
     /// Resolve an `<a href>` element to a `(url, label)` pair, or nil if the link is
     /// non-http(s). Whitespace-only labels fall back to the URL string.
-    func anchor(from element: Element) throws -> (url: URL, label: String)? {
+    nonisolated func anchor(from element: Element) throws -> (url: URL, label: String)? {
         let href = try element.attr("href")
         guard !href.isEmpty,
               let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL,
@@ -36,41 +36,43 @@ extension BoardParser {
 
 /// Accumulates an `[InlineSegment]` for a single text block while a parser walks
 /// HTML nodes. Coalesces adjacent text characters into one `.text` segment.
-struct InlineAccumulator {
+struct InlineAccumulator: Sendable {
     private var segments: [InlineSegment] = []
     private var textBuffer: String = ""
 
-    mutating func appendText(_ s: String) {
+    nonisolated init() {}
+
+    nonisolated mutating func appendText(_ s: String) {
         textBuffer.append(s)
     }
 
-    mutating func appendLink(url: URL, label: String) {
+    nonisolated mutating func appendLink(url: URL, label: String) {
         flushText()
         segments.append(.link(url: url, label: label))
     }
 
-    mutating func flushText() {
+    nonisolated mutating func flushText() {
         if !textBuffer.isEmpty {
             segments.append(.text(textBuffer))
             textBuffer = ""
         }
     }
 
-    var isEmpty: Bool {
+    nonisolated var isEmpty: Bool {
         segments.isEmpty && textBuffer.isEmpty
     }
 
     /// Drain into a trimmed segment list ready for `ContentBlock.richText`.
     /// Trims leading/trailing whitespace from the first and last text segments,
-    /// collapses runs of 3+ newlines into 2.
-    mutating func drain() -> [InlineSegment] {
+    /// collapses runs of 4+ newlines into 3 (= up to 2 blank lines).
+    nonisolated mutating func drain() -> [InlineSegment] {
         flushText()
         let result = segments
         segments = []
         return InlineAccumulator.trimmed(result)
     }
 
-    private static func trimmed(_ input: [InlineSegment]) -> [InlineSegment] {
+    nonisolated private static func trimmed(_ input: [InlineSegment]) -> [InlineSegment] {
         var out = input
 
         func collapse(_ s: String) -> String {
@@ -85,7 +87,23 @@ struct InlineAccumulator {
                 with: "\n",
                 options: .regularExpression
             )
-            s = s.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
+            // Cap at 3 consecutive `\n` (= up to 2 blank lines) so an
+            // explicit user-typed blank paragraph (`<p><br></p>` between
+            // two `<p>` blocks → ≥5 newlines) survives as 2 blank lines
+            // instead of being squashed down to 1. Plain paragraph breaks
+            // (2 newlines) still render as 1 blank line — the gap between
+            // a regular `<p>A</p><p>B</p>` and an `<p>A</p><p><br></p><p>B</p>`
+            // is preserved, matching the visual difference the editor
+            // intends. 4+ blank lines (very rare) get capped to 2.
+            //
+            // Caveat: this math depends on the source HTML being
+            // pretty-printed (1 newline of inter-tag whitespace between
+            // sibling `<p>` blocks). If a board ever switches to minified
+            // HTML, `<p>A</p><p>B</p>` collapses to "A\nB" and loses the
+            // single blank between paragraphs. None of the boards we
+            // currently parse minify, but worth re-testing if a parser
+            // starts emitting visually packed text.
+            s = s.replacingOccurrences(of: "\n{4,}", with: "\n\n\n", options: .regularExpression)
             return s
         }
 

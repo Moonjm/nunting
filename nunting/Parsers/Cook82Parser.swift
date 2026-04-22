@@ -13,14 +13,14 @@ struct Cook82Parser: BoardParser {
 
     nonisolated init() {}
 
-    private static let blockTags: Set<String> = [
+    nonisolated private static let blockTags: Set<String> = [
         "p", "div", "li", "blockquote",
         "h1", "h2", "h3", "h4", "h5", "h6",
         "section", "article", "tr",
     ]
-    private static let skipTags: Set<String> = ["script", "style", "noscript"]
+    nonisolated private static let skipTags: Set<String> = ["script", "style", "noscript"]
 
-    private static let youtubeIDRegex = try! NSRegularExpression(
+    nonisolated private static let youtubeIDRegex = try! NSRegularExpression(
         pattern: #"youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{11})"#,
         options: []
     )
@@ -28,17 +28,17 @@ struct Cook82Parser: BoardParser {
     /// `HH:MM` in very recent posts). Used to pick the correct `<em>` inside
     /// `.repleFunc` so a future admin/level badge `<em>` inserted before the
     /// date doesn't silently become the displayed timestamp.
-    private static let commentTimeRegex = try! NSRegularExpression(
+    nonisolated private static let commentTimeRegex = try! NSRegularExpression(
         pattern: #"\d{1,2}:\d{2}|\d{1,2}\.\d{1,2}\.\d{1,2}"#,
         options: []
     )
 
-    func parseList(html: String, board: Board) throws -> [Post] {
+    nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         // 82cook is aagag-dispatch-only; list parsing is never invoked.
         []
     }
 
-    func parseDetail(html: String, post: Post) throws -> PostDetail {
+    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
 
         // Deleted / moved posts replace the body wrapper with an error panel.
@@ -93,11 +93,11 @@ struct Cook82Parser: BoardParser {
     }
 
     // Comments live inline — no separate fetch needed.
-    func commentsURL(for post: Post) -> URL? { nil }
+    nonisolated func commentsURL(for post: Post) -> URL? { nil }
 
     // MARK: - Field extraction
 
-    private func extractTitle(in doc: Document, fallback: String) throws -> String {
+    nonisolated private func extractTitle(in doc: Document, fallback: String) throws -> String {
         let text = try doc.select("h4.bbstitle span").first()?.text()
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return text.isEmpty ? fallback : text
@@ -107,7 +107,7 @@ struct Cook82Parser: BoardParser {
     /// `<strong><a>이름</a></strong>  조회수 : 4,868`. Pull the `<strong>`
     /// text for the name, then regex the rest for the "조회수" number so a
     /// future CSS tweak to the trailing whitespace doesn't break parsing.
-    private func extractReadLeft(in doc: Document) throws -> (author: String, view: Int?) {
+    nonisolated private func extractReadLeft(in doc: Document) throws -> (author: String, view: Int?) {
         guard let left = try doc.select("#readHead .readLeft").first() else {
             return ("", nil)
         }
@@ -123,7 +123,7 @@ struct Cook82Parser: BoardParser {
         return (author, view)
     }
 
-    private func extractDate(in doc: Document) throws -> String? {
+    nonisolated private func extractDate(in doc: Document) throws -> String? {
         guard let right = try doc.select("#readHead .readRight").first() else { return nil }
         let raw = try right.text().trimmingCharacters(in: .whitespacesAndNewlines)
         // Drop the leading "작성일 :" label if present.
@@ -137,7 +137,7 @@ struct Cook82Parser: BoardParser {
 
     // MARK: - Body blocks
 
-    private func extractBlocks(in doc: Document) throws -> [ContentBlock] {
+    nonisolated private func extractBlocks(in doc: Document) throws -> [ContentBlock] {
         guard let wrap = try doc.select("#articleBody").first() else { return [] }
         var blocks: [ContentBlock] = []
         var inline = InlineAccumulator()
@@ -146,14 +146,14 @@ struct Cook82Parser: BoardParser {
         return blocks
     }
 
-    private func flushInline(into blocks: inout [ContentBlock], inline: inout InlineAccumulator) {
+    nonisolated private func flushInline(into blocks: inout [ContentBlock], inline: inout InlineAccumulator) {
         let segments = inline.drain()
         if !segments.isEmpty {
             blocks.append(.richText(segments))
         }
     }
 
-    private func collectBlocks(from element: Element, into blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
+    nonisolated private func collectBlocks(from element: Element, into blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
         for node in element.getChildNodes() {
             if let child = node as? Element {
                 try handleElement(child, blocks: &blocks, inline: &inline)
@@ -164,7 +164,7 @@ struct Cook82Parser: BoardParser {
         }
     }
 
-    private func handleElement(_ el: Element, blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
+    nonisolated private func handleElement(_ el: Element, blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
         let tag = el.tagName().lowercased()
         if Self.skipTags.contains(tag) { return }
 
@@ -189,6 +189,15 @@ struct Cook82Parser: BoardParser {
             }
             return
         case "a":
+            // Anchors wrapping `<img>` / `<video>` (forums often wrap inline
+            // GIFs in a clickable link) would otherwise be consumed here as
+            // a bare link label, hiding the media. Recurse into the children
+            // first so the nested image becomes a proper block; only treat
+            // the anchor as a link/text segment when there's no media inside.
+            if try el.select("img, video").first() != nil {
+                try collectBlocks(from: el, into: &blocks, inline: &inline)
+                return
+            }
             if let resolved = try anchor(from: el) {
                 inline.appendLink(url: resolved.url, label: resolved.label)
             } else {
@@ -208,7 +217,7 @@ struct Cook82Parser: BoardParser {
         }
     }
 
-    private func realImageURL(from el: Element) throws -> URL? {
+    nonisolated private func realImageURL(from el: Element) throws -> URL? {
         var src = try el.attr("src")
         if src.isEmpty { src = try el.attr("data-src") }
         if src.isEmpty { src = try el.attr("data-original") }
@@ -223,7 +232,7 @@ struct Cook82Parser: BoardParser {
 
     /// Pass HTML5 `<video poster="...">` through so the player shows a real
     /// thumbnail frame before the user taps.
-    private func videoPoster(from el: Element) throws -> URL? {
+    nonisolated private func videoPoster(from el: Element) throws -> URL? {
         let raw = try el.attr("poster").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return nil }
         let normalized = raw.hasPrefix("//") ? "https:" + raw : raw
@@ -234,7 +243,7 @@ struct Cook82Parser: BoardParser {
         return url
     }
 
-    private func videoURL(from el: Element) throws -> URL? {
+    nonisolated private func videoURL(from el: Element) throws -> URL? {
         var raw = try el.attr("src")
         if raw.isEmpty, let source = try el.select("source").first() {
             raw = try source.attr("src")
@@ -251,7 +260,7 @@ struct Cook82Parser: BoardParser {
         return url
     }
 
-    private func youtubeID(from src: String) -> String? {
+    nonisolated private func youtubeID(from src: String) -> String? {
         let ns = src as NSString
         guard let match = Self.youtubeIDRegex.firstMatch(in: src, range: NSRange(location: 0, length: ns.length)),
               match.numberOfRanges >= 2
@@ -279,7 +288,7 @@ struct Cook82Parser: BoardParser {
     /// carry class `me` to mark the post author, which we surface as a
     /// distinct author string only when parsing a reply; here it's just
     /// metadata we don't need.
-    private func extractComments(in doc: Document) throws -> [Comment] {
+    nonisolated private func extractComments(in doc: Document) throws -> [Comment] {
         let nodes = try doc.select("ul.reples > li.rp")
         var results: [Comment] = []
         for (idx, li) in nodes.enumerated() {
@@ -328,7 +337,7 @@ struct Cook82Parser: BoardParser {
     /// tags. Picking positionally is brittle — future template tweaks (admin
     /// badges, level chips) can slot extra `<em>`s in. Validate each candidate
     /// against a time-shaped regex so only the real timestamp wins.
-    private func extractCommentDate(li: Element) throws -> String {
+    nonisolated private func extractCommentDate(li: Element) throws -> String {
         for em in try li.select(".repleFunc em") {
             let cls = (try? em.attr("class")) ?? ""
             if cls.contains("ip") { continue }
@@ -345,7 +354,7 @@ struct Cook82Parser: BoardParser {
     /// SwiftSoup's `.text()` collapses `<br>` runs to spaces, losing the
     /// visible line breaks 82cook's comments rely on. Walk the `<p>` manually
     /// to preserve newlines exactly as rendered.
-    private func renderCommentContent(li: Element) throws -> String {
+    nonisolated private func renderCommentContent(li: Element) throws -> String {
         // Scope to a direct `<p>` child of the `<li>` so a future wrapper
         // (quote panel, announcement badge…) that itself contains a `<p>`
         // doesn't hijack the comment body.
@@ -365,7 +374,7 @@ struct Cook82Parser: BoardParser {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func walk(_ element: Element, into output: inout String) throws {
+    nonisolated private func walk(_ element: Element, into output: inout String) throws {
         for node in element.getChildNodes() {
             if let text = node as? TextNode {
                 output += text.text()

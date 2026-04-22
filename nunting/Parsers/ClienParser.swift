@@ -7,14 +7,33 @@ struct ClienParser: BoardParser {
     /// Matches the canonical YouTube embed URL shape — `/embed/{11-char id}`
     /// on `youtube.com` or the no-cookie variant. Shared with every other
     /// parser that promotes `<iframe>` to an inline YouTube block.
-    private static let youtubeIDRegex = try! NSRegularExpression(
+    nonisolated private static let youtubeIDRegex = try! NSRegularExpression(
         pattern: #"youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{11})"#,
         options: [.caseInsensitive]
     )
 
+    /// HTML elements that mark a paragraph / block boundary in Clien post
+    /// bodies. We emit a single `\n` after each — combined with the HTML
+    /// pretty-print whitespace TextNode that sits between sibling elements
+    /// in Clien output (also collapsed to `\n` by `InlineAccumulator.trimmed`),
+    /// consecutive `<p>A</p><p>B</p>` becomes "A\n\nB" (1 blank line),
+    /// while explicit `<p>A</p><p><br></p><p>B</p>` reaches 5 newlines and
+    /// caps at 3 via `\n{4,}` → `\n\n\n` (2 blank lines). That keeps the
+    /// distinction between paragraph break and user-typed blank line.
+    nonisolated private static let blockTags: Set<String> = [
+        "p", "div", "li", "blockquote", "tr",
+        "h1", "h2", "h3", "h4", "h5", "h6",
+        "section", "article",
+    ]
+
+    /// `YYYY-MM-DD HH:MM(:SS)` — the timestamp Clien renders inside
+    /// `div.post_date`. Used to slice out the modified timestamp when an
+    /// edited post advertises both 등록일 and 수정일 in the same block.
+    nonisolated private static let postDatePattern = #"\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}(?::\d{2})?"#
+
     nonisolated init() {}
 
-    func parseList(html: String, board: Board) throws -> [Post] {
+    nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
         let rows = try doc.select("a.list_item.symph-row")
 
@@ -63,7 +82,7 @@ struct ClienParser: BoardParser {
         }
     }
 
-    func parseDetail(html: String, post: Post) throws -> PostDetail {
+    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
         guard let article = try doc.select("div.post_article").first() else {
             throw ParserError.structureChanged("post_article 없음")
@@ -71,16 +90,24 @@ struct ClienParser: BoardParser {
 
         let (source, skipFirstParagraph) = try extractSource(from: article)
 
+        // Walk the article body via the shared collector so HTML
+        // pretty-print whitespace TextNodes between top-level `<p>` siblings
+        // reach the inline accumulator. Iterating `article.children()`
+        // (Elements only) and re-entering `collectBlocks` per child loses
+        // those TextNodes, splits each `<p>` into its own ContentBlock,
+        // and forces every paragraph gap down to the LazyVStack's fixed
+        // 12pt spacing — so the explicit-blank-line vs. paragraph-break
+        // distinction encoded in the markup never reaches the renderer.
         var blocks: [ContentBlock] = []
-        let children = article.children()
-        for (index, child) in children.enumerated() {
-            if skipFirstParagraph && index == 0 { continue }
-            try collectBlocks(from: child, into: &blocks)
+        // Mutates the SwiftSoup document in-place; safe because `doc` is
+        // local to this parse and never escapes.
+        if skipFirstParagraph, let firstP = article.children().first() {
+            try firstP.remove()
         }
+        try collectBlocks(from: article, into: &blocks)
 
-        let fullDateText = try doc.select("div.post_date").first()?.text()
-            .replacingOccurrences(of: "\u{00A0}", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawDate = try doc.select("div.post_date").first()?.text() ?? ""
+        let fullDateText = collapsePostDate(rawDate)
         let viewCountText = try doc.select("div.view_count").first()?.text() ?? ""
         let viewCount = firstInteger(in: viewCountText)
 
@@ -96,7 +123,28 @@ struct ClienParser: BoardParser {
         )
     }
 
-    private func extractSource(from article: Element) throws -> (source: PostSource?, skipFirstParagraph: Bool) {
+    /// Clien stuffs the registered date and modified date into the same
+    /// `div.post_date` block when an article has been edited (both stamps
+    /// appear, separated by a "수정" label). Surface only the modified
+    /// stamp in that case so the header reads cleanly; pass through any
+    /// other shape (single date, no edit) unchanged after light whitespace
+    /// normalization.
+    nonisolated private func collapsePostDate(_ raw: String) -> String {
+        let normalized = raw
+            .replacingOccurrences(of: "\u{00A0}", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let keyword = normalized.range(of: "수정"),
+           let date = normalized.range(
+               of: Self.postDatePattern,
+               options: .regularExpression,
+               range: keyword.upperBound..<normalized.endIndex
+           ) {
+            return String(normalized[date])
+        }
+        return normalized
+    }
+
+    nonisolated private func extractSource(from article: Element) throws -> (source: PostSource?, skipFirstParagraph: Bool) {
         guard let firstP = article.children().first(),
               firstP.tagName().lowercased() == "p"
         else { return (nil, false) }
@@ -128,7 +176,7 @@ struct ClienParser: BoardParser {
         return (PostSource(name: afterPipe, url: url), true)
     }
 
-    private func collectBlocks(from element: Element, into blocks: inout [ContentBlock]) throws {
+    nonisolated private func collectBlocks(from element: Element, into blocks: inout [ContentBlock]) throws {
         var inline = InlineAccumulator()
 
         func flush() {
@@ -146,11 +194,21 @@ struct ClienParser: BoardParser {
             return
         }
         if tag == "a" {
-            if let resolved = try anchor(from: element) {
-                inline.appendLink(url: resolved.url, label: resolved.label)
-                flush()
+            // Pure anchor: no nested media → emit a single inline link and
+            // return. When the anchor wraps `<img>` / `<iframe>` (forums
+            // often wrap inline GIFs in a clickable link), fall through to
+            // the main child-walking loop below so the nested media becomes
+            // a proper block AND sibling TextNodes still contribute text
+            // via the existing TextNode branch.
+            let nestedImgs = try element.select("img")
+            let nestedIframes = try element.select("iframe")
+            if nestedImgs.isEmpty() && nestedIframes.isEmpty() {
+                if let resolved = try anchor(from: element) {
+                    inline.appendLink(url: resolved.url, label: resolved.label)
+                    flush()
+                }
+                return
             }
-            return
         }
 
         for node in element.getChildNodes() {
@@ -174,7 +232,16 @@ struct ClienParser: BoardParser {
                 case "br":
                     inline.appendText("\n")
                 case "a":
-                    if let resolved = try anchor(from: el) {
+                    // Anchor wrapping `<img>` / `<iframe>` falls through to
+                    // the same recurse-as-block path the default case uses,
+                    // so an inline GIF wrapped in a clickable link still
+                    // renders as a media block instead of a bare link label.
+                    let nestedImgsInAnchor = try el.select("img")
+                    let nestedIframesInAnchor = try el.select("iframe")
+                    if !nestedImgsInAnchor.isEmpty() || !nestedIframesInAnchor.isEmpty() {
+                        flush()
+                        try collectBlocks(from: el, into: &blocks)
+                    } else if let resolved = try anchor(from: el) {
                         inline.appendLink(url: resolved.url, label: resolved.label)
                     } else {
                         inline.appendText(try el.text())
@@ -188,6 +255,9 @@ struct ClienParser: BoardParser {
                     } else {
                         try collectInlines(from: el, into: &inline)
                     }
+                    if Self.blockTags.contains(childTag) {
+                        inline.appendText("\n")
+                    }
                 }
             } else if let textNode = node as? TextNode {
                 inline.appendText(textNode.text())
@@ -199,7 +269,7 @@ struct ClienParser: BoardParser {
     /// Extract a YouTube video ID from an `<iframe src>` value. Returns nil
     /// for non-YouTube iframes so the default path can still recurse or
     /// drop silently without surfacing a broken embed card.
-    private func youtubeID(from src: String) -> String? {
+    nonisolated private func youtubeID(from src: String) -> String? {
         let ns = src as NSString
         guard let match = Self.youtubeIDRegex.firstMatch(
                 in: src,
@@ -210,7 +280,7 @@ struct ClienParser: BoardParser {
         return ns.substring(with: match.range(at: 1))
     }
 
-    private func collectInlines(from element: Element, into inline: inout InlineAccumulator) throws {
+    nonisolated private func collectInlines(from element: Element, into inline: inout InlineAccumulator) throws {
         for node in element.getChildNodes() {
             if let el = node as? Element {
                 let childTag = el.tagName().lowercased()
@@ -224,7 +294,15 @@ struct ClienParser: BoardParser {
                         inline.appendText(try el.text())
                     }
                 default:
+                    // Recurse first, then append `\n` for block-level tags
+                    // so user-typed Enter keystrokes nested inside non-block
+                    // wrappers (e.g. `<table><tr><td><p>...</p></td></tr>` —
+                    // Clien's legacy editor still emits these) survive into
+                    // the rendered text.
                     try collectInlines(from: el, into: &inline)
+                    if Self.blockTags.contains(childTag) {
+                        inline.appendText("\n")
+                    }
                 }
             } else if let textNode = node as? TextNode {
                 inline.appendText(textNode.text())
@@ -232,7 +310,7 @@ struct ClienParser: BoardParser {
         }
     }
 
-    private func image(from element: Element) throws -> (url: URL, aspectRatio: CGFloat?)? {
+    nonisolated private func image(from element: Element) throws -> (url: URL, aspectRatio: CGFloat?)? {
         let src = try element.attr("src")
         guard !src.isEmpty,
               let url = URL(string: src, relativeTo: site.baseURL)?.absoluteURL,
@@ -246,7 +324,7 @@ struct ClienParser: BoardParser {
         return (url, aspectRatio)
     }
 
-    private func parseComments(doc: Document) throws -> [Comment] {
+    nonisolated private func parseComments(doc: Document) throws -> [Comment] {
         let rows = try doc.select("div.comment_row[data-role=comment-row]")
         var results: [Comment] = []
 
@@ -292,7 +370,7 @@ struct ClienParser: BoardParser {
         return results
     }
 
-    private func firstInteger(in text: String) -> Int? {
+    nonisolated private func firstInteger(in text: String) -> Int? {
         var digits = ""
         for char in text {
             if char.isNumber {

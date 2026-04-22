@@ -19,9 +19,9 @@ enum Site: String, CaseIterable, Identifiable, Codable {
     /// Swift enum cases can't start with a digit, so we flip the numeric prefix.
     case cook82
 
-    var id: String { rawValue }
+    nonisolated var id: String { rawValue }
 
-    var displayName: String {
+    nonisolated var displayName: String {
         switch self {
         case .clien: "클리앙"
         case .coolenjoy: "쿨엔조이"
@@ -36,7 +36,7 @@ enum Site: String, CaseIterable, Identifiable, Codable {
         }
     }
 
-    var baseURL: URL {
+    nonisolated var baseURL: URL {
         switch self {
         case .clien: URL(string: "https://www.clien.net")!
         case .coolenjoy: URL(string: "https://coolenjoy.net")!
@@ -51,7 +51,7 @@ enum Site: String, CaseIterable, Identifiable, Codable {
         }
     }
 
-    var encoding: String.Encoding {
+    nonisolated var encoding: String.Encoding {
         switch self {
         case .ppomppu, .humor:
             // Server advertises EUC-KR but actually serves CP949 (Windows-949), which is a superset.
@@ -65,7 +65,7 @@ enum Site: String, CaseIterable, Identifiable, Codable {
 
     /// Best-effort site detection from a URL host. Used when resolving aagag mirror
     /// redirects so we can dispatch to the source site's parser.
-    static func detect(host: String?) -> Site? {
+    nonisolated static func detect(host: String?) -> Site? {
         guard let host = host?.lowercased() else { return nil }
         if host.hasSuffix("clien.net") { return .clien }
         if host.hasSuffix("coolenjoy.net") { return .coolenjoy }

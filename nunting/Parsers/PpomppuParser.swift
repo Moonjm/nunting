@@ -6,23 +6,23 @@ struct PpomppuParser: BoardParser {
 
     nonisolated init() {}
 
-    private static let blockTags: Set<String> = [
+    nonisolated private static let blockTags: Set<String> = [
         "p", "div", "li", "blockquote",
         "h1", "h2", "h3", "h4", "h5", "h6",
         "section", "article", "tr",
     ]
 
-    private static let skipTags: Set<String> = ["script", "style", "noscript"]
+    nonisolated private static let skipTags: Set<String> = ["script", "style", "noscript"]
 
     /// Matches the canonical YouTube embed URL shape — `/embed/{11-char id}`
     /// on `youtube.com` or the no-cookie variant. Shared by all YouTube
     /// `<iframe>` handling in this parser.
-    private static let youtubeIDRegex = try! NSRegularExpression(
+    nonisolated private static let youtubeIDRegex = try! NSRegularExpression(
         pattern: #"youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{11})"#,
         options: []
     )
 
-    func parseList(html: String, board: Board) throws -> [Post] {
+    nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
         let boardID = ppomppuBoardID(from: board)
 
@@ -98,7 +98,7 @@ struct PpomppuParser: BoardParser {
         }
     }
 
-    func parseDetail(html: String, post: Post) throws -> PostDetail {
+    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
         guard let view = try doc.select("div.bbs.view, div.bbs_view, div.view").first() else {
             throw ParserError.structureChanged("bbs.view 없음")
@@ -140,12 +140,12 @@ struct PpomppuParser: BoardParser {
         )
     }
 
-    func commentsURL(for post: Post) -> URL? {
+    nonisolated func commentsURL(for post: Post) -> URL? {
         // Comments are embedded in the detail page; pagination uses ?c_page=N on the same URL.
         post.url
     }
 
-    func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment] {
+    nonisolated func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment] {
         let firstHtml = try await fetcher(post.url)
         let firstDoc = try SwiftSoup.parse(firstHtml)
         let firstPage = try parseComments(in: firstDoc)
@@ -169,12 +169,12 @@ struct PpomppuParser: BoardParser {
         return (1...totalPages).flatMap { pageMap[$0] ?? [] }
     }
 
-    func parseComments(html: String) throws -> [Comment] {
+    nonisolated func parseComments(html: String) throws -> [Comment] {
         let doc = try SwiftSoup.parse(html)
         return try parseComments(in: doc)
     }
 
-    private func parseComments(in doc: Document) throws -> [Comment] {
+    nonisolated private func parseComments(in doc: Document) throws -> [Comment] {
         let nodes = try doc.select("div.cmAr div[class*=sect-cmt]")
         var results: [Comment] = []
         for node in nodes {
@@ -241,7 +241,7 @@ struct PpomppuParser: BoardParser {
         return results
     }
 
-    private func totalCommentPages(in doc: Document) throws -> Int {
+    nonisolated private func totalCommentPages(in doc: Document) throws -> Int {
         guard let pageEl = try doc.select("div.cmt-topInfo span.cmt-page").first() else { return 1 }
         let text = try pageEl.text()
         // Format: "1 / N"
@@ -250,7 +250,7 @@ struct PpomppuParser: BoardParser {
         return max(1, total)
     }
 
-    private func appendingCommentPage(to url: URL, page: Int) -> URL? {
+    nonisolated private func appendingCommentPage(to url: URL, page: Int) -> URL? {
         guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
         var items = (comps.queryItems ?? []).filter { $0.name != "c_page" }
         items.append(URLQueryItem(name: "c_page", value: "\(page)"))
@@ -258,7 +258,7 @@ struct PpomppuParser: BoardParser {
         return comps.url
     }
 
-    private func collectBlocks(from element: Element, skipping skipURL: URL?, into blocks: inout [ContentBlock]) throws {
+    nonisolated private func collectBlocks(from element: Element, skipping skipURL: URL?, into blocks: inout [ContentBlock]) throws {
         var inline = InlineAccumulator()
 
         func flush() {
@@ -282,16 +282,28 @@ struct PpomppuParser: BoardParser {
             return
         }
         if tag == "a" {
-            if let resolved = try anchor(from: element) {
-                if resolved.url != skipURL {
-                    inline.appendLink(url: resolved.url, label: resolved.label)
+            // Pure anchor: no nested media → emit a single inline link (or
+            // fallback text) and return. When the anchor wraps `<img>` /
+            // `<video>` / `<iframe>` (forums often wrap inline GIFs in a
+            // clickable link), fall through to the main child-walking loop
+            // below so the nested media becomes a proper block AND sibling
+            // TextNodes still contribute text via the existing TextNode
+            // branch.
+            let nestedImgs = try element.select("img")
+            let nestedVideos = try element.select("video")
+            let nestedIframes = try element.select("iframe")
+            if nestedImgs.isEmpty() && nestedVideos.isEmpty() && nestedIframes.isEmpty() {
+                if let resolved = try anchor(from: element) {
+                    if resolved.url != skipURL {
+                        inline.appendLink(url: resolved.url, label: resolved.label)
+                        flush()
+                    }
+                } else {
+                    inline.appendText(try element.text())
                     flush()
                 }
-            } else {
-                inline.appendText(try element.text())
-                flush()
+                return
             }
-            return
         }
         if Self.skipTags.contains(tag) { return }
 
@@ -321,7 +333,17 @@ struct PpomppuParser: BoardParser {
                 case "br":
                     inline.appendText("\n")
                 case "a":
-                    if let resolved = try anchor(from: el) {
+                    // Anchor wrapping media falls through to the same
+                    // recurse-as-block path the default case uses, so an
+                    // inline GIF wrapped in a clickable link still renders
+                    // as a media block instead of a bare link label.
+                    let nestedImgsInAnchor = try el.select("img")
+                    let nestedVideosInAnchor = try el.select("video")
+                    let nestedIframesInAnchor = try el.select("iframe")
+                    if !nestedImgsInAnchor.isEmpty() || !nestedVideosInAnchor.isEmpty() || !nestedIframesInAnchor.isEmpty() {
+                        flush()
+                        try collectBlocks(from: el, skipping: skipURL, into: &blocks)
+                    } else if let resolved = try anchor(from: el) {
                         if resolved.url != skipURL {
                             inline.appendLink(url: resolved.url, label: resolved.label)
                         }
@@ -351,7 +373,7 @@ struct PpomppuParser: BoardParser {
         flush()
     }
 
-    private func collectInlines(from element: Element, skipping skipURL: URL?, into inline: inout InlineAccumulator) throws {
+    nonisolated private func collectInlines(from element: Element, skipping skipURL: URL?, into inline: inout InlineAccumulator) throws {
         for node in element.getChildNodes() {
             if let el = node as? Element {
                 let childTag = el.tagName().lowercased()
@@ -370,6 +392,9 @@ struct PpomppuParser: BoardParser {
                     continue
                 default:
                     try collectInlines(from: el, skipping: skipURL, into: &inline)
+                    if Self.blockTags.contains(childTag) {
+                        inline.appendText("\n")
+                    }
                 }
             } else if let textNode = node as? TextNode {
                 inline.appendText(textNode.text())
@@ -377,7 +402,7 @@ struct PpomppuParser: BoardParser {
         }
     }
 
-    private func imageURL(from element: Element) throws -> URL? {
+    nonisolated private func imageURL(from element: Element) throws -> URL? {
         // Match the comment-image attribute priority so body GIFs that use
         // the same lazy-loading pattern as comments (src = placeholder like
         // `/images/gif_load.gif`, `data-original` = real CDN URL) aren't
@@ -402,7 +427,7 @@ struct PpomppuParser: BoardParser {
         return nil
     }
 
-    private func dealAnchor(from view: Element) throws -> (url: URL, label: String)? {
+    nonisolated private func dealAnchor(from view: Element) throws -> (url: URL, label: String)? {
         // Mobile: <div class="link-box"> inside <h4>.
         // Desktop: <li class="topTitle-link partner"> inside <ul class="topTitle-mainbox">.
         let el = try view.select("div.link-box a[href], li.topTitle-link a[href]").first()
@@ -414,7 +439,7 @@ struct PpomppuParser: BoardParser {
     /// when the URL doesn't match YouTube's canonical embed shape, so callers
     /// can fall through to the generic skip-or-recurse path for iframes of
     /// unrelated providers (Twitter, Naver blog, etc.).
-    private func youtubeID(from src: String) -> String? {
+    nonisolated private func youtubeID(from src: String) -> String? {
         let ns = src as NSString
         guard let match = Self.youtubeIDRegex.firstMatch(
                 in: src,
@@ -427,7 +452,7 @@ struct PpomppuParser: BoardParser {
 
     /// HTML5 `<video poster="...">` — when present, parser passes it along so
     /// the tap-to-play poster frame doesn't fall back to a plain black box.
-    private func videoPoster(from el: Element) throws -> URL? {
+    nonisolated private func videoPoster(from el: Element) throws -> URL? {
         let raw = try el.attr("poster").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return nil }
         let normalized = raw.hasPrefix("//") ? "https:" + raw : raw
@@ -438,7 +463,7 @@ struct PpomppuParser: BoardParser {
         return url
     }
 
-    private func videoURL(from element: Element) throws -> URL? {
+    nonisolated private func videoURL(from element: Element) throws -> URL? {
         // Ppomppu ships bodies with the standard <video><source src="..."></video>
         // shape (the mp4 URL lives on the child <source>). Fall back to
         // data-src / src on <video> itself for compatibility with older posts.
@@ -463,7 +488,7 @@ struct PpomppuParser: BoardParser {
         return url
     }
 
-    private func extractStickerURL(from element: Element) throws -> URL? {
+    nonisolated private func extractStickerURL(from element: Element) throws -> URL? {
         // Comment images are lazy-loaded: src is "/images/lazyloading.jpg"
         // and the real URL lives in data-original. Walk all imgs to find one
         // with a content URL, then fall back to a GIF preview (data-org-src
@@ -488,7 +513,7 @@ struct PpomppuParser: BoardParser {
     /// wraps uploaded mp4s in `<div class="wrapper_video"><video><source
     /// src="..."></video></div>`. Without this, `cleanCommentText` strips
     /// the `<video>` from the rendered text and nothing surfaces in the UI.
-    private func extractCommentVideoURL(from element: Element) throws -> URL? {
+    nonisolated private func extractCommentVideoURL(from element: Element) throws -> URL? {
         guard let vid = try element.select("video").first() else { return nil }
         var src = try vid.attr("src")
         if src.isEmpty, let source = try vid.select("source").first() {
@@ -507,7 +532,7 @@ struct PpomppuParser: BoardParser {
         return url
     }
 
-    private func commentImageURL(from el: Element) throws -> URL? {
+    nonisolated private func commentImageURL(from el: Element) throws -> URL? {
         let candidates = [
             try el.attr("data-original"),
             try el.attr("data-src"),
@@ -528,7 +553,7 @@ struct PpomppuParser: BoardParser {
         return nil
     }
 
-    private func cleanCommentText(from element: Element) throws -> String {
+    nonisolated private func cleanCommentText(from element: Element) throws -> String {
         let copy = (element.copy() as? Element) ?? element
         // Remove media elements *and* their decorative siblings so that
         // the <video> fallback string ("Your browser does not support...")
@@ -540,7 +565,7 @@ struct PpomppuParser: BoardParser {
         let blockMarker = "\u{0001}NL\u{0001}"
         let blocks = try copy.select("br, p, div, li, blockquote, tr")
         for el in blocks where el.parent() != nil {
-            try? el.before(blockMarker)
+            _ = try? el.before(blockMarker)
         }
         let text = try copy.text()
         var result = text.replacingOccurrences(of: blockMarker, with: "\n")
@@ -556,7 +581,7 @@ struct PpomppuParser: BoardParser {
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func splitCategoryAuthor(_ raw: String) -> (category: String?, author: String) {
+    nonisolated private func splitCategoryAuthor(_ raw: String) -> (category: String?, author: String) {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix("[") else { return (nil, trimmed) }
         guard let close = trimmed.firstIndex(of: "]") else { return (nil, trimmed) }
@@ -566,26 +591,26 @@ struct PpomppuParser: BoardParser {
         return (category.isEmpty ? nil : category, rest)
     }
 
-    private func queryValue(in url: URL, name: String) -> String? {
+    nonisolated private func queryValue(in url: URL, name: String) -> String? {
         URLComponents(url: url, resolvingAgainstBaseURL: false)?
             .queryItems?
             .first(where: { $0.name == name })?
             .value
     }
 
-    private func strippingPageQuery(_ url: URL) -> URL {
+    nonisolated private func strippingPageQuery(_ url: URL) -> URL {
         guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
         comps.queryItems = comps.queryItems?.filter { $0.name != "page" }
         if comps.queryItems?.isEmpty == true { comps.queryItems = nil }
         return comps.url ?? url
     }
 
-    private func ppomppuBoardID(from board: Board) -> String? {
+    nonisolated private func ppomppuBoardID(from board: Board) -> String? {
         guard let comps = URLComponents(string: board.path) else { return nil }
         return comps.queryItems?.first(where: { $0.name == "id" })?.value
     }
 
-    private static func levelIconURL(level: String?) -> URL? {
+    nonisolated private static func levelIconURL(level: String?) -> URL? {
         // Ppomppu levels are CSS sprites without standalone image URLs; show plain text instead.
         _ = level
         return nil

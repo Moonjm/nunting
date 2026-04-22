@@ -6,7 +6,18 @@ struct CoolenjoyParser: BoardParser {
 
     nonisolated init() {}
 
-    func parseList(html: String, board: Board) throws -> [Post] {
+    /// HTML elements that mark a paragraph / block boundary in Coolenjoy
+    /// post bodies. Trailing `\n` is appended after each such block so
+    /// user-typed Enter keystrokes (rendered as separate `<p>` blocks)
+    /// survive into the displayed text instead of all collapsing into a
+    /// single line.
+    nonisolated private static let blockTags: Set<String> = [
+        "p", "div", "li", "blockquote", "tr",
+        "h1", "h2", "h3", "h4", "h5", "h6",
+        "section", "article",
+    ]
+
+    nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
         let rows = try doc.select("ul.na-table > li.d-md-table-row")
 
@@ -40,7 +51,7 @@ struct CoolenjoyParser: BoardParser {
         }
     }
 
-    func commentsURL(for post: Post) -> URL? {
+    nonisolated func commentsURL(for post: Post) -> URL? {
         let comps = post.url.pathComponents
         guard comps.count >= 4 else { return nil }
         let boardTable = comps[2]
@@ -48,7 +59,7 @@ struct CoolenjoyParser: BoardParser {
         return URL(string: "https://coolenjoy.net/nariya/bbs/comment_view.php?bo_table=\(boardTable)&wr_id=\(wrID)")
     }
 
-    func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment] {
+    nonisolated func fetchAllComments(for post: Post, fetcher: @escaping @Sendable (URL) async throws -> String) async throws -> [Comment] {
         guard let baseURL = commentsURL(for: post) else { return [] }
 
         let firstPageURL = appendingPagingParams(to: baseURL, page: 1)
@@ -78,7 +89,7 @@ struct CoolenjoyParser: BoardParser {
         return (1...totalPages).flatMap { pageMap[$0] ?? [] }
     }
 
-    private func appendingPagingParams(to url: URL, page: Int) -> URL {
+    nonisolated private func appendingPagingParams(to url: URL, page: Int) -> URL {
         guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
         var items = (comps.queryItems ?? []).filter { $0.name != "page" && $0.name != "cob" }
         items.append(URLQueryItem(name: "cob", value: "old"))
@@ -87,7 +98,7 @@ struct CoolenjoyParser: BoardParser {
         return comps.url ?? url
     }
 
-    private func totalCommentPages(html: String) throws -> Int {
+    nonisolated private func totalCommentPages(html: String) throws -> Int {
         let doc = try SwiftSoup.parse(html)
         let items = try doc.select("ul.pagination li.page-item:not(.page-first):not(.page-prev):not(.page-next):not(.page-last)")
         var maxPage = 1
@@ -99,7 +110,7 @@ struct CoolenjoyParser: BoardParser {
         return maxPage
     }
 
-    func parseComments(html: String) throws -> [Comment] {
+    nonisolated func parseComments(html: String) throws -> [Comment] {
         let doc = try SwiftSoup.parse(html)
         let articles = try doc.select("article[id^=c_]")
         var results: [Comment] = []
@@ -133,7 +144,7 @@ struct CoolenjoyParser: BoardParser {
         return results
     }
 
-    func parseDetail(html: String, post: Post) throws -> PostDetail {
+    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
         guard let article = try doc.select("article#bo_v").first() else {
             throw ParserError.structureChanged("article#bo_v 없음")
@@ -143,10 +154,12 @@ struct CoolenjoyParser: BoardParser {
             throw ParserError.structureChanged("view-content 없음")
         }
 
+        // collectBlocks(from: contentEl) (ONE call) walks getChildNodes()
+        // including TextNodes between siblings. Iterating children() loses
+        // those TextNodes and forces every <p> into its own ContentBlock,
+        // collapsing all paragraph spacing to the renderer's fixed gap.
         var blocks: [ContentBlock] = []
-        for child in contentEl.children() {
-            try collectBlocks(from: child, into: &blocks)
-        }
+        try collectBlocks(from: contentEl, into: &blocks)
 
         let fullDateText = try article.select("time").first()?.text()
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -162,7 +175,7 @@ struct CoolenjoyParser: BoardParser {
         )
     }
 
-    private func resolvePostURL(titleEl: Element, row: Element) throws -> URL? {
+    nonisolated private func resolvePostURL(titleEl: Element, row: Element) throws -> URL? {
         let href = try titleEl.attr("href")
         if !href.isEmpty && href != "#",
            let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL,
@@ -178,20 +191,20 @@ struct CoolenjoyParser: BoardParser {
         return nil
     }
 
-    private static func extractLocationHref(from onclick: String) -> String? {
+    nonisolated private static func extractLocationHref(from onclick: String) -> String? {
         guard let start = onclick.range(of: "location.href='")?.upperBound,
               let end = onclick[start...].range(of: "'")?.lowerBound
         else { return nil }
         return String(onclick[start..<end])
     }
 
-    private func cleanedTitle(from anchor: Element) throws -> String {
+    nonisolated private func cleanedTitle(from anchor: Element) throws -> String {
         try anchor.select("span.sr-only").remove()
         let text = try anchor.text().trimmingCharacters(in: .whitespacesAndNewlines)
         return text
     }
 
-    private func authorName(from row: Element) throws -> String {
+    nonisolated private func authorName(from row: Element) throws -> String {
         if let memberEl = try row.select("a.sv_member").first() {
             let titleAttr = try memberEl.attr("title")
             if let stripped = stripSuffix(titleAttr, suffix: " 자기소개"), !stripped.isEmpty {
@@ -203,7 +216,7 @@ struct CoolenjoyParser: BoardParser {
         return ""
     }
 
-    private func metaValue(from row: Element, label: String) throws -> String? {
+    nonisolated private func metaValue(from row: Element, label: String) throws -> String? {
         let cells = try row.select("div.d-md-table-cell")
         for cell in cells {
             let srOnly = try cell.select("span.sr-only").first()
@@ -218,14 +231,14 @@ struct CoolenjoyParser: BoardParser {
         return nil
     }
 
-    private func commentCountValue(from row: Element) throws -> Int {
+    nonisolated private func commentCountValue(from row: Element) throws -> Int {
         guard let countEl = try row.select("span.count-plus").first() else { return 0 }
         let raw = try countEl.text()
         let digits = raw.filter(\.isNumber)
         return Int(digits) ?? 0
     }
 
-    private func metaValueInArticle(article: Element, label: String) throws -> String? {
+    nonisolated private func metaValueInArticle(article: Element, label: String) throws -> String? {
         let srOnlies = try article.select("span.sr-only")
         for sr in srOnlies {
             if try sr.text() == label {
@@ -241,7 +254,7 @@ struct CoolenjoyParser: BoardParser {
         return nil
     }
 
-    private func collectBlocks(from element: Element, into blocks: inout [ContentBlock]) throws {
+    nonisolated private func collectBlocks(from element: Element, into blocks: inout [ContentBlock]) throws {
         var inline = InlineAccumulator()
 
         func flush() {
@@ -259,11 +272,20 @@ struct CoolenjoyParser: BoardParser {
             return
         }
         if tag == "a" {
-            if let resolved = try anchor(from: element) {
-                inline.appendLink(url: resolved.url, label: resolved.label)
-                flush()
+            // Pure anchor: no nested media → emit a single inline link and
+            // return. When the anchor wraps `<img>` (forums often wrap
+            // inline GIFs in a clickable link), fall through to the main
+            // child-walking loop below so the nested image becomes a proper
+            // block AND sibling TextNodes still contribute text via the
+            // existing TextNode branch.
+            let nestedImgs = try element.select("img")
+            if nestedImgs.isEmpty() {
+                if let resolved = try anchor(from: element) {
+                    inline.appendLink(url: resolved.url, label: resolved.label)
+                    flush()
+                }
+                return
             }
-            return
         }
 
         for node in element.getChildNodes() {
@@ -278,18 +300,30 @@ struct CoolenjoyParser: BoardParser {
                 case "br":
                     inline.appendText("\n")
                 case "a":
-                    if let resolved = try anchor(from: el) {
+                    // Anchor wrapping `<img>` falls through to the same
+                    // recurse-as-block path the default case uses, so an
+                    // inline GIF inside a clickable link still renders as
+                    // a media block instead of a bare link label.
+                    let nestedImgsInAnchor = try el.select("img")
+                    if !nestedImgsInAnchor.isEmpty() {
+                        flush()
+                        try collectBlocks(from: el, into: &blocks)
+                    } else if let resolved = try anchor(from: el) {
                         inline.appendLink(url: resolved.url, label: resolved.label)
                     } else {
                         inline.appendText(try el.text())
                     }
                 default:
+                    let isBlock = Self.blockTags.contains(childTag)
                     let nestedImgs = try el.select("img")
                     if !nestedImgs.isEmpty() {
                         flush()
                         try collectBlocks(from: el, into: &blocks)
                     } else {
                         try collectInlines(from: el, into: &inline)
+                    }
+                    if isBlock {
+                        inline.appendText("\n")
                     }
                 }
             } else if let textNode = node as? TextNode {
@@ -299,7 +333,7 @@ struct CoolenjoyParser: BoardParser {
         flush()
     }
 
-    private func collectInlines(from element: Element, into inline: inout InlineAccumulator) throws {
+    nonisolated private func collectInlines(from element: Element, into inline: inout InlineAccumulator) throws {
         for node in element.getChildNodes() {
             if let el = node as? Element {
                 let childTag = el.tagName().lowercased()
@@ -313,7 +347,13 @@ struct CoolenjoyParser: BoardParser {
                         inline.appendText(try el.text())
                     }
                 default:
+                    // Append `\n` for block-level tags so nested `<p>` blocks
+                    // inside non-block wrappers (e.g. legacy table-based
+                    // editors) don't all collapse onto one line.
                     try collectInlines(from: el, into: &inline)
+                    if Self.blockTags.contains(childTag) {
+                        inline.appendText("\n")
+                    }
                 }
             } else if let textNode = node as? TextNode {
                 inline.appendText(textNode.text())
@@ -321,7 +361,7 @@ struct CoolenjoyParser: BoardParser {
         }
     }
 
-    private func imageURL(from element: Element) throws -> URL? {
+    nonisolated private func imageURL(from element: Element) throws -> URL? {
         let src = try element.attr("src")
         guard !src.isEmpty,
               let url = URL(string: src, relativeTo: site.baseURL)?.absoluteURL,
@@ -331,7 +371,7 @@ struct CoolenjoyParser: BoardParser {
         return url
     }
 
-    private func firstInteger(in text: String) -> Int? {
+    nonisolated private func firstInteger(in text: String) -> Int? {
         var digits = ""
         for char in text {
             if char.isNumber {
@@ -343,7 +383,7 @@ struct CoolenjoyParser: BoardParser {
         return digits.isEmpty ? nil : Int(digits)
     }
 
-    private func stripSuffix(_ s: String, suffix: String) -> String? {
+    nonisolated private func stripSuffix(_ s: String, suffix: String) -> String? {
         guard s.hasSuffix(suffix) else { return nil }
         return String(s.dropLast(suffix.count))
     }
