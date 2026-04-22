@@ -151,51 +151,59 @@ struct BoardListView: View {
 
     @ViewBuilder
     private func postRowContent(post: Post, isAagag: Bool, isRead: Bool) -> some View {
-        // Wrapping the row in a `Button` (instead of `.onTapGesture`) lets
-        // SwiftUI's built-in touch tracking cancel the action when the
-        // finger moves past its press-cancel threshold — so a `→` drag from
-        // a list row to open the side drawer no longer fires the row's
-        // navigation while the parent panGesture is still recognising the
-        // direction. `.plain` strips Button's default chrome so the row
-        // visuals stay identical to the previous tap-only implementation.
-        Button {
-            onSelectPost(post)
-        } label: {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    if isAagag, let lv = post.levelText, !lv.isEmpty {
-                        AagagSourceTag(code: lv)
-                    }
-                    Text(post.title).font(.body)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if isAagag, let lv = post.levelText, !lv.isEmpty {
+                    AagagSourceTag(code: lv)
                 }
-                HStack(spacing: 6) {
-                    Text(post.author)
-                    if !isAagag, let lv = post.levelText, !lv.isEmpty {
-                        Text(lv)
-                    }
-                    Text(post.dateText)
-                    if let views = post.viewCount {
-                        Text("조회 \(views)")
-                    }
-                    if let recos = post.recommendCount, recos > 0 {
-                        Text("추천 \(recos)").foregroundStyle(.pink)
-                    }
-                    if post.commentCount > 0 {
-                        Text("💬 \(post.commentCount)")
-                    }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
+                Text(post.title).font(.body)
             }
-            .opacity(isRead ? 0.45 : 1.0)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
+            HStack(spacing: 6) {
+                Text(post.author)
+                if !isAagag, let lv = post.levelText, !lv.isEmpty {
+                    Text(lv)
+                }
+                Text(post.dateText)
+                if let views = post.viewCount {
+                    Text("조회 \(views)")
+                }
+                if let recos = post.recommendCount, recos > 0 {
+                    Text("추천 \(recos)").foregroundStyle(.pink)
+                }
+                if post.commentCount > 0 {
+                    Text("💬 \(post.commentCount)")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
         }
-        .buttonStyle(.plain)
+        .opacity(isRead ? 0.45 : 1.0)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        // Tap-vs-drag discrimination: a `DragGesture(minimumDistance: 0)`
+        // captures the touch-down/touch-up cycle, and we only treat it as
+        // a row tap when the finger barely moved (≤ 6pt in either axis).
+        // This aligns with the parent `panGesture` in ContentView which
+        // locks `dragDirection = .horizontal` at ~10pt — so any drag that
+        // reaches the gesture's commit threshold (drawer open / detail
+        // forward-reveal) is past our tap threshold here, eliminating the
+        // accidental row tap during a `→` drawer-open swipe. Bare
+        // `.onTapGesture` and the previous `Button` wrapper both fired
+        // even when the parent gesture had already taken over.
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                .onEnded { value in
+                    if abs(value.translation.width) < 6
+                        && abs(value.translation.height) < 6 {
+                        onSelectPost(post)
+                    }
+                }
+        )
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
+        .accessibilityAction { onSelectPost(post) }
         .accessibilityValue(isRead ? "읽음" : "")
     }
 
