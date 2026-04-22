@@ -12,16 +12,21 @@ struct ClienParser: BoardParser {
         options: [.caseInsensitive]
     )
 
-    /// HTML elements that mark a paragraph / block boundary in Clien post
-    /// bodies. Trailing `\n` is appended after each such block so user-typed
-    /// Enter keystrokes (which the editor renders as separate `<p>` blocks)
-    /// survive into the rendered text instead of all collapsing into a
-    /// single line.
+    /// HTML elements that mark a generic block boundary — we append `\n`
+    /// after each so the next chunk starts on a new line.
     nonisolated private static let blockTags: Set<String> = [
-        "p", "div", "li", "blockquote", "tr",
+        "div", "li", "blockquote", "tr",
         "h1", "h2", "h3", "h4", "h5", "h6",
         "section", "article",
     ]
+
+    /// `<p>` is special: Clien's editor wraps every user line in a `<p>`,
+    /// and the browser shows them with paragraph margin so consecutive
+    /// `<p>...</p><p>...</p>` reads as separated paragraphs. Plain text
+    /// rendering needs `\n\n` (one blank line) to recreate that — using a
+    /// single `\n` like other blocks left `<p>A</p><p>B</p>` packed onto
+    /// adjacent lines, which felt like the user's Enter had been swallowed.
+    nonisolated private static let paragraphTags: Set<String> = ["p"]
 
     /// `YYYY-MM-DD HH:MM(:SS)` — the timestamp Clien renders inside
     /// `div.post_date`. Used to slice out the modified timestamp when an
@@ -235,7 +240,6 @@ struct ClienParser: BoardParser {
                         inline.appendText(try el.text())
                     }
                 default:
-                    let isBlock = Self.blockTags.contains(childTag)
                     let nestedImgs = try el.select("img")
                     let nestedIframes = try el.select("iframe")
                     if !nestedImgs.isEmpty() || !nestedIframes.isEmpty() {
@@ -244,7 +248,9 @@ struct ClienParser: BoardParser {
                     } else {
                         try collectInlines(from: el, into: &inline)
                     }
-                    if isBlock {
+                    if Self.paragraphTags.contains(childTag) {
+                        inline.appendText("\n\n")
+                    } else if Self.blockTags.contains(childTag) {
                         inline.appendText("\n")
                     }
                 }
@@ -283,17 +289,18 @@ struct ClienParser: BoardParser {
                         inline.appendText(try el.text())
                     }
                 default:
-                    // Recurse first, then append `\n` for block-level tags so
-                    // user-typed Enter keystrokes nested inside non-block
-                    // wrappers (e.g. `<table><tr><td><p>...</p></td></tr>` —
-                    // Clien's legacy editor still emits these) survive into
-                    // the rendered text. Without this, `collectBlocks` only
-                    // adds the boundary `\n` for the OUTERMOST block whose
-                    // direct children we walk, and every nested `<p>` collapses
-                    // when the wrapper has no media to trip the `<table>` →
-                    // `collectBlocks` recursion path.
+                    // Recurse first, then append boundary newlines for
+                    // paragraph / block tags so user-typed Enter keystrokes
+                    // nested inside non-block wrappers (e.g.
+                    // `<table><tr><td><p>...</p></td></tr>` — Clien's legacy
+                    // editor still emits these) survive into the rendered
+                    // text. `<p>` gets `\n\n` so consecutive paragraphs read
+                    // with a blank line between (matching browser margin
+                    // rendering); other block tags get a single `\n`.
                     try collectInlines(from: el, into: &inline)
-                    if Self.blockTags.contains(childTag) {
+                    if Self.paragraphTags.contains(childTag) {
+                        inline.appendText("\n\n")
+                    } else if Self.blockTags.contains(childTag) {
                         inline.appendText("\n")
                     }
                 }
