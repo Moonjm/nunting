@@ -762,9 +762,21 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
             }
             lockedContentOffset = baseline
             lockedDistanceToBottom = Self.distanceToBottom(in: scrollView)
-            // If the scroll has already drifted from the baseline, snap
-            // it back immediately so the snapshot we're about to take
-            // mirrors the user's actual starting position.
+            // Force-cancel any in-flight pan / deceleration on the inner
+            // ScrollView so its state machine can't fire another
+            // `.changed` (or its deceleration runloop step) after we
+            // snap back to `baseline`. `gestureRecognizer(_:shouldRecognize
+            // SimultaneouslyWith:)` returning `false` only blocks *future*
+            // simultaneous arbitration — it doesn't interrupt a recognizer
+            // that's already mid-recognition, which is exactly the case
+            // when the initial touch had a small vertical component. The
+            // disable→enable toggle flips the recognizer to `.cancelled`,
+            // stopping its tracking + any momentum without preventing
+            // future touches from engaging it.
+            scrollView.panGestureRecognizer.isEnabled = false
+            scrollView.panGestureRecognizer.isEnabled = true
+            // Snap the live view to the remembered baseline now that
+            // nothing else will overwrite it.
             if scrollView.contentOffset != baseline {
                 scrollView.setContentOffset(baseline, animated: false)
             }
