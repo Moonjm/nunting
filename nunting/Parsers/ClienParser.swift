@@ -12,21 +12,19 @@ struct ClienParser: BoardParser {
         options: [.caseInsensitive]
     )
 
-    /// HTML elements that mark a generic block boundary — we append `\n`
-    /// after each so the next chunk starts on a new line.
+    /// HTML elements that mark a paragraph / block boundary in Clien post
+    /// bodies. We emit a single `\n` after each — combined with the HTML
+    /// pretty-print whitespace TextNode that sits between sibling elements
+    /// in Clien output (also collapsed to `\n` by `InlineAccumulator.trimmed`),
+    /// consecutive `<p>A</p><p>B</p>` becomes "A\n\nB" (1 blank line),
+    /// while explicit `<p>A</p><p><br></p><p>B</p>` reaches 5 newlines and
+    /// caps at 3 via `\n{4,}` → `\n\n\n` (2 blank lines). That keeps the
+    /// distinction between paragraph break and user-typed blank line.
     nonisolated private static let blockTags: Set<String> = [
-        "div", "li", "blockquote", "tr",
+        "p", "div", "li", "blockquote", "tr",
         "h1", "h2", "h3", "h4", "h5", "h6",
         "section", "article",
     ]
-
-    /// `<p>` is special: Clien's editor wraps every user line in a `<p>`,
-    /// and the browser shows them with paragraph margin so consecutive
-    /// `<p>...</p><p>...</p>` reads as separated paragraphs. Plain text
-    /// rendering needs `\n\n` (one blank line) to recreate that — using a
-    /// single `\n` like other blocks left `<p>A</p><p>B</p>` packed onto
-    /// adjacent lines, which felt like the user's Enter had been swallowed.
-    nonisolated private static let paragraphTags: Set<String> = ["p"]
 
     /// `YYYY-MM-DD HH:MM(:SS)` — the timestamp Clien renders inside
     /// `div.post_date`. Used to slice out the modified timestamp when an
@@ -248,9 +246,7 @@ struct ClienParser: BoardParser {
                     } else {
                         try collectInlines(from: el, into: &inline)
                     }
-                    if Self.paragraphTags.contains(childTag) {
-                        inline.appendText("\n\n")
-                    } else if Self.blockTags.contains(childTag) {
+                    if Self.blockTags.contains(childTag) {
                         inline.appendText("\n")
                     }
                 }
@@ -289,18 +285,13 @@ struct ClienParser: BoardParser {
                         inline.appendText(try el.text())
                     }
                 default:
-                    // Recurse first, then append boundary newlines for
-                    // paragraph / block tags so user-typed Enter keystrokes
-                    // nested inside non-block wrappers (e.g.
-                    // `<table><tr><td><p>...</p></td></tr>` — Clien's legacy
-                    // editor still emits these) survive into the rendered
-                    // text. `<p>` gets `\n\n` so consecutive paragraphs read
-                    // with a blank line between (matching browser margin
-                    // rendering); other block tags get a single `\n`.
+                    // Recurse first, then append `\n` for block-level tags
+                    // so user-typed Enter keystrokes nested inside non-block
+                    // wrappers (e.g. `<table><tr><td><p>...</p></td></tr>` —
+                    // Clien's legacy editor still emits these) survive into
+                    // the rendered text.
                     try collectInlines(from: el, into: &inline)
-                    if Self.paragraphTags.contains(childTag) {
-                        inline.appendText("\n\n")
-                    } else if Self.blockTags.contains(childTag) {
+                    if Self.blockTags.contains(childTag) {
                         inline.appendText("\n")
                     }
                 }
