@@ -9,9 +9,10 @@ struct InlineVideoPlayer: View {
     /// view falls back to the aagag `/o/{q}.jpg` convention and, failing
     /// that, a plain film-icon placeholder.
     var posterURL: URL? = nil
-    /// Set by `SwipeToDismissOverlay` while a back-swipe is in flight so
-    /// releasing a finger over the play button doesn't push fullscreen
-    /// playback when the user only intended to leave the detail screen.
+    /// Set by ContentView's `panGesture` while a back-drag is in flight
+    /// so releasing a finger over the play button doesn't push
+    /// fullscreen playback when the user only intended to leave the
+    /// detail screen.
     var tapGate: TapSuppressionGate? = nil
 
     @State private var isPresented = false
@@ -73,18 +74,37 @@ private struct FullscreenVideoPlayer: View {
     let url: URL
 
     @Environment(\.dismiss) private var dismiss
+    /// True from presentation until the first video frame is decoded.
+    /// We defer `play()` to `.readyToPlay` to keep audio/video in sync,
+    /// but the black-and-silent window before that leaves the user
+    /// wondering if the tap registered — surface a spinner until the
+    /// first frame comes up.
+    @State private var isLoading = true
 
     var body: some View {
-        AVPlayerControllerView(url: url) {
-            dismiss()
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            AVPlayerControllerView(
+                url: url,
+                isLoading: $isLoading,
+                onDismiss: { dismiss() }
+            )
+            .ignoresSafeArea()
+
+            if isLoading {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .tint(.white)
+                    .scaleEffect(1.4)
+            }
         }
-        .ignoresSafeArea()
-        .background(Color.black)
     }
 }
 
 private struct AVPlayerControllerView: UIViewControllerRepresentable {
     let url: URL
+    @Binding var isLoading: Bool
     let onDismiss: () -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -104,6 +124,14 @@ private struct AVPlayerControllerView: UIViewControllerRepresentable {
 
         context.coordinator.installDismissGesture(on: controller.view)
 
+        // Seed the onReady callback now so it exists by the time the
+        // KVO observation fires; `updateUIViewController` will refresh
+        // it on each SwiftUI re-eval in case the binding's storage
+        // identity changes.
+        context.coordinator.onReady = { [isLoading = $isLoading] in
+            isLoading.wrappedValue = false
+        }
+
         // Calling `play()` synchronously here starts the audio decoder
         // before AVPlayerViewController has materialised its render layer,
         // which is exactly the "black frame + sound only" case the user
@@ -117,10 +145,15 @@ private struct AVPlayerControllerView: UIViewControllerRepresentable {
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
         // URL is fixed for the lifetime of the fullScreenCover presentation
         // (the sheet is tied to `isPresented`, not a dynamic item binding),
-        // so there's no URL-change path to reinstall a player here. Only the
-        // dismiss closure is worth refreshing in case SwiftUI rebuilds the
-        // parent and captures a new closure identity.
+        // so there's no URL-change path to reinstall a player here.
+        // Refresh the dismiss and ready closures so they point at the
+        // latest Binding / environment values — capturing the values
+        // once at `makeUIViewController` time would leave us stuck on
+        // the initial binding if SwiftUI's diff re-homes the @State.
         context.coordinator.onDismiss = onDismiss
+        context.coordinator.onReady = { [isLoading = $isLoading] in
+            isLoading.wrappedValue = false
+        }
     }
 
     static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: Coordinator) {
@@ -132,6 +165,12 @@ private struct AVPlayerControllerView: UIViewControllerRepresentable {
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var player: AVPlayer?
         var onDismiss: () -> Void
+        /// Invoked once the player item reports `.readyToPlay`.
+        /// Refreshed from `updateUIViewController` so the closure always
+        /// points at the current `@Binding` storage — capturing the
+        /// binding once at `makeUIViewController` time would pin us to
+        /// the initial snapshot.
+        var onReady: () -> Void = {}
 
         private weak var dismissPan: UIPanGestureRecognizer?
         private var hasDismissed = false
@@ -160,9 +199,11 @@ private struct AVPlayerControllerView: UIViewControllerRepresentable {
             statusObservation = item.observe(\.status, options: [.new, .initial]) { [weak self] item, _ in
                 guard item.status == .readyToPlay else { return }
                 DispatchQueue.main.async {
-                    self?.player?.play()
-                    self?.statusObservation?.invalidate()
-                    self?.statusObservation = nil
+                    guard let self else { return }
+                    self.player?.play()
+                    self.onReady()
+                    self.statusObservation?.invalidate()
+                    self.statusObservation = nil
                 }
             }
         }

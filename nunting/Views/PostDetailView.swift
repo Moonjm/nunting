@@ -5,10 +5,10 @@ struct PostDetailView: View {
     let post: Post
     let readStore: ReadStore
     let cache: PostDetailCache
-    /// Set to `.suppressed = true` by `SwipeToDismissOverlay` while a back-
-    /// swipe is in flight, so an image / video tap firing on the same
-    /// touch-up doesn't open a viewer / fullscreen player when the user was
-    /// only trying to leave the detail screen.
+    /// Flipped by ContentView's `panGesture` while a back-drag is in
+    /// flight so an image / video tap firing on the same touch-up
+    /// doesn't open a viewer / fullscreen player when the user was only
+    /// trying to leave the detail screen.
     var tapGate: TapSuppressionGate? = nil
     /// True while the overlay is actually on-screen. Keep-alive means the
     /// view instance survives `hideDetail()` with only `detailOffset`
@@ -17,6 +17,10 @@ struct PostDetailView: View {
     /// its grip on the list's `scrollsToTop` flag when the overlay
     /// slides off-screen.
     var isOverlayVisible: Bool = true
+    /// Forwarded to `.scrollDisabled` on the inner `ScrollView` while a
+    /// horizontal back-drag is in flight, so the inner vertical pan
+    /// can't drift under the translating overlay.
+    var isScrollingBlocked: Bool = false
     /// Invoked from the custom back button in the header. The parent owns the
     /// overlay offset animation; this view just asks to be dismissed.
     let onDismiss: () -> Void
@@ -89,6 +93,7 @@ struct PostDetailView: View {
                 }
                 .padding()
             }
+            .scrollDisabled(isScrollingBlocked)
         }
         // Fill the hosted container even when the SwiftUI ideal size would
         // otherwise be smaller — UIHostingController inside our overlay
@@ -196,9 +201,7 @@ struct PostDetailView: View {
         } else if let detail {
             // Lazy so only blocks near the viewport materialise — avoids
             // a 20-image post kicking off simultaneous fetches / decodes
-            // when the view opens. The horizontal back-swipe doesn't need
-            // contentSize stability here because `SwipeToDismissOverlay`
-            // animates a UIKit snapshot while the live tree is offscreen.
+            // when the view opens.
             LazyVStack(alignment: .leading, spacing: 12) {
                 ForEach(detail.blocks) { block in
                     switch block.kind {
@@ -591,9 +594,10 @@ private struct CommentsSection: View {
 
             // LazyVStack so off-screen comments don't kick off markdown
             // parses / image fetches / AVPlayer setup at the same time
-            // the user is trying to scroll the top of a long thread. The
-            // back-swipe uses a UIKit snapshot, so contentSize churn as
-            // new rows materialise doesn't bleed into the drag.
+            // the user is trying to scroll the top of a long thread.
+            // Back-drag is a SwiftUI `.offset(x:)` transform rather than
+            // a SwiftUI layout op, so contentSize churn as new rows
+            // materialise doesn't bleed into the drag position either.
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(comments.enumerated()), id: \.element.id) { index, comment in
                     CommentRow(comment: comment, tapGate: tapGate, onImageTap: onImageTap)
