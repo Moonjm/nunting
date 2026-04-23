@@ -594,9 +594,10 @@ private struct CommentsSection: View {
 
             // LazyVStack so off-screen comments don't kick off markdown
             // parses / image fetches / AVPlayer setup at the same time
-            // the user is trying to scroll the top of a long thread. The
-            // back-swipe uses a UIKit snapshot, so contentSize churn as
-            // new rows materialise doesn't bleed into the drag.
+            // the user is trying to scroll the top of a long thread.
+            // Back-drag is a SwiftUI `.offset(x:)` transform rather than
+            // a SwiftUI layout op, so contentSize churn as new rows
+            // materialise doesn't bleed into the drag position either.
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(comments.enumerated()), id: \.element.id) { index, comment in
                     CommentRow(comment: comment, tapGate: tapGate, onImageTap: onImageTap)

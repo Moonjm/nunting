@@ -58,10 +58,11 @@ struct ContentView: View {
     /// row's tap closure (which fires on the same touch-up) sees the
     /// blocked state before it clears.
     @State private var rowTapGate = TapSuppressionGate()
-    /// Same shape as `rowTapGate` but driven by the detail overlay's UIKit
-    /// back-swipe recognizer. Read by image / video tap handlers inside
-    /// `PostDetailView` so a `→` back-swipe doesn't accidentally tap an
-    /// image or video sitting under the user's finger when they release.
+    /// Same shape as `rowTapGate` but flipped by the detail overlay's
+    /// back-drag branch in `panGesture`. Read by image / video tap
+    /// handlers inside `PostDetailView` so a `→` back-drag doesn't
+    /// accidentally tap an image or video sitting under the user's
+    /// finger when they release.
     @State private var detailMediaTapGate = TapSuppressionGate()
 
     private let drawerWidth: CGFloat = 300
@@ -131,7 +132,10 @@ struct ContentView: View {
                     cache: detailCache,
                     tapGate: detailMediaTapGate,
                     isOverlayVisible: containerWidth > 0 && detailOffset < containerWidth - 0.5,
-                    isScrollingBlocked: scrollLocked && dragDirection == .horizontal,
+                    // `scrollLocked` already implies `dragDirection == .horizontal`
+                    // (both are set together in `panGesture` classification),
+                    // so no need to conjunction-gate here.
+                    isScrollingBlocked: scrollLocked,
                     onDismiss: { hideDetail() }
                 )
                 .id(post.id)
@@ -530,10 +534,10 @@ private struct ContainerWidthKey: PreferenceKey {
 /// Reference-typed gate that gestures use to tell child taps
 /// "you just saw a horizontal drag — don't fire on release". A class
 /// (not @State value type) so that mutating the deadline from a gesture
-/// closure doesn't invalidate the SwiftUI body. Used in two places:
-/// the list-row drag-vs-tap discriminator (driven by `panGesture`),
-/// and the detail overlay back-swipe suppressor for embedded image /
-/// video taps (driven by `SwipeToDismissOverlay.Coordinator`).
+/// closure doesn't invalidate the SwiftUI body. Both drivers — the list-
+/// row drag-vs-tap discriminator and the detail overlay back-drag
+/// suppressor for embedded image / video taps — live inside
+/// `ContentView.panGesture`.
 ///
 /// Stored as an absolute deadline (`suppressedUntil`) instead of a flat
 /// `Bool` so a missed reset (drag interrupted by a system alert / app
