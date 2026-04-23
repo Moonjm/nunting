@@ -42,6 +42,12 @@ struct ContentView: View {
     @State private var dragDirection: DragDirection?
     @State private var dragLockBaseline: CGFloat = 0
     @State private var scrollLocked = false
+    /// Kept asserted across the commit/cancel spring for back-drag and
+    /// forward-reveal. Without this, `resetDragState()` unlocks the
+    /// inner ScrollView the moment the finger leaves the screen and the
+    /// user can start a vertical scroll while the detail is still mid-
+    /// animation, which reads as the content drifting under the slide.
+    @State private var detailAnimating = false
     @State private var containerHeight: CGFloat = 0
     @State private var containerWidth: CGFloat = 0
     /// Y position (in the body's coordinate space) where the combined
@@ -133,9 +139,11 @@ struct ContentView: View {
                     tapGate: detailMediaTapGate,
                     isOverlayVisible: containerWidth > 0 && detailOffset < containerWidth - 0.5,
                     // `scrollLocked` already implies `dragDirection == .horizontal`
-                    // (both are set together in `panGesture` classification),
-                    // so no need to conjunction-gate here.
-                    isScrollingBlocked: scrollLocked,
+                    // (both are set together in `panGesture` classification).
+                    // `detailAnimating` keeps the lock asserted across the
+                    // post-release spring so a vertical scroll can't kick
+                    // in while the detail is still sliding into / out of place.
+                    isScrollingBlocked: scrollLocked || detailAnimating,
                     onDismiss: { hideDetail() }
                 )
                 .id(post.id)
@@ -414,6 +422,7 @@ struct ContentView: View {
                     // past the distance / velocity thresholds, else
                     // snap back to fully visible.
                     let shouldDismiss = shouldDismissDetailSwipe(dx: traveled, velocityX: velocity)
+                    beginDetailAnimationLock()
                     withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
                         detailOffset = shouldDismiss ? containerWidth : 0
                         dragOffset = 0
@@ -425,6 +434,7 @@ struct ContentView: View {
                     // lastOpenedPost re-push so a light flick from the right
                     // edge is enough to pull the overlay back in.
                     let shouldReveal = traveled < -32 || velocity < -120
+                    beginDetailAnimationLock()
                     withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
                         detailOffset = shouldReveal ? 0 : containerWidth
                         dragOffset = 0
@@ -461,6 +471,18 @@ struct ContentView: View {
         dragDirection = nil
         dragLockBaseline = 0
         scrollLocked = false
+    }
+
+    /// Holds `detailAnimating` true across the spring so the detail
+    /// view's inner ScrollView stays disabled until the slide settles.
+    /// The 0.35s delay is padded slightly past the 0.32s spring response
+    /// so the lock doesn't release mid-bounce.
+    private func beginDetailAnimationLock() {
+        detailAnimating = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(350))
+            detailAnimating = false
+        }
     }
 
     private func openDrawer(targetSection: DrawerSection) {

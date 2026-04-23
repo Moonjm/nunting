@@ -124,25 +124,36 @@ private struct AVPlayerControllerView: UIViewControllerRepresentable {
 
         context.coordinator.installDismissGesture(on: controller.view)
 
+        // Seed the onReady callback now so it exists by the time the
+        // KVO observation fires; `updateUIViewController` will refresh
+        // it on each SwiftUI re-eval in case the binding's storage
+        // identity changes.
+        context.coordinator.onReady = { [isLoading = $isLoading] in
+            isLoading.wrappedValue = false
+        }
+
         // Calling `play()` synchronously here starts the audio decoder
         // before AVPlayerViewController has materialised its render layer,
         // which is exactly the "black frame + sound only" case the user
         // reported. Defer the first `play()` until the underlying item
         // reports `.readyToPlay` (its first video sample is decoded), so
         // image and audio kick off together.
-        context.coordinator.startPlaybackWhenReady(item: item) { [isLoading = $isLoading] in
-            isLoading.wrappedValue = false
-        }
+        context.coordinator.startPlaybackWhenReady(item: item)
         return controller
     }
 
     func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
         // URL is fixed for the lifetime of the fullScreenCover presentation
         // (the sheet is tied to `isPresented`, not a dynamic item binding),
-        // so there's no URL-change path to reinstall a player here. Only the
-        // dismiss closure is worth refreshing in case SwiftUI rebuilds the
-        // parent and captures a new closure identity.
+        // so there's no URL-change path to reinstall a player here.
+        // Refresh the dismiss and ready closures so they point at the
+        // latest Binding / environment values — capturing the values
+        // once at `makeUIViewController` time would leave us stuck on
+        // the initial binding if SwiftUI's diff re-homes the @State.
         context.coordinator.onDismiss = onDismiss
+        context.coordinator.onReady = { [isLoading = $isLoading] in
+            isLoading.wrappedValue = false
+        }
     }
 
     static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: Coordinator) {
@@ -154,6 +165,12 @@ private struct AVPlayerControllerView: UIViewControllerRepresentable {
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var player: AVPlayer?
         var onDismiss: () -> Void
+        /// Invoked once the player item reports `.readyToPlay`.
+        /// Refreshed from `updateUIViewController` so the closure always
+        /// points at the current `@Binding` storage — capturing the
+        /// binding once at `makeUIViewController` time would pin us to
+        /// the initial snapshot.
+        var onReady: () -> Void = {}
 
         private weak var dismissPan: UIPanGestureRecognizer?
         private var hasDismissed = false
@@ -177,15 +194,16 @@ private struct AVPlayerControllerView: UIViewControllerRepresentable {
         /// dispatched main block runs, the second `play()` is idempotent on
         /// an already-playing player and the second `invalidate()` is a
         /// no-op on a nil observation.
-        func startPlaybackWhenReady(item: AVPlayerItem, onReady: @escaping () -> Void) {
+        func startPlaybackWhenReady(item: AVPlayerItem) {
             statusObservation?.invalidate()
             statusObservation = item.observe(\.status, options: [.new, .initial]) { [weak self] item, _ in
                 guard item.status == .readyToPlay else { return }
                 DispatchQueue.main.async {
-                    self?.player?.play()
-                    onReady()
-                    self?.statusObservation?.invalidate()
-                    self?.statusObservation = nil
+                    guard let self else { return }
+                    self.player?.play()
+                    self.onReady()
+                    self.statusObservation?.invalidate()
+                    self.statusObservation = nil
                 }
             }
         }
