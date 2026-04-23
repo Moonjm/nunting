@@ -900,12 +900,11 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
             // terminal state after we had cleared `lockedScrollView`, which
             // showed up as a small but visible jump when a back-swipe began
             // over a tappable comment image.
-            let resolvedTarget: CGPoint
-            if let distanceToBottom = lockedDistanceToBottom, distanceToBottom <= 2 {
-                resolvedTarget = CGPoint(x: targetOffset.x, y: Self.maxOffsetY(in: scrollView))
-            } else {
-                resolvedTarget = resolvedLockedOffset(in: scrollView, fallback: targetOffset)
-            }
+            //
+            // `resolvedLockedOffset` already encapsulates the
+            // `distanceToBottom <= 2 → maxY` behaviour, so no separate
+            // branch is needed here.
+            let resolvedTarget = resolvedLockedOffset(in: scrollView, fallback: targetOffset)
             if scrollView.contentOffset != resolvedTarget {
                 scrollView.setContentOffset(resolvedTarget, animated: false)
             }
