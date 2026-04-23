@@ -41,7 +41,6 @@ struct BoardListView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color("AppSurface"))
         .task(id: taskKey) {
             guard loadedKey != taskKey else { return }
             posts = []

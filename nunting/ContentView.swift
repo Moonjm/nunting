@@ -103,13 +103,11 @@ struct ContentView: View {
             mainScreen
                 .id(reloadToken)
 
-            GeometryReader { proxy in
-                Color("AppSurface")
-                    .frame(height: proxy.safeAreaInsets.top)
-                    .frame(maxHeight: .infinity, alignment: .top)
-                    .ignoresSafeArea(edges: .top)
-            }
-            .allowsHitTesting(false)
+            Color("AppSurface")
+                .ignoresSafeArea(edges: .top)
+                .frame(height: 0)
+                .frame(maxHeight: .infinity, alignment: .top)
+                .allowsHitTesting(false)
 
             Color.black
                 .opacity(0.3 * drawerProgress)
