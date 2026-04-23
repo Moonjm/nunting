@@ -136,11 +136,11 @@ struct ContentView: View {
                 )
                 .id(post.id)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                // Opaque background spans to safe-area edges so the list
-                // underneath doesn't peek through the top bar band when
-                // the overlay is on-screen.
-                .background(Color("AppSurface").ignoresSafeArea())
-                .ignoresSafeArea()
+                // PostDetailView already owns its background + ignores
+                // safe area for that background, so NO additional
+                // `.ignoresSafeArea()` here — applying it at this level
+                // would push the detail header (chevron, site name,
+                // Safari button) up behind the status bar / notch.
                 .offset(x: detailOffset)
                 // Interactive back-drag drives `detailOffset` via the
                 // ContentView-level `panGesture`. Block hit-testing on
