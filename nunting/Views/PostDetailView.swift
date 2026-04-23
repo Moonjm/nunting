@@ -34,6 +34,15 @@ struct PostDetailView: View {
         VStack(spacing: 0) {
             detailHeader
             ScrollView {
+                // Claims UIKit's status-bar-tap scroll-to-top for this
+                // detail ScrollView. When the overlay is live, the list
+                // screen behind is also visible with its own scrollsToTop
+                // scroll view; having two in the window makes iOS scroll
+                // neither. The claimer disables the other scroll views'
+                // scrollsToTop until the detail view disappears from the
+                // window, then restores.
+                StatusBarTapScrollClaimer()
+                    .frame(width: 0, height: 0)
                 VStack(alignment: .leading, spacing: 16) {
                     WrappingTitleLabel(text: post.title)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -746,5 +755,103 @@ struct WrappingTitleLabel: UIViewRepresentable {
             CGSize(width: width, height: .greatestFiniteMagnitude)
         )
         return CGSize(width: width, height: ceil(fitted.height))
+    }
+}
+
+/// When the detail view is visible, iOS's status-bar-tap scroll-to-top
+/// quietly stops working because both the list's backing `UIScrollView`
+/// (from `List`) and the detail's `ScrollView` sit in the window with
+/// `scrollsToTop = true`. iOS only fires the behaviour when exactly one
+/// candidate is eligible; ties resolve to none.
+///
+/// Drop this zero-sized view inside the detail's `ScrollView`. When it
+/// moves into the window it walks up to the enclosing scroll view (the
+/// detail's), pins that one as the claimant, and disables
+/// `scrollsToTop` on every *other* scroll view in the same window.
+/// When it leaves the window (detail dematerialised — different post
+/// opened and the overlay was rebuilt) it restores each original
+/// setting.
+struct StatusBarTapScrollClaimer: UIViewRepresentable {
+    func makeUIView(context: Context) -> ClaimerView {
+        ClaimerView()
+    }
+
+    func updateUIView(_ view: ClaimerView, context: Context) {
+        view.apply()
+    }
+
+    final class ClaimerView: UIView {
+        private struct Managed {
+            weak var scrollView: UIScrollView?
+            let originalScrollsToTop: Bool
+        }
+        private var managed: [Managed] = []
+        weak var ownScrollView: UIScrollView?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            apply()
+        }
+
+        func apply() {
+            guard let window else {
+                restoreManaged()
+                return
+            }
+            // Our enclosing scroll view is the detail view's ScrollView.
+            // Walk the superview chain to find it.
+            var current: UIView? = self
+            var enclosing: UIScrollView?
+            while let c = current {
+                if let sv = c as? UIScrollView {
+                    enclosing = sv
+                    break
+                }
+                current = c.superview
+            }
+            ownScrollView = enclosing
+            enclosing?.scrollsToTop = true
+
+            // Find every *other* UIScrollView in the window. Disable
+            // scrollsToTop on them and remember the prior value so we can
+            // restore on disappear.
+            var all: [UIScrollView] = []
+            Self.collectScrollViews(in: window, into: &all)
+            // Drop stale entries (views that left the hierarchy).
+            managed.removeAll { $0.scrollView == nil }
+            let alreadyManaged = Set(managed.compactMap { $0.scrollView.map(ObjectIdentifier.init) })
+            for sv in all {
+                if sv === enclosing { continue }
+                if alreadyManaged.contains(ObjectIdentifier(sv)) { continue }
+                managed.append(Managed(
+                    scrollView: sv,
+                    originalScrollsToTop: sv.scrollsToTop
+                ))
+                sv.scrollsToTop = false
+            }
+        }
+
+        override func willMove(toWindow newWindow: UIWindow?) {
+            if newWindow == nil {
+                restoreManaged()
+            }
+            super.willMove(toWindow: newWindow)
+        }
+
+        private func restoreManaged() {
+            for m in managed {
+                m.scrollView?.scrollsToTop = m.originalScrollsToTop
+            }
+            managed.removeAll()
+        }
+
+        private static func collectScrollViews(in root: UIView, into acc: inout [UIScrollView]) {
+            if let sv = root as? UIScrollView {
+                acc.append(sv)
+            }
+            for sub in root.subviews {
+                collectScrollViews(in: sub, into: &acc)
+            }
+        }
     }
 }
