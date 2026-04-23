@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 
-struct PostDetailView: View {
+struct PostDetailView: View, Equatable {
     let post: Post
     let readStore: ReadStore
     let cache: PostDetailCache
@@ -18,12 +18,41 @@ struct PostDetailView: View {
     /// slides off-screen.
     var isOverlayVisible: Bool = true
     /// Forwarded to `.scrollDisabled` on the inner `ScrollView` while a
-    /// horizontal back-drag is in flight, so the inner vertical pan
-    /// can't drift under the translating overlay.
+    /// horizontal back-drag is in flight or the post-release spring is
+    /// still settling — without it, layout callbacks during the spring
+    /// can drift `contentOffset` and the scroll position the user had
+    /// on dismiss isn't preserved for re-entry.
     var isScrollingBlocked: Bool = false
     /// Invoked from the custom back button in the header. The parent owns the
     /// overlay offset animation; this view just asks to be dismissed.
     let onDismiss: () -> Void
+
+    // Without this explicit Equatable, SwiftUI can't compare `onDismiss`
+    // (closures aren't Equatable) and treats PostDetailView as "possibly
+    // changed" on every parent re-eval. During a back-drag the parent
+    // re-evaluates every frame (detailOffset animates), so the inner
+    // ScrollView + body VStack + comments LazyVStack of a long post gets
+    // re-built on every frame too. Combined with heavy async image
+    // decode that churn is expensive. Comparing the diffable inputs
+    // (`post`, `isOverlayVisible`, `isScrollingBlocked`) lets SwiftUI
+    // short-circuit the diff, while still propagating the scroll-lock
+    // flip and any post-metadata change (title, commentCount, …) at
+    // their edges.
+    //
+    // Fields deliberately excluded from `==`:
+    // - `readStore`, `cache`: read only from `.task { … }`, never from
+    //   `body`. Mutations don't need a body re-eval to propagate.
+    // - `tapGate`: read synchronously from `.onTapGesture` closures at
+    //   tap time, not from `body`. Same reasoning as readStore/cache.
+    // - `onDismiss`: deliberately ignored — the closure captures
+    //   ContentView's `hideDetail()`, which mutates `@State` via
+    //   out-of-line storage, so calling the first-eval closure still
+    //   mutates the current state.
+    static func == (lhs: PostDetailView, rhs: PostDetailView) -> Bool {
+        lhs.post == rhs.post
+            && lhs.isOverlayVisible == rhs.isOverlayVisible
+            && lhs.isScrollingBlocked == rhs.isScrollingBlocked
+    }
 
     @State private var detail: PostDetail?
     @State private var isLoading = true
@@ -199,10 +228,18 @@ struct PostDetailView: View {
         } else if let errorMessage {
             ContentUnavailableView("불러오기 실패", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
         } else if let detail {
-            // Lazy so only blocks near the viewport materialise — avoids
-            // a 20-image post kicking off simultaneous fetches / decodes
-            // when the view opens.
-            LazyVStack(alignment: .leading, spacing: 12) {
+            // Eager VStack (not LazyVStack): keeps every body block's
+            // height pinned once measured. A `LazyVStack` here let SwiftUI
+            // derealize body items above the viewport when the user
+            // scrolled deep into comments; on re-realize the image
+            // placeholders collapsed to `minHeight: 120` before their
+            // aspect-ratio frame came back, the running content height
+            // contracted, and the viewport (deep at the comments) landed
+            // past content-end — "back-drag from comments area → blank
+            // screen". Fetch / decode throughput is already bounded by
+            // `ImageThrottle` inside `CachedAsyncImage`, so losing the
+            // lazy gate doesn't burst concurrent downloads.
+            VStack(alignment: .leading, spacing: 12) {
                 ForEach(detail.blocks) { block in
                     switch block.kind {
                     case .richText(let segments):
