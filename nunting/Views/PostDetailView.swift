@@ -794,6 +794,13 @@ struct StatusBarTapScrollClaimer: UIViewRepresentable {
     }
 
     func updateUIView(_ view: ClaimerView, context: Context) {
+        // SwiftUI fires `updateUIView` on every parent re-eval. Scanning
+        // the window tree on each call is wasteful and — worse — breaks
+        // transient scroll views (e.g. the Safari reader sheet) whose
+        // `scrollsToTop` we shouldn't be disabling at all. Only re-apply
+        // when the caller actually flipped `isActive`; mount-time apply
+        // still runs from `didMoveToWindow`.
+        guard view.isActive != isActive else { return }
         view.isActive = isActive
         view.apply()
     }
@@ -832,12 +839,25 @@ struct StatusBarTapScrollClaimer: UIViewRepresentable {
             // Find every *other* UIScrollView in the window. Disable
             // scrollsToTop on them and remember the prior value so we can
             // restore when `isActive` flips to false.
+            //
+            // Scope to scroll views whose owning view controller shares a
+            // top-level parent with ours. That's the rootVC's subtree,
+            // which contains the list behind our overlay (both are child
+            // VCs of the app's root hosting controller). Presented sheets
+            // and full-screen covers (SafariView, ImageViewer) live under
+            // a different top-level chain — their scroll views are THEIRS
+            // to manage, not ours.
+            let ourTopVC = Self.topLevelViewController(of: self)
             var all: [UIScrollView] = []
             Self.collectScrollViews(in: window, into: &all)
             let alreadyManaged = Set(managed.compactMap { $0.scrollView.map(ObjectIdentifier.init) })
             for sv in all {
                 if sv === enclosing { continue }
                 if alreadyManaged.contains(ObjectIdentifier(sv)) { continue }
+                let theirTopVC = Self.topLevelViewController(of: sv)
+                if let ourTopVC, let theirTopVC, ourTopVC !== theirTopVC {
+                    continue
+                }
                 managed.append(Managed(
                     scrollView: sv,
                     originalScrollsToTop: sv.scrollsToTop
@@ -867,6 +887,28 @@ struct StatusBarTapScrollClaimer: UIViewRepresentable {
             for sub in root.subviews {
                 collectScrollViews(in: sub, into: &acc)
             }
+        }
+
+        /// Walks the responder chain to find the view's owning
+        /// UIViewController, then follows `.parent` to the top. Presented
+        /// (modal) view controllers have no `.parent`, so `topLevel` on a
+        /// sheet's VC returns the sheet's own root VC — different object
+        /// from the app's rootVC, which is how we tell them apart.
+        private static func topLevelViewController(of view: UIView) -> UIViewController? {
+            var responder: UIResponder? = view
+            var owner: UIViewController?
+            while let r = responder {
+                if let vc = r as? UIViewController {
+                    owner = vc
+                    break
+                }
+                responder = r.next
+            }
+            var current = owner
+            while let c = current, let p = c.parent {
+                current = p
+            }
+            return current
         }
     }
 }

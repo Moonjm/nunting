@@ -812,6 +812,17 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
             // the snapshot and then appear to jump when the snapshot is
             // removed. Disable scrolling for the duration of the back-swipe
             // and restore it after the final offset is written.
+            //
+            // `isScrollEnabled = false` also serves the role the prior
+            // `panGestureRecognizer.isEnabled = false; panGestureRecognizer
+            // .isEnabled = true` toggle used to play — it cancels any
+            // in-flight pan recognition on the inner ScrollView so a
+            // `.changed` or deceleration step can't fire after we snap
+            // back to `baseline`. `gestureRecognizer(_:shouldRecognize
+            // SimultaneouslyWith:)` returning `false` only blocks *future*
+            // simultaneous arbitration; it doesn't interrupt a recognizer
+            // that's already mid-recognition, which happens whenever the
+            // initial touch had a small vertical component.
             scrollView.isScrollEnabled = false
             if scrollView.contentOffset != baseline {
                 scrollView.setContentOffset(baseline, animated: false)
