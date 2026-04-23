@@ -113,14 +113,14 @@ private struct AVPlayerControllerView: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
         let controller = AVPlayerViewController()
-        let item = AVPlayerItem(url: url)
-        let player = AVPlayer(playerItem: item)
-        context.coordinator.player = player
-
-        controller.player = player
         controller.showsPlaybackControls = true
         controller.videoGravity = .resizeAspect
-        controller.allowsPictureInPicturePlayback = true
+        // PiP adds measurable synchronous setup cost (internal PiP
+        // controller wiring + capability probing) on mount — none of the
+        // target sites actually need Picture-in-Picture, so disabling
+        // shortens the main-thread stall window that starts when the
+        // fullScreenCover first presents.
+        controller.allowsPictureInPicturePlayback = false
 
         context.coordinator.installDismissGesture(on: controller.view)
 
@@ -132,13 +132,38 @@ private struct AVPlayerControllerView: UIViewControllerRepresentable {
             isLoading.wrappedValue = false
         }
 
-        // Calling `play()` synchronously here starts the audio decoder
-        // before AVPlayerViewController has materialised its render layer,
-        // which is exactly the "black frame + sound only" case the user
-        // reported. Defer the first `play()` until the underlying item
-        // reports `.readyToPlay` (its first video sample is decoded), so
-        // image and audio kick off together.
-        context.coordinator.startPlaybackWhenReady(item: item)
+        // The bulk of AVPlayerViewController's mount cost lands on the
+        // `controller.player = …` assignment (layer allocation, transport
+        // control materialisation, KVO wiring, probe of the first few
+        // track samples). Doing that synchronously inside
+        // `makeUIViewController` means the fullScreenCover present
+        // animation and the spinner render both block on the AVKit stall,
+        // so the user sees an unresponsive black screen for the first
+        // seconds after tap. Hop one runloop tick via `Task { @MainActor }`
+        // so SwiftUI's present animation can finish and the spinner paints
+        // before AVKit's setup begins — the tap now feels like it
+        // registered even though the total load time hasn't changed.
+        //
+        // The Task handle is stored on the coordinator and cancelled by
+        // `dismantleUIViewController`. `[weak controller]` alone is not
+        // enough: UIKit retains the controller through the dismiss
+        // animation, so without the cancel + `Task.isCancelled` guard
+        // below, the body would proceed to build a fresh AVPlayerItem /
+        // AVPlayer on the already-dismantled coordinator and play audio
+        // over the dismiss animation once `.readyToPlay` fires.
+        let capturedURL = url
+        context.coordinator.setupTask = Task { @MainActor [weak controller, coordinator = context.coordinator] in
+            guard !Task.isCancelled, let controller else { return }
+            let item = AVPlayerItem(url: capturedURL)
+            let player = AVPlayer(playerItem: item)
+            coordinator.player = player
+            controller.player = player
+            // Defer the first `play()` until the item reports
+            // `.readyToPlay` so audio and first decoded picture start
+            // together (avoids the "black frame + sound only" case).
+            coordinator.startPlaybackWhenReady(item: item)
+            coordinator.setupTask = nil
+        }
         return controller
     }
 
@@ -157,6 +182,14 @@ private struct AVPlayerControllerView: UIViewControllerRepresentable {
     }
 
     static func dismantleUIViewController(_ controller: AVPlayerViewController, coordinator: Coordinator) {
+        // Cancel the deferred player-attach Task before touching any state.
+        // Without this, UIKit can retain `controller` for the dismiss
+        // animation, the Task's `[weak controller]` check succeeds, and it
+        // proceeds to wire up a fresh `AVPlayerItem` + `AVPlayer` on the
+        // dismantled coordinator — which then plays audio during the
+        // dismiss animation once `.readyToPlay` fires.
+        coordinator.setupTask?.cancel()
+        coordinator.setupTask = nil
         coordinator.player?.pause()
         coordinator.player = nil
         controller.player = nil
@@ -175,6 +208,10 @@ private struct AVPlayerControllerView: UIViewControllerRepresentable {
         private weak var dismissPan: UIPanGestureRecognizer?
         private var hasDismissed = false
         private var statusObservation: NSKeyValueObservation?
+        /// Handle to the deferred player-attach Task (see
+        /// `makeUIViewController`). Retained here so dismantle can cancel
+        /// it before the closure body fires against a torn-down controller.
+        var setupTask: Task<Void, Never>?
 
         init(onDismiss: @escaping () -> Void) {
             self.onDismiss = onDismiss
