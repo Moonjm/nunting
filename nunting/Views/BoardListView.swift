@@ -40,6 +40,8 @@ struct BoardListView: View {
                 listView
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color("AppSurface"))
         .task(id: taskKey) {
             guard loadedKey != taskKey else { return }
             posts = []
@@ -129,7 +131,7 @@ struct BoardListView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .background(Color("AppSurface"))
+        .background(Color("AppSurface").ignoresSafeArea())
         .scrollDisabled(scrollLocked)
         .refreshable { await load() }
     }

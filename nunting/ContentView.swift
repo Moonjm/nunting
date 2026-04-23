@@ -97,8 +97,19 @@ struct ContentView: View {
 
     var body: some View {
         ZStack(alignment: .leading) {
+            Color("AppSurface")
+                .ignoresSafeArea()
+
             mainScreen
                 .id(reloadToken)
+
+            GeometryReader { proxy in
+                Color("AppSurface")
+                    .frame(height: proxy.safeAreaInsets.top)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .ignoresSafeArea(edges: .top)
+            }
+            .allowsHitTesting(false)
 
             Color.black
                 .opacity(0.3 * drawerProgress)
@@ -596,4 +607,3 @@ private struct BottomAreaTopKey: PreferenceKey {
 #Preview {
     ContentView()
 }
-
