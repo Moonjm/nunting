@@ -73,18 +73,37 @@ private struct FullscreenVideoPlayer: View {
     let url: URL
 
     @Environment(\.dismiss) private var dismiss
+    /// True from presentation until the first video frame is decoded.
+    /// We defer `play()` to `.readyToPlay` to keep audio/video in sync,
+    /// but the black-and-silent window before that leaves the user
+    /// wondering if the tap registered — surface a spinner until the
+    /// first frame comes up.
+    @State private var isLoading = true
 
     var body: some View {
-        AVPlayerControllerView(url: url) {
-            dismiss()
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            AVPlayerControllerView(
+                url: url,
+                isLoading: $isLoading,
+                onDismiss: { dismiss() }
+            )
+            .ignoresSafeArea()
+
+            if isLoading {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .tint(.white)
+                    .scaleEffect(1.4)
+            }
         }
-        .ignoresSafeArea()
-        .background(Color.black)
     }
 }
 
 private struct AVPlayerControllerView: UIViewControllerRepresentable {
     let url: URL
+    @Binding var isLoading: Bool
     let onDismiss: () -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -110,7 +129,9 @@ private struct AVPlayerControllerView: UIViewControllerRepresentable {
         // reported. Defer the first `play()` until the underlying item
         // reports `.readyToPlay` (its first video sample is decoded), so
         // image and audio kick off together.
-        context.coordinator.startPlaybackWhenReady(item: item)
+        context.coordinator.startPlaybackWhenReady(item: item) { [isLoading = $isLoading] in
+            isLoading.wrappedValue = false
+        }
         return controller
     }
 
@@ -155,12 +176,13 @@ private struct AVPlayerControllerView: UIViewControllerRepresentable {
         /// dispatched main block runs, the second `play()` is idempotent on
         /// an already-playing player and the second `invalidate()` is a
         /// no-op on a nil observation.
-        func startPlaybackWhenReady(item: AVPlayerItem) {
+        func startPlaybackWhenReady(item: AVPlayerItem, onReady: @escaping () -> Void) {
             statusObservation?.invalidate()
             statusObservation = item.observe(\.status, options: [.new, .initial]) { [weak self] item, _ in
                 guard item.status == .readyToPlay else { return }
                 DispatchQueue.main.async {
                     self?.player?.play()
+                    onReady()
                     self?.statusObservation?.invalidate()
                     self?.statusObservation = nil
                 }
