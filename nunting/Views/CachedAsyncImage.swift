@@ -126,8 +126,18 @@ struct CachedAsyncImage: View {
 
         if let cached = ImageCache.shared.image(for: url, variant: variant) {
             image = cached
-            if intrinsicAspectRatio == nil, cached.size.height > 0 {
-                intrinsicAspectRatio = cached.size.width / cached.size.height
+            if cached.size.height > 0 {
+                let aspect = cached.size.width / cached.size.height
+                if intrinsicAspectRatio == nil {
+                    intrinsicAspectRatio = aspect
+                }
+                // Opportunistically back-fill the aspect-ratio cache on
+                // cache hits too, so images decoded by a pre-fix build
+                // (image stored, ratio not) get a stable frame on the
+                // next re-realize instead of bouncing through minHeight 120.
+                if ImageCache.shared.aspectRatio(for: url, variant: variant) == nil {
+                    ImageCache.shared.storeAspectRatio(aspect, for: url, variant: variant)
+                }
             }
             return
         }
@@ -166,7 +176,17 @@ struct CachedAsyncImage: View {
                 ImageCache.shared.store(img, for: url, variant: variant)
                 image = img
                 if img.size.height > 0 {
-                    intrinsicAspectRatio = img.size.width / img.size.height
+                    let aspect = img.size.width / img.size.height
+                    intrinsicAspectRatio = aspect
+                    // Persist the ratio so subsequent re-realizations (LazyVStack
+                    // derealize/realize during back-drag) reserve the final
+                    // frame size from `init`, instead of collapsing to the
+                    // minHeight: 120 placeholder for the duration of the
+                    // cache-hit `.task`. Without this, a long post's body
+                    // images briefly shrink to 120pt on re-realize, total
+                    // content height contracts, and the viewport at deep
+                    // scroll ends up past the new content end — blank screen.
+                    ImageCache.shared.storeAspectRatio(aspect, for: url, variant: variant)
                 }
             case .animated(let frames, let duration):
                 // Animated GIFs aren't cached (the frame count × frame size

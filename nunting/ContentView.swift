@@ -43,10 +43,11 @@ struct ContentView: View {
     @State private var dragLockBaseline: CGFloat = 0
     @State private var scrollLocked = false
     /// Kept asserted across the commit/cancel spring for back-drag and
-    /// forward-reveal. Without this, `resetDragState()` unlocks the
-    /// inner ScrollView the moment the finger leaves the screen and the
-    /// user can start a vertical scroll while the detail is still mid-
-    /// animation, which reads as the content drifting under the slide.
+    /// forward-reveal. Without this, `resetDragState()` clears the
+    /// scroll lock the moment the finger leaves and layout callbacks
+    /// during the spring can drift the inner ScrollView's contentOffset
+    /// — the next re-entry then shows a scroll position different from
+    /// where the user left off.
     @State private var detailAnimating = false
     @State private var containerHeight: CGFloat = 0
     @State private var containerWidth: CGFloat = 0
@@ -138,14 +139,22 @@ struct ContentView: View {
                     cache: detailCache,
                     tapGate: detailMediaTapGate,
                     isOverlayVisible: containerWidth > 0 && detailOffset < containerWidth - 0.5,
-                    // `scrollLocked` already implies `dragDirection == .horizontal`
-                    // (both are set together in `panGesture` classification).
-                    // `detailAnimating` keeps the lock asserted across the
-                    // post-release spring so a vertical scroll can't kick
-                    // in while the detail is still sliding into / out of place.
+                    // `scrollLocked` is set by `panGesture`'s horizontal
+                    // classification; `detailAnimating` extends the lock
+                    // across the post-release spring so the inner scroll
+                    // position can't drift while the overlay slides in/out.
                     isScrollingBlocked: scrollLocked || detailAnimating,
                     onDismiss: { hideDetail() }
                 )
+                // `.equatable()` pairs with PostDetailView's custom `==` to
+                // short-circuit body re-evaluation when only the `onDismiss`
+                // closure identity changed (ContentView re-evaluates every
+                // frame of a back-drag as `detailOffset` animates, creating
+                // a fresh closure each time). Without this the inner
+                // ScrollView + body VStack + comments LazyVStack rebuild
+                // per frame on long posts — expensive churn that compounds
+                // with heavy async image decode.
+                .equatable()
                 .id(post.id)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 // PostDetailView already owns its background + ignores
@@ -473,10 +482,10 @@ struct ContentView: View {
         scrollLocked = false
     }
 
-    /// Holds `detailAnimating` true across the spring so the detail
-    /// view's inner ScrollView stays disabled until the slide settles.
-    /// The 0.35s delay is padded slightly past the 0.32s spring response
-    /// so the lock doesn't release mid-bounce.
+    /// Holds `detailAnimating` true across the spring (0.32s response)
+    /// so the detail view's `isScrollingBlocked` stays asserted until
+    /// the slide settles. The 0.35s delay is padded slightly past the
+    /// spring so the lock doesn't release mid-bounce.
     private func beginDetailAnimationLock() {
         detailAnimating = true
         Task { @MainActor in
