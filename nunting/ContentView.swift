@@ -149,6 +149,11 @@ struct ContentView: View {
                         readStore: readStore,
                         cache: detailCache,
                         tapGate: detailMediaTapGate,
+                        // `containerWidth > 0` guards against the pre-
+                        // first-measurement window where detailOffset
+                        // defaults to 0 but the overlay is effectively
+                        // hidden (nothing rendered yet).
+                        isOverlayVisible: containerWidth > 0 && detailOffset < containerWidth - 0.5,
                         onDismiss: { hideDetail() }
                     )
                 }
@@ -653,6 +658,7 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
         weak var lockedScrollView: UIScrollView?
         var lockedContentOffset: CGPoint?
         var lockedDistanceToBottom: CGFloat?
+        var lockedScrollWasEnabled: Bool?
         /// Captured at touch-down (`shouldReceive`) before the embedded
         /// ScrollView has had a chance to nudge its `contentOffset` in
         /// response to the touch's vertical component. `lockScroll` reads
@@ -799,21 +805,25 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
             }
             lockedContentOffset = baseline
             lockedDistanceToBottom = Self.distanceToBottom(in: scrollView)
-            // Force-cancel any in-flight pan / deceleration on the inner
-            // ScrollView so its state machine can't fire another
-            // `.changed` (or its deceleration runloop step) after we
-            // snap back to `baseline`. `gestureRecognizer(_:shouldRecognize
+            lockedScrollWasEnabled = scrollView.isScrollEnabled
+            // While the snapshot is visible, the live SwiftUI ScrollView sits
+            // hidden behind it. If that live scroll view keeps accepting the
+            // same touch's small vertical component, it can drift underneath
+            // the snapshot and then appear to jump when the snapshot is
+            // removed. Disable scrolling for the duration of the back-swipe
+            // and restore it after the final offset is written.
+            //
+            // `isScrollEnabled = false` also serves the role the prior
+            // `panGestureRecognizer.isEnabled = false; panGestureRecognizer
+            // .isEnabled = true` toggle used to play — it cancels any
+            // in-flight pan recognition on the inner ScrollView so a
+            // `.changed` or deceleration step can't fire after we snap
+            // back to `baseline`. `gestureRecognizer(_:shouldRecognize
             // SimultaneouslyWith:)` returning `false` only blocks *future*
-            // simultaneous arbitration — it doesn't interrupt a recognizer
-            // that's already mid-recognition, which is exactly the case
-            // when the initial touch had a small vertical component. The
-            // disable→enable toggle flips the recognizer to `.cancelled`,
-            // stopping its tracking + any momentum without preventing
-            // future touches from engaging it.
-            scrollView.panGestureRecognizer.isEnabled = false
-            scrollView.panGestureRecognizer.isEnabled = true
-            // Snap the live view to the remembered baseline now that
-            // nothing else will overwrite it.
+            // simultaneous arbitration; it doesn't interrupt a recognizer
+            // that's already mid-recognition, which happens whenever the
+            // initial touch had a small vertical component.
+            scrollView.isScrollEnabled = false
             if scrollView.contentOffset != baseline {
                 scrollView.setContentOffset(baseline, animated: false)
             }
@@ -877,37 +887,43 @@ struct SwipeToDismissOverlay<Content: View>: UIViewControllerRepresentable {
         }
 
         private func restoreScroll() {
-            freezeScrollOffset()
-            let scrollView = self.lockedScrollView
-            let targetOffset = self.lockedContentOffset
+            guard let scrollView = lockedScrollView,
+                  let targetOffset = lockedContentOffset
+            else {
+                clearScrollLock()
+                return
+            }
+
+            // Finish the restore while the coordinator still owns the scroll
+            // lock. Deferring this to the next runloop left a narrow window
+            // where the cancelled inner ScrollView pan could process its
+            // terminal state after we had cleared `lockedScrollView`, which
+            // showed up as a small but visible jump when a back-swipe began
+            // over a tappable comment image.
+            //
+            // `resolvedLockedOffset` already encapsulates the
+            // `distanceToBottom <= 2 → maxY` behaviour, so no separate
+            // branch is needed here.
+            let resolvedTarget = resolvedLockedOffset(in: scrollView, fallback: targetOffset)
+            if scrollView.contentOffset != resolvedTarget {
+                scrollView.setContentOffset(resolvedTarget, animated: false)
+            }
+            clearScrollLock()
+        }
+
+        private func clearScrollLock() {
+            if let scrollView = lockedScrollView,
+               let lockedScrollWasEnabled {
+                scrollView.isScrollEnabled = lockedScrollWasEnabled
+            }
             lockedScrollView = nil
             lockedContentOffset = nil
-            let distanceToBottom = lockedDistanceToBottom
             lockedDistanceToBottom = nil
+            lockedScrollWasEnabled = nil
             // Drop the touch-down snapshot so the next touch re-samples
             // rather than reusing a stale baseline.
             earliestScrollView = nil
             earliestOffset = nil
-            DispatchQueue.main.async { [weak scrollView] in
-                guard let scrollView else { return }
-                let resolvedTarget: CGPoint?
-                if let targetOffset {
-                    if let distanceToBottom, distanceToBottom <= 2 {
-                        resolvedTarget = CGPoint(x: targetOffset.x, y: Self.maxOffsetY(in: scrollView))
-                    } else {
-                        let minY = -scrollView.adjustedContentInset.top
-                        resolvedTarget = CGPoint(
-                            x: targetOffset.x,
-                            y: max(minY, min(Self.maxOffsetY(in: scrollView), targetOffset.y))
-                        )
-                    }
-                } else {
-                    resolvedTarget = nil
-                }
-                if let resolvedTarget, scrollView.contentOffset != resolvedTarget {
-                    scrollView.setContentOffset(resolvedTarget, animated: false)
-                }
-            }
         }
 
         private static func distanceToBottom(in scrollView: UIScrollView) -> CGFloat {
