@@ -232,7 +232,9 @@ struct CachedAsyncImage: View {
                 source: source,
                 frameCount: frameCount,
                 downsampleRatio: ratio,
-                longSide: longSide
+                longSide: longSide,
+                sourceWidth: sourceW,
+                sourceHeight: sourceH
             )
         }
 
@@ -265,14 +267,28 @@ struct CachedAsyncImage: View {
         return .still(UIImage(cgImage: cg, scale: 1, orientation: .up))
     }
 
-    /// Upper bound on how many decoded frames we keep resident for a single
-    /// animated source. Keep-alive overlays hold their GIFs for the
-    /// lifetime of the active post, so a 300-frame Twitch clip (surfaced
-    /// as a GIF embed) would otherwise sit on ~1GB of decoded pixels and
-    /// push the app toward jetsam. We subsample the source to fit this
-    /// cap — animation plays at a slightly lower frame rate but still
-    /// reads as motion.
-    nonisolated private static let animatedFrameLimit = 60
+    /// Memory budget for resident decoded frames of a single animated
+    /// source. Keep-alive overlays hold their GIFs for the lifetime of
+    /// the active post, so a 300-frame Twitch clip at 1080px would
+    /// otherwise sit on ~1GB of decoded pixels and push the app toward
+    /// jetsam. We fit as many frames as this budget allows and stride-
+    /// subsample past it. 280MB matches the legacy envelope at 1080px
+    /// (~4.6MB/frame × 60 frames) while letting smaller board GIFs —
+    /// e.g. a 566×540 Bobaedream clip at 1.2MB/frame — keep all 200
+    /// frames instead of being thinned to 60. That thinning stretched
+    /// each sampled frame's dwell time to 4× the source, which users
+    /// saw as the GIF playing in slow motion vs. the browser.
+    nonisolated private static let animatedFrameByteBudget = 280 * 1024 * 1024
+
+    /// Absolute frame ceiling so a pathological source (thousands of
+    /// tiny frames well inside the byte budget) can't balloon decode
+    /// time. 300 covers the longest sane board embed.
+    nonisolated private static let animatedFrameCeiling = 300
+
+    /// Floor so an exceptionally large in-cap frame can't drive the
+    /// limit below this. 30 × animatedLongEdgeCap² × 4 ≈ 140MB, safely
+    /// under budget even in the worst case.
+    nonisolated private static let animatedFrameFloor = 30
 
     /// Long-edge cap (pixels) applied to animated frames. Lower than the
     /// still path's `maxDimension` to bound per-frame memory. Boards like
@@ -291,7 +307,9 @@ struct CachedAsyncImage: View {
         source: CGImageSource,
         frameCount: Int,
         downsampleRatio ratio: CGFloat,
-        longSide: CGFloat
+        longSide: CGFloat,
+        sourceWidth: CGFloat,
+        sourceHeight: CGFloat
     ) -> DecodeResult? {
         // Tighter long-edge cap than the still path — frames compound, and
         // a keep-alive overlay sitting on 40 retina-scale frames adds up
@@ -309,14 +327,34 @@ struct CachedAsyncImage: View {
             kCGImageSourceThumbnailMaxPixelSize: targetLongSide,
         ]
 
-        // Subsample stride when the source exceeds our frame budget. A
-        // 120-frame source maps to stride=2 (every other frame), yielding
-        // a 60-frame loop at half the frame rate. The window's delay is
-        // summed so the total loop duration stays close to the source's
-        // original playback speed.
-        let stride = max(1, (frameCount + animatedFrameLimit - 1) / animatedFrameLimit)
+        // Per-frame resident cost after downsampling (RGBA8888).
+        // effectiveRatio is the 1D scale from source long edge down to
+        // targetLongSide; squaring it converts to a 2D pixel-count ratio.
+        // When the source reports no pixel dimensions (corrupt header),
+        // fall back to a square frame at the long-edge cap — otherwise
+        // sourceWidth×sourceHeight collapses to 0, the `max(…, 1)` guard
+        // rescues it to 1 pixel, and `budgetFrames` explodes to the
+        // ceiling (300). The subsequent native-decode branch would then
+        // try to hold 300 full-resolution frames, which is exactly the
+        // jetsam risk the budget exists to prevent.
+        let sourceLong = max(sourceWidth, sourceHeight)
+        let effectiveRatio = sourceLong > 0 ? min(1, targetLongSide / sourceLong) : 1
+        let framePixels: CGFloat
+        if sourceWidth > 0 && sourceHeight > 0 {
+            framePixels = sourceWidth * sourceHeight * effectiveRatio * effectiveRatio
+        } else {
+            framePixels = targetLongSide * targetLongSide
+        }
+        let frameBytes = max(framePixels, 1) * 4
+        let budgetFrames = Int(CGFloat(animatedFrameByteBudget) / frameBytes)
+        let limit = max(animatedFrameFloor, min(animatedFrameCeiling, budgetFrames))
+
+        // Subsample stride when the source exceeds our dynamic frame
+        // limit. The window's delay is summed so the total loop duration
+        // stays close to the source's original playback speed.
+        let stride = max(1, (frameCount + limit - 1) / limit)
         var frames: [UIImage] = []
-        frames.reserveCapacity(min(frameCount, animatedFrameLimit))
+        frames.reserveCapacity(min(frameCount, limit))
         var totalDuration: TimeInterval = 0
 
         var sampleIndex = 0
