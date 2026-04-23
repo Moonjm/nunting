@@ -330,10 +330,22 @@ struct CachedAsyncImage: View {
         // Per-frame resident cost after downsampling (RGBA8888).
         // effectiveRatio is the 1D scale from source long edge down to
         // targetLongSide; squaring it converts to a 2D pixel-count ratio.
+        // When the source reports no pixel dimensions (corrupt header),
+        // fall back to a square frame at the long-edge cap — otherwise
+        // sourceWidth×sourceHeight collapses to 0, the `max(…, 1)` guard
+        // rescues it to 1 pixel, and `budgetFrames` explodes to the
+        // ceiling (300). The subsequent native-decode branch would then
+        // try to hold 300 full-resolution frames, which is exactly the
+        // jetsam risk the budget exists to prevent.
         let sourceLong = max(sourceWidth, sourceHeight)
         let effectiveRatio = sourceLong > 0 ? min(1, targetLongSide / sourceLong) : 1
-        let framePixels = max(sourceWidth * sourceHeight * effectiveRatio * effectiveRatio, 1)
-        let frameBytes = framePixels * 4
+        let framePixels: CGFloat
+        if sourceWidth > 0 && sourceHeight > 0 {
+            framePixels = sourceWidth * sourceHeight * effectiveRatio * effectiveRatio
+        } else {
+            framePixels = targetLongSide * targetLongSide
+        }
+        let frameBytes = max(framePixels, 1) * 4
         let budgetFrames = Int(CGFloat(animatedFrameByteBudget) / frameBytes)
         let limit = max(animatedFrameFloor, min(animatedFrameCeiling, budgetFrames))
 
