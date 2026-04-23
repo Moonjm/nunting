@@ -9,9 +9,10 @@ struct InlineVideoPlayer: View {
     /// view falls back to the aagag `/o/{q}.jpg` convention and, failing
     /// that, a plain film-icon placeholder.
     var posterURL: URL? = nil
-    /// Set by `SwipeToDismissOverlay` while a back-swipe is in flight so
-    /// releasing a finger over the play button doesn't push fullscreen
-    /// playback when the user only intended to leave the detail screen.
+    /// Set by ContentView's `panGesture` while a back-drag is in flight
+    /// so releasing a finger over the play button doesn't push
+    /// fullscreen playback when the user only intended to leave the
+    /// detail screen.
     var tapGate: TapSuppressionGate? = nil
 
     @State private var isPresented = false
