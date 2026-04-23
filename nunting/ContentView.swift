@@ -113,61 +113,41 @@ struct ContentView: View {
             .frame(width: drawerWidth)
             .offset(x: drawerXOffset)
 
-            // Keep-alive detail overlay. Once set, `activePost` stays
-            // non-nil so the rendered PostDetailView survives back-swipes
-            // (scroll state, image decode, video playback all preserved).
-            // `.id(post.id)` forces a rebuild only when a different post is
-            // opened, which is the sole case where we intentionally trade
-            // keep-alive for a fresh view.
+            // Permanent-mount detail overlay. Once `activePost` is set,
+            // the PostDetailView stays live in the SwiftUI tree for the
+            // rest of the session — dismiss is nothing more than a
+            // `.offset(x:)` animation that pushes the view off-screen
+            // right. The underlying UIScrollView, loaded images, GIF
+            // frames, and every `@State` inside PostDetailView are all
+            // preserved by inertia: nothing is ever detached from the
+            // view hierarchy. `.id(post.id)` forces a rebuild only when
+            // the user actively opens a DIFFERENT post (single-post
+            // state preservation; multi-post would need an LRU layered
+            // on top of this).
             if let post = activePost {
-                // Wrap the detail view in a UIHostingController whose root
-                // UIView carries a UIPanGestureRecognizer. SwiftUI's
-                // `.simultaneousGesture` alone doesn't fire reliably here
-                // because UIScrollView tends to claim the touch first. The
-                // UIKit recognizer stays simultaneous with the scroll pan,
-                // but only begins for clearly rightward horizontal drags.
-                // During the drag it moves a UIKit snapshot, avoiding
-                // per-frame SwiftUI state writes that can make long
-                // LazyVStack details blank or jump.
-                SwipeToDismissOverlay(
-                    onChange: { dx in
-                        detailOffset = max(0, min(containerWidth, dx))
-                    },
-                    shouldDismiss: { dx, velocityX in
-                        shouldDismissDetailSwipe(dx: dx, velocityX: velocityX)
-                    },
-                    onEnd: { dx, velocityX in
-                        let shouldDismiss = shouldDismissDetailSwipe(dx: dx, velocityX: velocityX)
-                        withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
-                            detailOffset = shouldDismiss ? containerWidth : 0
-                        }
-                    },
-                    tapGate: detailMediaTapGate
-                ) {
-                    PostDetailView(
-                        post: post,
-                        readStore: readStore,
-                        cache: detailCache,
-                        tapGate: detailMediaTapGate,
-                        // `containerWidth > 0` guards against the pre-
-                        // first-measurement window where detailOffset
-                        // defaults to 0 but the overlay is effectively
-                        // hidden (nothing rendered yet).
-                        isOverlayVisible: containerWidth > 0 && detailOffset < containerWidth - 0.5,
-                        onDismiss: { hideDetail() }
-                    )
-                }
+                PostDetailView(
+                    post: post,
+                    readStore: readStore,
+                    cache: detailCache,
+                    tapGate: detailMediaTapGate,
+                    isOverlayVisible: containerWidth > 0 && detailOffset < containerWidth - 0.5,
+                    isScrollingBlocked: scrollLocked && dragDirection == .horizontal,
+                    onDismiss: { hideDetail() }
+                )
                 .id(post.id)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                // Extend the hosted container edge-to-edge so the
-                // UIHostingController's view covers the status-bar /
-                // notch band. Without this the ZStack clips the overlay
-                // to the ContentView's safe area and the list underneath
-                // shows through the top of the detail. The PostDetailView
-                // root inside still respects safe area for its header, so
-                // the chevron still lands below the status bar.
+                // Opaque background spans to safe-area edges so the list
+                // underneath doesn't peek through the top bar band when
+                // the overlay is on-screen.
+                .background(Color("AppSurface").ignoresSafeArea())
                 .ignoresSafeArea()
                 .offset(x: detailOffset)
+                // Interactive back-drag drives `detailOffset` via the
+                // ContentView-level `panGesture`. Block hit-testing on
+                // the detail whenever it's visibly off-screen so the
+                // list beneath receives taps/scrolls without the stale
+                // (but still-mounted) PostDetailView intercepting.
+                .allowsHitTesting(containerWidth == 0 || detailOffset < containerWidth - 0.5)
                 .zIndex(10)
             }
         }
@@ -373,16 +353,22 @@ struct ContentView: View {
                 }
                 if dragDirection == .horizontal {
                     dragOffset = value.translation.width - dragLockBaseline
-                    // Forward-swipe reveal: overlay hidden at drag start and
-                    // finger moving leftward pulls it in. If the finger
-                    // reverses back rightward past the start, snap the
-                    // overlay fully hidden again — otherwise a subsequent
-                    // drawer-open commit would leave `detailOffset` parked
-                    // at a partial reveal, and the next left-swipe would
-                    // lock with `detailOffsetBase < containerWidth` and
-                    // never re-enter forward-reveal mode. Back-swipe is
-                    // owned by the overlay's UIKit recognizer.
-                    if activePost != nil && detailOffsetBase >= containerWidth {
+                    if activePost != nil && detailOffsetBase == 0 {
+                        // Back-drag from the visible overlay. Track the
+                        // finger so the detail follows the drag out to
+                        // the right; the inner ScrollView is gated by
+                        // `isScrollingBlocked` so its pan can't drift
+                        // under us during the drag.
+                        detailMediaTapGate.suppress()
+                        detailOffset = max(0, min(containerWidth, dragOffset))
+                    } else if activePost != nil && detailOffsetBase >= containerWidth {
+                        // Forward-swipe reveal: overlay hidden at drag
+                        // start and finger moving leftward pulls it in.
+                        // If the finger reverses back rightward past
+                        // the start, snap the overlay fully hidden again
+                        // so the next swipe re-enters forward-reveal
+                        // mode cleanly instead of getting stuck at a
+                        // partial reveal.
                         if dragOffset < 0 {
                             detailOffset = max(0, min(containerWidth, containerWidth + dragOffset))
                         } else {
@@ -419,13 +405,15 @@ struct ContentView: View {
                 // correct end state here preserves continuity with the
                 // finger's position.
                 if hasActive && base == 0 {
-                    // Overlay visible: back-swipe is owned by the edge
-                    // strip, and this gesture fired either on a stray
-                    // horizontal drag that the ScrollView didn't consume
-                    // or from a simultaneous dispatch. Do nothing so we
-                    // don't double-commit an animation the edge gesture
-                    // already handled.
-                    dragOffset = 0
+                    // Back-drag: overlay was fully visible at drag
+                    // start. Commit to hidden if the finger travelled
+                    // past the distance / velocity thresholds, else
+                    // snap back to fully visible.
+                    let shouldDismiss = shouldDismissDetailSwipe(dx: traveled, velocityX: velocity)
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
+                        detailOffset = shouldDismiss ? containerWidth : 0
+                        dragOffset = 0
+                    }
                     return
                 }
                 if hasActive && base >= containerWidth && traveled < 0 {

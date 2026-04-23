@@ -17,6 +17,10 @@ struct PostDetailView: View {
     /// its grip on the list's `scrollsToTop` flag when the overlay
     /// slides off-screen.
     var isOverlayVisible: Bool = true
+    /// Forwarded to `.scrollDisabled` on the inner `ScrollView` while a
+    /// horizontal back-drag is in flight, so the inner vertical pan
+    /// can't drift under the translating overlay.
+    var isScrollingBlocked: Bool = false
     /// Invoked from the custom back button in the header. The parent owns the
     /// overlay offset animation; this view just asks to be dismissed.
     let onDismiss: () -> Void
@@ -89,6 +93,7 @@ struct PostDetailView: View {
                 }
                 .padding()
             }
+            .scrollDisabled(isScrollingBlocked)
         }
         // Fill the hosted container even when the SwiftUI ideal size would
         // otherwise be smaller — UIHostingController inside our overlay
