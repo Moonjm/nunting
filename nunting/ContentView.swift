@@ -149,6 +149,11 @@ struct ContentView: View {
                         readStore: readStore,
                         cache: detailCache,
                         tapGate: detailMediaTapGate,
+                        // `containerWidth > 0` guards against the pre-
+                        // first-measurement window where detailOffset
+                        // defaults to 0 but the overlay is effectively
+                        // hidden (nothing rendered yet).
+                        isOverlayVisible: containerWidth > 0 && detailOffset < containerWidth - 0.5,
                         onDismiss: { hideDetail() }
                     )
                 }
