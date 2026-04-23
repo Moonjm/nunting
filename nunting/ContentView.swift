@@ -315,11 +315,11 @@ struct ContentView: View {
     }
 
     private func shouldDismissDetailSwipe(dx: CGFloat, velocityX: CGFloat) -> Bool {
-        dx > detailSwipeDistanceThreshold || velocityX > 320
+        dx > detailSwipeDistanceThreshold || velocityX > 120
     }
 
     private var detailSwipeDistanceThreshold: CGFloat {
-        min(containerWidth * 0.12, 48)
+        min(containerWidth * 0.08, 32)
     }
 
 
@@ -420,7 +420,7 @@ struct ContentView: View {
                     // Forward-swipe reveal: low threshold matches the old
                     // lastOpenedPost re-push so a light flick from the right
                     // edge is enough to pull the overlay back in.
-                    let shouldReveal = traveled < -50 || velocity < -180
+                    let shouldReveal = traveled < -32 || velocity < -120
                     withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
                         detailOffset = shouldReveal ? 0 : containerWidth
                         dragOffset = 0
