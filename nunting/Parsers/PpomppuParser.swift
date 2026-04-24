@@ -568,14 +568,31 @@ struct PpomppuParser: BoardParser {
 
     nonisolated private func cleanCommentText(from element: Element) throws -> String {
         let copy = (element.copy() as? Element) ?? element
+        let blockMarker = "\u{0001}NL\u{0001}"
+        // `.scrap_bx_href` / `.scrap_bx` is the OpenGraph link-preview card
+        // ppomppu injects when a comment contains an external URL. Web
+        // hides the `<small>` description via CSS; flattening the subtree
+        // with `.text()` leaks the full article body into the comment.
+        // The card is an inline `<a>` wrapping a `<div>`, so the block
+        // newline it visually created is lost when we remove the subtree.
+        // Stamp the block-marker sentinel in its place so the user's
+        // sibling text and the fallback URL keep the line break the DOM
+        // implied; the sibling `<a class="noeffect">` already carries the
+        // same URL as plain text so the tappable link survives.
+        for scrap in try copy.select("a.scrap_bx_href, .scrap_bx") where scrap.parent() != nil {
+            _ = try? scrap.before(blockMarker)
+        }
         // Remove media elements *and* their decorative siblings so that
         // the <video> fallback string ("Your browser does not support...")
         // and the GIF-expansion button's "원본보기" label don't leak into
         // the comment content.
         try copy.select(
-            "img, script, style, video, source, .wrapper_video, a.btn_show_org"
+            "img, script, style, video, source, .wrapper_video, a.btn_show_org, a.scrap_bx_href, .scrap_bx"
         ).remove()
-        let blockMarker = "\u{0001}NL\u{0001}"
+        // Preserve remaining anchors as tappable markdown links — `.text()`
+        // below would otherwise drop the href and render the label as
+        // unlinked prose.
+        convertAnchorsToMarkdown(in: copy)
         let blocks = try copy.select("br, p, div, li, blockquote, tr")
         for el in blocks where el.parent() != nil {
             _ = try? el.before(blockMarker)

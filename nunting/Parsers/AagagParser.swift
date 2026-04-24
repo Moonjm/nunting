@@ -340,26 +340,8 @@ struct AagagParser: BoardParser {
         else { return raw }
 
         // Convert anchors to markdown so PostDetailView's comment renderer can
-        // make them tappable. `[label](<url>)` — the `<>` wrapping survives URL
-        // characters like `?`, `&`, `=`.
-        if let anchors = try? body.select("a[href]") {
-            for el in anchors where el.parent() != nil {
-                let href = (try? el.attr("href")) ?? ""
-                let label = ((try? el.text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !href.isEmpty,
-                      let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL,
-                      let scheme = url.scheme?.lowercased(),
-                      scheme == "http" || scheme == "https"
-                else { continue }
-                let displayLabel = label.isEmpty ? url.absoluteString : label
-                let safe = displayLabel
-                    .replacingOccurrences(of: "\\", with: "\\\\")
-                    .replacingOccurrences(of: "[", with: "\\[")
-                    .replacingOccurrences(of: "]", with: "\\]")
-                let markdown = "[\(safe)](<\(url.absoluteString)>)"
-                _ = try? el.replaceWith(TextNode(markdown, ""))
-            }
-        }
+        // make them tappable (shared BoardParser helper).
+        convertAnchorsToMarkdown(in: body)
 
         // Replace <br>/block elements with literal newlines via a marker that
         // survives SwiftSoup's text() whitespace collapsing.

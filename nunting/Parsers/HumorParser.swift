@@ -344,6 +344,9 @@ struct HumorParser: BoardParser {
                 try copy.select(
                     ".recomm_btn, [id^=comm_ok_ment_], [id^=poncomm], .comment_file, img, script, style"
                 ).remove()
+                // Preserve anchors as tappable markdown links — `.text()`
+                // below would otherwise drop the href.
+                convertAnchorsToMarkdown(in: copy)
                 return try copy.text().trimmingCharacters(in: .whitespacesAndNewlines)
             }()
 
