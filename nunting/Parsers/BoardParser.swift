@@ -214,13 +214,7 @@ extension BoardParser {
 /// actor isolation) keeps one pre-compilation shared across every
 /// parser instance.
 private enum BoardParserRegex {
-    // Swift 6 infers main-actor isolation on top-level types by default;
-    // without `nonisolated(unsafe)` the static let can't be read from
-    // `nonisolated` parser extension methods. Reading an immutable
-    // Sendable `NSRegularExpression` across actors is inherently safe —
-    // the compiler's "unnecessary" warning is a known quirk in this
-    // isolation-inference case. Keep the annotation.
-    nonisolated(unsafe) static let youtubeEmbedID: NSRegularExpression = try! NSRegularExpression(
+    nonisolated static let youtubeEmbedID: NSRegularExpression = try! NSRegularExpression(
         pattern: #"youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{11})"#,
         options: [.caseInsensitive]
     )
