@@ -167,6 +167,7 @@ struct Cook82Parser: BoardParser {
     nonisolated private func handleElement(_ el: Element, blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
         let tag = el.tagName().lowercased()
         if Self.skipTags.contains(tag) { return }
+        if isHidden(el) { return }
 
         switch tag {
         case "img":

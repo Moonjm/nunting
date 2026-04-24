@@ -210,6 +210,7 @@ struct HumorParser: BoardParser {
         let tag = el.tagName().lowercased()
 
         if Self.skipTags.contains(tag) { return }
+        if isHidden(el) { return }
 
         // Videos come from OnClick handlers on wrapper divs (humor doesn't
         // ship raw <video> tags on the mobile detail page). Extract the mp4

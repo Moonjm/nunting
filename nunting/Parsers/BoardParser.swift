@@ -62,6 +62,20 @@ extension BoardParser {
         }
         return false
     }
+
+    /// Inline-style visibility check. Sites sometimes stash preload/tracking
+    /// `<img>` or helper markup inside a `display: none` wrapper (e.g. inven's
+    /// `INVEN.Media.Resizer.collect` injects five 1px copies of every image
+    /// into a hidden div at the top of the body). Browsers drop those
+    /// subtrees via CSS; a plain HTML walker promotes them to image blocks
+    /// unless we explicitly filter hidden ancestors. Only inspects the inline
+    /// `style` attribute — class-based CSS rules would require a full
+    /// stylesheet resolver and aren't what the real-world preload tricks use.
+    nonisolated func isHidden(_ element: Element) -> Bool {
+        guard let style = try? element.attr("style"), !style.isEmpty else { return false }
+        let compact = style.lowercased().filter { !$0.isWhitespace }
+        return compact.contains("display:none") || compact.contains("visibility:hidden")
+    }
 }
 
 /// Accumulates an `[InlineSegment]` for a single text block while a parser walks
