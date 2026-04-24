@@ -277,6 +277,7 @@ struct PpomppuParser: BoardParser {
     }
 
     nonisolated private func collectBlocks(from element: Element, skipping skipURL: URL?, into blocks: inout [ContentBlock]) throws {
+        if isHidden(element) { return }
         var inline = InlineAccumulator()
 
         func flush() {
@@ -324,6 +325,7 @@ struct PpomppuParser: BoardParser {
 
         for node in element.getChildNodes() {
             if let el = node as? Element {
+                if isHidden(el) { continue }
                 let childTag = el.tagName().lowercased()
                 switch childTag {
                 case "img":
@@ -383,8 +385,10 @@ struct PpomppuParser: BoardParser {
     }
 
     nonisolated private func collectInlines(from element: Element, skipping skipURL: URL?, into inline: inout InlineAccumulator) throws {
+        if isHidden(element) { return }
         for node in element.getChildNodes() {
             if let el = node as? Element {
+                if isHidden(el) { continue }
                 let childTag = el.tagName().lowercased()
                 switch childTag {
                 case "br":

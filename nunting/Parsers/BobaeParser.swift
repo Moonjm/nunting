@@ -178,6 +178,7 @@ struct BobaeParser: BoardParser {
         let tag = el.tagName().lowercased()
 
         if Self.skipTags.contains(tag) { return }
+        if isHidden(el) { return }
 
         switch tag {
         case "img":

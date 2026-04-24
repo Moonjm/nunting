@@ -266,6 +266,7 @@ struct CoolenjoyParser: BoardParser {
     }
 
     nonisolated private func collectBlocks(from element: Element, into blocks: inout [ContentBlock]) throws {
+        if isHidden(element) { return }
         var inline = InlineAccumulator()
 
         func flush() {
@@ -300,6 +301,7 @@ struct CoolenjoyParser: BoardParser {
 
         for node in element.getChildNodes() {
             if let el = node as? Element {
+                if isHidden(el) { continue }
                 let childTag = el.tagName().lowercased()
                 switch childTag {
                 case "img":
@@ -342,8 +344,10 @@ struct CoolenjoyParser: BoardParser {
     }
 
     nonisolated private func collectInlines(from element: Element, into inline: inout InlineAccumulator) throws {
+        if isHidden(element) { return }
         for node in element.getChildNodes() {
             if let el = node as? Element {
+                if isHidden(el) { continue }
                 let childTag = el.tagName().lowercased()
                 switch childTag {
                 case "br":
