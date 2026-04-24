@@ -318,12 +318,6 @@ struct CachedAsyncImage: View {
         )
         let needsThumbnail = !(ratio >= 1 && targetLongSide >= max(longSide, 1))
 
-        var delays: [TimeInterval] = []
-        delays.reserveCapacity(frameCount)
-        for i in 0..<frameCount {
-            delays.append(frameDelay(at: i, in: source))
-        }
-
         // Prewarm frame 0 on the decode task (we're off-main here) so the
         // view's first layout pass has something to present immediately,
         // rather than flashing blank while the display link schedules its
@@ -347,7 +341,6 @@ struct CachedAsyncImage: View {
 
         let payload = AnimatedImagePayload(
             source: source,
-            delays: delays,
             frameCount: frameCount,
             firstFrame: firstFrame,
             aspect: aspect,
@@ -383,7 +376,7 @@ struct CachedAsyncImage: View {
         }
     }
 
-    nonisolated private static func frameDelay(at index: Int, in source: CGImageSource) -> TimeInterval {
+    nonisolated fileprivate static func frameDelay(at index: Int, in source: CGImageSource) -> TimeInterval {
         guard let props = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any]
         else { return 0.1 }
         // GIF and APNG both surface delay metadata, but under their own
@@ -407,15 +400,18 @@ struct CachedAsyncImage: View {
 }
 
 /// Lightweight animated-image description passed from the decoder to the
-/// UIKit player. Holds the raw `CGImageSource` plus the pre-computed
-/// per-frame delay table and a prewarmed first frame; the player decodes
-/// remaining frames on demand and keeps a bounded LRU cache.
+/// UIKit player. Holds the raw `CGImageSource` and a prewarmed first
+/// frame — per-frame delays are NOT pre-computed here because reading
+/// `CGImageSourceCopyPropertiesAtIndex` for every frame of a long GIF
+/// (300+ frames) forces the file parser to walk to the end of the
+/// stream before the decode task can return, which the user perceived
+/// as slow initial loading. The player reads delays lazily, one frame
+/// at a time, inside its CADisplayLink tick.
 /// `@unchecked Sendable` because `CGImageSource` is immutable + reference-
 /// typed and Apple documents its read APIs as thread-safe; we only ever
 /// read, so crossing the decode-task → main-actor boundary is sound.
 struct AnimatedImagePayload: @unchecked Sendable {
     let source: CGImageSource
-    let delays: [TimeInterval]
     let frameCount: Int
     let firstFrame: CGImage
     let aspect: CGFloat
@@ -473,7 +469,17 @@ private struct AnimatedImageUIView: UIViewRepresentable {
 private final class DisplayLinkAnimatedImageView: UIView {
     private(set) var source: CGImageSource?
     private var frameCount: Int = 0
+
+    /// Cumulative per-frame delays, filled lazily as the player walks
+    /// forward. `cumulativeDelays[i]` = sum of delays for frames [0, i].
+    /// Starts empty; each tick extends it as far as the current elapsed
+    /// time demands. Avoids the up-front `CGImageSourceCopyPropertiesAtIndex`
+    /// scan the decoder used to run over every frame before returning.
     private var cumulativeDelays: [TimeInterval] = []
+    /// Total duration once every frame's delay has been read. 0 while the
+    /// table is still being filled — in that window `tick` treats the
+    /// playhead as still advancing forward through the first loop without
+    /// modulo.
     private var totalDuration: TimeInterval = 0
     private var useThumbnail: Bool = false
     private var thumbnailMaxPixelSize: CGFloat = 0
@@ -543,21 +549,9 @@ private final class DisplayLinkAnimatedImageView: UIView {
         useThumbnail = payload.useThumbnail
         thumbnailMaxPixelSize = payload.thumbnailMaxPixelSize
 
-        // Build a prefix-sum table of delays so a display-link tick can
-        // map `elapsed mod totalDuration` to a frame index via binary
-        // search in O(log frameCount) instead of a linear scan each tick.
         cumulativeDelays = []
-        cumulativeDelays.reserveCapacity(payload.delays.count)
-        var running: TimeInterval = 0
-        for d in payload.delays {
-            running += d
-            cumulativeDelays.append(running)
-        }
-        // Degenerate sources with zero-total delays would otherwise make
-        // `tick` divide by zero and freeze on frame 0. 0.1s / frame is
-        // the same fallback `frameDelay(...)` already applies per-frame
-        // when metadata is missing.
-        totalDuration = running > 0 ? running : Double(max(frameCount, 1)) * 0.1
+        cumulativeDelays.reserveCapacity(payload.frameCount)
+        totalDuration = 0
 
         frameCache.removeAll(keepingCapacity: true)
         cacheOrder.removeAll(keepingCapacity: true)
@@ -578,7 +572,7 @@ private final class DisplayLinkAnimatedImageView: UIView {
     }
 
     private func resumeDisplayLink() {
-        guard displayLink == nil, source != nil, totalDuration > 0 else { return }
+        guard displayLink == nil, source != nil, frameCount > 0 else { return }
         let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
         // `.common` runs the tick during scroll tracking too — otherwise
         // GIFs freeze the moment the user starts dragging the feed.
@@ -596,11 +590,44 @@ private final class DisplayLinkAnimatedImageView: UIView {
     }
 
     @objc private func tick(_ link: CADisplayLink) {
-        guard source != nil, totalDuration > 0, !cumulativeDelays.isEmpty else { return }
+        guard let source, frameCount > 0 else { return }
         let now = link.targetTimestamp
         if startTime == nil { startTime = now }
         let elapsed = now - (startTime ?? now)
-        let t = elapsed.truncatingRemainder(dividingBy: totalDuration)
+
+        // Extend the cumulative-delay table lazily: read one frame's delay
+        // metadata at a time via `CGImageSourceCopyPropertiesAtIndex` until
+        // the accumulated total covers `elapsed` (first-loop progression)
+        // or until every frame has been scanned (then `totalDuration`
+        // locks in and subsequent loops use modulo). Reading a single
+        // frame's properties is O(μs) after the initial parse, well
+        // inside a display-link tick budget.
+        if totalDuration == 0 {
+            let cap = cumulativeDelays.last ?? 0
+            if cumulativeDelays.count < frameCount && cap <= elapsed {
+                var running = cap
+                while cumulativeDelays.count < frameCount && running <= elapsed + 1 {
+                    let d = CachedAsyncImage.frameDelay(at: cumulativeDelays.count, in: source)
+                    running += d
+                    cumulativeDelays.append(running)
+                }
+                if cumulativeDelays.count == frameCount {
+                    // Last frame sum locks in the loop duration for
+                    // subsequent modulo playback. Fall back to 0.1s/frame
+                    // if every delay came back 0 (degenerate metadata).
+                    totalDuration = running > 0 ? running : Double(frameCount) * 0.1
+                }
+            }
+        }
+
+        guard !cumulativeDelays.isEmpty else { return }
+        let t: TimeInterval
+        if totalDuration > 0 {
+            t = elapsed.truncatingRemainder(dividingBy: totalDuration)
+        } else {
+            // Still walking through the first loop — advance linearly.
+            t = elapsed
+        }
 
         // Binary search for the first cumulative delay strictly greater
         // than `t` — that index is the frame currently on-screen.
