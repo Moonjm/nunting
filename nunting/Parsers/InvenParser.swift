@@ -236,37 +236,13 @@ struct InvenParser: BoardParser {
     }
 
     nonisolated private func imageURL(from element: Element) throws -> URL? {
-        let src = try element.attr("src")
-        guard !src.isEmpty,
-              let url = URL(string: src, relativeTo: site.baseURL)?.absoluteURL,
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https"
-        else { return nil }
-        return url
-    }
-
-    /// Pick up HTML5 `<video poster="...">` so the tap-to-play frame shows
-    /// the site's intended thumbnail instead of a black placeholder.
-    nonisolated private func videoPoster(from el: Element) throws -> URL? {
-        let raw = try el.attr("poster").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else { return nil }
-        let normalized = raw.hasPrefix("//") ? "https:" + raw : raw
-        guard let url = URL(string: normalized, relativeTo: site.baseURL)?.absoluteURL,
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https"
-        else { return nil }
-        return url
+        resolveHTTPURL(try element.attr("src"))
     }
 
     nonisolated private func videoURL(from element: Element) throws -> URL? {
         let dataSrc = try element.attr("data-src")
         let raw = dataSrc.isEmpty ? try element.attr("src") : dataSrc
-        guard !raw.isEmpty,
-              let url = URL(string: raw, relativeTo: site.baseURL)?.absoluteURL,
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https"
-        else { return nil }
-        return url
+        return resolveHTTPURL(raw)
     }
 
     nonisolated func commentsURL(for post: Post) -> URL? {
@@ -398,25 +374,8 @@ struct InvenParser: BoardParser {
         // Preserve anchors as tappable markdown links — `.text()` below
         // would otherwise strip the href and lose the URL entirely.
         convertAnchorsToMarkdown(in: body)
-
-        // Stamp a non-whitespace marker before block-level breaks so they survive
-        // SwiftSoup's text() whitespace collapsing; we replace it with \n afterwards.
-        let blockMarker = "\u{0001}NL\u{0001}"
-        if let blocks = try? body.select("br, p, div, li, blockquote") {
-            for el in blocks {
-                _ = try? el.before(blockMarker)
-            }
-        }
-
-        let text = (try? body.text()) ?? raw
-        var result = text.replacingOccurrences(of: blockMarker, with: "\n")
-        // SwiftSoup's text() leaves whitespace flanking the block marker,
-        // so once the marker becomes a newline each continuation line
-        // starts with a space and renders as a visible indent. Collapse
-        // any whitespace hugging a newline before the run-length cleanup.
-        result = result.replacingOccurrences(of: #"[ \t]*\n[ \t]*"#, with: "\n", options: .regularExpression)
-        result = result.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
-        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+        stampBlockBreaks(in: body)
+        return normalizeCommentWhitespace((try? body.text()) ?? raw)
     }
 
     /// Decodes one layer of HTML character references without invoking a

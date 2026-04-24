@@ -342,25 +342,8 @@ struct AagagParser: BoardParser {
         // Convert anchors to markdown so PostDetailView's comment renderer can
         // make them tappable (shared BoardParser helper).
         convertAnchorsToMarkdown(in: body)
-
-        // Replace <br>/block elements with literal newlines via a marker that
-        // survives SwiftSoup's text() whitespace collapsing.
-        let blockMarker = "\u{0001}NL\u{0001}"
-        if let blocks = try? body.select("br, p, div, li, blockquote") {
-            for el in blocks where el.parent() != nil {
-                _ = try? el.before(blockMarker)
-            }
-        }
-        let text = (try? body.text()) ?? raw
-        var result = text.replacingOccurrences(of: blockMarker, with: "\n")
-        // SwiftSoup's text() inserts a space between inline and block
-        // siblings; once the marker turns into a newline those spaces sit
-        // flanking the newline and render as leading indentation on each
-        // line. Collapse any whitespace hugging a newline so multi-line
-        // comments read flush-left, matching the rest of the parsers.
-        result = result.replacingOccurrences(of: #"[ \t]*\n[ \t]*"#, with: "\n", options: .regularExpression)
-        result = result.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
-        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+        stampBlockBreaks(in: body)
+        return normalizeCommentWhitespace((try? body.text()) ?? raw)
     }
 
     nonisolated private func issueIdx(from post: Post) -> String? {

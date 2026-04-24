@@ -10,10 +10,6 @@ struct BobaeParser: BoardParser {
 
     nonisolated init() {}
 
-    nonisolated private static let youtubeIDRegex = try! NSRegularExpression(
-        pattern: #"youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{11})"#,
-        options: []
-    )
     /// Matches the two shapes bobaedream renders for comment timestamps:
     /// `HH:MM` for same-day comments and `YYYY.MM.DD HH:MM` for older ones.
     /// Used to filter the util row's spans so an added badge / IP indicator
@@ -195,7 +191,7 @@ struct BobaeParser: BoardParser {
             return
         case "iframe":
             let src = try el.attr("src")
-            if let id = youtubeID(from: src) {
+            if let id = youtubeEmbedID(from: src) {
                 flushInline(into: &blocks, inline: &inline)
                 blocks.append(.embed(.youtube, id: id))
             }
@@ -234,27 +230,7 @@ struct BobaeParser: BoardParser {
         var src = try el.attr("src")
         if src.isEmpty { src = try el.attr("data-src") }
         if src.isEmpty { src = try el.attr("data-original") }
-        guard !src.isEmpty else { return nil }
-        let normalized = src.hasPrefix("//") ? "https:" + src : src
-        guard let url = URL(string: normalized, relativeTo: site.baseURL)?.absoluteURL,
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https"
-        else { return nil }
-        return url
-    }
-
-    /// HTML5 `<video poster="...">` — forum posts often ship it so the player
-    /// shows something before the user taps, and the tap-to-fullscreen flow
-    /// only reveals black otherwise.
-    nonisolated private func videoPoster(from el: Element) throws -> URL? {
-        let raw = try el.attr("poster").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else { return nil }
-        let normalized = raw.hasPrefix("//") ? "https:" + raw : raw
-        guard let url = URL(string: normalized, relativeTo: site.baseURL)?.absoluteURL,
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https"
-        else { return nil }
-        return url
+        return resolveHTTPURL(src)
     }
 
     nonisolated private func videoURL(from el: Element) throws -> URL? {
@@ -262,27 +238,13 @@ struct BobaeParser: BoardParser {
         if raw.isEmpty, let source = try el.select("source").first() {
             raw = try source.attr("src")
         }
-        guard !raw.isEmpty else { return nil }
-        // Strip media fragments like `#t=0.05` that the source site uses as a
-        // poster hint — AVURLAsset treats them as seek targets and breaks the
-        // initial frame render.
+        // Strip media fragments like `#t=0.05` that the source site uses as
+        // a poster hint — AVURLAsset treats them as seek targets and breaks
+        // the initial frame render.
         if let hash = raw.firstIndex(of: "#") {
             raw = String(raw[..<hash])
         }
-        let normalized = raw.hasPrefix("//") ? "https:" + raw : raw
-        guard let url = URL(string: normalized, relativeTo: site.baseURL)?.absoluteURL,
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https"
-        else { return nil }
-        return url
-    }
-
-    nonisolated private func youtubeID(from src: String) -> String? {
-        let ns = src as NSString
-        guard let match = Self.youtubeIDRegex.firstMatch(in: src, range: NSRange(location: 0, length: ns.length)),
-              match.numberOfRanges >= 2
-        else { return nil }
-        return ns.substring(with: match.range(at: 1))
+        return resolveHTTPURL(raw)
     }
 
     // MARK: - Comments

@@ -20,6 +20,13 @@ protocol BoardParser: Sendable {
 }
 
 extension BoardParser {
+    /// Private-use sentinel that survives SwiftSoup's `.text()` whitespace
+    /// collapse — stamp it where a real `\n` should appear, then swap back
+    /// via `normalizeCommentWhitespace`. Value is a U+0001 control char on
+    /// both sides of the literal "NL", which `.text()` treats as opaque
+    /// payload rather than collapsible whitespace.
+    nonisolated static var blockMarker: String { "\u{0001}NL\u{0001}" }
+
     nonisolated func commentsURL(for post: Post) -> URL? { nil }
     nonisolated func parseComments(html: String) throws -> [Comment] { [] }
 
@@ -123,6 +130,100 @@ extension BoardParser {
         let compact = lower.filter { !$0.isWhitespace }
         return compact.contains("display:none") || compact.contains("visibility:hidden")
     }
+
+    /// Stamp the block-marker sentinel immediately before every HTML block
+    /// tag in the subtree so the subsequent `.text()` flatten preserves
+    /// the user-visible line breaks. Paired with `normalizeCommentWhitespace`
+    /// — stamp first, read `.text()`, then call normalize on the result.
+    /// Tag list matches the editor-block repertoire every board uses:
+    /// `<br>`, `<p>`, `<div>`, `<li>`, `<blockquote>`, `<tr>`.
+    nonisolated func stampBlockBreaks(in element: Element) {
+        guard let blocks = try? element.select("br, p, div, li, blockquote, tr") else { return }
+        for el in blocks where el.parent() != nil {
+            _ = try? el.before(Self.blockMarker)
+        }
+    }
+
+    /// Post-process the `.text()` result of a stamped subtree: swap every
+    /// block-marker sentinel back to a real `\n`, strip the ASCII
+    /// whitespace SwiftSoup leaves flanking each marker (otherwise lines
+    /// render with a visible leading indent), and cap runs at 2 blank
+    /// lines. Final trim drops leading/trailing blanks. Mirrors the logic
+    /// previously duplicated across Aagag / Inven / Ppomppu comment
+    /// cleaners.
+    nonisolated func normalizeCommentWhitespace(_ text: String) -> String {
+        var s = text.replacingOccurrences(of: Self.blockMarker, with: "\n")
+        s = s.replacingOccurrences(of: #"[ \t]*\n[ \t]*"#, with: "\n", options: .regularExpression)
+        s = s.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Resolve a raw URL string (attribute value, style `url(...)` payload,
+    /// etc.) to an absolute `http(s)` `URL` via the parser's `site.baseURL`.
+    /// Trims whitespace, promotes protocol-relative `//foo.com/...` to
+    /// HTTPS (every board we scrape runs on HTTPS today), then validates
+    /// the final scheme so non-http(s) outputs (mailto:, data:, javascript:)
+    /// never reach the image loader or video player.
+    nonisolated func resolveHTTPURL(_ raw: String) -> URL? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let normalized = trimmed.hasPrefix("//") ? "https:" + trimmed : trimmed
+        guard let url = URL(string: normalized, relativeTo: site.baseURL)?.absoluteURL,
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https"
+        else { return nil }
+        return url
+    }
+
+    /// HTML5 `<video poster="...">` — when present, parsers forward it so
+    /// the inline tap-to-play frame shows the site's intended thumbnail
+    /// rather than a plain black box. Identical enough across every
+    /// video-supporting parser to live here.
+    nonisolated func videoPoster(from element: Element) throws -> URL? {
+        resolveHTTPURL(try element.attr("poster"))
+    }
+
+    /// Extract a YouTube (or youtube-nocookie) video ID from a raw string
+    /// — typically an `<iframe src>` value. Matches the canonical
+    /// `/embed/{11-char-id}` shape used by every iframe embed code the
+    /// boards generate; returns nil for non-YouTube iframes so callers
+    /// can fall through to the generic skip / recurse path.
+    nonisolated func youtubeEmbedID(from src: String) -> String? {
+        let ns = src as NSString
+        guard let match = Self.youtubeEmbedIDRegex.firstMatch(
+            in: src,
+            range: NSRange(location: 0, length: ns.length)
+        ), match.numberOfRanges >= 2 else { return nil }
+        return ns.substring(with: match.range(at: 1))
+    }
+
+    /// Pre-compiled once, shared across every parser instance. Hoisted
+    /// because `try! NSRegularExpression(...)` at call time showed up on
+    /// long comment / body traversals otherwise.
+    nonisolated static var youtubeEmbedIDRegex: NSRegularExpression {
+        BoardParserRegex.youtubeEmbedID
+    }
+}
+
+/// Private namespace for pre-compiled regexes the protocol extension
+/// references. `BoardParserRegex` is declared with a `@unchecked Sendable`
+/// conformance so its static `let` can be accessed from `nonisolated`
+/// parser code under Swift 6 strict concurrency. Storing the regex in
+/// a dedicated type (rather than the protocol extension, which can't
+/// hold stored properties, or a top-level `let`, which inherits main-
+/// actor isolation) keeps one pre-compilation shared across every
+/// parser instance.
+private enum BoardParserRegex {
+    // Swift 6 infers main-actor isolation on top-level types by default;
+    // without `nonisolated(unsafe)` the static let can't be read from
+    // `nonisolated` parser extension methods. Reading an immutable
+    // Sendable `NSRegularExpression` across actors is inherently safe —
+    // the compiler's "unnecessary" warning is a known quirk in this
+    // isolation-inference case. Keep the annotation.
+    nonisolated(unsafe) static let youtubeEmbedID: NSRegularExpression = try! NSRegularExpression(
+        pattern: #"youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{11})"#,
+        options: [.caseInsensitive]
+    )
 }
 
 /// Accumulates an `[InlineSegment]` for a single text block while a parser walks
