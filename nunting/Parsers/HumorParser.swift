@@ -12,10 +12,6 @@ struct HumorParser: BoardParser {
         pattern: #"comment_mp4_expand\s*\(\s*'[^']*'\s*,\s*'([^']+)'"#,
         options: []
     )
-    nonisolated private static let youtubeIDRegex = try! NSRegularExpression(
-        pattern: #"youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{11})"#,
-        options: []
-    )
     /// Source markers that identify non-content chrome (loading bars, UI icons,
     /// reaction buttons, AI 너굴맨 / "안심맨" decoy that humoruniv injects
     /// before every uploaded body image to thwart hot-linking — surfacing it
@@ -231,7 +227,7 @@ struct HumorParser: BoardParser {
             return
         case "iframe":
             let src = try el.attr("src")
-            if let id = youtubeID(from: src) {
+            if let id = youtubeEmbedID(from: src) {
                 flushInline(into: &blocks, inline: &inline)
                 blocks.append(.embed(.youtube, id: id))
             }
@@ -269,16 +265,10 @@ struct HumorParser: BoardParser {
 
     nonisolated private func realImageURL(from el: Element) throws -> URL? {
         var src = try el.attr("src")
-        if src.isEmpty {
-            src = try el.attr("data-src")
-        }
+        if src.isEmpty { src = try el.attr("data-src") }
         guard !src.isEmpty else { return nil }
         if Self.skipImageMarkers.contains(where: src.contains) { return nil }
-        guard let url = URL(string: src, relativeTo: site.baseURL)?.absoluteURL,
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https"
-        else { return nil }
-        return url
+        return resolveHTTPURL(src)
     }
 
     nonisolated private func parseMp4Click(_ onclick: String) throws -> URL? {
@@ -295,13 +285,6 @@ struct HumorParser: BoardParser {
         return url
     }
 
-    nonisolated private func youtubeID(from src: String) -> String? {
-        let ns = src as NSString
-        guard let match = Self.youtubeIDRegex.firstMatch(in: src, range: NSRange(location: 0, length: ns.length)),
-              match.numberOfRanges >= 2
-        else { return nil }
-        return ns.substring(with: match.range(at: 1))
-    }
 
     // MARK: - Comments
 

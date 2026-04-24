@@ -19,14 +19,6 @@ struct PpomppuParser: BoardParser {
     /// recurse-vs-inline without doing three separate `select()` walks.
     nonisolated private static let mediaTags: Set<String> = ["img", "video", "iframe"]
 
-    /// Matches the canonical YouTube embed URL shape — `/embed/{11-char id}`
-    /// on `youtube.com` or the no-cookie variant. Shared by all YouTube
-    /// `<iframe>` handling in this parser.
-    nonisolated private static let youtubeIDRegex = try! NSRegularExpression(
-        pattern: #"youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{11})"#,
-        options: []
-    )
-
     nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
         let boardID = ppomppuBoardID(from: board)
@@ -343,7 +335,7 @@ struct PpomppuParser: BoardParser {
                     // Promote to an inline `.embed(.youtube, id:)` block so
                     // the detail view renders the real thumbnail + tap-to-open
                     // affordance instead of the iframe being silently dropped.
-                    if let id = youtubeID(from: (try? el.attr("src")) ?? "") {
+                    if let id = youtubeEmbedID(from: (try? el.attr("src")) ?? "") {
                         flush()
                         blocks.append(.embed(.youtube, id: id))
                     }
@@ -429,11 +421,8 @@ struct PpomppuParser: BoardParser {
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty,
                   !trimmed.contains("lazyloading"),
-                  !trimmed.contains("/images/gif_load")
-            else { continue }
-            guard let url = URL(string: trimmed, relativeTo: site.baseURL)?.absoluteURL,
-                  let scheme = url.scheme?.lowercased(),
-                  scheme == "http" || scheme == "https"
+                  !trimmed.contains("/images/gif_load"),
+                  let url = resolveHTTPURL(trimmed)
             else { continue }
             return url
         }
@@ -448,33 +437,6 @@ struct PpomppuParser: BoardParser {
         return try anchor(from: el)
     }
 
-    /// Extract a YouTube video ID from an `<iframe src>` value. Returns nil
-    /// when the URL doesn't match YouTube's canonical embed shape, so callers
-    /// can fall through to the generic skip-or-recurse path for iframes of
-    /// unrelated providers (Twitter, Naver blog, etc.).
-    nonisolated private func youtubeID(from src: String) -> String? {
-        let ns = src as NSString
-        guard let match = Self.youtubeIDRegex.firstMatch(
-                in: src,
-                range: NSRange(location: 0, length: ns.length)
-              ),
-              match.numberOfRanges >= 2
-        else { return nil }
-        return ns.substring(with: match.range(at: 1))
-    }
-
-    /// HTML5 `<video poster="...">` — when present, parser passes it along so
-    /// the tap-to-play poster frame doesn't fall back to a plain black box.
-    nonisolated private func videoPoster(from el: Element) throws -> URL? {
-        let raw = try el.attr("poster").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else { return nil }
-        let normalized = raw.hasPrefix("//") ? "https:" + raw : raw
-        guard let url = URL(string: normalized, relativeTo: site.baseURL)?.absoluteURL,
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https"
-        else { return nil }
-        return url
-    }
 
     nonisolated private func videoURL(from element: Element) throws -> URL? {
         // Ppomppu ships bodies with the standard <video><source src="..."></video>
@@ -493,12 +455,7 @@ struct PpomppuParser: BoardParser {
         if let hash = raw.firstIndex(of: "#") {
             raw = String(raw[raw.startIndex..<hash])
         }
-        guard !raw.isEmpty,
-              let url = URL(string: raw, relativeTo: site.baseURL)?.absoluteURL,
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https"
-        else { return nil }
-        return url
+        return resolveHTTPURL(raw)
     }
 
     nonisolated private func extractStickerURL(from element: Element) throws -> URL? {
@@ -568,7 +525,6 @@ struct PpomppuParser: BoardParser {
 
     nonisolated private func cleanCommentText(from element: Element) throws -> String {
         let copy = (element.copy() as? Element) ?? element
-        let blockMarker = "\u{0001}NL\u{0001}"
         // `.scrap_bx_href` / `.scrap_bx` is the OpenGraph link-preview card
         // ppomppu injects when a comment contains an external URL. Web
         // hides the `<small>` description via CSS; flattening the subtree
@@ -580,7 +536,7 @@ struct PpomppuParser: BoardParser {
         // implied; the sibling `<a class="noeffect">` already carries the
         // same URL as plain text so the tappable link survives.
         for scrap in try copy.select("a.scrap_bx_href, .scrap_bx") where scrap.parent() != nil {
-            _ = try? scrap.before(blockMarker)
+            _ = try? scrap.before(Self.blockMarker)
         }
         // Remove media elements *and* their decorative siblings so that
         // the <video> fallback string ("Your browser does not support...")
@@ -593,22 +549,8 @@ struct PpomppuParser: BoardParser {
         // below would otherwise drop the href and render the label as
         // unlinked prose.
         convertAnchorsToMarkdown(in: copy)
-        let blocks = try copy.select("br, p, div, li, blockquote, tr")
-        for el in blocks where el.parent() != nil {
-            _ = try? el.before(blockMarker)
-        }
-        let text = try copy.text()
-        var result = text.replacingOccurrences(of: blockMarker, with: "\n")
-        // SwiftSoup's `text()` puts whitespace around the injected marker,
-        // so each post-replace newline ends up with leading/trailing spaces
-        // that show as per-line indentation. Strip that.
-        result = result.replacingOccurrences(
-            of: #"[ \t]*\n[ \t]*"#,
-            with: "\n",
-            options: .regularExpression
-        )
-        result = result.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
-        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+        stampBlockBreaks(in: copy)
+        return normalizeCommentWhitespace(try copy.text())
     }
 
     nonisolated private func splitCategoryAuthor(_ raw: String) -> (category: String?, author: String) {

@@ -20,10 +20,6 @@ struct Cook82Parser: BoardParser {
     ]
     nonisolated private static let skipTags: Set<String> = ["script", "style", "noscript"]
 
-    nonisolated private static let youtubeIDRegex = try! NSRegularExpression(
-        pattern: #"youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{11})"#,
-        options: []
-    )
     /// Matches 82cook's comment timestamp shape (`'26.4.19 3:12 PM` or a bare
     /// `HH:MM` in very recent posts). Used to pick the correct `<em>` inside
     /// `.repleFunc` so a future admin/level badge `<em>` inserted before the
@@ -184,7 +180,7 @@ struct Cook82Parser: BoardParser {
             return
         case "iframe":
             let src = try el.attr("src")
-            if let id = youtubeID(from: src) {
+            if let id = youtubeEmbedID(from: src) {
                 flushInline(into: &blocks, inline: &inline)
                 blocks.append(.embed(.youtube, id: id))
             }
@@ -222,26 +218,7 @@ struct Cook82Parser: BoardParser {
         var src = try el.attr("src")
         if src.isEmpty { src = try el.attr("data-src") }
         if src.isEmpty { src = try el.attr("data-original") }
-        guard !src.isEmpty else { return nil }
-        let normalized = src.hasPrefix("//") ? "https:" + src : src
-        guard let url = URL(string: normalized, relativeTo: site.baseURL)?.absoluteURL,
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https"
-        else { return nil }
-        return url
-    }
-
-    /// Pass HTML5 `<video poster="...">` through so the player shows a real
-    /// thumbnail frame before the user taps.
-    nonisolated private func videoPoster(from el: Element) throws -> URL? {
-        let raw = try el.attr("poster").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else { return nil }
-        let normalized = raw.hasPrefix("//") ? "https:" + raw : raw
-        guard let url = URL(string: normalized, relativeTo: site.baseURL)?.absoluteURL,
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https"
-        else { return nil }
-        return url
+        return resolveHTTPURL(src)
     }
 
     nonisolated private func videoURL(from el: Element) throws -> URL? {
@@ -249,24 +226,10 @@ struct Cook82Parser: BoardParser {
         if raw.isEmpty, let source = try el.select("source").first() {
             raw = try source.attr("src")
         }
-        guard !raw.isEmpty else { return nil }
         if let hash = raw.firstIndex(of: "#") {
             raw = String(raw[..<hash])
         }
-        let normalized = raw.hasPrefix("//") ? "https:" + raw : raw
-        guard let url = URL(string: normalized, relativeTo: site.baseURL)?.absoluteURL,
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https"
-        else { return nil }
-        return url
-    }
-
-    nonisolated private func youtubeID(from src: String) -> String? {
-        let ns = src as NSString
-        guard let match = Self.youtubeIDRegex.firstMatch(in: src, range: NSRange(location: 0, length: ns.length)),
-              match.numberOfRanges >= 2
-        else { return nil }
-        return ns.substring(with: match.range(at: 1))
+        return resolveHTTPURL(raw)
     }
 
     // MARK: - Comments
