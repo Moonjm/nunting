@@ -130,7 +130,7 @@ struct SLRParser: BoardParser {
             referer: post.url
         )
 
-        return Self.decodeComments(data: data)
+        return decodeComments(data: data)
     }
 
     // MARK: - Field extraction
@@ -372,7 +372,7 @@ struct SLRParser: BoardParser {
         let del: Int?
     }
 
-    nonisolated private static func decodeComments(data: Data) -> [Comment] {
+    nonisolated private func decodeComments(data: Data) -> [Comment] {
         guard let payload = try? JSONDecoder().decode(SLRJSON.self, from: data),
               let entries = payload.c
         else { return [] }
@@ -412,7 +412,7 @@ struct SLRParser: BoardParser {
     /// for the `<br>` runs before parsing and restore real newlines after.
     nonisolated private static let brSentinel = "\u{E000}"
 
-    nonisolated private static func renderMemo(_ memo: String) -> (text: String, sticker: URL?, video: URL?) {
+    nonisolated private func renderMemo(_ memo: String) -> (text: String, sticker: URL?, video: URL?) {
         let raw = memo.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return ("", nil, nil) }
         // Fast path: no tags at all → original trimmed text.
@@ -422,7 +422,7 @@ struct SLRParser: BoardParser {
         // the line break. Regex covers `<br>`, `<br/>`, `<br />`, mixed case.
         let prepped = raw.replacingOccurrences(
             of: #"<\s*[Bb][Rr]\s*/?\s*>"#,
-            with: brSentinel,
+            with: Self.brSentinel,
             options: .regularExpression
         )
 
@@ -474,6 +474,9 @@ struct SLRParser: BoardParser {
             // prevents the browser-fallback text ("Your browser does not
             // support the video tag.") from leaking into the comment body.
             try body.select("img, video, source, script, style").remove()
+            // Preserve anchors as tappable markdown links — `.text()` below
+            // would otherwise drop the href.
+            convertAnchorsToMarkdown(in: body)
             let collapsed = try body.text()
             // After sentinel→newline, strip whitespace that SwiftSoup's
             // `.text()` left on either side of the sentinel (it collapses
@@ -482,7 +485,7 @@ struct SLRParser: BoardParser {
             // — i.e. a visible leading space / indent on the new line.
             let text = collapsed
                 .replacingOccurrences(
-                    of: "[ \t]*\(brSentinel)[ \t]*",
+                    of: "[ \t]*\(Self.brSentinel)[ \t]*",
                     with: "\n",
                     options: .regularExpression
                 )

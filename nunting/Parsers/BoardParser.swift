@@ -63,6 +63,36 @@ extension BoardParser {
         return false
     }
 
+    /// Replace every `<a href>` descendant with a plain TextNode holding the
+    /// markdown form `[label](<url>)`. Comment bodies across every site are
+    /// rendered by flattening a SwiftSoup subtree with `.text()` / a manual
+    /// walker, which drops the anchor's `href` — users see the label as
+    /// unlinked prose. Converting anchors to markdown first lets
+    /// `PostDetailView.styledContent`'s `AttributedString(markdown:)` pass
+    /// turn them back into tappable `.link` spans. The `<>` wrapping around
+    /// the URL is the autolink form that survives query-string characters
+    /// (`?`, `&`, `=`) without needing per-URL escaping. Mutates `element`
+    /// in place — callers typically pass a `.copy()`.
+    nonisolated func convertAnchorsToMarkdown(in element: Element) {
+        guard let anchors = try? element.select("a[href]") else { return }
+        for el in anchors where el.parent() != nil {
+            let href = (try? el.attr("href")) ?? ""
+            let label = ((try? el.text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !href.isEmpty,
+                  let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL,
+                  let scheme = url.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https"
+            else { continue }
+            let displayLabel = label.isEmpty ? url.absoluteString : label
+            let safe = displayLabel
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "[", with: "\\[")
+                .replacingOccurrences(of: "]", with: "\\]")
+            let markdown = "[\(safe)](<\(url.absoluteString)>)"
+            _ = try? el.replaceWith(TextNode(markdown, ""))
+        }
+    }
+
     /// Inline-style visibility check. Sites sometimes stash preload/tracking
     /// `<img>` or helper markup inside a `display: none` wrapper (e.g. inven's
     /// `INVEN.Media.Resizer.collect` injects five 1px copies of every image

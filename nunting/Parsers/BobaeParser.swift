@@ -359,6 +359,9 @@ struct BobaeParser: BoardParser {
         try copy.select("br").forEach { br in
             try br.before(TextNode("\n", ""))
         }
+        // Preserve anchors as tappable markdown links — `.text()` below
+        // would otherwise drop the href.
+        convertAnchorsToMarkdown(in: copy)
         return try copy.text().trimmingCharacters(in: .whitespacesAndNewlines)
     }
 

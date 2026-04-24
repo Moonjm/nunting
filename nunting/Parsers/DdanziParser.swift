@@ -133,7 +133,7 @@ struct DdanziParser: BoardParser {
             contentType: "application/json"
         )
 
-        return Self.decodeComments(data: data)
+        return decodeComments(data: data)
     }
 
     // MARK: - Field extraction
@@ -357,7 +357,7 @@ struct DdanziParser: BoardParser {
         let commentHtml: String?
     }
 
-    nonisolated private static func decodeComments(data: Data) -> [Comment] {
+    nonisolated private func decodeComments(data: Data) -> [Comment] {
         guard let payload = try? JSONDecoder().decode(CommentResponse.self, from: data),
               let fragment = payload.commentHtml,
               !fragment.isEmpty
@@ -407,7 +407,7 @@ struct DdanziParser: BoardParser {
 
     /// Pull the first inline image out as a sticker URL so the comment
     /// renders as `[text] + image` the same way other parsers do.
-    nonisolated private static func extractCommentSticker(in li: Element) throws -> URL? {
+    nonisolated private func extractCommentSticker(in li: Element) throws -> URL? {
         guard let img = try li.select(".fdComment .xe_content img").first() else { return nil }
         var src = try img.attr("src")
         if src.isEmpty { src = try img.attr("data-src") }
@@ -426,13 +426,16 @@ struct DdanziParser: BoardParser {
     /// `.re_com_nickname` (the "@targetUser" prefix bubble) from the text
     /// — leaving it in duplicates information the reply indentation already
     /// communicates, and makes every reply look like it starts with `@…`.
-    nonisolated private static func renderCommentContent(in li: Element) throws -> String {
+    nonisolated private func renderCommentContent(in li: Element) throws -> String {
         guard let content = try li.select(".fdComment .xe_content").first() else { return "" }
         guard let copy = content.copy() as? Element else { return "" }
         try copy.select(".re_com_nickname, img, script, style").remove()
+        // Preserve anchors as tappable markdown links — `walk()` below
+        // recurses through anchors as plain elements and drops their hrefs.
+        convertAnchorsToMarkdown(in: copy)
 
         var output = ""
-        try walk(copy, into: &output)
+        try Self.walk(copy, into: &output)
         let trimmed = output
             // Raw text-node content leaks the source's pretty-print
             // indentation (`"\n    "` between block children) into the

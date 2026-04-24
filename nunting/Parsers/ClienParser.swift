@@ -404,6 +404,9 @@ struct ClienParser: BoardParser {
 
             guard let viewEl = try row.select("div.comment_view").first() else { continue }
             try viewEl.select("input").remove()
+            // Preserve anchors as tappable markdown links before `.text()`
+            // flattens the subtree and drops their hrefs.
+            convertAnchorsToMarkdown(in: viewEl)
             let content = try viewEl.text().trimmingCharacters(in: .whitespacesAndNewlines)
             guard !content.isEmpty else { continue }
 

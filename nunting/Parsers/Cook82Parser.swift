@@ -360,8 +360,14 @@ struct Cook82Parser: BoardParser {
         // (quote panel, announcement badge…) that itself contains a `<p>`
         // doesn't hijack the comment body.
         guard let p = try li.select("> p").first() else { return "" }
+        // Work on a copy so the anchor→markdown rewrite doesn't mutate the
+        // original DOM other callers may still hold.
+        guard let copy = p.copy() as? Element else { return "" }
+        // Preserve anchors as tappable markdown links — `walk()` below
+        // recurses through anchors as plain elements and drops their hrefs.
+        convertAnchorsToMarkdown(in: copy)
         var output = ""
-        try walk(p, into: &output)
+        try walk(copy, into: &output)
         return output
             // Raw text-node content carries 82cook's pretty-print indentation
             // (`"\n    "` between block children). Strip spaces/tabs around

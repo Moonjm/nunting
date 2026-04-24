@@ -395,6 +395,10 @@ struct InvenParser: BoardParser {
               let body = doc.body()
         else { return working }
 
+        // Preserve anchors as tappable markdown links — `.text()` below
+        // would otherwise strip the href and lose the URL entirely.
+        convertAnchorsToMarkdown(in: body)
+
         // Stamp a non-whitespace marker before block-level breaks so they survive
         // SwiftSoup's text() whitespace collapsing; we replace it with \n afterwards.
         let blockMarker = "\u{0001}NL\u{0001}"
