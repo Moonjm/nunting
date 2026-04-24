@@ -402,12 +402,16 @@ struct ClienParser: BoardParser {
             let dateText = try row.select("span.timestamp").first()?.text()
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-            guard let viewEl = try row.select("div.comment_view").first() else { continue }
-            try viewEl.select("input").remove()
+            guard let viewEl = try row.select("div.comment_view").first(),
+                  let copy = viewEl.copy() as? Element
+            else { continue }
+            try copy.select("input").remove()
             // Preserve anchors as tappable markdown links before `.text()`
-            // flattens the subtree and drops their hrefs.
-            convertAnchorsToMarkdown(in: viewEl)
-            let content = try viewEl.text().trimmingCharacters(in: .whitespacesAndNewlines)
+            // flattens the subtree and drops their hrefs. Done on a copy
+            // so later reads of the original `doc` aren't corrupted —
+            // matches the pattern every other parser in this patch uses.
+            convertAnchorsToMarkdown(in: copy)
+            let content = try copy.text().trimmingCharacters(in: .whitespacesAndNewlines)
             guard !content.isEmpty else { continue }
 
             let likeText = try row.select("strong[id^=setLikeCount_]").first()?.text()

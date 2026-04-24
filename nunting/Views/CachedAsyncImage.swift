@@ -486,15 +486,37 @@ private final class DisplayLinkAnimatedImageView: UIView {
 
     private var displayLink: CADisplayLink?
     private var startTime: CFTimeInterval?
+    /// Elapsed seconds at the moment the display link was last paused
+    /// (window detach). Restored on resume so playback continues from the
+    /// frame that was on-screen instead of jumping back to frame 0 — the
+    /// behaviour the LazyVStack derealize / realize cycle would otherwise
+    /// produce every time a GIF cell scrolled back into view.
+    private var pausedElapsed: TimeInterval = 0
     private var lastFrameIndex: Int = -1
 
     /// LRU frame cache — bounded by count so memory stays predictable
     /// regardless of total source length. 12 frames at the 1080px long-
     /// edge cap is ≈55MB peak, small enough to coexist with several
-    /// concurrent GIFs on a detail page.
+    /// concurrent GIFs on a detail page. Picked to cover a typical
+    /// reaction GIF (8–20 frames) so the second loop serves entirely
+    /// from cache once prefetch has filled it.
     private static let frameCacheCapacity = 12
     private var frameCache: [Int: CGImage] = [:]
     private var cacheOrder: [Int] = []
+
+    /// Background queue for speculative next-frame decodes. Keeps the
+    /// per-tick main-thread cost at ~0 on the happy path (frame already
+    /// in cache by the time we need it) instead of paying a
+    /// CGImageSourceCreateThumbnailAtIndex (~5–10ms at 1080px) inline
+    /// inside a 16.67ms / 8.33ms display-link budget.
+    private static let prefetchQueue = DispatchQueue(
+        label: "nunting.gif.prefetch",
+        qos: .userInitiated
+    )
+    /// Frame indices currently being decoded on the prefetch queue.
+    /// Prevents duplicate work if two ticks ask for the same frame
+    /// before the first decode finishes. Read/written on main only.
+    private var prefetchInFlight: Set<Int> = []
 
     private var memoryWarningObserver: NSObjectProtocol?
 
@@ -557,6 +579,9 @@ private final class DisplayLinkAnimatedImageView: UIView {
         cacheOrder.removeAll(keepingCapacity: true)
         lastFrameIndex = -1
         startTime = nil
+        // Fresh payload = fresh playhead. A mid-playback source swap
+        // shouldn't inherit the previous GIF's pause offset.
+        pausedElapsed = 0
 
         // Seed the cache and the layer with the prewarmed first frame so
         // the view shows content on its first layout pass — before the
@@ -583,16 +608,27 @@ private final class DisplayLinkAnimatedImageView: UIView {
     private func pauseDisplayLink() {
         displayLink?.invalidate()
         displayLink = nil
-        // Reset `startTime` so the next resume restarts playback from
-        // wherever the cached frame was, not mid-loop — prevents a
-        // visible skip when the view re-enters the window.
+        // Snapshot elapsed so resume picks up where we left off instead
+        // of snapping back to frame 0. Using `CACurrentMediaTime()` lines
+        // up with the display link's clock; subtracting `startTime` gives
+        // the playhead position at the moment of pause.
+        if let start = startTime {
+            pausedElapsed = CACurrentMediaTime() - start
+        }
         startTime = nil
     }
 
     @objc private func tick(_ link: CADisplayLink) {
         guard let source, frameCount > 0 else { return }
         let now = link.targetTimestamp
-        if startTime == nil { startTime = now }
+        if startTime == nil {
+            // Offset the virtual start by `pausedElapsed` so the first
+            // tick after resume computes the SAME elapsed as the pause
+            // moment — playback continues seamlessly from the visible
+            // frame rather than cutting to frame 0.
+            startTime = now - pausedElapsed
+            pausedElapsed = 0
+        }
         let elapsed = now - (startTime ?? now)
 
         // Extend the cumulative-delay table lazily: read one frame's delay
@@ -606,6 +642,11 @@ private final class DisplayLinkAnimatedImageView: UIView {
             let cap = cumulativeDelays.last ?? 0
             if cumulativeDelays.count < frameCount && cap <= elapsed {
                 var running = cap
+                // `elapsed + 1` reads ~1s of lookahead beyond the current
+                // playhead so the binary search below always has a bucket
+                // that strictly exceeds `t`. Without the lookahead a tick
+                // landing exactly at `running` would binary-search past
+                // the last known entry and flicker to frame 0.
                 while cumulativeDelays.count < frameCount && running <= elapsed + 1 {
                     let d = CachedAsyncImage.frameDelay(at: cumulativeDelays.count, in: source)
                     running += d
@@ -643,6 +684,49 @@ private final class DisplayLinkAnimatedImageView: UIView {
         if let cg = frame(at: frameIndex) {
             layer.contents = cg
             lastFrameIndex = frameIndex
+        }
+        // Speculatively decode the next frame so it's ready when the
+        // next tick needs it. Cheap to do on miss (one background
+        // decode), free to do on hit (guarded).
+        prefetchFrame(at: (frameIndex + 1) % frameCount)
+    }
+
+    /// Kick off a background decode for `index` if it isn't already
+    /// cached or in-flight. The result is grafted onto the LRU from the
+    /// main thread so the cache itself remains single-threaded.
+    private func prefetchFrame(at index: Int) {
+        guard frameCount > 1 else { return }
+        guard let source else { return }
+        if frameCache[index] != nil { return }
+        if prefetchInFlight.contains(index) { return }
+        prefetchInFlight.insert(index)
+        let useThumb = useThumbnail
+        let maxPx = thumbnailMaxPixelSize
+        // `CGImageSource` is reference-typed but Apple documents its
+        // read APIs as thread-safe, and this path only reads. Box it in
+        // a `@unchecked Sendable` shell so Swift 6 strict-concurrency
+        // lets us cross the DispatchQueue boundary without dropping the
+        // whole class into `@unchecked Sendable`.
+        struct SourceBox: @unchecked Sendable { let source: CGImageSource }
+        let boxed = SourceBox(source: source)
+        Self.prefetchQueue.async { [weak self] in
+            let cg = CachedAsyncImage.decodeFrame(
+                at: index,
+                source: boxed.source,
+                useThumbnail: useThumb,
+                thumbnailMaxPixelSize: maxPx
+            )
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.prefetchInFlight.remove(index)
+                // Another path (synchronous miss on the display link
+                // tick) may have raced ahead and populated the cache
+                // while we were decoding; skip the insert so we don't
+                // shuffle LRU order and evict a frame the player is
+                // actively using.
+                guard let cg, self.frameCache[index] == nil else { return }
+                self.insertCache(index: index, image: cg)
+            }
         }
     }
 
