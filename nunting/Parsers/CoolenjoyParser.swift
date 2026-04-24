@@ -344,6 +344,7 @@ struct CoolenjoyParser: BoardParser {
     }
 
     nonisolated private func collectInlines(from element: Element, into inline: inout InlineAccumulator) throws {
+        if isHidden(element) { return }
         for node in element.getChildNodes() {
             if let el = node as? Element {
                 if isHidden(el) { continue }

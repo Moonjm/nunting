@@ -73,7 +73,12 @@ extension BoardParser {
     /// stylesheet resolver and aren't what the real-world preload tricks use.
     nonisolated func isHidden(_ element: Element) -> Bool {
         guard let style = try? element.attr("style"), !style.isEmpty else { return false }
-        let compact = style.lowercased().filter { !$0.isWhitespace }
+        let lower = style.lowercased()
+        // Fast path: most elements aren't hidden, so bail before paying for
+        // the whitespace-strip pass when the style can't possibly contain
+        // `display:none` / `visibility:hidden`.
+        guard lower.contains("none") || lower.contains("hidden") else { return false }
+        let compact = lower.filter { !$0.isWhitespace }
         return compact.contains("display:none") || compact.contains("visibility:hidden")
     }
 }
