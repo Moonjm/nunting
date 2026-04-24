@@ -15,8 +15,7 @@ struct CachedAsyncImage: View {
     let showsPlaceholder: Bool
 
     @State private var image: UIImage?
-    @State private var animatedFrames: [UIImage]?
-    @State private var animatedDuration: TimeInterval = 0
+    @State private var animatedPayload: AnimatedImagePayload?
     @State private var failed = false
     /// Aspect ratio discovered from the decoded image (or primed from the
     /// session aspect cache on init). Used when the caller didn't supply an
@@ -56,7 +55,7 @@ struct CachedAsyncImage: View {
         // for the placeholder. Suppressing the inherited animation also
         // stops the visible "slide-from-right" jank during loading.
         let content = ZStack {
-            if image == nil && animatedFrames == nil && !failed && showsPlaceholder {
+            if image == nil && animatedPayload == nil && !failed && showsPlaceholder {
                 Color("AppSurface2")
                     .overlay(ProgressView())
                     // Placeholder exists purely to fill the slot; without
@@ -65,11 +64,13 @@ struct CachedAsyncImage: View {
                     // parent ScrollView long enough to feel like a freeze.
                     .allowsHitTesting(false)
             }
-            if let frames = animatedFrames, !frames.isEmpty {
-                // SwiftUI's `Image(uiImage:)` renders only the first frame
-                // of a multi-frame UIImage, so animated GIFs need a
-                // UIImageView bridge to actually animate.
-                AnimatedImageView(frames: frames, duration: animatedDuration)
+            if let animatedPayload {
+                // `UIImageView.animationImages` equi-spaces per-frame time
+                // (total / frameCount), which flattens GIFs with varying
+                // delays into a jerky stutter vs. Safari. Use a custom
+                // CADisplayLink player that honours per-frame delays and
+                // decodes frames lazily from the shared CGImageSource.
+                AnimatedImageView(payload: animatedPayload)
             } else if let image {
                 Image(uiImage: image)
                     .resizable()
@@ -112,14 +113,13 @@ struct CachedAsyncImage: View {
         if let effective {
             content.aspectRatio(effective, contentMode: .fit)
         } else {
-            content.frame(minHeight: image == nil && animatedFrames == nil && showsPlaceholder ? 120 : nil)
+            content.frame(minHeight: image == nil && animatedPayload == nil && showsPlaceholder ? 120 : nil)
         }
     }
 
     private func load() async {
         image = nil
-        animatedFrames = nil
-        animatedDuration = 0
+        animatedPayload = nil
         failed = false
 
         let variant = cacheVariant
@@ -188,18 +188,15 @@ struct CachedAsyncImage: View {
                     // scroll ends up past the new content end — blank screen.
                     ImageCache.shared.storeAspectRatio(aspect, for: url, variant: variant)
                 }
-            case .animated(let frames, let duration):
-                // Animated GIFs aren't cached (the frame count × frame size
-                // can balloon past the 200MB NSCache budget quickly, and
-                // GIFs re-decode cheaply on re-entry). Aspect is cached
-                // from the first frame so re-renders stay stable.
-                animatedFrames = frames
-                animatedDuration = duration
-                if let first = frames.first, first.size.height > 0 {
-                    let aspect = first.size.width / first.size.height
-                    intrinsicAspectRatio = aspect
-                    ImageCache.shared.storeAspectRatio(aspect, for: url, variant: variant)
-                }
+            case .animated(let payload):
+                // Animated GIFs aren't stored in ImageCache — the frame
+                // data stays alive as long as this view's CGImageSource
+                // reference does, and re-decode from URLCache on re-entry
+                // is cheap. Aspect ratio is still cached so re-renders
+                // reserve the final frame before the payload is ready.
+                animatedPayload = payload
+                intrinsicAspectRatio = payload.aspect
+                ImageCache.shared.storeAspectRatio(payload.aspect, for: url, variant: variant)
             case nil:
                 failed = true
             }
@@ -224,7 +221,7 @@ struct CachedAsyncImage: View {
 
     fileprivate enum DecodeResult {
         case still(UIImage)
-        case animated(frames: [UIImage], duration: TimeInterval)
+        case animated(AnimatedImagePayload)
     }
 
     nonisolated private static func decode(data: Data, maxDimension: CGFloat, maxPixelArea: CGFloat, scale: CGFloat) -> DecodeResult? {
@@ -287,42 +284,26 @@ struct CachedAsyncImage: View {
         return .still(UIImage(cgImage: cg, scale: 1, orientation: .up))
     }
 
-    /// Memory budget for resident decoded frames of a single animated
-    /// source. Keep-alive overlays hold their GIFs for the lifetime of
-    /// the active post, so a 300-frame Twitch clip at 1080px would
-    /// otherwise sit on ~1GB of decoded pixels and push the app toward
-    /// jetsam. We fit as many frames as this budget allows and stride-
-    /// subsample past it. 280MB matches the legacy envelope at 1080px
-    /// (~4.6MB/frame × 60 frames) while letting smaller board GIFs —
-    /// e.g. a 566×540 Bobaedream clip at 1.2MB/frame — keep all 200
-    /// frames instead of being thinned to 60. That thinning stretched
-    /// each sampled frame's dwell time to 4× the source, which users
-    /// saw as the GIF playing in slow motion vs. the browser.
-    nonisolated private static let animatedFrameByteBudget = 280 * 1024 * 1024
-
-    /// Absolute frame ceiling so a pathological source (thousands of
-    /// tiny frames well inside the byte budget) can't balloon decode
-    /// time. 300 covers the longest sane board embed.
-    nonisolated private static let animatedFrameCeiling = 300
-
-    /// Floor so an exceptionally large in-cap frame can't drive the
-    /// limit below this. 30 × animatedLongEdgeCap² × 4 ≈ 140MB, safely
-    /// under budget even in the worst case.
-    nonisolated private static let animatedFrameFloor = 30
-
     /// Long-edge cap (pixels) applied to animated frames. Lower than the
     /// still path's `maxDimension` to bound per-frame memory. Boards like
     /// Ppomppu and Clien rarely ship retina-quality GIFs; 1080px stays
     /// sharp on a 390pt column while cutting per-frame decode size by
-    /// roughly half vs the still ceiling.
+    /// roughly half vs the still ceiling. Used as the thumbnail target
+    /// when the source exceeds the display column budget.
     nonisolated private static let animatedLongEdgeCap: CGFloat = 1080
 
-    /// Walks every frame of a multi-image source (animated GIF / APNG) and
-    /// sums the per-frame delay metadata into a total duration for
-    /// UIImageView's `animationDuration`. Falls back to a 0.1s / frame
-    /// default when the source omits delay properties so the animation
-    /// still plays at a reasonable speed instead of flashing a single
-    /// composite frame.
+    /// Prepare a lightweight `AnimatedImagePayload` for the custom
+    /// `CADisplayLink`-based player. Unlike the previous implementation
+    /// this does NOT eagerly decode every frame into `[UIImage]` — it
+    /// pre-reads per-frame delays (needed to drive the display link
+    /// scheduler) and decodes a single first frame so the view has
+    /// something to show on its first layout pass. Remaining frames are
+    /// decoded on demand from the shared `CGImageSource` inside the
+    /// player's LRU cache. This preserves per-frame timing (GIFs with
+    /// variable delays no longer flatten to the average, which was the
+    /// visible "frame-drop" stutter vs. the browser) and removes the
+    /// stride-subsampling fallback that halved the effective framerate
+    /// on long sources.
     nonisolated private static func decodeAnimated(
         source: CGImageSource,
         frameCount: Int,
@@ -331,81 +312,75 @@ struct CachedAsyncImage: View {
         sourceWidth: CGFloat,
         sourceHeight: CGFloat
     ) -> DecodeResult? {
-        // Tighter long-edge cap than the still path — frames compound, and
-        // a keep-alive overlay sitting on 40 retina-scale frames adds up
-        // fast. `longSide` can be 0 when the source reports no pixel
-        // dimensions (corrupt header); clamp to the animated cap so we
-        // still produce a viewable image.
         let targetLongSide = min(
             longSide > 0 ? longSide : animatedLongEdgeCap,
             animatedLongEdgeCap
         )
-        let thumbnailOptions: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: targetLongSide,
-        ]
+        let needsThumbnail = !(ratio >= 1 && targetLongSide >= max(longSide, 1))
 
-        // Per-frame resident cost after downsampling (RGBA8888).
-        // effectiveRatio is the 1D scale from source long edge down to
-        // targetLongSide; squaring it converts to a 2D pixel-count ratio.
-        // When the source reports no pixel dimensions (corrupt header),
-        // fall back to a square frame at the long-edge cap — otherwise
-        // sourceWidth×sourceHeight collapses to 0, the `max(…, 1)` guard
-        // rescues it to 1 pixel, and `budgetFrames` explodes to the
-        // ceiling (300). The subsequent native-decode branch would then
-        // try to hold 300 full-resolution frames, which is exactly the
-        // jetsam risk the budget exists to prevent.
-        let sourceLong = max(sourceWidth, sourceHeight)
-        let effectiveRatio = sourceLong > 0 ? min(1, targetLongSide / sourceLong) : 1
-        let framePixels: CGFloat
+        var delays: [TimeInterval] = []
+        delays.reserveCapacity(frameCount)
+        for i in 0..<frameCount {
+            delays.append(frameDelay(at: i, in: source))
+        }
+
+        // Prewarm frame 0 on the decode task (we're off-main here) so the
+        // view's first layout pass has something to present immediately,
+        // rather than flashing blank while the display link schedules its
+        // first tick on main.
+        let firstFrame = Self.decodeFrame(
+            at: 0,
+            source: source,
+            useThumbnail: needsThumbnail,
+            thumbnailMaxPixelSize: targetLongSide
+        )
+        guard let firstFrame else { return nil }
+
+        let aspect: CGFloat
         if sourceWidth > 0 && sourceHeight > 0 {
-            framePixels = sourceWidth * sourceHeight * effectiveRatio * effectiveRatio
+            aspect = sourceWidth / sourceHeight
         } else {
-            framePixels = targetLongSide * targetLongSide
+            let w = CGFloat(firstFrame.width)
+            let h = CGFloat(firstFrame.height)
+            aspect = h > 0 ? w / h : 1
         }
-        let frameBytes = max(framePixels, 1) * 4
-        let budgetFrames = Int(CGFloat(animatedFrameByteBudget) / frameBytes)
-        let limit = max(animatedFrameFloor, min(animatedFrameCeiling, budgetFrames))
 
-        // Subsample stride when the source exceeds our dynamic frame
-        // limit. The window's delay is summed so the total loop duration
-        // stays close to the source's original playback speed.
-        let stride = max(1, (frameCount + limit - 1) / limit)
-        var frames: [UIImage] = []
-        frames.reserveCapacity(min(frameCount, limit))
-        var totalDuration: TimeInterval = 0
+        let payload = AnimatedImagePayload(
+            source: source,
+            delays: delays,
+            frameCount: frameCount,
+            firstFrame: firstFrame,
+            aspect: aspect,
+            useThumbnail: needsThumbnail,
+            thumbnailMaxPixelSize: targetLongSide
+        )
+        return .animated(payload)
+    }
 
-        var sampleIndex = 0
-        while sampleIndex < frameCount {
-            let cg: CGImage?
-            if ratio >= 1 && targetLongSide >= max(longSide, 1) {
-                // Source already fits every cap — native decode preserves
-                // pixel fidelity (e.g. a small meme GIF doesn't get
-                // needlessly re-thumbnailed).
-                cg = CGImageSourceCreateImageAtIndex(source, sampleIndex, nil)
-            } else {
-                cg = CGImageSourceCreateThumbnailAtIndex(source, sampleIndex, thumbnailOptions as CFDictionary)
-            }
-            if let cg {
-                frames.append(UIImage(cgImage: cg, scale: 1, orientation: .up))
-                // Sum the delays of every frame in this stride window so
-                // the rendered loop keeps the source's total duration
-                // instead of running stride× faster.
-                let windowEnd = Swift.min(sampleIndex + stride, frameCount)
-                for j in sampleIndex..<windowEnd {
-                    totalDuration += frameDelay(at: j, in: source)
-                }
-            }
-            sampleIndex += stride
+    /// Decode a single animated-image frame at `index`. Runs off-main
+    /// from the decode pipeline and on-main from the display-link
+    /// player; both are valid because `CGImageSource`'s read APIs are
+    /// thread-safe once the source itself has been created.
+    nonisolated fileprivate static func decodeFrame(
+        at index: Int,
+        source: CGImageSource,
+        useThumbnail: Bool,
+        thumbnailMaxPixelSize: CGFloat
+    ) -> CGImage? {
+        if useThumbnail {
+            let opts: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceShouldCacheImmediately: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: thumbnailMaxPixelSize,
+            ]
+            return CGImageSourceCreateThumbnailAtIndex(source, index, opts as CFDictionary)
+        } else {
+            let opts: [CFString: Any] = [
+                kCGImageSourceShouldCacheImmediately: true,
+            ]
+            return CGImageSourceCreateImageAtIndex(source, index, opts as CFDictionary)
         }
-        guard !frames.isEmpty else { return nil }
-        // Guard against degenerate sources whose per-frame delay values are
-        // all zero — UIImageView treats duration = 0 as "render first frame
-        // only", which would look identical to the bug we're fixing.
-        let safeDuration = totalDuration > 0 ? totalDuration : Double(frames.count) * 0.1
-        return .animated(frames: frames, duration: safeDuration)
     }
 
     nonisolated private static func frameDelay(at index: Int, in source: CGImageSource) -> TimeInterval {
@@ -431,83 +406,101 @@ struct CachedAsyncImage: View {
     }
 }
 
-/// UIKit bridge that actually animates a multi-frame UIImage. SwiftUI's
-/// `Image(uiImage:)` quietly renders only the first frame of an animated
-/// UIImage, so detail views that relied on it showed every GIF as a still.
+/// Lightweight animated-image description passed from the decoder to the
+/// UIKit player. Holds the raw `CGImageSource` plus the pre-computed
+/// per-frame delay table and a prewarmed first frame; the player decodes
+/// remaining frames on demand and keeps a bounded LRU cache.
+/// `@unchecked Sendable` because `CGImageSource` is immutable + reference-
+/// typed and Apple documents its read APIs as thread-safe; we only ever
+/// read, so crossing the decode-task → main-actor boundary is sound.
+struct AnimatedImagePayload: @unchecked Sendable {
+    let source: CGImageSource
+    let delays: [TimeInterval]
+    let frameCount: Int
+    let firstFrame: CGImage
+    let aspect: CGFloat
+    let useThumbnail: Bool
+    let thumbnailMaxPixelSize: CGFloat
+}
+
+/// SwiftUI wrapper. The prior implementation fed `UIImageView.animationImages`
+/// which flattens per-frame delays to a uniform `duration / frameCount`
+/// interval — that's what made GIFs with varying delays stutter vs. the
+/// browser. The underlying UIView now drives its own CADisplayLink and
+/// honours each delay directly.
 private struct AnimatedImageView: View {
-    let frames: [UIImage]
-    let duration: TimeInterval
+    let payload: AnimatedImagePayload
 
     var body: some View {
-        // Apply the first frame's aspect ratio on the SwiftUI side so the
-        // view sizes itself against the available column width instead of
-        // inheriting the GIF's native pixel dimensions. Without this a
-        // 900×600 GIF in a ddanzi post pushed the detail ScrollView wider
-        // than the screen, which in turn made the horizontal back-swipe
-        // leave the overlay partially visible over the list on dismiss.
-        let first = frames.first
-        let aspect = first.map { $0.size.width / max($0.size.height, 1) } ?? 1
-        AnimatedImageUIView(frames: frames, duration: duration)
-            .aspectRatio(aspect, contentMode: .fit)
+        AnimatedImageUIView(payload: payload)
+            .aspectRatio(payload.aspect, contentMode: .fit)
             .frame(maxWidth: .infinity)
     }
 }
 
 private struct AnimatedImageUIView: UIViewRepresentable {
-    let frames: [UIImage]
-    let duration: TimeInterval
+    let payload: AnimatedImagePayload
 
-    func makeUIView(context: Context) -> FlexibleAnimatedImageView {
-        let v = FlexibleAnimatedImageView(frame: .zero)
-        v.contentMode = .scaleAspectFit
-        v.clipsToBounds = true
-        v.image = frames.first
-        v.animationImages = frames
-        v.animationDuration = duration
-        v.animationRepeatCount = 0
-        v.startAnimating()
+    func makeUIView(context: Context) -> DisplayLinkAnimatedImageView {
+        let v = DisplayLinkAnimatedImageView(frame: .zero)
+        v.setPayload(payload)
         return v
     }
 
-    func updateUIView(_ v: FlexibleAnimatedImageView, context: Context) {
-        // Only rebind the frames when the array identity changed — reusing
-        // the same arrays on unrelated re-renders would restart the
-        // animation from frame 0 and make the GIF visibly stutter.
-        guard v.animationImages?.first !== frames.first else { return }
-        v.stopAnimating()
-        v.image = frames.first
-        v.animationImages = frames
-        v.animationDuration = duration
-        v.startAnimating()
+    func updateUIView(_ v: DisplayLinkAnimatedImageView, context: Context) {
+        // Only rebind when the underlying source changed — reusing the
+        // same payload on unrelated re-renders would reset the playhead
+        // to frame 0 and make the GIF visibly jump.
+        guard v.source !== payload.source else { return }
+        v.setPayload(payload)
     }
 }
 
-/// UIImageView that does *not* propagate its image's native pixel size as
-/// an intrinsic content size. SwiftUI reads `intrinsicContentSize` to
-/// compute a default frame for UIViewRepresentable, and for a regular
-/// UIImageView that's the image's pixel dimensions — a big GIF would then
-/// try to be 900pt wide inside a 390pt column. Returning `noIntrinsicMetric`
-/// hands sizing back to SwiftUI's aspectRatio + frame modifiers.
-///
-/// Also listens for memory warnings so animated frame arrays can be
-/// released under pressure without taking the whole app down. The still
-/// `image` (first frame) stays set, so the post continues to render as a
-/// frozen poster instead of a blank box. A later `updateUIView` call with
-/// the same frames will rebind and restart animation — acceptable
-/// degradation that prioritises keeping the app alive.
-private final class FlexibleAnimatedImageView: UIImageView {
+/// Custom `UIView` that drives GIF / APNG playback through a
+/// `CADisplayLink`, honouring each frame's native delay and decoding
+/// frames lazily from the shared `CGImageSource`. Replaces the previous
+/// `UIImageView.animationImages` path for two reasons:
+/// 1. **Per-frame timing.** UIImageView distributes the total
+///    `animationDuration` evenly across frames, which flattens GIFs with
+///    variable delays (hold-and-release patterns common in reaction
+///    GIFs) into a perceived stutter.
+/// 2. **Memory bound.** The old path eager-decoded every frame into
+///    `[UIImage]` and fell back to stride-subsampling past ~280MB — a
+///    120-frame source ended up at 60 frames, i.e. half framerate. The
+///    LRU cache here is capped at `frameCacheCapacity` decoded CGImages
+///    regardless of source length, and `CGImageSource` itself holds
+///    encoded bytes only.
+private final class DisplayLinkAnimatedImageView: UIView {
+    private(set) var source: CGImageSource?
+    private var frameCount: Int = 0
+    private var cumulativeDelays: [TimeInterval] = []
+    private var totalDuration: TimeInterval = 0
+    private var useThumbnail: Bool = false
+    private var thumbnailMaxPixelSize: CGFloat = 0
+
+    private var displayLink: CADisplayLink?
+    private var startTime: CFTimeInterval?
+    private var lastFrameIndex: Int = -1
+
+    /// LRU frame cache — bounded by count so memory stays predictable
+    /// regardless of total source length. 12 frames at the 1080px long-
+    /// edge cap is ≈55MB peak, small enough to coexist with several
+    /// concurrent GIFs on a detail page.
+    private static let frameCacheCapacity = 12
+    private var frameCache: [Int: CGImage] = [:]
+    private var cacheOrder: [Int] = []
+
     private var memoryWarningObserver: NSObjectProtocol?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
+        layer.contentsGravity = .resizeAspect
         memoryWarningObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.didReceiveMemoryWarningNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self else { return }
-            self.stopAnimating()
-            self.animationImages = nil
+            self?.flushFrameCache()
         }
     }
 
@@ -516,6 +509,7 @@ private final class FlexibleAnimatedImageView: UIImageView {
     }
 
     deinit {
+        displayLink?.invalidate()
         if let memoryWarningObserver {
             NotificationCenter.default.removeObserver(memoryWarningObserver)
         }
@@ -523,6 +517,157 @@ private final class FlexibleAnimatedImageView: UIImageView {
 
     override var intrinsicContentSize: CGSize {
         CGSize(width: UIView.noIntrinsicMetric, height: UIView.noIntrinsicMetric)
+    }
+
+    /// Suspend the display link when the view leaves a window (e.g.
+    /// LazyVStack derealize on scroll) so off-screen GIFs don't spin
+    /// the CPU. Resume when re-attached.
+    override func willMove(toWindow newWindow: UIWindow?) {
+        super.willMove(toWindow: newWindow)
+        if newWindow == nil {
+            pauseDisplayLink()
+        }
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil, source != nil {
+            resumeDisplayLink()
+        }
+    }
+
+    func setPayload(_ payload: AnimatedImagePayload) {
+        pauseDisplayLink()
+        source = payload.source
+        frameCount = payload.frameCount
+        useThumbnail = payload.useThumbnail
+        thumbnailMaxPixelSize = payload.thumbnailMaxPixelSize
+
+        // Build a prefix-sum table of delays so a display-link tick can
+        // map `elapsed mod totalDuration` to a frame index via binary
+        // search in O(log frameCount) instead of a linear scan each tick.
+        cumulativeDelays = []
+        cumulativeDelays.reserveCapacity(payload.delays.count)
+        var running: TimeInterval = 0
+        for d in payload.delays {
+            running += d
+            cumulativeDelays.append(running)
+        }
+        // Degenerate sources with zero-total delays would otherwise make
+        // `tick` divide by zero and freeze on frame 0. 0.1s / frame is
+        // the same fallback `frameDelay(...)` already applies per-frame
+        // when metadata is missing.
+        totalDuration = running > 0 ? running : Double(max(frameCount, 1)) * 0.1
+
+        frameCache.removeAll(keepingCapacity: true)
+        cacheOrder.removeAll(keepingCapacity: true)
+        lastFrameIndex = -1
+        startTime = nil
+
+        // Seed the cache and the layer with the prewarmed first frame so
+        // the view shows content on its first layout pass — before the
+        // display link even ticks.
+        frameCache[0] = payload.firstFrame
+        cacheOrder.append(0)
+        layer.contents = payload.firstFrame
+        lastFrameIndex = 0
+
+        if window != nil {
+            resumeDisplayLink()
+        }
+    }
+
+    private func resumeDisplayLink() {
+        guard displayLink == nil, source != nil, totalDuration > 0 else { return }
+        let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
+        // `.common` runs the tick during scroll tracking too — otherwise
+        // GIFs freeze the moment the user starts dragging the feed.
+        link.add(to: .main, forMode: .common)
+        displayLink = link
+    }
+
+    private func pauseDisplayLink() {
+        displayLink?.invalidate()
+        displayLink = nil
+        // Reset `startTime` so the next resume restarts playback from
+        // wherever the cached frame was, not mid-loop — prevents a
+        // visible skip when the view re-enters the window.
+        startTime = nil
+    }
+
+    @objc private func tick(_ link: CADisplayLink) {
+        guard source != nil, totalDuration > 0, !cumulativeDelays.isEmpty else { return }
+        let now = link.targetTimestamp
+        if startTime == nil { startTime = now }
+        let elapsed = now - (startTime ?? now)
+        let t = elapsed.truncatingRemainder(dividingBy: totalDuration)
+
+        // Binary search for the first cumulative delay strictly greater
+        // than `t` — that index is the frame currently on-screen.
+        var lo = 0
+        var hi = cumulativeDelays.count - 1
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if cumulativeDelays[mid] <= t { lo = mid + 1 } else { hi = mid }
+        }
+        let frameIndex = lo
+
+        guard frameIndex != lastFrameIndex else { return }
+        if let cg = frame(at: frameIndex) {
+            layer.contents = cg
+            lastFrameIndex = frameIndex
+        }
+    }
+
+    private func frame(at index: Int) -> CGImage? {
+        if let cached = frameCache[index] {
+            touchLRU(index)
+            return cached
+        }
+        guard let source else { return nil }
+        guard let cg = CachedAsyncImage.decodeFrame(
+            at: index,
+            source: source,
+            useThumbnail: useThumbnail,
+            thumbnailMaxPixelSize: thumbnailMaxPixelSize
+        ) else { return nil }
+        insertCache(index: index, image: cg)
+        return cg
+    }
+
+    private func insertCache(index: Int, image: CGImage) {
+        frameCache[index] = image
+        cacheOrder.append(index)
+        while cacheOrder.count > Self.frameCacheCapacity {
+            let evict = cacheOrder.removeFirst()
+            if evict != lastFrameIndex {
+                frameCache.removeValue(forKey: evict)
+            } else {
+                // Don't evict the currently-displayed frame — bounce it
+                // to the end of the LRU order so the next eviction takes
+                // an actually-stale entry instead.
+                cacheOrder.append(evict)
+            }
+        }
+    }
+
+    private func touchLRU(_ index: Int) {
+        if let pos = cacheOrder.firstIndex(of: index) {
+            cacheOrder.remove(at: pos)
+        }
+        cacheOrder.append(index)
+    }
+
+    private func flushFrameCache() {
+        // Keep the currently-displayed frame so the view doesn't flash
+        // blank on memory pressure; the LRU will refill as the display
+        // link walks forward.
+        var preserved: [Int: CGImage] = [:]
+        if lastFrameIndex >= 0, let current = frameCache[lastFrameIndex] {
+            preserved[lastFrameIndex] = current
+        }
+        frameCache = preserved
+        cacheOrder = Array(preserved.keys)
     }
 }
 
