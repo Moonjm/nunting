@@ -76,6 +76,18 @@ extension BoardParser {
     nonisolated func convertAnchorsToMarkdown(in element: Element) {
         guard let anchors = try? element.select("a[href]") else { return }
         for el in anchors where el.parent() != nil {
+            // Anchors that wrap an `<img>` / `<video>` are a media link
+            // wrapper — the media itself is extracted through the parser's
+            // separate sticker / image path, so treating the anchor as a
+            // markdown link here duplicates it as a plain URL under the
+            // rendered image. Mirror the body parsers' rule: when media
+            // is the payload, drop the anchor (leave the `<img>` child so
+            // `.text()` contributes nothing and the sticker path still
+            // picks the src up).
+            if hasAnyDescendant(of: el, taggedAnyOf: ["img", "video"]) {
+                _ = try? el.unwrap()
+                continue
+            }
             let href = (try? el.attr("href")) ?? ""
             let label = ((try? el.text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             guard !href.isEmpty,
