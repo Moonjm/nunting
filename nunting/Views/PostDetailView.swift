@@ -59,17 +59,18 @@ struct PostDetailView: View, Equatable {
     @State private var errorMessage: String?
     @State private var selectedImage: ImageViewerItem?
     @State private var webItem: WebBrowserItem?
-    /// True from the moment the user commits the drag-down dismiss on a
-    /// fullscreen video until the slide-down + AVKit teardown have had
-    /// enough time to settle. While true, a full-screen `Color.black`
-    /// overlay obscures the detail content so the user doesn't see it
-    /// progressively reveal under the dismissing cover and prematurely
-    /// try to scroll — touches during that window route to the still-
-    /// dismissing cover, not the detail, and the user perceives it as
-    /// "터치가 바로 동작 안 한다". The overlay also absorbs taps in this
-    /// window which keeps that intent honest. ContentView's pan gesture
-    /// is `simultaneousGesture` so a back-drag still works.
-    @State private var videoDismissCovering = false
+    /// True from the moment the user commits a fullscreen-cover dismiss
+    /// (video drag-down, image X-tap or drag-down) until the slide-down
+    /// animation + any AVKit/decode teardown has had enough time to
+    /// settle. While true, a full-screen `Color.black` overlay obscures
+    /// the detail content so the user doesn't see it progressively
+    /// reveal under the dismissing cover and prematurely try to scroll
+    /// — touches during that window route to the still-dismissing
+    /// cover, not the detail, and the user perceives it as "터치가
+    /// 바로 동작 안 한다". The overlay also absorbs taps in this window
+    /// which keeps that intent honest. ContentView's pan gesture is
+    /// `simultaneousGesture` so a back-drag still works.
+    @State private var dismissCovering = false
 
     /// Minimum wall-clock delay between view appearance and the first
     /// `detail = ...` commit. Must exceed the iOS push animation (~350ms);
@@ -127,7 +128,7 @@ struct PostDetailView: View, Equatable {
                                 if tapGate?.suppressed == true { return }
                                 selectedImage = ImageViewerItem(url: url)
                             },
-                            onVideoDismissBegin: { beginVideoDismissCover() }
+                            onVideoDismissBegin: { beginDismissCover() }
                         )
                             .padding(.top, 8)
                     }
@@ -187,7 +188,7 @@ struct PostDetailView: View, Equatable {
             await load(renderReadyAt: renderReadyAt)
         }
         .fullScreenCover(item: $selectedImage) { item in
-            ImageViewer(url: item.url)
+            ImageViewer(url: item.url, onDismissBegin: { beginDismissCover() })
         }
         .sheet(item: $webItem) { item in
             SafariView(url: item.url)
@@ -198,25 +199,26 @@ struct PostDetailView: View, Equatable {
         // animation. Color absorbs touches so a premature scroll attempt
         // lands on the overlay (does nothing visible) instead of on a
         // detail-content view that can't yet handle it. Removed by the
-        // timer in `beginVideoDismissCover()`.
+        // timer in `beginDismissCover()`.
         .overlay {
-            if videoDismissCovering {
+            if dismissCovering {
                 Color.black.ignoresSafeArea()
             }
         }
     }
 
-    /// Raise the full-screen black cover the moment a fullscreen-video
-    /// dismiss commits, then drop it after long enough for the slide-down
-    /// animation (~300 ms) and AVKit teardown (~50–150 ms on the typical
-    /// short clip) to settle. Anything earlier and the user sees the
-    /// detail revealing under the still-dismissing cover and tries to
-    /// scroll into a window where touches don't yet route to the detail.
-    private func beginVideoDismissCover() {
-        videoDismissCovering = true
+    /// Raise the full-screen black cover the moment a fullscreen cover
+    /// (video or image viewer) dismiss commits, then drop it after long
+    /// enough for the slide-down animation (~300 ms) and any AVKit /
+    /// decode teardown (~50–150 ms on a typical short clip or image)
+    /// to settle. Anything earlier and the user sees the detail revealing
+    /// under the still-dismissing cover and tries to scroll into a window
+    /// where touches don't yet route to the detail.
+    private func beginDismissCover() {
+        dismissCovering = true
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(450))
-            videoDismissCovering = false
+            dismissCovering = false
         }
     }
 
@@ -312,7 +314,7 @@ struct PostDetailView: View, Equatable {
                             url: url,
                             posterURL: posterURL,
                             tapGate: tapGate,
-                            onDismissBegin: { beginVideoDismissCover() }
+                            onDismissBegin: { beginDismissCover() }
                         )
                     case .dealLink(let url, let label):
                         DealLinkBanner(url: url, label: label)

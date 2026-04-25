@@ -10,6 +10,13 @@ struct ImageViewerItem: Identifiable {
 
 struct ImageViewer: View {
     let url: URL
+    /// Fires the moment the viewer commits a dismiss (X tap or drag-down
+    /// past threshold), BEFORE SwiftUI starts animating the cover off.
+    /// The host (PostDetailView) raises a full-screen black overlay
+    /// during the slide-down so the underlying detail doesn't reveal
+    /// progressively under the dismissing cover. See the matching
+    /// callback on `InlineVideoPlayer` for the full reasoning.
+    var onDismissBegin: () -> Void = {}
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.displayScale) private var displayScale
@@ -21,7 +28,6 @@ struct ImageViewer: View {
     var body: some View {
         ZStack(alignment: .topTrailing) {
             Color.black.ignoresSafeArea()
-                .opacity(backgroundOpacity)
 
             if let image {
                 ZoomableImageView(image: image, isZoomed: $isZoomed)
@@ -41,6 +47,7 @@ struct ImageViewer: View {
             }
 
             Button {
+                onDismissBegin()
                 dismiss()
             } label: {
                 Image(systemName: "xmark")
@@ -67,6 +74,7 @@ struct ImageViewer: View {
             .onEnded { value in
                 guard !isZoomed else { return }
                 if value.translation.height > 120 || value.predictedEndTranslation.height > 220 {
+                    onDismissBegin()
                     dismiss()
                 } else {
                     withAnimation(.spring(response: 0.25, dampingFraction: 0.85)) {
@@ -74,11 +82,6 @@ struct ImageViewer: View {
                     }
                 }
             }
-    }
-
-    private var backgroundOpacity: Double {
-        guard !isZoomed else { return 1 }
-        return max(0.35, 1 - Double(dismissOffset / 360))
     }
 
     private func loadImage() async {
