@@ -144,8 +144,17 @@ struct PostDetailView: View, Equatable {
         // system handling so `tel:` / `mailto:` still work. Comment
         // @mentions are text-styled (not assigned a `.link` attribute), so
         // they don't fire `openURL` and aren't affected.
+        //
+        // `tapGate` short-circuit mirrors the image / video onTapGesture
+        // guards: a right-edge back-drag fires `tapGate.suppress()` from
+        // `ContentView.panGesture`, and on touch-up SwiftUI still delivers
+        // the link tap that landed under the finger. Without this, a
+        // back-swipe started over a linked span (body anchor, deal banner,
+        // source badge) dismisses the detail AND opens SafariView on top
+        // of the list — discard the openURL when the gate is hot.
         .environment(\.openURL, OpenURLAction { url in
-            presentInBrowser(url) ? .handled : .systemAction
+            if tapGate?.suppressed == true { return .discarded }
+            return presentInBrowser(url) ? .handled : .systemAction
         })
         .task(id: post.id) {
             readStore.markRead(post)
