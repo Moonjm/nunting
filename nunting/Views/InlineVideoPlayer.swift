@@ -14,6 +14,17 @@ struct InlineVideoPlayer: View {
     /// fullscreen playback when the user only intended to leave the
     /// detail screen.
     var tapGate: TapSuppressionGate? = nil
+    /// Fires the moment the user's drag-down dismiss commits (touch-up
+    /// past the threshold), BEFORE SwiftUI starts animating the cover
+    /// off-screen. The host view (PostDetailView) raises a full-screen
+    /// black overlay during the slide-down so the underlying detail
+    /// doesn't progressively reveal — without this, the user sees the
+    /// detail content while the cover is still mid-animation, intuits
+    /// "the screen is back, I can scroll", and tries to scroll only to
+    /// hit the dismiss-event window where touches don't yet route to
+    /// the underlying view. The visual cue keeps the intent honest:
+    /// nothing to interact with until the cover is fully gone.
+    var onDismissBegin: () -> Void = {}
 
     @State private var isPresented = false
 
@@ -50,7 +61,7 @@ struct InlineVideoPlayer: View {
         .buttonStyle(.plain)
         .accessibilityLabel("영상 재생")
         .fullScreenCover(isPresented: $isPresented) {
-            FullscreenVideoPlayer(url: url)
+            FullscreenVideoPlayer(url: url, onDismissBegin: onDismissBegin)
         }
     }
 
@@ -72,6 +83,7 @@ struct InlineVideoPlayer: View {
 
 private struct FullscreenVideoPlayer: View {
     let url: URL
+    var onDismissBegin: () -> Void = {}
 
     @Environment(\.dismiss) private var dismiss
     /// True from presentation until the first video frame is decoded.
@@ -88,7 +100,10 @@ private struct FullscreenVideoPlayer: View {
             AVPlayerControllerView(
                 url: url,
                 isLoading: $isLoading,
-                onDismiss: { dismiss() }
+                onDismiss: {
+                    onDismissBegin()
+                    dismiss()
+                }
             )
             .ignoresSafeArea()
 

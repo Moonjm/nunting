@@ -59,6 +59,17 @@ struct PostDetailView: View, Equatable {
     @State private var errorMessage: String?
     @State private var selectedImage: ImageViewerItem?
     @State private var webItem: WebBrowserItem?
+    /// True from the moment the user commits the drag-down dismiss on a
+    /// fullscreen video until the slide-down + AVKit teardown have had
+    /// enough time to settle. While true, a full-screen `Color.black`
+    /// overlay obscures the detail content so the user doesn't see it
+    /// progressively reveal under the dismissing cover and prematurely
+    /// try to scroll — touches during that window route to the still-
+    /// dismissing cover, not the detail, and the user perceives it as
+    /// "터치가 바로 동작 안 한다". The overlay also absorbs taps in this
+    /// window which keeps that intent honest. ContentView's pan gesture
+    /// is `simultaneousGesture` so a back-drag still works.
+    @State private var videoDismissCovering = false
 
     /// Minimum wall-clock delay between view appearance and the first
     /// `detail = ...` commit. Must exceed the iOS push animation (~350ms);
@@ -115,7 +126,8 @@ struct PostDetailView: View, Equatable {
                             onImageTap: { url in
                                 if tapGate?.suppressed == true { return }
                                 selectedImage = ImageViewerItem(url: url)
-                            }
+                            },
+                            onVideoDismissBegin: { beginVideoDismissCover() }
                         )
                             .padding(.top, 8)
                     }
@@ -180,6 +192,31 @@ struct PostDetailView: View, Equatable {
         .sheet(item: $webItem) { item in
             SafariView(url: item.url)
                 .ignoresSafeArea()
+        }
+        // Stays on top of every detail-screen layer (header, ScrollView,
+        // background) for the duration of the fullscreen-video dismiss
+        // animation. Color absorbs touches so a premature scroll attempt
+        // lands on the overlay (does nothing visible) instead of on a
+        // detail-content view that can't yet handle it. Removed by the
+        // timer in `beginVideoDismissCover()`.
+        .overlay {
+            if videoDismissCovering {
+                Color.black.ignoresSafeArea()
+            }
+        }
+    }
+
+    /// Raise the full-screen black cover the moment a fullscreen-video
+    /// dismiss commits, then drop it after long enough for the slide-down
+    /// animation (~300 ms) and AVKit teardown (~50–150 ms on the typical
+    /// short clip) to settle. Anything earlier and the user sees the
+    /// detail revealing under the still-dismissing cover and tries to
+    /// scroll into a window where touches don't yet route to the detail.
+    private func beginVideoDismissCover() {
+        videoDismissCovering = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(450))
+            videoDismissCovering = false
         }
     }
 
@@ -271,7 +308,12 @@ struct PostDetailView: View, Equatable {
                             selectedImage = ImageViewerItem(url: url)
                         }
                     case .video(let url, let posterURL):
-                        InlineVideoPlayer(url: url, posterURL: posterURL, tapGate: tapGate)
+                        InlineVideoPlayer(
+                            url: url,
+                            posterURL: posterURL,
+                            tapGate: tapGate,
+                            onDismissBegin: { beginVideoDismissCover() }
+                        )
                     case .dealLink(let url, let label):
                         DealLinkBanner(url: url, label: label)
                     case .embed(.youtube, let id):
@@ -628,6 +670,7 @@ private struct CommentsSection: View {
     let comments: [Comment]
     var tapGate: TapSuppressionGate? = nil
     let onImageTap: (URL) -> Void
+    let onVideoDismissBegin: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -647,7 +690,12 @@ private struct CommentsSection: View {
             // materialise doesn't bleed into the drag position either.
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(comments.enumerated()), id: \.element.id) { index, comment in
-                    CommentRow(comment: comment, tapGate: tapGate, onImageTap: onImageTap)
+                    CommentRow(
+                        comment: comment,
+                        tapGate: tapGate,
+                        onImageTap: onImageTap,
+                        onVideoDismissBegin: onVideoDismissBegin
+                    )
                     if index < comments.count - 1 {
                         Divider().padding(.vertical, 2)
                     }
@@ -661,6 +709,7 @@ private struct CommentRow: View {
     let comment: Comment
     var tapGate: TapSuppressionGate? = nil
     let onImageTap: (URL) -> Void
+    let onVideoDismissBegin: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -694,7 +743,11 @@ private struct CommentRow: View {
             }
             if let videoURL = comment.videoURL {
                 HStack(spacing: 0) {
-                    InlineVideoPlayer(url: videoURL, tapGate: tapGate)
+                    InlineVideoPlayer(
+                        url: videoURL,
+                        tapGate: tapGate,
+                        onDismissBegin: onVideoDismissBegin
+                    )
                         .frame(maxWidth: 320, maxHeight: 240)
                     Spacer(minLength: 0)
                 }
