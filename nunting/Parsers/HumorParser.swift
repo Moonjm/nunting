@@ -181,6 +181,10 @@ struct HumorParser: BoardParser {
         // because its `</div>` close is matched correctly by the HTML5
         // parser regardless of the wrap_copy typo. Fallbacks stay for
         // legacy / Daum-imported posts that don't ship body_editor.
+        // Scoped `#wrap_copy div.body_editor` runs before the unscoped
+        // `div.body_editor` so a future preview / quoted-post widget
+        // sharing the `body_editor` class outside wrap_copy can't win
+        // ahead of the real body.
         let candidates: [Element?] = [
             try doc.select("div.daum-wm-content").first(),
             try doc.select("#wrap_copy div.body_editor").first(),
