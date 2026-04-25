@@ -173,6 +173,11 @@ private struct AVPlayerControllerView: UIViewControllerRepresentable {
             let player = AVPlayer(playerItem: item)
             coordinator.player = player
             controller.player = player
+            // Loop on end-of-playback: most boards' inline videos are
+            // short reaction clips users want to rewatch. NotificationCenter
+            // keeps us on `AVPlayer` (not `AVQueuePlayer`) so the rest of
+            // the playback / dismantle paths stay unchanged.
+            coordinator.observeEndOfItem(item)
             // Defer the first `play()` until the item reports
             // `.readyToPlay` so audio and first decoded picture start
             // together (avoids the "black frame + sound only" case).
@@ -205,6 +210,7 @@ private struct AVPlayerControllerView: UIViewControllerRepresentable {
         // dismiss animation once `.readyToPlay` fires.
         coordinator.setupTask?.cancel()
         coordinator.setupTask = nil
+        coordinator.removeEndObservation()
         coordinator.player?.pause()
         coordinator.player = nil
         controller.player = nil
@@ -223,6 +229,13 @@ private struct AVPlayerControllerView: UIViewControllerRepresentable {
         private weak var dismissPan: UIPanGestureRecognizer?
         private var hasDismissed = false
         private var statusObservation: NSKeyValueObservation?
+        /// `NotificationCenter.addObserver(forName:object:queue:using:)`
+        /// returns an opaque token that's both the observer and the
+        /// removal handle. Stored so dismantle can detach the looping
+        /// callback — without removal, the closure (which captures the
+        /// coordinator weakly) would dangle on the default center until
+        /// the AVPlayerItem itself deallocates.
+        private var endObservation: NSObjectProtocol?
         /// Handle to the deferred player-attach Task (see
         /// `makeUIViewController`). Retained here so dismantle can cancel
         /// it before the closure body fires against a torn-down controller.
@@ -234,6 +247,34 @@ private struct AVPlayerControllerView: UIViewControllerRepresentable {
 
         deinit {
             statusObservation?.invalidate()
+            if let endObservation {
+                NotificationCenter.default.removeObserver(endObservation)
+            }
+        }
+
+        /// Subscribe to `didPlayToEndTimeNotification` and rewind+resume
+        /// playback when the item finishes. Uses `.main` queue so the
+        /// `AVPlayer` calls happen on the same actor that drives the
+        /// playback layer; AVPlayer's `seek(to:)` and `play()` are
+        /// documented as main-thread-affine.
+        func observeEndOfItem(_ item: AVPlayerItem) {
+            removeEndObservation()
+            endObservation = NotificationCenter.default.addObserver(
+                forName: AVPlayerItem.didPlayToEndTimeNotification,
+                object: item,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self, let player = self.player else { return }
+                player.seek(to: .zero)
+                player.play()
+            }
+        }
+
+        func removeEndObservation() {
+            if let endObservation {
+                NotificationCenter.default.removeObserver(endObservation)
+                self.endObservation = nil
+            }
         }
 
         /// Hold off on `play()` until the AVPlayerItem reports it can deliver
