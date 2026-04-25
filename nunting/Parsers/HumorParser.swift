@@ -165,12 +165,26 @@ struct HumorParser: BoardParser {
 
     nonisolated private func extractBlocks(in doc: Document) throws -> [ContentBlock] {
         // The article body is nested under <wrap_copy id="wrap_copy"> whose
-        // closing tag in the source is a typo (</warp_copy>). SwiftSoup can't
-        // match the close, so the custom element may end up empty or swallow
-        // the rest of the page. Prefer standard wrappers when they're
-        // present and fall back to the id-based selector.
+        // closing tag in the source is a typo (</warp_copy>). SwiftSoup
+        // ignores the unmatched close, so the custom element stays open
+        // until its parent closes — which means everything that follows
+        // (comment list DOM, ad widgets, footer chrome) gets sucked into
+        // wrap_copy's subtree. On a real pds post that inflated the body
+        // to 22+ image blocks: comment-author icons (icon-file.humoruniv),
+        // timg thumb proxies, 11번가/G마켓 광고 CDN URLs, plus loose UI
+        // GIFs (waitplz / blt_ad / memo_notice) that aren't in
+        // skipImageMarkers. Many simultaneous CachedAsyncImage placeholders
+        // → SwiftUI state-update churn + ImageThrottle queueing → the
+        // "이미지 하나가 hang하면 화면이 멈춘다" symptom.
+        //
+        // Prefer `div.body_editor` (the editor's own root inside wrap_copy)
+        // because its `</div>` close is matched correctly by the HTML5
+        // parser regardless of the wrap_copy typo. Fallbacks stay for
+        // legacy / Daum-imported posts that don't ship body_editor.
         let candidates: [Element?] = [
             try doc.select("div.daum-wm-content").first(),
+            try doc.select("#wrap_copy div.body_editor").first(),
+            try doc.select("div.body_editor").first(),
             try doc.select("#wrap_copy").first(),
             try doc.select("div.wrap_body").first(),
         ]
