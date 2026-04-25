@@ -245,7 +245,6 @@ struct ContentView: View {
                 MainBottomBar(
                     board: selectedBoard,
                     favorites: favorites,
-                    onBoardTap: { openDrawer(targetSection: boardNavScope) },
                     onBoardDoubleTap: {
                         searchQuery = nil
                         reloadToken &+= 1
