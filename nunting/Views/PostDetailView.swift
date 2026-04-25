@@ -202,6 +202,7 @@ struct PostDetailView: View, Equatable {
                 .lineLimit(1)
             Spacer(minLength: 0)
             Button {
+                if tapGate?.suppressed == true { return }
                 presentInBrowser(post.url)
             } label: {
                 Image(systemName: "safari")
