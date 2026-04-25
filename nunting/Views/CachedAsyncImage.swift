@@ -13,6 +13,12 @@ struct CachedAsyncImage: View {
     /// inline icons (comment level/auth icons) where the placeholder visibly
     /// flashes in and looks worse than a blank spot.
     let showsPlaceholder: Bool
+    /// Lower value loads earlier when the fetch / decode throttle queue
+    /// fills. Body images pass their block index so a long detail page
+    /// loads top-down instead of in arrival order. Default `.max` keeps
+    /// non-priority callers (comment icons, sticker, video poster, YouTube
+    /// thumb) behind any indexed caller and FIFO among themselves.
+    let loadPriority: Int
 
     @State private var image: UIImage?
     @State private var animatedPayload: AnimatedImagePayload?
@@ -31,7 +37,8 @@ struct CachedAsyncImage: View {
         maxPixelArea: CGFloat = 20_000_000,
         aspectRatio: CGFloat? = nil,
         cacheVariant: String = "default",
-        showsPlaceholder: Bool = true
+        showsPlaceholder: Bool = true,
+        loadPriority: Int = .max
     ) {
         self.url = url
         self.maxDimension = maxDimension
@@ -39,6 +46,7 @@ struct CachedAsyncImage: View {
         self.aspectRatio = aspectRatio
         self.cacheVariant = cacheVariant
         self.showsPlaceholder = showsPlaceholder
+        self.loadPriority = loadPriority
         // Prime from the aspect cache so LazyVStack re-materialisation (and
         // re-scroll over previously-decoded images) renders at final size
         // on the FIRST layout pass instead of starting with a 120pt stub
@@ -154,7 +162,7 @@ struct CachedAsyncImage: View {
         // visit to the same post finds it cached instead of re-downloading.
         // The loader also owns the `ImageThrottle.fetch` semaphore so we
         // don't hold a slot while a cancelled view's Task is unwinding.
-        let data = await ImageDataLoader.shared.data(for: url.atsSafe)
+        let data = await ImageDataLoader.shared.data(for: url.atsSafe, priority: loadPriority)
         guard !Task.isCancelled else { return }
         guard let data else {
             failed = true
@@ -162,7 +170,7 @@ struct CachedAsyncImage: View {
         }
 
         do {
-            try await ImageThrottle.decode.acquire()
+            try await ImageThrottle.decode.acquire(priority: loadPriority)
         } catch {
             return
         }
@@ -786,11 +794,20 @@ private final class DisplayLinkAnimatedImageView: UIView {
 /// loading to cap concurrent network fetches and CPU decodes separately —
 /// separating the two budgets lets I/O and CPU overlap rather than
 /// serialising both through one queue.
+///
+/// `acquire(priority:)` orders the wait queue ascending by priority value
+/// (lower = served first); ties stay FIFO. Default priority is `.max`, so
+/// callers that don't pass one keep the original FIFO behaviour relative
+/// to one another while always queueing behind any caller with a numerical
+/// priority. Used by `PostDetailView` body images to load top-down: each
+/// image's block index becomes its priority, while comment icons / video
+/// posters / sticker images keep the default and load after.
 actor AsyncSemaphore {
     let maxConcurrent: Int
     private var inFlight = 0
     private struct Waiter {
         let id: UUID
+        let priority: Int
         let cont: CheckedContinuation<Void, Error>
     }
     private var waiters: [Waiter] = []
@@ -805,7 +822,7 @@ actor AsyncSemaphore {
     /// future `release()` happened along — worst case pinning `inFlight` at
     /// `maxConcurrent` indefinitely. Callers must only pair a successful
     /// `acquire()` with `release()`.
-    func acquire() async throws {
+    func acquire(priority: Int = .max) async throws {
         if inFlight < maxConcurrent {
             inFlight += 1
             return
@@ -813,7 +830,14 @@ actor AsyncSemaphore {
         let id = UUID()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { cont in
-                waiters.append(Waiter(id: id, cont: cont))
+                let waiter = Waiter(id: id, priority: priority, cont: cont)
+                // Sorted insert: find the first existing waiter with a
+                // strictly greater priority and insert before it. Equal
+                // priorities keep FIFO order (new entry lands after them),
+                // so default `.max` callers behave exactly like the prior
+                // append-only queue relative to each other.
+                let insertAt = waiters.firstIndex(where: { $0.priority > priority }) ?? waiters.count
+                waiters.insert(waiter, at: insertAt)
             }
         } onCancel: {
             // `onCancel` is nonisolated; hop back onto the actor to touch
@@ -855,7 +879,14 @@ actor ImageDataLoader {
 
     private var inFlight: [URL: Task<Data?, Never>] = [:]
 
-    func data(for url: URL) async -> Data? {
+    /// `priority` is forwarded to `ImageThrottle.fetch.acquire`. Two
+    /// concurrent callers for the same URL share one in-flight task —
+    /// the FIRST caller's priority wins because the second sees the task
+    /// already created and just awaits it. In practice the body's top
+    /// images dispatch first (eager VStack creates them in tree order)
+    /// so the lowest-index priority is the one that registers, which is
+    /// what we want.
+    func data(for url: URL, priority: Int = .max) async -> Data? {
         if let existing = inFlight[url] {
             return await existing.value
         }
@@ -864,7 +895,7 @@ actor ImageDataLoader {
                 Task { await ImageDataLoader.shared.cleanup(url: url) }
             }
             do {
-                try await ImageThrottle.fetch.acquire()
+                try await ImageThrottle.fetch.acquire(priority: priority)
             } catch {
                 return nil
             }

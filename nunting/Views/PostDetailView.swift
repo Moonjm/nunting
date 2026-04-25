@@ -303,7 +303,16 @@ struct PostDetailView: View, Equatable {
             // `ImageThrottle` inside `CachedAsyncImage`, so losing the
             // lazy gate doesn't burst concurrent downloads.
             VStack(alignment: .leading, spacing: 12) {
-                ForEach(detail.blocks) { block in
+                // `enumerated()` so each image / video-poster block can
+                // pass its document position as `loadPriority`. The
+                // `ImageThrottle` queue serves lower priorities first, so
+                // a long post's images load top-down even when SwiftUI's
+                // eager VStack starts every `.task(id:)` at once. The
+                // queue is sorted by raw priority value, so any
+                // monotonically increasing per-block index works — only
+                // the relative order matters, not the magnitude or
+                // whether non-image blocks consume an index.
+                ForEach(Array(detail.blocks.enumerated()), id: \.element.id) { index, block in
                     switch block.kind {
                     case .richText(let segments):
                         Text(attributedString(from: segments))
@@ -316,7 +325,8 @@ struct PostDetailView: View, Equatable {
                             maxDimension: 1000,
                             maxPixelArea: 8_000_000,
                             aspectRatio: aspectRatio,
-                            cacheVariant: "article-inline"
+                            cacheVariant: "article-inline",
+                            loadPriority: index
                         )
                         .contentShape(Rectangle())
                         .onTapGesture {
@@ -328,7 +338,8 @@ struct PostDetailView: View, Equatable {
                             url: url,
                             posterURL: posterURL,
                             tapGate: tapGate,
-                            onDismissBegin: { beginDismissCover() }
+                            onDismissBegin: { beginDismissCover() },
+                            posterLoadPriority: index
                         )
                     case .dealLink(let url, let label):
                         DealLinkBanner(url: url, label: label)

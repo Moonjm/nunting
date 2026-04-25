@@ -25,6 +25,12 @@ struct InlineVideoPlayer: View {
     /// the underlying view. The visual cue keeps the intent honest:
     /// nothing to interact with until the cover is fully gone.
     var onDismissBegin: () -> Void = {}
+    /// Forwarded to the poster's `CachedAsyncImage` so a video block sitting
+    /// among body images participates in the same top-down priority queue.
+    /// Default `.max` keeps comment-section videos behind any indexed body
+    /// caller, matching the behaviour of every other non-body image
+    /// callsite.
+    var posterLoadPriority: Int = .max
 
     @State private var isPresented = false
 
@@ -37,7 +43,11 @@ struct InlineVideoPlayer: View {
                 Color.black
 
                 if let resolvedPoster {
-                    CachedAsyncImage(url: resolvedPoster, maxDimension: 720)
+                    CachedAsyncImage(
+                        url: resolvedPoster,
+                        maxDimension: 720,
+                        loadPriority: posterLoadPriority
+                    )
                 } else {
                     Image(systemName: "film")
                         .font(.system(size: 42, weight: .regular))
