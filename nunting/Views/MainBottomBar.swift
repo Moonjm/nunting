@@ -23,6 +23,16 @@ struct MainBottomBar: View {
             // drawer is now reachable only via a left-edge rightward
             // swipe handled by ContentView's panGesture; the bottom
             // bar's board name no longer surfaces it on tap.)
+            //
+            // The empty single-tap recognizer is intentionally kept:
+            // when only `.onTapGesture(count: 2)` is attached alongside
+            // the drag, SwiftUI holds the first touch waiting for a
+            // potential second tap and the drag recognizer is starved
+            // of `.onChanged` / `.onEnded` events — left-right swipe
+            // for board step silently stops working. Pairing it with
+            // a no-op single-tap restores the gesture mediation we had
+            // before the drawer-on-tap removal, so the swipe arrives
+            // at the drag handler again.
             Group {
                 Text(board.name)
                     .font(.caption.weight(.medium))
@@ -33,6 +43,9 @@ struct MainBottomBar: View {
             .contentShape(Rectangle())
             .onTapGesture(count: 2) {
                 onBoardDoubleTap()
+            }
+            .onTapGesture {
+                // Intentional no-op — see comment above.
             }
             // High priority so the parent drawer-pan gesture in ContentView
             // doesn't swallow the swipe before it can reach the bar.
