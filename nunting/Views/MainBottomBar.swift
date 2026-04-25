@@ -20,8 +20,9 @@ struct MainBottomBar: View {
             // Board name area: double tap clears the active search,
             // horizontal swipe steps through the current scope's boards.
             // (Single-tap → side drawer was removed by request — the
-            // drawer is reachable via the right-edge swipe and the
-            // bottom-bar-name no longer surfaces it on tap.)
+            // drawer is now reachable only via a left-edge rightward
+            // swipe handled by ContentView's panGesture; the bottom
+            // bar's board name no longer surfaces it on tap.)
             Group {
                 Text(board.name)
                     .font(.caption.weight(.medium))

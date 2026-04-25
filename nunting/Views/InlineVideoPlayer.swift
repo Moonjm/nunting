@@ -257,6 +257,16 @@ private struct AVPlayerControllerView: UIViewControllerRepresentable {
         /// `AVPlayer` calls happen on the same actor that drives the
         /// playback layer; AVPlayer's `seek(to:)` and `play()` are
         /// documented as main-thread-affine.
+        ///
+        /// Cleanup correctness depends on this being called from the
+        /// SAME synchronous main-actor span as `setupTask`'s body —
+        /// `dismantleUIViewController` runs `setupTask?.cancel()` and
+        /// then `removeEndObservation()` back-to-back, which is safe
+        /// only because the body has no `await` between the
+        /// `Task.isCancelled` guard and the call here. Adding an
+        /// `await` (e.g. async asset probing) before this point would
+        /// let the registration race past dismantle's removal, leaking
+        /// the token for the AVPlayerItem's lifetime.
         func observeEndOfItem(_ item: AVPlayerItem) {
             removeEndObservation()
             endObservation = NotificationCenter.default.addObserver(

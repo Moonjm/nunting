@@ -71,6 +71,14 @@ struct PostDetailView: View, Equatable {
     /// which keeps that intent honest. ContentView's pan gesture is
     /// `simultaneousGesture` so a back-drag still works.
     @State private var dismissCovering = false
+    /// Monotonic counter bumped by `beginDismissCover()`. Each scheduled
+    /// drop-timer captures the value at scheduling time and clears
+    /// `dismissCovering` only if no later call superseded it. Without
+    /// this guard, two dismisses inside the 450 ms window (e.g. user
+    /// closes the video and immediately opens + closes an image) cause
+    /// the first timer to clear the flag while the second cover is
+    /// still mid-animation, flashing the detail content briefly.
+    @State private var coverGeneration = 0
 
     /// Minimum wall-clock delay between view appearance and the first
     /// `detail = ...` commit. Must exceed the iOS push animation (~350ms);
@@ -216,8 +224,14 @@ struct PostDetailView: View, Equatable {
     /// where touches don't yet route to the detail.
     private func beginDismissCover() {
         dismissCovering = true
+        coverGeneration &+= 1
+        let scheduledGeneration = coverGeneration
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(450))
+            // Only clear if no later begin-call superseded this one. A
+            // newer cover is responsible for its own clear; clearing here
+            // would flash the detail content under the new cover.
+            guard scheduledGeneration == coverGeneration else { return }
             dismissCovering = false
         }
     }

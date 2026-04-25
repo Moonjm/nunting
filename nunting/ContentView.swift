@@ -502,15 +502,6 @@ struct ContentView: View {
         }
     }
 
-    private func openDrawer(targetSection: DrawerSection) {
-        drawerSection = targetSection
-        resetDragState()
-        withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
-            drawerOpen = true
-            dragOffset = 0
-        }
-    }
-
     private func startedInBottomBar(_ value: DragGesture.Value) -> Bool {
         // Prefer the measured top of the filter+bar area so a tap-with-jitter
         // on a chip ("10추", "이슈모음 전체", etc.) is always classified as
