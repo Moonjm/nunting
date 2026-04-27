@@ -27,6 +27,23 @@ struct CachedAsyncImage: View {
     /// into a full-column white box. Default `false` preserves the
     /// fixed-slot fill that level / auth icon callers rely on.
     let clampsToNaturalWidth: Bool
+    /// When true, defers the network fetch + decode pipeline until this
+    /// image's frame intersects the enclosing ScrollView's viewport.
+    /// Used by body images so a 30-image post doesn't queue 30 fetches
+    /// at the moment the detail commits — only viewport-region images
+    /// trigger work, and bottom-of-post images stay idle until the
+    /// user actually scrolls there. Default `false` keeps icons /
+    /// stickers / video posters loading the moment they mount, which
+    /// they need because they sit in fixed slots that should fill on
+    /// first appearance, not on viewport crossing.
+    ///
+    /// **Required:** the view must be mounted inside a `ScrollView` for
+    /// the gate ever to open. `onScrollVisibilityChange` silently
+    /// no-ops outside scroll views per Apple's contract, which would
+    /// leave the image stuck on its placeholder forever. A DEBUG-only
+    /// guard in `body` warns if a gated view hasn't received a
+    /// visibility callback within 1 s of appearing.
+    let visibilityGated: Bool
 
     @State private var image: UIImage?
     @State private var animatedPayload: AnimatedImagePayload?
@@ -43,6 +60,12 @@ struct CachedAsyncImage: View {
     /// view never upscales beyond the source. Primed from the aspect-cache
     /// sibling on init for the same re-realize-doesn't-jump reason.
     @State private var intrinsicPointWidth: CGFloat?
+    /// Tracks `.onScrollVisibilityChange` for `visibilityGated` callers.
+    /// `nil` while we haven't received a callback yet (treated as "not
+    /// visible" so loads stay deferred); flipped to `true` / `false` by
+    /// the modifier as the image's frame crosses the enclosing
+    /// ScrollView's viewport. Non-gated callers ignore this entirely.
+    @State private var isVisible: Bool = false
     @Environment(\.displayScale) private var displayScale
 
     init(
@@ -53,7 +76,8 @@ struct CachedAsyncImage: View {
         cacheVariant: String = "default",
         showsPlaceholder: Bool = true,
         loadPriority: Int = .max,
-        clampsToNaturalWidth: Bool = false
+        clampsToNaturalWidth: Bool = false,
+        visibilityGated: Bool = false
     ) {
         self.url = url
         self.maxDimension = maxDimension
@@ -63,6 +87,7 @@ struct CachedAsyncImage: View {
         self.showsPlaceholder = showsPlaceholder
         self.loadPriority = loadPriority
         self.clampsToNaturalWidth = clampsToNaturalWidth
+        self.visibilityGated = visibilityGated
         // Prime from the aspect cache so LazyVStack re-materialisation (and
         // re-scroll over previously-decoded images) renders at final size
         // on the FIRST layout pass instead of starting with a 120pt stub
@@ -141,7 +166,51 @@ struct CachedAsyncImage: View {
         // ImageCache at init so the cap is in effect on first layout.
         .frame(maxWidth: clampsToNaturalWidth ? (intrinsicPointWidth ?? .infinity) : .infinity)
         .transaction { $0.animation = nil }
-        .task(id: url) { await load() }
+        // Task identity includes the visibility gate state so the load
+        // re-fires (kicks the pipeline) when a deferred image first
+        // crosses the viewport. Non-gated callers' `loadGateOpen` is
+        // always `true`, so for them this is identical to keying on
+        // just `url` — no behavioural change.
+        .task(id: LoadGate(url: url, open: !visibilityGated || isVisible)) {
+            guard !visibilityGated || isVisible else { return }
+            await load()
+        }
+        // iOS 18+ viewport-intersection callback. Fires only when the
+        // view sits inside a ScrollView (every CachedAsyncImage caller
+        // does today). `threshold: 0` flips `isVisible` the moment any
+        // pixel of the image's frame enters the viewport — that's
+        // when we want fetch + decode to start. A larger threshold
+        // would delay the trigger past first-pixel, which translates
+        // to longer placeholder time on scroll-in.
+        //
+        // Apple's contract: this callback fires once on the initial
+        // layout pass with the current visibility state, NOT only on
+        // transitions — so an above-the-fold body image gets
+        // `visible = true` on first layout and the gate opens before
+        // any scroll input. That's load-bearing for the experiment;
+        // without it, body images visible on detail entry would never
+        // load.
+        .onScrollVisibilityChange(threshold: 0) { visible in
+            if visibilityGated { isVisible = visible }
+        }
+        // DEBUG-only misuse guard. If a `visibilityGated` caller is
+        // accidentally placed outside a `ScrollView` (or any other
+        // configuration where `onScrollVisibilityChange` doesn't
+        // fire), the gate stays closed and the image silently never
+        // loads — the worst kind of bug to chase. After 1 s of
+        // appearance, if the gate is still closed and there's no
+        // cached image, log a one-shot warning so the misuse surfaces
+        // immediately during development. Stripped from release
+        // builds via `#if DEBUG`.
+        #if DEBUG
+        .task(id: url) {
+            guard visibilityGated else { return }
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled, !isVisible, image == nil, animatedPayload == nil
+            else { return }
+            print("[CachedAsyncImage] WARNING: visibilityGated image at \(url) hasn't received an onScrollVisibilityChange callback after 1s — is it inside a ScrollView?")
+        }
+        #endif
 
         let effective = aspectRatio ?? intrinsicAspectRatio
         if let effective {
@@ -268,6 +337,19 @@ struct CachedAsyncImage: View {
     fileprivate enum DecodeResult {
         case still(UIImage)
         case animated(AnimatedImagePayload)
+    }
+
+    /// Composite `.task(id:)` key combining URL with the visibility
+    /// gate's open/closed state. Non-gated callers always pass
+    /// `open: true`, which makes the key collapse to URL-equivalent
+    /// behaviour (no spurious re-fires on isVisible changes the caller
+    /// is supposed to ignore). Gated callers see two key transitions
+    /// per scroll-through: false→true (kicks load), true→false (cancels
+    /// in-flight task; the shared `ImageDataLoader` continues the fetch
+    /// in the background and stores it in URLCache for the next time).
+    private struct LoadGate: Hashable {
+        let url: URL
+        let open: Bool
     }
 
     nonisolated private static func decode(data: Data, maxDimension: CGFloat, maxPixelArea: CGFloat, scale: CGFloat) -> DecodeResult? {
