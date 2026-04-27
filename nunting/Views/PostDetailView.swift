@@ -326,7 +326,8 @@ struct PostDetailView: View, Equatable {
                             maxPixelArea: 8_000_000,
                             aspectRatio: aspectRatio,
                             cacheVariant: "article-inline",
-                            loadPriority: index
+                            loadPriority: index,
+                            clampsToNaturalWidth: true
                         )
                         .contentShape(Rectangle())
                         .onTapGesture {

@@ -48,6 +48,14 @@ struct HumorParser: BoardParser {
         // extractBlocks/extractComments 모두 자동으로 깨끗한 트리를 받음.
         // racy_hidden_* 안의 "원본" 펼치기 버튼도 같은 이유로 함께 제거.
         try doc.select("[id^=racy_show_], [id^=btn_nemo_expand_all]").remove()
+        // racy_hidden_* 컨테이너에는 인라인 `display:none` 이 박혀 있어
+        // BoardParser.isHidden 가 서브트리 전체(=실제 mp4 OnClick 핸들러
+        // + 썸네일)를 드롭. 디코이를 이미 떼낸 이상 hidden 상태로 둘 이유가
+        // 없으므로 style 만 비워 가시화. selector 를 `racy_hidden_*` 로
+        // 좁혀 두어 다른 사이트가 의존하는 진짜 hidden 가드와 충돌 없음.
+        for el in try doc.select("[id^=racy_hidden_]") {
+            try el.removeAttr("style")
+        }
 
         // Humoruniv redirects deleted/moved posts to /board/msg.html which
         // has none of the usual detail markup. Returning an empty PostDetail

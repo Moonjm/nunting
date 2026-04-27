@@ -19,6 +19,14 @@ struct CachedAsyncImage: View {
     /// non-priority callers (comment icons, sticker, video poster, YouTube
     /// thumb) behind any indexed caller and FIFO among themselves.
     let loadPriority: Int
+    /// When true, the rendered frame caps at the source's natural point
+    /// width instead of stretching to fill the parent. Mirrors the browser
+    /// `width: auto; max-width: 100%` behaviour boards apply on body
+    /// `<img>` — keeps small attachments (e.g. SLR's failed-upload 127×100
+    /// white placeholder) at their natural size instead of upscaling 3×
+    /// into a full-column white box. Default `false` preserves the
+    /// fixed-slot fill that level / auth icon callers rely on.
+    let clampsToNaturalWidth: Bool
 
     @State private var image: UIImage?
     @State private var animatedPayload: AnimatedImagePayload?
@@ -29,6 +37,12 @@ struct CachedAsyncImage: View {
     /// on re-appearances — stops the 120pt placeholder → natural-height
     /// jump that shifts scroll position when images load.
     @State private var intrinsicAspectRatio: CGFloat?
+    /// Source pixel width treated as point width (the decoded UIImage uses
+    /// `scale = 1`, so `size.width` equals the pixel count). Read by
+    /// `clampsToNaturalWidth` callers to bound the rendered frame so the
+    /// view never upscales beyond the source. Primed from the aspect-cache
+    /// sibling on init for the same re-realize-doesn't-jump reason.
+    @State private var intrinsicPointWidth: CGFloat?
     @Environment(\.displayScale) private var displayScale
 
     init(
@@ -38,7 +52,8 @@ struct CachedAsyncImage: View {
         aspectRatio: CGFloat? = nil,
         cacheVariant: String = "default",
         showsPlaceholder: Bool = true,
-        loadPriority: Int = .max
+        loadPriority: Int = .max,
+        clampsToNaturalWidth: Bool = false
     ) {
         self.url = url
         self.maxDimension = maxDimension
@@ -47,6 +62,7 @@ struct CachedAsyncImage: View {
         self.cacheVariant = cacheVariant
         self.showsPlaceholder = showsPlaceholder
         self.loadPriority = loadPriority
+        self.clampsToNaturalWidth = clampsToNaturalWidth
         // Prime from the aspect cache so LazyVStack re-materialisation (and
         // re-scroll over previously-decoded images) renders at final size
         // on the FIRST layout pass instead of starting with a 120pt stub
@@ -54,6 +70,9 @@ struct CachedAsyncImage: View {
         _intrinsicAspectRatio = State(
             initialValue: aspectRatio
                 ?? ImageCache.shared.aspectRatio(for: url, variant: cacheVariant)
+        )
+        _intrinsicPointWidth = State(
+            initialValue: ImageCache.shared.naturalPointWidth(for: url, variant: cacheVariant)
         )
     }
 
@@ -113,7 +132,14 @@ struct CachedAsyncImage: View {
                 }
             }
         }
-        .frame(maxWidth: .infinity)
+        // Body-image callers (`clampsToNaturalWidth: true`) pin the upper
+        // bound to the source's natural point width once known so 127px
+        // placeholders don't get upscaled 3× into a full-column white box.
+        // Falling back to `.infinity` while the width is still unknown
+        // keeps the placeholder full-width during first load — there's no
+        // size to clamp against yet, and re-visits prime the width from
+        // ImageCache at init so the cap is in effect on first layout.
+        .frame(maxWidth: clampsToNaturalWidth ? (intrinsicPointWidth ?? .infinity) : .infinity)
         .transaction { $0.animation = nil }
         .task(id: url) { await load() }
 
@@ -139,12 +165,19 @@ struct CachedAsyncImage: View {
                 if intrinsicAspectRatio == nil {
                     intrinsicAspectRatio = aspect
                 }
-                // Opportunistically back-fill the aspect-ratio cache on
-                // cache hits too, so images decoded by a pre-fix build
-                // (image stored, ratio not) get a stable frame on the
-                // next re-realize instead of bouncing through minHeight 120.
+                if intrinsicPointWidth == nil {
+                    intrinsicPointWidth = cached.size.width
+                }
+                // Opportunistically back-fill the aspect / natural-width
+                // caches on cache hits too, so images decoded by a pre-fix
+                // build (UIImage stored, sibling caches missing) get a
+                // stable frame on the next re-realize instead of bouncing
+                // through minHeight 120 / `.infinity` width.
                 if ImageCache.shared.aspectRatio(for: url, variant: variant) == nil {
                     ImageCache.shared.storeAspectRatio(aspect, for: url, variant: variant)
+                }
+                if ImageCache.shared.naturalPointWidth(for: url, variant: variant) == nil {
+                    ImageCache.shared.storeNaturalPointWidth(cached.size.width, for: url, variant: variant)
                 }
             }
             return
@@ -186,6 +219,7 @@ struct CachedAsyncImage: View {
                 if img.size.height > 0 {
                     let aspect = img.size.width / img.size.height
                     intrinsicAspectRatio = aspect
+                    intrinsicPointWidth = img.size.width
                     // Persist the ratio so subsequent re-realizations (LazyVStack
                     // derealize/realize during back-drag) reserve the final
                     // frame size from `init`, instead of collapsing to the
@@ -195,16 +229,20 @@ struct CachedAsyncImage: View {
                     // content height contracts, and the viewport at deep
                     // scroll ends up past the new content end — blank screen.
                     ImageCache.shared.storeAspectRatio(aspect, for: url, variant: variant)
+                    ImageCache.shared.storeNaturalPointWidth(img.size.width, for: url, variant: variant)
                 }
             case .animated(let payload):
                 // Animated GIFs aren't stored in ImageCache — the frame
                 // data stays alive as long as this view's CGImageSource
                 // reference does, and re-decode from URLCache on re-entry
-                // is cheap. Aspect ratio is still cached so re-renders
-                // reserve the final frame before the payload is ready.
+                // is cheap. Aspect ratio + natural width are still cached
+                // so re-renders reserve the final frame (and respect
+                // `clampsToNaturalWidth`) before the payload is ready.
                 animatedPayload = payload
                 intrinsicAspectRatio = payload.aspect
+                intrinsicPointWidth = payload.naturalPointWidth
                 ImageCache.shared.storeAspectRatio(payload.aspect, for: url, variant: variant)
+                ImageCache.shared.storeNaturalPointWidth(payload.naturalPointWidth, for: url, variant: variant)
             case nil:
                 failed = true
             }
@@ -347,13 +385,19 @@ struct CachedAsyncImage: View {
             aspect = h > 0 ? w / h : 1
         }
 
+        // Source pixel width treated as point width — same `scale = 1`
+        // convention `.still` UIImages use, so `clampsToNaturalWidth`
+        // callers can cap GIFs at their source size the same way.
+        let naturalPointWidth = sourceWidth > 0 ? sourceWidth : CGFloat(firstFrame.width)
+
         let payload = AnimatedImagePayload(
             source: source,
             frameCount: frameCount,
             firstFrame: firstFrame,
             aspect: aspect,
             useThumbnail: needsThumbnail,
-            thumbnailMaxPixelSize: targetLongSide
+            thumbnailMaxPixelSize: targetLongSide,
+            naturalPointWidth: naturalPointWidth
         )
         return .animated(payload)
     }
@@ -425,6 +469,11 @@ struct AnimatedImagePayload: @unchecked Sendable {
     let aspect: CGFloat
     let useThumbnail: Bool
     let thumbnailMaxPixelSize: CGFloat
+    /// Source's natural pixel width treated as point width (matches the
+    /// `scale = 1` convention `.still` UIImages use). Threaded through so
+    /// `clampsToNaturalWidth` callers can cap GIFs the same way they cap
+    /// stills.
+    let naturalPointWidth: CGFloat
 }
 
 /// SwiftUI wrapper. The prior implementation fed `UIImageView.animationImages`
@@ -961,12 +1010,26 @@ final class ImageCache {
         return c
     }()
 
+    /// Sibling of `aspects` storing the source's natural point width so
+    /// `clampsToNaturalWidth: true` callers (body images) reserve the
+    /// capped frame on first layout after re-realize / cache eviction.
+    /// Same footprint and key shape as `aspects`.
+    private let naturalWidths: NSCache<NSString, NSNumber> = {
+        let c = NSCache<NSString, NSNumber>()
+        c.countLimit = 1000
+        return c
+    }()
+
     func image(for url: URL, variant: String = "default") -> UIImage? {
         cache.object(forKey: key(for: url, variant: variant))
     }
 
     func aspectRatio(for url: URL, variant: String = "default") -> CGFloat? {
         aspects.object(forKey: key(for: url, variant: variant)).map { CGFloat(truncating: $0) }
+    }
+
+    func naturalPointWidth(for url: URL, variant: String = "default") -> CGFloat? {
+        naturalWidths.object(forKey: key(for: url, variant: variant)).map { CGFloat(truncating: $0) }
     }
 
     func store(_ image: UIImage, for url: URL, variant: String = "default") {
@@ -979,12 +1042,24 @@ final class ImageCache {
                 NSNumber(value: Double(pixelW / pixelH)),
                 forKey: key(for: url, variant: variant)
             )
+            // `CachedAsyncImage` decodes UIImages with `scale = 1`, so
+            // `image.size.width` already equals the pixel width and is the
+            // value `clampsToNaturalWidth` callers cap on.
+            naturalWidths.setObject(
+                NSNumber(value: Double(image.size.width)),
+                forKey: key(for: url, variant: variant)
+            )
         }
     }
 
     func storeAspectRatio(_ ratio: CGFloat, for url: URL, variant: String = "default") {
         guard ratio > 0, ratio.isFinite else { return }
         aspects.setObject(NSNumber(value: Double(ratio)), forKey: key(for: url, variant: variant))
+    }
+
+    func storeNaturalPointWidth(_ width: CGFloat, for url: URL, variant: String = "default") {
+        guard width > 0, width.isFinite else { return }
+        naturalWidths.setObject(NSNumber(value: Double(width)), forKey: key(for: url, variant: variant))
     }
 
     private func key(for url: URL, variant: String) -> NSString {
