@@ -1082,6 +1082,31 @@ final class ImageCache {
         return c
     }()
 
+    private var memoryWarningObserver: NSObjectProtocol?
+
+    init() {
+        // NSCache auto-evicts under cost pressure, but iOS-level memory
+        // warnings (jetsam approaching) don't necessarily map 1:1 to that
+        // — long detail-view sessions accumulate UIImage entries up to the
+        // 200MB cap before the OS starts pushing back. Drop the pixel
+        // cache eagerly on warning so we contract before jetsam fires.
+        // Aspect / natural-width siblings stay (tiny footprint, and
+        // dropping them would make the next re-realize bounce frames).
+        memoryWarningObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.cache.removeAllObjects()
+        }
+    }
+
+    deinit {
+        if let memoryWarningObserver {
+            NotificationCenter.default.removeObserver(memoryWarningObserver)
+        }
+    }
+
     /// Session-scoped aspect ratio cache keyed by (variant, url). Survives
     /// NSCache UIImage eviction so a recycled `CachedAsyncImage` can still
     /// render at the right proportion on first layout even if the pixel
