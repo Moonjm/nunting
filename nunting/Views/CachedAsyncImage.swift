@@ -1084,12 +1084,11 @@ final class ImageCache {
 
     private var memoryWarningObserver: NSObjectProtocol?
 
-    init() {
-        // NSCache auto-evicts under cost pressure, but iOS-level memory
-        // warnings (jetsam approaching) don't necessarily map 1:1 to that
-        // — long detail-view sessions accumulate UIImage entries up to the
-        // 200MB cap before the OS starts pushing back. Drop the pixel
-        // cache eagerly on warning so we contract before jetsam fires.
+    private init() {
+        // NSCache evicts on its own cost cap, but the 200MB cap is high
+        // enough that on memory-tight devices jetsam can fire before
+        // NSCache's own eviction has contracted us. Drop the pixel cache
+        // eagerly on iOS memory warning so we shrink ahead of jetsam.
         // Aspect / natural-width siblings stay (tiny footprint, and
         // dropping them would make the next re-realize bounce frames).
         memoryWarningObserver = NotificationCenter.default.addObserver(
