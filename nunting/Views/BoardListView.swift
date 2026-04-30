@@ -157,36 +157,39 @@ struct BoardListView: View {
 
     @ViewBuilder
     private func postRowContent(post: Post, isAagag: Bool, isRead: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                if isAagag, let lv = post.levelText, !lv.isEmpty {
-                    AagagSourceTag(code: lv)
+        HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    if isAagag, let lv = post.levelText, !lv.isEmpty {
+                        AagagSourceTag(code: lv)
+                    }
+                    Text(post.title).font(.body)
                 }
-                Text(post.title).font(.body)
+                HStack(spacing: 6) {
+                    Text(post.author)
+                    if !isAagag, let lv = post.levelText, !lv.isEmpty {
+                        Text(lv)
+                    }
+                    Text(post.dateText)
+                    if let views = post.viewCount {
+                        Text("조회 \(views)")
+                    }
+                    if let recos = post.recommendCount, recos > 0 {
+                        Text("추천 \(recos)").foregroundStyle(.pink)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
             }
-            HStack(spacing: 6) {
-                Text(post.author)
-                if !isAagag, let lv = post.levelText, !lv.isEmpty {
-                    Text(lv)
-                }
-                Text(post.dateText)
-                if let views = post.viewCount {
-                    Text("조회 \(views)")
-                }
-                if let recos = post.recommendCount, recos > 0 {
-                    Text("추천 \(recos)").foregroundStyle(.pink)
-                }
-                if post.commentCount > 0 {
-                    Text("💬 \(post.commentCount)")
-                }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if post.commentCount > 0 {
+                commentBadge(count: post.commentCount)
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .truncationMode(.tail)
         }
         .opacity(isRead ? 0.45 : 1.0)
-        .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .onTapGesture {
             if shouldSuppressRowTap() { return }
@@ -195,6 +198,32 @@ struct BoardListView: View {
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .accessibilityValue(isRead ? "읽음" : "")
+    }
+
+    @ViewBuilder
+    private func commentBadge(count: Int) -> some View {
+        let tint = commentBadgeTint(for: count)
+        Text("\(count)")
+            .font(.caption.weight(.semibold))
+            .monospacedDigit()
+            .frame(minWidth: 20)
+            .padding(.vertical, 5)
+            .padding(.horizontal, 2)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(tint.opacity(0.15))
+            )
+            .foregroundStyle(tint)
+            .accessibilityLabel("댓글 \(count)개")
+    }
+
+    private func commentBadgeTint(for count: Int) -> Color {
+        switch count {
+        case ..<10: return .gray
+        case 10..<30: return .blue
+        case 30..<60: return .orange
+        default: return .red
+        }
     }
 
     private func load() async {
