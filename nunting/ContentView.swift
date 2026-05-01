@@ -9,6 +9,10 @@ struct ContentView: View {
     /// Session cache so a freshly-opened post (one whose overlay wasn't the
     /// keep-alive target) skips the network + parse on first render.
     @State private var detailCache = PostDetailCache()
+    /// First-page list snapshots, keyed by `BoardListView.taskKey`. Drives
+    /// the stale-while-revalidate path on board re-entry and is populated
+    /// in advance by `BoardListCache.prefetch` when the drawer opens.
+    @State private var listCache = BoardListCache()
     @State private var selectedBoard: Board
     @State private var selectedFilter: BoardFilter? = nil
     @State private var searchQuery: String? = nil
@@ -86,11 +90,11 @@ struct ContentView: View {
         _favorites = State(initialValue: store)
         if let firstFav = store.favoriteBoards().first {
             _selectedBoard = State(initialValue: firstFav)
-            _selectedFilter = State(initialValue: Self.defaultFilter(for: firstFav))
+            _selectedFilter = State(initialValue: firstFav.defaultListFilter)
             _boardNavScope = State(initialValue: .favorites)
         } else {
             _selectedBoard = State(initialValue: .clienNews)
-            _selectedFilter = State(initialValue: Self.defaultFilter(for: .clienNews))
+            _selectedFilter = State(initialValue: Board.clienNews.defaultListFilter)
             _boardNavScope = State(initialValue: .site(.clien))
         }
     }
@@ -121,7 +125,17 @@ struct ContentView: View {
                 currentBoardID: selectedBoard.id,
                 selectedSection: $drawerSection,
                 onSelectBoard: { board in
+                    // Set board, filter, and search atomically in a single
+                    // state-mutation batch so `BoardListView`'s `taskKey`
+                    // changes exactly once. The prior pattern (set board,
+                    // let `.onChange(of: selectedBoard)` reset filter on
+                    // the next render) gave invenMaple a guaranteed
+                    // double-fire: first task fetched with the previous
+                    // board's filter, was cancelled, then the real fetch
+                    // started — extra round-trip on every entry.
                     selectedBoard = board
+                    selectedFilter = board.defaultListFilter
+                    searchQuery = nil
                     boardNavScope = drawerSection
                     closeDrawer()
                 },
@@ -223,21 +237,47 @@ struct ContentView: View {
                 ImageWarmup.warm()
             }
         }
+        .onChange(of: drawerOpen) { _, open in
+            // Drawer just opened: warm up favorites in the background so
+            // the typical "open drawer → tap a favorite" flow lands on a
+            // cache hit and renders without a spinner. Capped to the
+            // first 6 to avoid bursting 10+ hosts at once when a user
+            // has a long favorites list. Best-effort; failures fall
+            // through silently to the live load path.
+            guard open else { return }
+            let targets = Array(favorites.favoriteBoards().prefix(6))
+            guard !targets.isEmpty else { return }
+            BoardListCache.prefetch(boards: targets, into: listCache)
+        }
     }
 
     private var mainScreen: some View {
-        VStack(spacing: 0) {
-            BoardListView(
-                board: selectedBoard,
-                filter: selectedFilter,
-                searchQuery: searchQuery,
-                scrollLocked: scrollLocked,
-                shouldSuppressRowTap: { [rowTapGate] in rowTapGate.suppressed },
-                readStore: readStore,
-                onSelectPost: { post in
-                    showDetail(post)
-                }
-            )
+        // Bar (filter chips + bottom bar) is declared as the list's
+        // bottom safe-area inset rather than a sibling in a VStack so
+        // SwiftUI computes the List's `contentInset.bottom` as
+        // `bar height + home-indicator inset` for us. The previous
+        // VStack arrangement had a race where, after a slow first
+        // load (e.g. switching to a heavy Inven board), the late
+        // `loadingView → listView` body swap materialised
+        // `.background(...ignoresSafeArea())` on the List against an
+        // already-settled layout — the List's bottom inset stayed at
+        // 0, letting rows render past the bar into the home-indicator
+        // zone. `.safeAreaInset` makes the inset declarative and
+        // race-immune, which is also the canonical pattern Mail /
+        // Messages use for their bottom bars.
+        BoardListView(
+            board: selectedBoard,
+            filter: selectedFilter,
+            searchQuery: searchQuery,
+            scrollLocked: scrollLocked,
+            shouldSuppressRowTap: { [rowTapGate] in rowTapGate.suppressed },
+            readStore: readStore,
+            cache: listCache,
+            onSelectPost: { post in
+                showDetail(post)
+            }
+        )
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 if !selectedBoard.filters.isEmpty {
                     BoardFilterBar(board: selectedBoard, selection: $selectedFilter)
@@ -263,10 +303,6 @@ struct ContentView: View {
                 }
             )
         }
-        .onChange(of: selectedBoard) { _, _ in
-            selectedFilter = Self.defaultFilter(for: selectedBoard)
-            searchQuery = nil
-        }
         .onChange(of: selectedFilter) { _, _ in
             // Filter switches can swap the path entirely (BoardFilter.replacementPath),
             // so the prior search query may not be meaningful on the new endpoint.
@@ -280,11 +316,6 @@ struct ContentView: View {
                 onClear: { searchQuery = nil }
             )
         }
-    }
-
-    private static func defaultFilter(for board: Board) -> BoardFilter? {
-        guard board.id == Board.invenMaple.id else { return nil }
-        return board.filters.first { $0.id == "chu" }
     }
 
     private var drawerProgress: CGFloat {
@@ -528,8 +559,13 @@ struct ContentView: View {
               let idx = pool.firstIndex(where: { $0.id == selectedBoard.id })
         else { return }
         let next = ((idx + delta) % pool.count + pool.count) % pool.count
+        let nextBoard = pool[next]
+        // Atomic state batch — see `onSelectBoard` for why a single
+        // mutation matters (taskKey debouncing, no double-fetch).
         withAnimation(.easeInOut(duration: 0.15)) {
-            selectedBoard = pool[next]
+            selectedBoard = nextBoard
+            selectedFilter = nextBoard.defaultListFilter
+            searchQuery = nil
         }
     }
 
