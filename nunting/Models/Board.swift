@@ -27,17 +27,17 @@ struct Board: Identifiable, Hashable {
         self.pageQueryName = pageQueryName ?? Self.defaultPageQueryName(for: site)
     }
 
-    var url: URL { url(filter: nil, search: nil, page: nil) }
+    nonisolated var url: URL { url(filter: nil, search: nil, page: nil) }
 
-    func url(filter: BoardFilter?) -> URL {
+    nonisolated func url(filter: BoardFilter?) -> URL {
         url(filter: filter, search: nil, page: nil)
     }
 
-    func url(filter: BoardFilter?, search: String?) -> URL {
+    nonisolated func url(filter: BoardFilter?, search: String?) -> URL {
         url(filter: filter, search: search, page: nil)
     }
 
-    func url(filter: BoardFilter?, search: String?, page: Int?) -> URL {
+    nonisolated func url(filter: BoardFilter?, search: String?, page: Int?) -> URL {
         let trimmedSearch = search?.trimmingCharacters(in: .whitespacesAndNewlines)
         let isSearching = trimmedSearch?.isEmpty == false
         let listPath = filter?.replacementPath ?? path
@@ -231,8 +231,9 @@ extension Board {
     /// the drawer / swipe-step. Currently only `invenMaple` overrides the
     /// default ("10추") because its all-posts feed is too noisy. Shared
     /// between `ContentView` (state seed) and `BoardListCache.prefetch`
-    /// (so the prefetched key matches the live `BoardListView.taskKey`).
-    var defaultListFilter: BoardFilter? {
+    /// (so the prefetched key matches the live `BoardListView.taskKey`);
+    /// `nonisolated` so the prefetch task group can read it off main.
+    nonisolated var defaultListFilter: BoardFilter? {
         guard id == Board.invenMaple.id else { return nil }
         return filters.first { $0.id == "chu" }
     }

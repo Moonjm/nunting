@@ -11,6 +11,7 @@ struct BoardListView: View {
     /// through and trigger a row navigation on touch-up.
     var shouldSuppressRowTap: () -> Bool = { false }
     let readStore: ReadStore
+    let cache: BoardListCache
     let onSelectPost: (Post) -> Void
 
     @State private var posts: [Post] = []
@@ -43,6 +44,22 @@ struct BoardListView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task(id: taskKey) {
             guard loadedKey != taskKey else { return }
+            // Stale-while-revalidate: a recent first-page snapshot shows
+            // immediately, then a silent background load swaps in fresh
+            // content. Cold path (no cache hit) clears state and shows
+            // the spinner as before.
+            if let cached = cache.get(taskKey: taskKey) {
+                posts = cached.posts
+                seenIDs = Set(cached.posts.map(\.id))
+                currentPage = 1
+                hasMorePages = cached.hasMorePages
+                nextSearchURL = cached.nextSearchURL
+                loadMoreError = false
+                errorMessage = nil
+                loadedKey = taskKey
+                await load(silent: true)
+                return
+            }
             posts = []
             seenIDs = []
             currentPage = 1
@@ -226,15 +243,17 @@ struct BoardListView: View {
         }
     }
 
-    private func load() async {
+    private func load(silent: Bool = false) async {
         guard !Task.isCancelled else { return }
         // Capture taskKey at the start so a stale fetch (board switched mid-flight)
         // can't overwrite the new task's posts/errorMessage on completion.
         let key = taskKey
-        errorMessage = nil
-        isLoading = true
+        if !silent {
+            errorMessage = nil
+            isLoading = true
+        }
         defer {
-            if key == taskKey {
+            if !silent, key == taskKey {
                 isLoading = false
             }
         }
@@ -244,18 +263,32 @@ struct BoardListView: View {
             try Task.checkCancellation()
             let parsed = try await parseListOffMain(html: html, board: board)
             guard key == taskKey else { return }
+            // Silent revalidation only owns the first page. If the user has
+            // already paginated past it (`currentPage > 1`), keep their
+            // merged list — replacing it with a fresh page-1 response would
+            // drop the loadMore'd tail and jumble scroll position.
+            if silent, currentPage > 1 { return }
             posts = parsed
             seenIDs = Set(parsed.map(\.id))
             currentPage = 1
             nextSearchURL = nextSearchPageURL(from: html)
             hasMorePages = board.supportsPaging && (!parsed.isEmpty || nextSearchURL != nil)
             loadedKey = key
+            cache.put(
+                taskKey: key,
+                posts: parsed,
+                hasMorePages: hasMorePages,
+                nextSearchURL: nextSearchURL
+            )
         } catch is CancellationError {
             return
         } catch let urlError as URLError where urlError.code == .cancelled {
             return
         } catch {
-            guard key == taskKey else { return }
+            // On silent revalidate, leave the cached list visible — the user
+            // already sees something useful and a transient network blip
+            // shouldn't surface as an error overlay.
+            guard !silent, key == taskKey else { return }
             errorMessage = error.localizedDescription
         }
     }

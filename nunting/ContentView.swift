@@ -9,6 +9,10 @@ struct ContentView: View {
     /// Session cache so a freshly-opened post (one whose overlay wasn't the
     /// keep-alive target) skips the network + parse on first render.
     @State private var detailCache = PostDetailCache()
+    /// First-page list snapshots, keyed by `BoardListView.taskKey`. Drives
+    /// the stale-while-revalidate path on board re-entry and is populated
+    /// in advance by `BoardListCache.prefetch` when the drawer opens.
+    @State private var listCache = BoardListCache()
     @State private var selectedBoard: Board
     @State private var selectedFilter: BoardFilter? = nil
     @State private var searchQuery: String? = nil
@@ -256,6 +260,7 @@ struct ContentView: View {
             scrollLocked: scrollLocked,
             shouldSuppressRowTap: { [rowTapGate] in rowTapGate.suppressed },
             readStore: readStore,
+            cache: listCache,
             onSelectPost: { post in
                 showDetail(post)
             }
