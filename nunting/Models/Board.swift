@@ -227,6 +227,16 @@ extension Board {
         .aagag,
     ]
 
+    /// Filter applied automatically when the user opens this board from
+    /// the drawer / swipe-step. Currently only `invenMaple` overrides the
+    /// default ("10추") because its all-posts feed is too noisy. Shared
+    /// between `ContentView` (state seed) and `BoardListCache.prefetch`
+    /// (so the prefetched key matches the live `BoardListView.taskKey`).
+    var defaultListFilter: BoardFilter? {
+        guard id == Board.invenMaple.id else { return nil }
+        return filters.first { $0.id == "chu" }
+    }
+
     static func boards(for site: Site) -> [Board] {
         all.filter { $0.site == site }
     }

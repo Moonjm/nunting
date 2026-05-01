@@ -86,11 +86,11 @@ struct ContentView: View {
         _favorites = State(initialValue: store)
         if let firstFav = store.favoriteBoards().first {
             _selectedBoard = State(initialValue: firstFav)
-            _selectedFilter = State(initialValue: Self.defaultFilter(for: firstFav))
+            _selectedFilter = State(initialValue: firstFav.defaultListFilter)
             _boardNavScope = State(initialValue: .favorites)
         } else {
             _selectedBoard = State(initialValue: .clienNews)
-            _selectedFilter = State(initialValue: Self.defaultFilter(for: .clienNews))
+            _selectedFilter = State(initialValue: Board.clienNews.defaultListFilter)
             _boardNavScope = State(initialValue: .site(.clien))
         }
     }
@@ -121,7 +121,17 @@ struct ContentView: View {
                 currentBoardID: selectedBoard.id,
                 selectedSection: $drawerSection,
                 onSelectBoard: { board in
+                    // Set board, filter, and search atomically in a single
+                    // state-mutation batch so `BoardListView`'s `taskKey`
+                    // changes exactly once. The prior pattern (set board,
+                    // let `.onChange(of: selectedBoard)` reset filter on
+                    // the next render) gave invenMaple a guaranteed
+                    // double-fire: first task fetched with the previous
+                    // board's filter, was cancelled, then the real fetch
+                    // started — extra round-trip on every entry.
                     selectedBoard = board
+                    selectedFilter = board.defaultListFilter
+                    searchQuery = nil
                     boardNavScope = drawerSection
                     closeDrawer()
                 },
@@ -276,10 +286,6 @@ struct ContentView: View {
                 }
             )
         }
-        .onChange(of: selectedBoard) { _, _ in
-            selectedFilter = Self.defaultFilter(for: selectedBoard)
-            searchQuery = nil
-        }
         .onChange(of: selectedFilter) { _, _ in
             // Filter switches can swap the path entirely (BoardFilter.replacementPath),
             // so the prior search query may not be meaningful on the new endpoint.
@@ -293,11 +299,6 @@ struct ContentView: View {
                 onClear: { searchQuery = nil }
             )
         }
-    }
-
-    private static func defaultFilter(for board: Board) -> BoardFilter? {
-        guard board.id == Board.invenMaple.id else { return nil }
-        return board.filters.first { $0.id == "chu" }
     }
 
     private var drawerProgress: CGFloat {
@@ -541,8 +542,13 @@ struct ContentView: View {
               let idx = pool.firstIndex(where: { $0.id == selectedBoard.id })
         else { return }
         let next = ((idx + delta) % pool.count + pool.count) % pool.count
+        let nextBoard = pool[next]
+        // Atomic state batch — see `onSelectBoard` for why a single
+        // mutation matters (taskKey debouncing, no double-fetch).
         withAnimation(.easeInOut(duration: 0.15)) {
-            selectedBoard = pool[next]
+            selectedBoard = nextBoard
+            selectedFilter = nextBoard.defaultListFilter
+            searchQuery = nil
         }
     }
 
