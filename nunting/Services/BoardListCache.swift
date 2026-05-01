@@ -70,6 +70,19 @@ final class BoardListCache {
         evictIfNeeded()
     }
 
+    /// Drop a single entry so the next `get` returns nil and the loader
+    /// falls through to the cold-path. Used by the drawer's
+    /// `onSelectBoard` so a deliberate menu-tap always re-fetches —
+    /// the cache exists for transparent re-entry (back-swipe,
+    /// swipe-step, scenePhase resume), not for explicit user
+    /// navigation where "see what's new" is the expected intent.
+    func evict(taskKey: String) {
+        entries.removeValue(forKey: taskKey)
+        if let idx = order.firstIndex(of: taskKey) {
+            order.remove(at: idx)
+        }
+    }
+
     private func touch(_ key: String) {
         if let existing = order.firstIndex(of: key) {
             order.remove(at: existing)

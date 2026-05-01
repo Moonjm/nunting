@@ -105,6 +105,19 @@ struct ContentView: View {
                 selectedSection: $drawerSection,
                 onSelectBoard: { board in
                     selection.select(board, navScope: drawerSection)
+                    // Drawer-tap is an explicit "show me what's new"
+                    // signal — drop any cached snapshot for the new
+                    // board so the loader falls through to the cold
+                    // path with a visible spinner + fresh fetch. The
+                    // cache stays warm for transparent re-entry paths
+                    // (back-swipe, swipe-step, scenePhase resume)
+                    // where continuity matters more than freshness.
+                    let key = BoardListCache.key(
+                        boardID: board.id,
+                        filterID: board.defaultListFilter?.id,
+                        searchQuery: nil
+                    )
+                    listCache.evict(taskKey: key)
                     closeDrawer()
                 },
                 onClose: closeDrawer

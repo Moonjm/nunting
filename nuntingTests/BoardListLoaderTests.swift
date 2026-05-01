@@ -175,6 +175,59 @@ final class BoardListLoaderTests: XCTestCase {
                        "동일 key 재호출은 noop (loadedKey 가드)")
     }
 
+    // MARK: - Cache eviction (drawer-tap path)
+
+    func testEvictRemovesEntryAndForcesNextLoadColdPath() async {
+        // 직접 단위테스트: put → get hit → evict → get nil.
+        let cache = BoardListCache()
+        let key = BoardListCache.key(boardID: "x", filterID: nil, searchQuery: nil)
+        let post = Post(
+            id: "x-1", site: .clien, boardID: "x", title: "t", author: "a",
+            date: nil, dateText: "", commentCount: 0,
+            url: URL(string: "https://example.com/1")!
+        )
+        cache.put(taskKey: key, posts: [post], hasMorePages: false, nextSearchURL: nil)
+        XCTAssertNotNil(cache.get(taskKey: key), "put 직후 get 은 hit")
+
+        cache.evict(taskKey: key)
+
+        XCTAssertNil(cache.get(taskKey: key), "evict 후 get 은 nil")
+    }
+
+    func testEvictBeforeRefreshTakesColdPathInsteadOfSilentRevalidate() async {
+        // 드로어 탭 시나리오: 캐시에 이미 데이터 있는데 evict 하면
+        // refresh 가 silent revalidate 가 아닌 cold path 로 빠짐.
+        let cache = BoardListCache()
+        let key = BoardListLoader.taskKey(board: .clienNews, filter: nil, searchQuery: nil)
+        let stalePost = Post(
+            id: "stale-1", site: .clien, boardID: "clien-news",
+            title: "오래된 글", author: "z", date: nil, dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://www.clien.net/service/board/news/0")!
+        )
+        cache.put(taskKey: key, posts: [stalePost], hasMorePages: true, nextSearchURL: nil)
+
+        let fetchCount = TestCounter()
+        let loader = BoardListLoader(fetcher: { [clienHTML] _, _, _, _ in
+            fetchCount.increment()
+            return clienHTML
+        })
+
+        // evict 안 했을 때: cache hit → 1 fetch (silent revalidate)
+        // evict 했을 때: cache miss → 1 fetch (cold path) — 같은 fetch
+        // 카운트지만 의미 다름. isLoading 가시성으로 구분.
+        cache.evict(taskKey: key)
+        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil, cache: cache)
+
+        XCTAssertEqual(fetchCount.value, 1)
+        // cold path 후 posts 는 fresh fixture 결과 — 캐시의 stale 항목은
+        // evict 됐으므로 silent path 의 'cached posts 그대로 보존' 분기로
+        // 빠지지 않았어야 함.
+        XCTAssertEqual(loader.posts.count, 2, "fresh HTML 의 2건이 들어옴")
+        XCTAssertFalse(loader.posts.contains(where: { $0.id == "stale-1" }),
+                       "evict 된 stale post 는 결과에 없음")
+    }
+
     // MARK: - Reload
 
     func testReloadBypassesLoadedKeyShortCircuit() async {
