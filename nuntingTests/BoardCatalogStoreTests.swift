@@ -29,7 +29,7 @@ final class BoardCatalogStoreTests: XCTestCase {
         var fetchCount = 0
         let nowProvider = MutableClock(initial: Date())
         let store = BoardCatalogStore(
-            fetcher: { [clienHTML] _, _ in
+            fetcher: { [clienHTML] _, _, _ in
                 fetchCount += 1
                 return clienHTML
             },
@@ -51,7 +51,7 @@ final class BoardCatalogStoreTests: XCTestCase {
         }
         var fetchCount = 0
         let store = BoardCatalogStore(
-            fetcher: { _, _ in
+            fetcher: { _, _, _ in
                 fetchCount += 1
                 throw StubError()
             },
@@ -71,7 +71,7 @@ final class BoardCatalogStoreTests: XCTestCase {
         var fetchCount = 0
         let nowProvider = MutableClock(initial: Date())
         let store = BoardCatalogStore(
-            fetcher: { [clienHTML] _, _ in
+            fetcher: { [clienHTML] _, _, _ in
                 fetchCount += 1
                 return clienHTML
             },
@@ -95,7 +95,7 @@ final class BoardCatalogStoreTests: XCTestCase {
         var fetchCount = 0
         let nowProvider = MutableClock(initial: Date())
         let store = BoardCatalogStore(
-            fetcher: { [clienHTML] _, _ in
+            fetcher: { [clienHTML] _, _, _ in
                 fetchCount += 1
                 return clienHTML
             },
@@ -122,7 +122,7 @@ final class BoardCatalogStoreTests: XCTestCase {
         var shouldFail = false
         let nowProvider = MutableClock(initial: Date())
         let store = BoardCatalogStore(
-            fetcher: { [clienHTML] _, _ in
+            fetcher: { [clienHTML] _, _, _ in
                 fetchCount += 1
                 if shouldFail { throw StubError() }
                 return clienHTML
@@ -153,7 +153,7 @@ final class BoardCatalogStoreTests: XCTestCase {
         var fetchCount = 0
         let nowProvider = MutableClock(initial: Date())
         let store = BoardCatalogStore(
-            fetcher: { [clienHTML] _, _ in
+            fetcher: { [clienHTML] _, _, _ in
                 fetchCount += 1
                 return clienHTML
             },
@@ -178,7 +178,7 @@ final class BoardCatalogStoreTests: XCTestCase {
     func testRevalidateLoadedCatalogsSkipsNeverLoadedSites() async {
         var fetchCount = 0
         let store = BoardCatalogStore(
-            fetcher: { _, _ in
+            fetcher: { _, _, _ in
                 fetchCount += 1
                 return ""
             },
@@ -189,6 +189,36 @@ final class BoardCatalogStoreTests: XCTestCase {
         await store.revalidateLoadedCatalogs()
 
         XCTAssertEqual(fetchCount, 0, "사용자가 한 번도 안 연 사이트는 revalidate 도 안 함")
+    }
+
+    // MARK: - PpomppuCatalog routes through injected fetcher
+
+    func testPpomppuCatalogUsesInjectedFetcherWithDesktopUserAgent() async {
+        // Regression net for the silent-bypass PpomppuCatalog used to
+        // have (calling `Networking.fetchHTML` directly because it
+        // needed a desktop UA). After the seam widened to
+        // (URL, encoding, ua?), ppomppu must route every fetch through
+        // the injected closure or the test seam silently rots.
+        var seenUserAgents: [String?] = []
+        let stubBody = """
+        <html><body>
+        <li class="menu01"><a href="/zboard.php?id=ppomppu">뽐뿌게시판</a></li>
+        </body></html>
+        """
+        let store = BoardCatalogStore(
+            fetcher: { _, _, ua in
+                seenUserAgents.append(ua)
+                return stubBody
+            }
+        )
+        await store.loadIfNeeded(.ppomppu)
+
+        XCTAssertFalse(seenUserAgents.isEmpty,
+                       "PpomppuCatalog 가 injected fetcher 로 통과 안 함 — 이전의 silent bypass 회귀")
+        XCTAssertTrue(
+            seenUserAgents.allSatisfy { $0 != nil && $0!.contains("Macintosh") },
+            "ppomppu 의 모든 fetch 호출이 desktop UA 를 fetcher 의 3번째 인자로 전달해야 함"
+        )
     }
 }
 
