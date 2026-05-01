@@ -2,7 +2,6 @@ import SwiftUI
 
 struct MainBottomBar: View {
     let board: Board
-    let favorites: FavoritesStore
     let onBoardDoubleTap: () -> Void
     let onSearch: () -> Void
     let onPrev: () -> Void
@@ -33,6 +32,12 @@ struct MainBottomBar: View {
             // a no-op single-tap restores the gesture mediation we had
             // before the drawer-on-tap removal, so the swipe arrives
             // at the drag handler again.
+            //
+            // Favorite-toggle (별 버튼) was removed from this bar by
+            // user request — accidental taps during normal interaction
+            // were silently un-favoriting boards. Add/remove favorites
+            // is still available in the side drawer (사이트 카탈로그
+            // 섹션의 별 아이콘).
             Group {
                 Text(board.name)
                     .font(.caption.weight(.medium))
@@ -57,14 +62,6 @@ struct MainBottomBar: View {
                         else if dx > 40 { onPrev() }
                     }
             )
-
-            barButton {
-                Image(systemName: favorites.isFavorite(board) ? "star.fill" : "star")
-                    .font(.callout)
-                    .foregroundStyle(favorites.isFavorite(board) ? Color.yellow : Color.primary)
-            } action: {
-                favorites.toggle(board)
-            }
         }
         .frame(height: 50)
         .background(.bar)
