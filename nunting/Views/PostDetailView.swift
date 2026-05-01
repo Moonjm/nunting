@@ -1,15 +1,6 @@
 import SwiftUI
 import UIKit
 
-// TODO: PostDetailLoader extraction — split this view's
-// `load(renderReadyAt:)` (mid-function isLoading toggle, aagag
-// external-redirect dispatch, parallel comment-fetch with two-phase
-// commit on `detail`) into a dedicated `@Observable @MainActor`
-// loader, mirroring the BoardListLoader pattern from PR #39. Deferred
-// from PR #39 because the timing-sensitive comment-fetch commit makes
-// behavioral-equivalence verification non-trivial — needs its own
-// focused PR.
-
 struct PostDetailView: View, Equatable {
     let post: Post
     let readStore: ReadStore
@@ -57,15 +48,19 @@ struct PostDetailView: View, Equatable {
     //   ContentView's `hideDetail()`, which mutates `@State` via
     //   out-of-line storage, so calling the first-eval closure still
     //   mutates the current state.
+    // - `loader`: an `@Observable` reference type owned by `@State`.
+    //   SwiftUI tracks `loader.detail` / `.isLoading` / `.errorMessage`
+    //   reads from `body` directly through observation, so a property
+    //   mutation invalidates body even when `==` returns true. The
+    //   loader instance itself is identity-stable across re-evals, so
+    //   adding it to `==` would always compare equal anyway.
     static func == (lhs: PostDetailView, rhs: PostDetailView) -> Bool {
         lhs.post == rhs.post
             && lhs.isOverlayVisible == rhs.isOverlayVisible
             && lhs.isScrollingBlocked == rhs.isScrollingBlocked
     }
 
-    @State private var detail: PostDetail?
-    @State private var isLoading = true
-    @State private var errorMessage: String?
+    @State private var loader = PostDetailLoader()
     @State private var selectedImage: ImageViewerItem?
     @State private var webItem: WebBrowserItem?
     /// True from the moment the user commits a fullscreen-cover dismiss
@@ -118,8 +113,8 @@ struct PostDetailView: View, Equatable {
 
                     HStack(spacing: 10) {
                         Text(post.author)
-                        Text(detail?.fullDateText ?? post.dateText)
-                        if let views = detail?.viewCount {
+                        Text(loader.detail?.fullDateText ?? post.dateText)
+                        if let views = loader.detail?.viewCount {
                             Text("👁 \(views)")
                         }
                         if post.commentCount > 0 {
@@ -129,7 +124,7 @@ struct PostDetailView: View, Equatable {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                    if let source = detail?.source {
+                    if let source = loader.detail?.source {
                         SourceBanner(source: source)
                     }
 
@@ -137,7 +132,7 @@ struct PostDetailView: View, Equatable {
 
                     articleContent
 
-                    if let comments = detail?.comments, !comments.isEmpty {
+                    if let comments = loader.detail?.comments, !comments.isEmpty {
                         CommentsSection(
                             comments: comments,
                             tapGate: tapGate,
@@ -188,21 +183,12 @@ struct PostDetailView: View, Equatable {
         })
         .task(id: post.id) {
             readStore.markRead(post)
-            // Cache hit → restore instantly with no render gate. The push
-            // animation isn't at risk when the image subtree was already
-            // materialised (and then dropped) once this session; cached
-            // URLs are warm in `CachedAsyncImage`'s own store and decoding
-            // stays off the main thread.
-            if let entry = cache.get(id: post.id) {
-                detail = entry.detail
-                isLoading = false
-                return
-            }
-            // Anchor the commit gate at view appearance; load() starts work
-            // immediately and only waits on this deadline before writing
-            // image-heavy state.
+            // Anchor the commit gate at view appearance; the loader starts
+            // work immediately and only waits on this deadline before
+            // writing image-heavy state. Cache-hit short-circuit lives
+            // inside the loader so the gate isn't paid on a warm restore.
             let renderReadyAt = ContinuousClock.now.advanced(by: Self.renderCommitDelay)
-            await load(renderReadyAt: renderReadyAt)
+            await loader.load(post: post, cache: cache, renderReadyAt: renderReadyAt)
         }
         .fullScreenCover(item: $selectedImage) { item in
             ImageViewer(url: item.url, onDismissBegin: { beginDismissCover() })
@@ -295,11 +281,11 @@ struct PostDetailView: View, Equatable {
 
     @ViewBuilder
     private var articleContent: some View {
-        if isLoading {
+        if loader.isLoading {
             HStack { Spacer(); ProgressView(); Spacer() }.padding(.vertical, 40)
-        } else if let errorMessage {
+        } else if let errorMessage = loader.errorMessage {
             ContentUnavailableView("불러오기 실패", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
-        } else if let detail {
+        } else if let detail = loader.detail {
             // Eager VStack (not LazyVStack): keeps every body block's
             // height pinned once measured. A `LazyVStack` here let SwiftUI
             // derealize body items above the viewport when the user
@@ -416,181 +402,6 @@ struct PostDetailView: View, Equatable {
         return attr
     }
 
-    private enum Dispatch {
-        /// Use the given Post with its site's parser. Optional prefetched body
-        /// is the GET response captured by `resolveFinalURL` (avoids re-fetch).
-        case parser(Post, prefetched: Data?)
-        /// Resolved redirect points at a site we don't parse; render an
-        /// external-link banner and skip the parser pipeline.
-        case external(URL)
-    }
-
-    /// Aagag mirror items have URLs of the form `aagag.com/mirror/re?ss=...`
-    /// which 301-redirect to the source site. Resolve and decide how to load:
-    /// dispatch to a source parser if we recognise the host, else surface a
-    /// "외부 사이트로 이동" banner.
-    private func resolveDispatchedPost(_ post: Post) async throws -> Dispatch {
-        // Mirror detail URLs always live under /mirror/re and carry the item
-        // id in the `ss` query — matching the query is less brittle than a
-        // bare path suffix if aagag ever renames the redirect endpoint, and
-        // still rejects issue detail URLs (which use /issue/?idx=…).
-        guard post.site == .aagag,
-              let host = post.url.host?.lowercased(),
-              host.hasSuffix("aagag.com"),
-              post.url.path.hasPrefix("/mirror/re"),
-              URLComponents(url: post.url, resolvingAgainstBaseURL: false)?
-                  .queryItems?
-                  .contains(where: { $0.name == "ss" }) == true
-        else { return .parser(post, prefetched: nil) }
-
-        let resolved = await Networking.resolveFinalURL(post.url)
-        guard resolved.url != post.url else {
-            return .parser(post, prefetched: nil)
-        }
-        guard let sourceSite = Site.detect(host: resolved.url.host) else {
-            return .external(resolved.url)
-        }
-        let dispatched = Post(
-            id: post.id,
-            site: sourceSite,
-            boardID: post.boardID,
-            title: post.title,
-            author: post.author,
-            date: post.date,
-            dateText: post.dateText,
-            commentCount: post.commentCount,
-            url: resolved.url,
-            viewCount: post.viewCount,
-            recommendCount: post.recommendCount,
-            levelText: post.levelText,
-            hasAuthIcon: post.hasAuthIcon
-        )
-        return .parser(dispatched, prefetched: resolved.prefetchedBody)
-    }
-
-    private func load(renderReadyAt: ContinuousClock.Instant) async {
-        guard !Task.isCancelled else { return }
-        isLoading = true
-        errorMessage = nil
-        defer { isLoading = false }
-        do {
-            // Aagag mirror items are HTTP redirects to a source site; resolve the
-            // target URL and dispatch to the source parser when supported.
-            let dispatch = try await resolveDispatchedPost(post)
-            try Task.checkCancellation()
-
-            switch dispatch {
-            case .external(let externalURL):
-                let placeholder = PostDetail(
-                    post: post,
-                    blocks: [.dealLink(externalURL, label: "외부 사이트로 이동: \(externalURL.host ?? externalURL.absoluteString)")],
-                    fullDateText: post.dateText,
-                    viewCount: post.viewCount,
-                    source: nil,
-                    comments: []
-                )
-                await Self.awaitRenderReady(renderReadyAt)
-                try Task.checkCancellation()
-                // Toggle isLoading in the same runloop as the detail write so
-                // `articleContent`'s `if isLoading` branch doesn't keep the
-                // spinner up after we already have content.
-                isLoading = false
-                detail = placeholder
-                cache.put(id: post.id, detail: placeholder)
-                return
-
-            case .parser(let resolved, let prefetched):
-                let parser = try ParserFactory.parser(for: resolved.site)
-                let html: String
-                if let prefetched {
-                    html = Networking.decodeHTML(data: prefetched, encoding: resolved.site.encoding)
-                } else {
-                    html = try await Networking.fetchHTML(url: resolved.url, encoding: resolved.site.encoding)
-                }
-                try Task.checkCancellation()
-
-                // Kick comment fetch off in parallel with the detached detail
-                // parse. Parse is CPU-bound, comment fetch is network-bound,
-                // so overlapping them shaves the comment leg off the critical
-                // path for every site that has an override (Coolenjoy, Inven,
-                // Ppomppu, Aagag, SLR, Ddanzi). Parsers without a comments URL
-                // keep the detail-embedded comments returned by parseDetail.
-                //
-                // `detailHTML: html` threads the body we already fetched
-                // through the protocol, so Ppomppu / SLR / Ddanzi (which
-                // used to re-fetch `post.url` just to extract AJAX params
-                // or first-page comment DOM) can reuse it and skip the
-                // duplicate SwiftSoup parse their perf log sample showed.
-                let parsedHTML = html
-                let parsedPost = resolved
-                let postSite = resolved.site
-                async let parsedTask: PostDetail = Task.detached(priority: .userInitiated) {
-                    try parser.parseDetail(html: parsedHTML, post: parsedPost)
-                }.value
-                async let commentsTask: [Comment]? = {
-                    guard parser.commentsURL(for: resolved) != nil else { return nil }
-                    return try? await parser.fetchAllComments(
-                        for: resolved,
-                        detailHTML: parsedHTML
-                    ) { url in
-                        try await Networking.fetchHTML(url: url, encoding: postSite.encoding)
-                    }
-                }()
-
-                var parsed = try await parsedTask
-                try Task.checkCancellation()
-
-                // Gate the first render commit so SwiftUI isn't building an
-                // image-heavy subtree during the first animation frames.
-                // When parse is slower than the gate this is a no-op.
-                await Self.awaitRenderReady(renderReadyAt)
-                // Flip isLoading in the same runloop as the detail write so
-                // the spinner disappears the moment the article is ready —
-                // otherwise `defer` keeps isLoading=true until the comments
-                // leg finishes and the two-phase commit collapses back into
-                // a single-flash render.
-                isLoading = false
-                detail = parsed
-
-                if let extras = await commentsTask, !extras.isEmpty {
-                    parsed = PostDetail(
-                        post: parsed.post,
-                        blocks: parsed.blocks,
-                        fullDateText: parsed.fullDateText,
-                        viewCount: parsed.viewCount,
-                        source: parsed.source,
-                        comments: extras
-                    )
-                    detail = parsed
-                }
-                // Stale-load guard: a popped-and-re-entered view triggers
-                // `.task` cancellation, but `await commentsTask` above sits
-                // on `try?` so a cancelled parent task silently falls
-                // through. Re-check before the cache write so an in-flight
-                // old load can't clobber the new view's fresher cache entry.
-                try Task.checkCancellation()
-                // Cache the final state so re-entering this post (via a
-                // fresh tap after the overlay was replaced) skips network +
-                // parse entirely. The overlay itself keeps the rendered view
-                // alive across back-swipes, so this cache is really just for
-                // when the active post gets evicted by a different tap.
-                cache.put(id: post.id, detail: parsed)
-            }
-        } catch is CancellationError {
-            return
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    /// Sleep until `deadline` if it's in the future; no-op otherwise. Used to
-    /// keep state mutations that trigger image-subtree construction out of
-    /// the navigation push animation's opening frames.
-    private static func awaitRenderReady(_ deadline: ContinuousClock.Instant) async {
-        let remaining = deadline - ContinuousClock.now
-        guard remaining > .zero else { return }
-        try? await Task.sleep(for: remaining)
-    }
 }
 
 private struct YouTubeBanner: View {
