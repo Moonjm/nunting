@@ -10,14 +10,30 @@
 		6ED66F832F92705500A64087 /* SwiftSoup in Frameworks */ = {isa = PBXBuildFile; productRef = 6ED66F822F92705500A64087 /* SwiftSoup */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		7E510000000000000000000B /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 6ED66F6B2F926F2700A64087 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 6ED66F722F926F2700A64087;
+			remoteInfo = nunting;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		6ED66F732F926F2700A64087 /* nunting.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = nunting.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		7E5100000000000000000008 /* nuntingTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = nuntingTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		6ED66F752F926F2700A64087 /* nunting */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = nunting;
+			sourceTree = "<group>";
+		};
+		7E5100000000000000000009 /* nuntingTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = nuntingTests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -31,6 +47,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		7E5100000000000000000006 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -38,6 +61,7 @@
 			isa = PBXGroup;
 			children = (
 				6ED66F752F926F2700A64087 /* nunting */,
+				7E5100000000000000000009 /* nuntingTests */,
 				6ED66F742F926F2700A64087 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -46,6 +70,7 @@
 			isa = PBXGroup;
 			children = (
 				6ED66F732F926F2700A64087 /* nunting.app */,
+				7E5100000000000000000008 /* nuntingTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -76,6 +101,29 @@
 			productReference = 6ED66F732F926F2700A64087 /* nunting.app */;
 			productType = "com.apple.product-type.application";
 		};
+		7E5100000000000000000001 /* nuntingTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7E5100000000000000000002 /* Build configuration list for PBXNativeTarget "nuntingTests" */;
+			buildPhases = (
+				7E5100000000000000000005 /* Sources */,
+				7E5100000000000000000006 /* Frameworks */,
+				7E5100000000000000000007 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				7E510000000000000000000A /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				7E5100000000000000000009 /* nuntingTests */,
+			);
+			name = nuntingTests;
+			packageProductDependencies = (
+			);
+			productName = nuntingTests;
+			productReference = 7E5100000000000000000008 /* nuntingTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -88,6 +136,10 @@
 				TargetAttributes = {
 					6ED66F722F926F2700A64087 = {
 						CreatedOnToolsVersion = 26.4;
+					};
+					7E5100000000000000000001 = {
+						CreatedOnToolsVersion = 26.4;
+						TestTargetID = 6ED66F722F926F2700A64087;
 					};
 				};
 			};
@@ -109,12 +161,20 @@
 			projectRoot = "";
 			targets = (
 				6ED66F722F926F2700A64087 /* nunting */,
+				7E5100000000000000000001 /* nuntingTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		6ED66F712F926F2700A64087 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7E5100000000000000000007 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -131,7 +191,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		7E5100000000000000000005 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		7E510000000000000000000A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 6ED66F722F926F2700A64087 /* nunting */;
+			targetProxy = 7E510000000000000000000B /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		6ED66F7C2F926F2800A64087 /* Debug */ = {
@@ -342,6 +417,52 @@
 			};
 			name = Release;
 		};
+		7E5100000000000000000003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 4L7RX6VCB2;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.moonjm.nuntingTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/nunting.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/nunting";
+			};
+			name = Debug;
+		};
+		7E5100000000000000000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 4L7RX6VCB2;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.4;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.moonjm.nuntingTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/nunting.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/nunting";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -359,6 +480,15 @@
 			buildConfigurations = (
 				6ED66F7F2F926F2800A64087 /* Debug */,
 				6ED66F802F926F2800A64087 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		7E5100000000000000000002 /* Build configuration list for PBXNativeTarget "nuntingTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7E5100000000000000000003 /* Debug */,
+				7E5100000000000000000004 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
