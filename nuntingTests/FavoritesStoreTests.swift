@@ -201,10 +201,18 @@ final class FavoritesStoreTests: XCTestCase {
     }
 }
 
-/// Helper that builds a `FavoriteBoardSnapshot` directly from raw fields
-/// — bypasses the `init(_ board:)` path so tests can synthesize legacy
-/// payloads (stale `searchQueryName`, missing fields) that wouldn't be
-/// producible from a current `Board` value.
+/// Builds a `FavoriteBoardSnapshot` directly from raw fields, bypassing
+/// the `init(_ board:)` path. The point is to synthesize *legacy
+/// payloads* — stale `searchQueryName` (e.g. Clien's pre-rename `sv`),
+/// the v3-pre-filters-field shape where the `filters` key is absent —
+/// that current `Board` values cannot produce. If a test only needs
+/// fields that round-trip cleanly from a `Board`, prefer
+/// `FavoriteBoardSnapshot(_ board:)` directly.
+///
+/// `filters: nil` omits the JSON key entirely (decode path with the
+/// optional missing); `filters: []` writes an empty array (decode path
+/// with the field present-but-empty); `filters: [BoardFilter(...)]`
+/// round-trips through `BoardFilter.Codable`.
 private extension FavoriteBoardSnapshot {
     static func legacy(
         id: String,
@@ -215,15 +223,21 @@ private extension FavoriteBoardSnapshot {
         searchQueryName: String?,
         pageQueryName: String?
     ) -> FavoriteBoardSnapshot {
-        let json: [String: Any] = [
+        var json: [String: Any] = [
             "id": id,
             "siteRaw": siteRaw,
             "name": name,
             "path": path,
-            "filters": filters.map { _ in [] as [Any] } ?? [] as Any,
             "searchQueryName": searchQueryName as Any? ?? NSNull(),
             "pageQueryName": pageQueryName as Any? ?? NSNull(),
         ]
+        if let filters {
+            // Round-trip through BoardFilter.Codable so we honor whatever
+            // shape the production decoder expects, instead of
+            // hand-writing the JSON for `BoardFilter`.
+            let filtersData = try! JSONEncoder().encode(filters)
+            json["filters"] = try! JSONSerialization.jsonObject(with: filtersData)
+        }
         let data = try! JSONSerialization.data(withJSONObject: json)
         return try! JSONDecoder().decode(FavoriteBoardSnapshot.self, from: data)
     }
