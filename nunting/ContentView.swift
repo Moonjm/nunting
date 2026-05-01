@@ -226,18 +226,31 @@ struct ContentView: View {
     }
 
     private var mainScreen: some View {
-        VStack(spacing: 0) {
-            BoardListView(
-                board: selectedBoard,
-                filter: selectedFilter,
-                searchQuery: searchQuery,
-                scrollLocked: scrollLocked,
-                shouldSuppressRowTap: { [rowTapGate] in rowTapGate.suppressed },
-                readStore: readStore,
-                onSelectPost: { post in
-                    showDetail(post)
-                }
-            )
+        // Bar (filter chips + bottom bar) is declared as the list's
+        // bottom safe-area inset rather than a sibling in a VStack so
+        // SwiftUI computes the List's `contentInset.bottom` as
+        // `bar height + home-indicator inset` for us. The previous
+        // VStack arrangement had a race where, after a slow first
+        // load (e.g. switching to a heavy Inven board), the late
+        // `loadingView → listView` body swap materialised
+        // `.background(...ignoresSafeArea())` on the List against an
+        // already-settled layout — the List's bottom inset stayed at
+        // 0, letting rows render past the bar into the home-indicator
+        // zone. `.safeAreaInset` makes the inset declarative and
+        // race-immune, which is also the canonical pattern Mail /
+        // Messages use for their bottom bars.
+        BoardListView(
+            board: selectedBoard,
+            filter: selectedFilter,
+            searchQuery: searchQuery,
+            scrollLocked: scrollLocked,
+            shouldSuppressRowTap: { [rowTapGate] in rowTapGate.suppressed },
+            readStore: readStore,
+            onSelectPost: { post in
+                showDetail(post)
+            }
+        )
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 if !selectedBoard.filters.isEmpty {
                     BoardFilterBar(board: selectedBoard, selection: $selectedFilter)
