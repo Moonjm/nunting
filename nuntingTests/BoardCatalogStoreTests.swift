@@ -213,11 +213,19 @@ final class BoardCatalogStoreTests: XCTestCase {
         )
         await store.loadIfNeeded(.ppomppu)
 
-        XCTAssertFalse(seenUserAgents.isEmpty,
-                       "PpomppuCatalog 가 injected fetcher 로 통과 안 함 — 이전의 silent bypass 회귀")
+        // 두 번 (home + forum URL). 누가 둘 중 한 fetch 만 다시
+        // 우회시켜도 (partial bypass) 즉시 깨지도록 정확한 카운트.
+        XCTAssertEqual(
+            seenUserAgents.count, 2,
+            "ppomppu 는 home + forum 두 fetch 모두 seam 통과해야 함"
+        )
+        // Macintosh 부분 매치 대신 정확한 동등성 — 누가 향후
+        // userAgent: nil 로 되돌리면 (= 세션 기본 모바일 UA) 즉시
+        // fail. desktopUserAgent 자체가 바뀌면 이 테스트가 동시에
+        // 갱신돼야 한다는 신호.
         XCTAssertTrue(
-            seenUserAgents.allSatisfy { $0 != nil && $0!.contains("Macintosh") },
-            "ppomppu 의 모든 fetch 호출이 desktop UA 를 fetcher 의 3번째 인자로 전달해야 함"
+            seenUserAgents.allSatisfy { $0 == Networking.desktopUserAgent },
+            "ppomppu 의 모든 fetch 호출이 정확히 Networking.desktopUserAgent 로 라우팅돼야 함"
         )
     }
 }

@@ -22,6 +22,11 @@ final class BoardCatalogStore {
     /// Routing UA through the seam (rather than letting catalogs call
     /// `Networking.fetchHTML` directly) means test fakes intercept every
     /// catalog uniformly and we don't strand a per-catalog bypass path.
+    ///
+    /// If a future catalog needs a third request knob (cookies, Referer,
+    /// custom Accept), promote to a `FetchOptions` struct rather than
+    /// widening this tuple again — three positional args is already
+    /// the boundary where named fields earn their cost.
     typealias Fetcher = @Sendable (URL, String.Encoding, String?) async throws -> String
 
     private(set) var groups: [Site: [BoardGroup]] = [:]
