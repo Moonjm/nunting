@@ -47,7 +47,7 @@ struct ClienCatalog: SiteCatalog {
         guard let url = URL(string: "https://www.clien.net/") else {
             return [BoardGroup(id: "clien", name: nil, boards: Board.boards(for: .clien))]
         }
-        let body = try await fetcher(url, .utf8, nil)
+        let body = try await fetcher(url, site.encoding, nil)
         let doc = try SwiftSoup.parse(body)
 
         var community: [Board] = []
@@ -106,7 +106,7 @@ struct CoolenjoyCatalog: SiteCatalog {
         guard let url = URL(string: "https://coolenjoy.net/bbs/freeboard2") else {
             return [BoardGroup(id: "coolenjoy", name: nil, boards: Board.boards(for: .coolenjoy))]
         }
-        let body = try await fetcher(url, .utf8, nil)
+        let body = try await fetcher(url, site.encoding, nil)
         let doc = try SwiftSoup.parse(body)
 
         var seen = Set<String>()

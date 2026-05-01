@@ -13,6 +13,13 @@ import XCTest
 /// real catalog parser to surface a non-empty group, so we can assert
 /// "fetched succeeded" vs "fetched again" by counting fetcher
 /// invocations and watching `lastFetchedAt`.
+///
+/// Captured state (counters, flags, recorders) goes through reference-
+/// typed `@unchecked Sendable` helpers below — `BoardCatalogStore`'s
+/// fetcher runs inside `Task.detached`, so a `var` capture would be a
+/// data race under Swift 6 strict concurrency. `Task.detached(...).value`
+/// already happens-before the test's reads in practice, but the helpers
+/// make that explicit at the type level.
 final class BoardCatalogStoreTests: XCTestCase {
 
     // Smallest body that still produces at least one Board through
@@ -26,11 +33,11 @@ final class BoardCatalogStoreTests: XCTestCase {
     // MARK: - Cold load
 
     func testColdLoadFetchesAndStampsLastFetchedAt() async {
-        var fetchCount = 0
+        let fetchCount = TestCounter()
         let nowProvider = MutableClock(initial: Date())
         let store = BoardCatalogStore(
             fetcher: { [clienHTML] _, _, _ in
-                fetchCount += 1
+                fetchCount.increment()
                 return clienHTML
             },
             staleTTL: 60,
@@ -39,7 +46,7 @@ final class BoardCatalogStoreTests: XCTestCase {
 
         await store.loadIfNeeded(.clien)
 
-        XCTAssertEqual(fetchCount, 1, "cold load triggers fetch")
+        XCTAssertEqual(fetchCount.value, 1, "cold load triggers fetch")
         XCTAssertNotNil(store.lastFetchedAt[.clien], "성공 시 timestamp 기록")
         XCTAssertFalse(store.boards(for: .clien).isEmpty, "그룹이 채워짐")
         XCTAssertNil(store.error(for: .clien))
@@ -49,10 +56,10 @@ final class BoardCatalogStoreTests: XCTestCase {
         struct StubError: Error, LocalizedError {
             var errorDescription: String? { "stub network failure" }
         }
-        var fetchCount = 0
+        let fetchCount = TestCounter()
         let store = BoardCatalogStore(
             fetcher: { _, _, _ in
-                fetchCount += 1
+                fetchCount.increment()
                 throw StubError()
             },
             staleTTL: 60
@@ -60,7 +67,7 @@ final class BoardCatalogStoreTests: XCTestCase {
 
         await store.loadIfNeeded(.clien)
 
-        XCTAssertEqual(fetchCount, 1)
+        XCTAssertEqual(fetchCount.value, 1)
         XCTAssertEqual(store.error(for: .clien), "stub network failure")
         XCTAssertNil(store.lastFetchedAt[.clien], "실패 시 timestamp 미기록 — 다음 시도가 cold path 로 가야 함")
     }
@@ -68,11 +75,11 @@ final class BoardCatalogStoreTests: XCTestCase {
     // MARK: - Skip when fresh
 
     func testSecondLoadWithinTTLIsNoOp() async {
-        var fetchCount = 0
+        let fetchCount = TestCounter()
         let nowProvider = MutableClock(initial: Date())
         let store = BoardCatalogStore(
             fetcher: { [clienHTML] _, _, _ in
-                fetchCount += 1
+                fetchCount.increment()
                 return clienHTML
             },
             staleTTL: 60,
@@ -80,23 +87,23 @@ final class BoardCatalogStoreTests: XCTestCase {
         )
 
         await store.loadIfNeeded(.clien)
-        XCTAssertEqual(fetchCount, 1)
+        XCTAssertEqual(fetchCount.value, 1)
 
         // 30 seconds later — still within 60s TTL.
         nowProvider.advance(by: 30)
         await store.loadIfNeeded(.clien)
 
-        XCTAssertEqual(fetchCount, 1, "TTL 안에서는 재페치 없음")
+        XCTAssertEqual(fetchCount.value, 1, "TTL 안에서는 재페치 없음")
     }
 
     // MARK: - Stale revalidate
 
     func testLoadIfNeededPastTTLSilentlyRevalidates() async {
-        var fetchCount = 0
+        let fetchCount = TestCounter()
         let nowProvider = MutableClock(initial: Date())
         let store = BoardCatalogStore(
             fetcher: { [clienHTML] _, _, _ in
-                fetchCount += 1
+                fetchCount.increment()
                 return clienHTML
             },
             staleTTL: 60,
@@ -104,27 +111,27 @@ final class BoardCatalogStoreTests: XCTestCase {
         )
 
         await store.loadIfNeeded(.clien)
-        XCTAssertEqual(fetchCount, 1)
+        XCTAssertEqual(fetchCount.value, 1)
         let firstStamp = store.lastFetchedAt[.clien]
 
         // Move clock past TTL.
         nowProvider.advance(by: 90)
         await store.loadIfNeeded(.clien)
 
-        XCTAssertEqual(fetchCount, 2, "TTL 지나면 재페치")
+        XCTAssertEqual(fetchCount.value, 2, "TTL 지나면 재페치")
         XCTAssertNotEqual(store.lastFetchedAt[.clien], firstStamp, "timestamp 갱신")
         XCTAssertFalse(store.isLoading(.clien), "silent revalidate 는 spinner 안 띄움")
     }
 
     func testStaleRevalidateFailureLeavesPriorCatalogVisible() async {
         struct StubError: Error {}
-        var fetchCount = 0
-        var shouldFail = false
+        let fetchCount = TestCounter()
+        let shouldFail = TestFlag()
         let nowProvider = MutableClock(initial: Date())
         let store = BoardCatalogStore(
             fetcher: { [clienHTML] _, _, _ in
-                fetchCount += 1
-                if shouldFail { throw StubError() }
+                fetchCount.increment()
+                if shouldFail.isSet { throw StubError() }
                 return clienHTML
             },
             staleTTL: 60,
@@ -137,10 +144,10 @@ final class BoardCatalogStoreTests: XCTestCase {
 
         // Past TTL — next call attempts silent revalidate, which fails.
         nowProvider.advance(by: 90)
-        shouldFail = true
+        shouldFail.set(true)
         await store.loadIfNeeded(.clien)
 
-        XCTAssertEqual(fetchCount, 2)
+        XCTAssertEqual(fetchCount.value, 2)
         XCTAssertEqual(store.boards(for: .clien).map(\.id), priorBoards.map(\.id),
                        "silent revalidate 실패는 기존 카탈로그를 그대로 보존")
         XCTAssertNil(store.error(for: .clien),
@@ -150,11 +157,11 @@ final class BoardCatalogStoreTests: XCTestCase {
     // MARK: - revalidateLoadedCatalogs
 
     func testRevalidateLoadedCatalogsOnlyTouchesStaleSites() async {
-        var fetchCount = 0
+        let fetchCount = TestCounter()
         let nowProvider = MutableClock(initial: Date())
         let store = BoardCatalogStore(
             fetcher: { [clienHTML] _, _, _ in
-                fetchCount += 1
+                fetchCount.increment()
                 return clienHTML
             },
             staleTTL: 60,
@@ -162,24 +169,24 @@ final class BoardCatalogStoreTests: XCTestCase {
         )
 
         await store.loadIfNeeded(.clien)  // fetch #1
-        XCTAssertEqual(fetchCount, 1)
+        XCTAssertEqual(fetchCount.value, 1)
 
         // Within TTL — revalidate should noop.
         nowProvider.advance(by: 10)
         await store.revalidateLoadedCatalogs()
-        XCTAssertEqual(fetchCount, 1, "fresh 사이트는 revalidate 가 건너뜀")
+        XCTAssertEqual(fetchCount.value, 1, "fresh 사이트는 revalidate 가 건너뜀")
 
         // Past TTL — revalidate hits.
         nowProvider.advance(by: 100)
         await store.revalidateLoadedCatalogs()
-        XCTAssertEqual(fetchCount, 2, "stale 사이트만 silent re-fetch")
+        XCTAssertEqual(fetchCount.value, 2, "stale 사이트만 silent re-fetch")
     }
 
     func testRevalidateLoadedCatalogsSkipsNeverLoadedSites() async {
-        var fetchCount = 0
+        let fetchCount = TestCounter()
         let store = BoardCatalogStore(
             fetcher: { _, _, _ in
-                fetchCount += 1
+                fetchCount.increment()
                 return ""
             },
             staleTTL: 0  // 즉시 stale 이지만 groups 가 비어있어야 함
@@ -188,7 +195,7 @@ final class BoardCatalogStoreTests: XCTestCase {
         // Never called loadIfNeeded — nothing in `groups`.
         await store.revalidateLoadedCatalogs()
 
-        XCTAssertEqual(fetchCount, 0, "사용자가 한 번도 안 연 사이트는 revalidate 도 안 함")
+        XCTAssertEqual(fetchCount.value, 0, "사용자가 한 번도 안 연 사이트는 revalidate 도 안 함")
     }
 
     // MARK: - PpomppuCatalog routes through injected fetcher
@@ -199,7 +206,7 @@ final class BoardCatalogStoreTests: XCTestCase {
         // needed a desktop UA). After the seam widened to
         // (URL, encoding, ua?), ppomppu must route every fetch through
         // the injected closure or the test seam silently rots.
-        var seenUserAgents: [String?] = []
+        let seenUserAgents = TestRecorder<String?>()
         let stubBody = """
         <html><body>
         <li class="menu01"><a href="/zboard.php?id=ppomppu">뽐뿌게시판</a></li>
@@ -224,7 +231,7 @@ final class BoardCatalogStoreTests: XCTestCase {
         // fail. desktopUserAgent 자체가 바뀌면 이 테스트가 동시에
         // 갱신돼야 한다는 신호.
         XCTAssertTrue(
-            seenUserAgents.allSatisfy { $0 == Networking.desktopUserAgent },
+            seenUserAgents.snapshot.allSatisfy { $0 == Networking.desktopUserAgent },
             "ppomppu 의 모든 fetch 호출이 정확히 Networking.desktopUserAgent 로 라우팅돼야 함"
         )
     }
@@ -254,5 +261,73 @@ private final class MutableClock: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         current = current.addingTimeInterval(seconds)
+    }
+}
+
+/// Thread-safe counter for fetcher-call accounting in tests.
+/// `BoardCatalogStore` runs the injected fetcher inside `Task.detached`;
+/// a `var` capture from the test method would be a data race under
+/// Swift 6 strict concurrency even though `Task.detached(...).value`
+/// already happens-before the test's reads. Wrapping the counter in
+/// a reference type with explicit locking makes that intent type-safe.
+private final class TestCounter: @unchecked Sendable {
+    private var n = 0
+    private let lock = NSLock()
+
+    func increment() {
+        lock.lock()
+        defer { lock.unlock() }
+        n += 1
+    }
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return n
+    }
+}
+
+/// Same shape as `TestCounter` but for boolean flags toggled across
+/// the actor boundary (test-side `set(true)` before an `await`, then
+/// read inside the detached fetcher).
+private final class TestFlag: @unchecked Sendable {
+    private var on = false
+    private let lock = NSLock()
+
+    func set(_ value: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        on = value
+    }
+
+    var isSet: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return on
+    }
+}
+
+/// Thread-safe append-only collector. Used by the ppomppu seam test
+/// to record the User-Agent argument seen on each fetcher call.
+private final class TestRecorder<T>: @unchecked Sendable {
+    private var items: [T] = []
+    private let lock = NSLock()
+
+    func append(_ item: T) {
+        lock.lock()
+        defer { lock.unlock() }
+        items.append(item)
+    }
+
+    var snapshot: [T] {
+        lock.lock()
+        defer { lock.unlock() }
+        return items
+    }
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return items.count
     }
 }
