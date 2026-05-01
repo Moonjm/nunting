@@ -232,9 +232,13 @@ struct ContentView: View {
             // pooled connections and evicted ImageIO plugins during
             // background time, so the first request / decode after
             // coming back pays the respective cold cost otherwise.
+            // Same trigger silently revalidates any board catalog
+            // older than `staleTTL` (default 6h) so apps backgrounded
+            // overnight pick up upstream board renames / additions.
             if phase == .active {
                 Networking.prewarmConnections()
                 ImageWarmup.warm()
+                Task { await catalog.revalidateLoadedCatalogs() }
             }
         }
         .onChange(of: drawerOpen) { _, open in
