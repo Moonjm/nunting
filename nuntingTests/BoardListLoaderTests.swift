@@ -5,7 +5,6 @@ import XCTest
 ///
 /// Stub fetcher returns canned HTML; the production parser still runs
 /// (so we exercise the real ClienParser etc., not a parsed-result fake).
-/// `BoardListCache` is fresh per test to keep cases isolated.
 ///
 /// Captured `var` from the @Sendable fetcher closure goes through the
 /// same lock-protected helpers used in `BoardCatalogStoreTests`
@@ -32,28 +31,31 @@ final class BoardListLoaderTests: XCTestCase {
 
     // MARK: - taskKey
 
-    func testTaskKeyMirrorsCacheKeyExactly() {
-        let loaderKey = BoardListLoader.taskKey(
-            board: .clienNews, filter: nil, searchQuery: nil
+    func testTaskKeyShape() {
+        let key = BoardListLoader.taskKey(board: .clienNews, filter: nil, searchQuery: nil)
+        XCTAssertEqual(key, "clien-news|_all|")
+    }
+
+    func testTaskKeyEncodesFilterAndSearch() {
+        let chu = Board.invenMaple.filters.first { $0.id == "chu" }!
+        let key = BoardListLoader.taskKey(
+            board: .invenMaple,
+            filter: chu,
+            searchQuery: "맥북"
         )
-        let cacheKey = BoardListCache.key(
-            boardID: Board.clienNews.id, filterID: nil, searchQuery: nil
-        )
-        XCTAssertEqual(loaderKey, cacheKey,
-                       "loader 와 cache 가 같은 요청에 같은 key 를 산출해야 캐시 hit 이 일어남")
+        XCTAssertEqual(key, "inven-maple|chu|맥북")
     }
 
     // MARK: - Cold path
 
-    func testColdRefreshFetchesAndPopulatesPosts() async {
+    func testRefreshFetchesAndPopulatesPosts() async {
         let fetchCount = TestCounter()
         let loader = BoardListLoader(fetcher: { [clienHTML] _, _, _, _ in
             fetchCount.increment()
             return clienHTML
         })
-        let cache = BoardListCache()
 
-        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil, cache: cache)
+        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil)
 
         XCTAssertEqual(fetchCount.value, 1)
         XCTAssertEqual(loader.posts.count, 2)
@@ -62,94 +64,19 @@ final class BoardListLoaderTests: XCTestCase {
         XCTAssertNil(loader.errorMessage)
     }
 
-    func testColdRefreshCachesFirstPageSnapshot() async {
-        let loader = BoardListLoader(fetcher: { [clienHTML] _, _, _, _ in clienHTML })
-        let cache = BoardListCache()
-
-        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil, cache: cache)
-
-        let key = BoardListLoader.taskKey(board: .clienNews, filter: nil, searchQuery: nil)
-        let cached = cache.get(taskKey: key)
-        XCTAssertNotNil(cached, "성공한 cold load 후 cache 에 first-page snapshot 저장")
-        XCTAssertEqual(cached?.posts.count, 2)
-    }
-
-    func testColdRefreshFailureSurfacesErrorMessage() async {
+    func testRefreshFailureSurfacesErrorMessage() async {
         struct StubError: Error, LocalizedError {
             var errorDescription: String? { "network down" }
         }
         let loader = BoardListLoader(fetcher: { _, _, _, _ in
             throw StubError()
         })
-        let cache = BoardListCache()
 
-        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil, cache: cache)
+        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil)
 
         XCTAssertEqual(loader.errorMessage, "network down")
         XCTAssertTrue(loader.posts.isEmpty)
         XCTAssertFalse(loader.isLoading)
-    }
-
-    // MARK: - Cache hit + silent revalidate
-
-    func testCacheHitInstantRendersThenRevalidates() async {
-        let cache = BoardListCache()
-        let key = BoardListLoader.taskKey(board: .clienNews, filter: nil, searchQuery: nil)
-        let cachedPost = Post(
-            id: "clien-news-cached",
-            site: .clien,
-            boardID: "clien-news",
-            title: "캐시 글",
-            author: "X",
-            date: nil,
-            dateText: "어제",
-            commentCount: 0,
-            url: URL(string: "https://www.clien.net/service/board/news/cached")!
-        )
-        cache.put(taskKey: key, posts: [cachedPost], hasMorePages: true, nextSearchURL: nil)
-
-        let fetchCount = TestCounter()
-        let loader = BoardListLoader(fetcher: { [clienHTML] _, _, _, _ in
-            fetchCount.increment()
-            return clienHTML
-        })
-
-        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil, cache: cache)
-
-        // Silent revalidate ran (cache hit triggers it) + replaced the
-        // posts with fresh content from clienHTML.
-        XCTAssertEqual(fetchCount.value, 1, "cache hit 시 silent revalidate 가 1회 fire")
-        XCTAssertEqual(loader.posts.map(\.title), ["첫번째 글", "두번째 글"],
-                       "fresh 응답으로 교체됨")
-    }
-
-    func testSilentRevalidateFailureLeavesPriorPostsVisible() async {
-        struct StubError: Error {}
-        let cache = BoardListCache()
-        let key = BoardListLoader.taskKey(board: .clienNews, filter: nil, searchQuery: nil)
-        let cachedPost = Post(
-            id: "clien-news-cached",
-            site: .clien,
-            boardID: "clien-news",
-            title: "캐시 글",
-            author: "X",
-            date: nil,
-            dateText: "어제",
-            commentCount: 0,
-            url: URL(string: "https://www.clien.net/service/board/news/cached")!
-        )
-        cache.put(taskKey: key, posts: [cachedPost], hasMorePages: true, nextSearchURL: nil)
-
-        let loader = BoardListLoader(fetcher: { _, _, _, _ in
-            throw StubError()
-        })
-
-        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil, cache: cache)
-
-        XCTAssertEqual(loader.posts.map(\.title), ["캐시 글"],
-                       "silent revalidate 실패 시 cache 의 이전 posts 가 그대로 보임")
-        XCTAssertNil(loader.errorMessage,
-                     "silent 실패는 사용자 에러로 surface 되지 않음")
     }
 
     // MARK: - Idempotency
@@ -160,22 +87,35 @@ final class BoardListLoaderTests: XCTestCase {
             fetchCount.increment()
             return clienHTML
         })
-        let cache = BoardListCache()
 
-        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil, cache: cache)
+        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil)
         XCTAssertEqual(fetchCount.value, 1)
 
-        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil, cache: cache)
+        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil)
 
-        // Second refresh: loadedKey == key 이미 → 빠져나감. 단 cache hit
-        // 이 일어나는지에 따라 silent revalidate 가 1회 더 fire 가능.
-        // 실제로 첫 cold load 가 cache.put 으로 스냅샷 남겼으므로 두번째
-        // refresh 는 loadedKey 매치로 즉시 return → fetch 추가 호출 0.
         XCTAssertEqual(fetchCount.value, 1,
                        "동일 key 재호출은 noop (loadedKey 가드)")
     }
 
-    // MARK: - Reload
+    func testRefreshOnDifferentKeyTriggersFreshFetch() async {
+        // 보드 전환 path: 다른 key 로 refresh → 새로 fetch.
+        // 드로어 탭과 swipe-step 양쪽 시나리오 모두 이 path 통과.
+        let fetchCount = TestCounter()
+        let loader = BoardListLoader(fetcher: { [clienHTML] _, _, _, _ in
+            fetchCount.increment()
+            return clienHTML
+        })
+
+        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil)
+        XCTAssertEqual(fetchCount.value, 1)
+
+        await loader.refresh(board: .clienJirum, filter: nil, searchQuery: nil)
+
+        XCTAssertEqual(fetchCount.value, 2,
+                       "다른 보드로 refresh 시 cold path 로 새 fetch")
+    }
+
+    // MARK: - Reload (pull-to-refresh)
 
     func testReloadBypassesLoadedKeyShortCircuit() async {
         let fetchCount = TestCounter()
@@ -183,12 +123,11 @@ final class BoardListLoaderTests: XCTestCase {
             fetchCount.increment()
             return clienHTML
         })
-        let cache = BoardListCache()
 
-        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil, cache: cache)
+        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil)
         XCTAssertEqual(fetchCount.value, 1)
 
-        await loader.reload(board: .clienNews, filter: nil, searchQuery: nil, cache: cache)
+        await loader.reload(board: .clienNews, filter: nil, searchQuery: nil)
 
         XCTAssertEqual(fetchCount.value, 2,
                        "pull-to-refresh 는 loadedKey 가드 우회 — 같은 key 라도 재페치")
@@ -207,13 +146,11 @@ final class BoardListLoaderTests: XCTestCase {
             }
             return clienHTML
         })
-        let cache = BoardListCache()
 
         await loader.refresh(
             board: .clienNews,
             filter: nil,
-            searchQuery: "맥북",
-            cache: cache
+            searchQuery: "맥북"
         )
 
         XCTAssertEqual(attempts.count, 2, "primary + retry 두 번 fetcher 통과")
@@ -233,13 +170,11 @@ final class BoardListLoaderTests: XCTestCase {
             attempts.increment()
             throw NetworkError.badResponse(400)
         })
-        let cache = BoardListCache()
 
         await loader.refresh(
             board: .invenMaple,
             filter: nil,
-            searchQuery: "test",
-            cache: cache
+            searchQuery: "test"
         )
 
         XCTAssertEqual(attempts.value, 1,
@@ -253,13 +188,11 @@ final class BoardListLoaderTests: XCTestCase {
             attempts.increment()
             throw NetworkError.badResponse(400)
         })
-        let cache = BoardListCache()
 
         await loader.refresh(
             board: .clienNews,
             filter: nil,
-            searchQuery: nil,  // 검색 아닌 일반 list
-            cache: cache
+            searchQuery: nil  // 검색 아닌 일반 list
         )
 
         XCTAssertEqual(attempts.value, 1,

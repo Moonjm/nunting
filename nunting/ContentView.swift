@@ -9,10 +9,6 @@ struct ContentView: View {
     /// Session cache so a freshly-opened post (one whose overlay wasn't the
     /// keep-alive target) skips the network + parse on first render.
     @State private var detailCache = PostDetailCache()
-    /// First-page list snapshots, keyed by `BoardListView.taskKey`. Drives
-    /// the stale-while-revalidate path on board re-entry and is populated
-    /// in advance by `BoardListCache.prefetch` when the drawer opens.
-    @State private var listCache = BoardListCache()
     /// Owns selectedBoard / selectedFilter / searchQuery / boardNavScope /
     /// reloadToken plus the atomic transitions that make taskKey changes
     /// happen exactly once per user action.
@@ -204,18 +200,6 @@ struct ContentView: View {
                 Task { await catalog.revalidateLoadedCatalogs() }
             }
         }
-        .onChange(of: drawerOpen) { _, open in
-            // Drawer just opened: warm up favorites in the background so
-            // the typical "open drawer → tap a favorite" flow lands on a
-            // cache hit and renders without a spinner. Capped to the
-            // first 6 to avoid bursting 10+ hosts at once when a user
-            // has a long favorites list. Best-effort; failures fall
-            // through silently to the live load path.
-            guard open else { return }
-            let targets = Array(favorites.favoriteBoards().prefix(6))
-            guard !targets.isEmpty else { return }
-            BoardListCache.prefetch(boards: targets, into: listCache)
-        }
     }
 
     private var mainScreen: some View {
@@ -240,7 +224,6 @@ struct ContentView: View {
             scrollLocked: scrollLocked,
             shouldSuppressRowTap: { [rowTapGate] in rowTapGate.suppressed },
             readStore: readStore,
-            cache: listCache,
             onSelectPost: { post in
                 detail.show(post)
             }
