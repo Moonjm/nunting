@@ -45,6 +45,13 @@ final class BoardListLoader {
     private var seenIDs: Set<String> = []
     private var currentPage: Int = 1
     private var nextSearchURL: URL?
+
+    // TODO: cold-path / cache-hit reset blocks should also clear
+    // `isLoadingMore` and `loadMoreError` — they belong to the prior
+    // key's lifecycle. The pre-refactor view had the same pre-existing
+    // bug class (mid-loadMore filter swap leaves spinner stuck until
+    // the next loadMore fires). Preserved byte-for-byte by this
+    // refactor; fix in a focused follow-up rather than bundled here.
     /// Latest request the view asked us to handle. Used as the stale-
     /// write guard in `defer` and post-await checks: a load that
     /// completes after the view has navigated to a new request must
