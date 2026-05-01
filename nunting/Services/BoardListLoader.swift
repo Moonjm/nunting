@@ -271,6 +271,17 @@ final class BoardListLoader {
         }
     }
 
+    /// Inven search-result paging link. Hoisted to a static so list /
+    /// loadMore calls don't pay `NSRegularExpression` construction every
+    /// time. Matches the convention used by `InvenParser` /
+    /// `AagagParser` for similar per-page selectors. `try!` because the
+    /// pattern is a compile-time literal — failure would be a build-
+    /// time bug, not runtime.
+    private nonisolated static let invenNextSearchRegex = try! NSRegularExpression(
+        pattern: #"<a\s+href="([^"]*sterm=[^"]*)"\s+class="search-total""#,
+        options: [.caseInsensitive]
+    )
+
     private nonisolated static func parseListOffMain(html: String, board: Board) async throws -> [Post] {
         try await Task.detached(priority: .userInitiated) {
             let parser = try ParserFactory.parser(for: board.site)
@@ -283,9 +294,7 @@ final class BoardListLoader {
               searchQuery?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         else { return nil }
 
-        let pattern = #"<a\s+href="([^"]*sterm=[^"]*)"\s+class="search-total""#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
-              let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+        guard let match = invenNextSearchRegex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
               match.numberOfRanges > 1,
               let range = Range(match.range(at: 1), in: html)
         else { return nil }
