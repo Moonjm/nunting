@@ -229,13 +229,11 @@ extension Board {
 
     /// Filter applied automatically when the user opens this board from
     /// the drawer / swipe-step. Currently only `invenMaple` overrides the
-    /// default ("10추") because its all-posts feed is too noisy. Shared
-    /// between `ContentView` (state seed) and `BoardListCache.prefetch`
-    /// (so the prefetched key matches the live `BoardListView.taskKey`);
-    /// `nonisolated` so the prefetch task group can read it off main.
-    /// The id is compared as a string literal rather than via
-    /// `Board.invenMaple.id` so the static-property lookup doesn't drag
-    /// MainActor isolation into this path under Swift 6 mode.
+    /// default ("10추") because its all-posts feed is too noisy. Used by
+    /// `ContentView` (state seed) and `BoardSelection` (atomic
+    /// transitions). The id is compared as a string literal rather than
+    /// via `Board.invenMaple.id` so the static-property lookup doesn't
+    /// drag MainActor isolation into this path under Swift 6 mode.
     nonisolated var defaultListFilter: BoardFilter? {
         guard id == "inven-maple" else { return nil }
         return filters.first { $0.id == "chu" }

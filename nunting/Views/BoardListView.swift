@@ -11,7 +11,6 @@ struct BoardListView: View {
     /// through and trigger a row navigation on touch-up.
     var shouldSuppressRowTap: () -> Bool = { false }
     let readStore: ReadStore
-    let cache: BoardListCache
     let onSelectPost: (Post) -> Void
 
     @State private var loader = BoardListLoader()
@@ -30,12 +29,7 @@ struct BoardListView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task(id: BoardListLoader.taskKey(board: board, filter: filter, searchQuery: searchQuery)) {
-            await loader.refresh(
-                board: board,
-                filter: filter,
-                searchQuery: searchQuery,
-                cache: cache
-            )
+            await loader.refresh(board: board, filter: filter, searchQuery: searchQuery)
         }
     }
 
@@ -126,7 +120,7 @@ struct BoardListView: View {
         .background(Color("AppSurface"))
         .scrollDisabled(scrollLocked)
         .refreshable {
-            await loader.reload(board: board, filter: filter, searchQuery: searchQuery, cache: cache)
+            await loader.reload(board: board, filter: filter, searchQuery: searchQuery)
         }
     }
 
