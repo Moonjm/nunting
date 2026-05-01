@@ -32,12 +32,6 @@ struct MainBottomBar: View {
             // a no-op single-tap restores the gesture mediation we had
             // before the drawer-on-tap removal, so the swipe arrives
             // at the drag handler again.
-            //
-            // Favorite-toggle (별 버튼) was removed from this bar by
-            // user request — accidental taps during normal interaction
-            // were silently un-favoriting boards. Add/remove favorites
-            // is still available in the side drawer (사이트 카탈로그
-            // 섹션의 별 아이콘).
             Group {
                 Text(board.name)
                     .font(.caption.weight(.medium))
@@ -63,12 +57,19 @@ struct MainBottomBar: View {
                     }
             )
 
-            // Invisible right slot — matches the search button's flex
-            // claim so removing the favorite-toggle doesn't recenter
-            // search-icon + board-name. Keeping the bar's spatial
-            // partition intact means muscle memory for swipe-step /
-            // double-tap on the board name still hits the same area
-            // it did before.
+            // Phantom right slot. The favorite-toggle (별 버튼) used
+            // to live here but was removed by user request —
+            // accidental taps during normal swipe-step / double-tap
+            // interaction on the board name were silently un-
+            // favoriting boards. Add/remove favorites is still
+            // available in the side drawer (사이트 카탈로그 섹션의
+            // 별 아이콘).
+            //
+            // The slot itself stays as an invisible flex spacer
+            // matching the search button's `.frame(maxWidth: .infinity)`
+            // claim — without it the HStack collapses to a 50/50 split
+            // and search-icon + board-name shift left, breaking muscle
+            // memory for swipe-step and double-tap-reload areas.
             Color.clear
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .allowsHitTesting(false)
