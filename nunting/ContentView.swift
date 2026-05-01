@@ -13,48 +13,24 @@ struct ContentView: View {
     /// the stale-while-revalidate path on board re-entry and is populated
     /// in advance by `BoardListCache.prefetch` when the drawer opens.
     @State private var listCache = BoardListCache()
-    @State private var selectedBoard: Board
-    @State private var selectedFilter: BoardFilter? = nil
-    @State private var searchQuery: String? = nil
+    /// Owns selectedBoard / selectedFilter / searchQuery / boardNavScope /
+    /// reloadToken plus the atomic transitions that make taskKey changes
+    /// happen exactly once per user action.
+    @State private var selection: BoardSelection
+    /// Owns the keep-alive PostDetailView's activePost / offset / animation
+    /// lock. The pan gesture below still drives the interactive drag
+    /// directly against this controller's `offset` / `offsetBase`.
+    @State private var detail = DetailOverlayController()
+
     @State private var drawerOpen = false
     @State private var drawerSection: DrawerSection = .favorites
-    /// Which list the bottom-bar swipe should cycle through (favorites vs.
-    /// a specific site's catalog). Updated whenever the user taps a board
-    /// in the drawer.
-    @State private var boardNavScope: DrawerSection = .favorites
     @State private var searchSheetPresented = false
-    /// Most recently opened post. Kept alive as a ZStack overlay so the
-    /// rendered view, scroll position, image state, and video playback all
-    /// survive back-swipes. A right-edge leftward drag re-slides the same
-    /// view back in; tapping a different post rebuilds the overlay via
-    /// `.id(post.id)` (old view destroyed, data still hot in `detailCache`).
-    @State private var activePost: Post?
-    /// 0 = overlay fully shown; `containerWidth` = fully hidden off the right
-    /// edge. Animated by `showDetail`/`hideDetail` on tap/back, dragged
-    /// directly in the pan handler during interactive swipes.
-    @State private var detailOffset: CGFloat = 0
-    /// `detailOffset` at the moment the horizontal drag lock engages. Used
-    /// to classify the drag as back-swipe (base 0) vs forward-reveal (base
-    /// containerWidth) regardless of how far the finger has travelled.
-    @State private var detailOffsetBase: CGFloat = 0
-    /// Bumped on bottom-bar double-tap. Attached to `mainScreen` via `.id()`
-    /// so the whole list + filter bar + bottom bar subtree is rebuilt,
-    /// triggering a fresh load regardless of current search/filter state.
-    @State private var reloadToken: Int = 0
 
     @State private var dragOffset: CGFloat = 0
     @State private var dragDirection: DragDirection?
     @State private var dragLockBaseline: CGFloat = 0
     @State private var scrollLocked = false
-    /// Kept asserted across the commit/cancel spring for back-drag and
-    /// forward-reveal. Without this, `resetDragState()` clears the
-    /// scroll lock the moment the finger leaves and layout callbacks
-    /// during the spring can drift the inner ScrollView's contentOffset
-    /// — the next re-entry then shows a scroll position different from
-    /// where the user left off.
-    @State private var detailAnimating = false
     @State private var containerHeight: CGFloat = 0
-    @State private var containerWidth: CGFloat = 0
     /// Y position (in the body's coordinate space) where the combined
     /// filter-bar + bottom-bar area begins. Drags that start at or below
     /// this line belong to the bar/chips, not the drawer/detail overlay.
@@ -89,23 +65,26 @@ struct ContentView: View {
         let store = FavoritesStore()
         _favorites = State(initialValue: store)
         if let firstFav = store.favoriteBoards().first {
-            _selectedBoard = State(initialValue: firstFav)
-            _selectedFilter = State(initialValue: firstFav.defaultListFilter)
-            _boardNavScope = State(initialValue: .favorites)
+            _selection = State(initialValue: BoardSelection(
+                initialBoard: firstFav,
+                initialNavScope: .favorites
+            ))
         } else {
-            _selectedBoard = State(initialValue: .clienNews)
-            _selectedFilter = State(initialValue: Board.clienNews.defaultListFilter)
-            _boardNavScope = State(initialValue: .site(.clien))
+            _selection = State(initialValue: BoardSelection(
+                initialBoard: .clienNews,
+                initialNavScope: .site(.clien)
+            ))
         }
     }
 
     var body: some View {
+        @Bindable var selection = selection
         ZStack(alignment: .leading) {
             Color("AppSurface")
                 .ignoresSafeArea()
 
             mainScreen
-                .id(reloadToken)
+                .id(selection.reloadToken)
 
             Color("AppSurface")
                 .ignoresSafeArea(edges: .top)
@@ -122,21 +101,10 @@ struct ContentView: View {
             SideDrawer(
                 favorites: favorites,
                 catalog: catalog,
-                currentBoardID: selectedBoard.id,
+                currentBoardID: selection.board.id,
                 selectedSection: $drawerSection,
                 onSelectBoard: { board in
-                    // Set board, filter, and search atomically in a single
-                    // state-mutation batch so `BoardListView`'s `taskKey`
-                    // changes exactly once. The prior pattern (set board,
-                    // let `.onChange(of: selectedBoard)` reset filter on
-                    // the next render) gave invenMaple a guaranteed
-                    // double-fire: first task fetched with the previous
-                    // board's filter, was cancelled, then the real fetch
-                    // started — extra round-trip on every entry.
-                    selectedBoard = board
-                    selectedFilter = board.defaultListFilter
-                    searchQuery = nil
-                    boardNavScope = drawerSection
+                    selection.select(board, navScope: drawerSection)
                     closeDrawer()
                 },
                 onClose: closeDrawer
@@ -155,24 +123,24 @@ struct ContentView: View {
             // the user actively opens a DIFFERENT post (single-post
             // state preservation; multi-post would need an LRU layered
             // on top of this).
-            if let post = activePost {
+            if let post = detail.activePost {
                 PostDetailView(
                     post: post,
                     readStore: readStore,
                     cache: detailCache,
                     tapGate: detailMediaTapGate,
-                    isOverlayVisible: containerWidth > 0 && detailOffset < containerWidth - 0.5,
+                    isOverlayVisible: detail.isOverlayVisible,
                     // `scrollLocked` is set by `panGesture`'s horizontal
-                    // classification; `detailAnimating` extends the lock
+                    // classification; `detail.animating` extends the lock
                     // across the post-release spring so the inner scroll
                     // position can't drift while the overlay slides in/out.
-                    isScrollingBlocked: scrollLocked || detailAnimating,
-                    onDismiss: { hideDetail() }
+                    isScrollingBlocked: scrollLocked || detail.animating,
+                    onDismiss: { detail.hide() }
                 )
                 // `.equatable()` pairs with PostDetailView's custom `==` to
                 // short-circuit body re-evaluation when only the `onDismiss`
                 // closure identity changed (ContentView re-evaluates every
-                // frame of a back-drag as `detailOffset` animates, creating
+                // frame of a back-drag as `detail.offset` animates, creating
                 // a fresh closure each time). Without this the inner
                 // ScrollView + body VStack + comments LazyVStack rebuild
                 // per frame on long posts — expensive churn that compounds
@@ -185,13 +153,13 @@ struct ContentView: View {
                 // `.ignoresSafeArea()` here — applying it at this level
                 // would push the detail header (chevron, site name,
                 // Safari button) up behind the status bar / notch.
-                .offset(x: detailOffset)
-                // Interactive back-drag drives `detailOffset` via the
+                .offset(x: detail.offset)
+                // Interactive back-drag drives `detail.offset` via the
                 // ContentView-level `panGesture`. Block hit-testing on
                 // the detail whenever it's visibly off-screen so the
                 // list beneath receives taps/scrolls without the stale
                 // (but still-mounted) PostDetailView intercepting.
-                .allowsHitTesting(containerWidth == 0 || detailOffset < containerWidth - 0.5)
+                .allowsHitTesting(detail.allowsHitTesting)
                 .zIndex(10)
             }
         }
@@ -205,12 +173,7 @@ struct ContentView: View {
         )
         .onPreferenceChange(ContainerHeightKey.self) { containerHeight = $0 }
         .onPreferenceChange(ContainerWidthKey.self) { newWidth in
-            // If the overlay was hidden at the previous width, keep it fully
-            // hidden at the new width — otherwise a rotation / window resize
-            // could leave a sliver of it visible on the right edge.
-            let wasHidden = detailOffset >= containerWidth - 0.5 && containerWidth > 0
-            containerWidth = newWidth
-            if wasHidden { detailOffset = newWidth }
+            detail.updateContainerWidth(newWidth)
         }
         .coordinateSpace(name: "contentRoot")
         .onPreferenceChange(BottomAreaTopKey.self) { bottomAreaTopY = $0 }
@@ -256,6 +219,7 @@ struct ContentView: View {
     }
 
     private var mainScreen: some View {
+        @Bindable var selection = selection
         // Bar (filter chips + bottom bar) is declared as the list's
         // bottom safe-area inset rather than a sibling in a VStack so
         // SwiftUI computes the List's `contentInset.bottom` as
@@ -269,30 +233,27 @@ struct ContentView: View {
         // zone. `.safeAreaInset` makes the inset declarative and
         // race-immune, which is also the canonical pattern Mail /
         // Messages use for their bottom bars.
-        BoardListView(
-            board: selectedBoard,
-            filter: selectedFilter,
-            searchQuery: searchQuery,
+        return BoardListView(
+            board: selection.board,
+            filter: selection.filter,
+            searchQuery: selection.searchQuery,
             scrollLocked: scrollLocked,
             shouldSuppressRowTap: { [rowTapGate] in rowTapGate.suppressed },
             readStore: readStore,
             cache: listCache,
             onSelectPost: { post in
-                showDetail(post)
+                detail.show(post)
             }
         )
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
-                if !selectedBoard.filters.isEmpty {
-                    BoardFilterBar(board: selectedBoard, selection: $selectedFilter)
+                if !selection.board.filters.isEmpty {
+                    BoardFilterBar(board: selection.board, selection: $selection.filter)
                 }
                 MainBottomBar(
-                    board: selectedBoard,
+                    board: selection.board,
                     favorites: favorites,
-                    onBoardDoubleTap: {
-                        searchQuery = nil
-                        reloadToken &+= 1
-                    },
+                    onBoardDoubleTap: { selection.requestReload() },
                     onSearch: { searchSheetPresented = true },
                     onPrev: { stepBoard(by: -1) },
                     onNext: { stepBoard(by: 1) }
@@ -307,17 +268,17 @@ struct ContentView: View {
                 }
             )
         }
-        .onChange(of: selectedFilter) { _, _ in
+        .onChange(of: selection.filter) { _, _ in
             // Filter switches can swap the path entirely (BoardFilter.replacementPath),
             // so the prior search query may not be meaningful on the new endpoint.
-            searchQuery = nil
+            selection.searchQuery = nil
         }
         .sheet(isPresented: $searchSheetPresented) {
             SearchSheet(
-                board: selectedBoard,
-                initialQuery: searchQuery ?? "",
-                onSubmit: { q in searchQuery = q },
-                onClear: { searchQuery = nil }
+                board: selection.board,
+                initialQuery: selection.searchQuery ?? "",
+                onSubmit: { q in selection.searchQuery = q },
+                onClear: { selection.searchQuery = nil }
             )
         }
     }
@@ -333,59 +294,17 @@ struct ContentView: View {
     /// the drawer doesn't flash open while the detail overlay is tracking
     /// the same finger.
     private var drawerApplicableDrag: CGFloat {
-        guard activePost != nil else { return dragOffset }
+        guard detail.activePost != nil else { return dragOffset }
         // Overlay exists. Detail back-swipe (base 0) and forward-reveal
         // (dragging left) both own the drag; only a rightward drag started
         // while the overlay is hidden still belongs to the drawer.
-        if detailOffsetBase == 0 { return 0 }
+        if detail.offsetBase == 0 { return 0 }
         return dragOffset > 0 ? dragOffset : 0
     }
 
     private var drawerXOffset: CGFloat {
         -drawerWidth + drawerWidth * drawerProgress
     }
-
-    private func showDetail(_ post: Post) {
-        // Re-revealing the already-active post: keep-alive path. Just slide
-        // the existing overlay (which still holds its scroll/image state)
-        // back into view. `.id(post.id)` unchanged, so SwiftUI reuses the
-        // same PostDetailView instance and `.task(id:)` doesn't re-fire.
-        if activePost?.id == post.id {
-            withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
-                detailOffset = 0
-            }
-            return
-        }
-        // Different or first post: park the overlay offscreen right, swap
-        // `activePost` (forcing the view to rebuild), then animate in on
-        // the next runloop so SwiftUI actually observes the offscreen
-        // starting position. Coalescing all three into one transaction
-        // collapses the animation and the overlay pops in.
-        detailOffset = containerWidth > 0 ? containerWidth : 1000
-        activePost = post
-        DispatchQueue.main.async {
-            withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
-                detailOffset = 0
-            }
-        }
-    }
-
-    private func hideDetail() {
-        withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
-            detailOffset = containerWidth
-        }
-        // Intentionally leaves `activePost` non-nil so the view survives and
-        // the next right-edge forward-swipe can restore it instantly.
-    }
-
-    private func shouldDismissDetailSwipe(dx: CGFloat, velocityX: CGFloat) -> Bool {
-        dx > detailSwipeDistanceThreshold || velocityX > 120
-    }
-
-    private var detailSwipeDistanceThreshold: CGFloat {
-        min(containerWidth * 0.08, 32)
-    }
-
 
     private var panGesture: some Gesture {
         DragGesture(minimumDistance: 6)
@@ -410,22 +329,22 @@ struct ContentView: View {
                         dragDirection = .horizontal
                         dragLockBaseline = value.translation.width
                         scrollLocked = true
-                        detailOffsetBase = detailOffset
+                        detail.offsetBase = detail.offset
                     } else if absH > 10 && absH > absW {
                         dragDirection = .vertical
                     }
                 }
                 if dragDirection == .horizontal {
                     dragOffset = value.translation.width - dragLockBaseline
-                    if activePost != nil && detailOffsetBase == 0 {
+                    if detail.activePost != nil && detail.offsetBase == 0 {
                         // Back-drag from the visible overlay. Track the
                         // finger so the detail follows the drag out to
                         // the right; the inner ScrollView is gated by
                         // `isScrollingBlocked` so its pan can't drift
                         // under us during the drag.
                         detailMediaTapGate.suppress()
-                        detailOffset = max(0, min(containerWidth, dragOffset))
-                    } else if activePost != nil && detailOffsetBase >= containerWidth {
+                        detail.offset = max(0, min(detail.containerWidth, dragOffset))
+                    } else if detail.activePost != nil && detail.offsetBase >= detail.containerWidth {
                         // Forward-swipe reveal: overlay hidden at drag
                         // start and finger moving leftward pulls it in.
                         // If the finger reverses back rightward past
@@ -434,9 +353,9 @@ struct ContentView: View {
                         // mode cleanly instead of getting stuck at a
                         // partial reveal.
                         if dragOffset < 0 {
-                            detailOffset = max(0, min(containerWidth, containerWidth + dragOffset))
+                            detail.offset = max(0, min(detail.containerWidth, detail.containerWidth + dragOffset))
                         } else {
-                            detailOffset = containerWidth
+                            detail.offset = detail.containerWidth
                         }
                     }
                 }
@@ -452,8 +371,9 @@ struct ContentView: View {
                 }
                 let lockedHorizontal = dragDirection == .horizontal
                 let baseline = dragLockBaseline
-                let base = detailOffsetBase
-                let hasActive = activePost != nil
+                let base = detail.offsetBase
+                let hasActive = detail.activePost != nil
+                let containerW = detail.containerWidth
                 resetDragState()
 
                 guard lockedHorizontal else {
@@ -465,7 +385,7 @@ struct ContentView: View {
                 let traveled = value.translation.width - baseline
 
                 // Detail overlay modes take precedence — the drag already
-                // moved `detailOffset` interactively, so committing the
+                // moved `detail.offset` interactively, so committing the
                 // correct end state here preserves continuity with the
                 // finger's position.
                 if hasActive && base == 0 {
@@ -473,22 +393,22 @@ struct ContentView: View {
                     // start. Commit to hidden if the finger travelled
                     // past the distance / velocity thresholds, else
                     // snap back to fully visible.
-                    let shouldDismiss = shouldDismissDetailSwipe(dx: traveled, velocityX: velocity)
-                    beginDetailAnimationLock()
+                    let shouldDismiss = detail.shouldDismissSwipe(dx: traveled, velocityX: velocity)
+                    detail.beginAnimationLock()
                     withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
-                        detailOffset = shouldDismiss ? containerWidth : 0
+                        detail.offset = shouldDismiss ? containerW : 0
                         dragOffset = 0
                     }
                     return
                 }
-                if hasActive && base >= containerWidth && traveled < 0 {
+                if hasActive && base >= containerW && traveled < 0 {
                     // Forward-swipe reveal: low threshold matches the old
                     // lastOpenedPost re-push so a light flick from the right
                     // edge is enough to pull the overlay back in.
                     let shouldReveal = traveled < -32 || velocity < -120
-                    beginDetailAnimationLock()
+                    detail.beginAnimationLock()
                     withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
-                        detailOffset = shouldReveal ? 0 : containerWidth
+                        detail.offset = shouldReveal ? 0 : containerW
                         dragOffset = 0
                         if shouldReveal && drawerOpen {
                             drawerOpen = false
@@ -512,8 +432,8 @@ struct ContentView: View {
                     // into a drawer gesture, the overlay may still sit at a
                     // partial reveal from `onChanged`. Snap it fully hidden
                     // here so the next forward-swipe sees the expected base.
-                    if hasActive && base >= containerWidth && detailOffset != containerWidth {
-                        detailOffset = containerWidth
+                    if hasActive && base >= containerW && detail.offset != containerW {
+                        detail.offset = containerW
                     }
                 }
             }
@@ -523,18 +443,6 @@ struct ContentView: View {
         dragDirection = nil
         dragLockBaseline = 0
         scrollLocked = false
-    }
-
-    /// Holds `detailAnimating` true across the spring (0.32s response)
-    /// so the detail view's `isScrollingBlocked` stays asserted until
-    /// the slide settles. The 0.35s delay is padded slightly past the
-    /// spring so the lock doesn't release mid-bounce.
-    private func beginDetailAnimationLock() {
-        detailAnimating = true
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(350))
-            detailAnimating = false
-        }
     }
 
     private func startedInBottomBar(_ value: DragGesture.Value) -> Bool {
@@ -553,23 +461,16 @@ struct ContentView: View {
     /// continuous; no-ops if the scope only has one board.
     private func stepBoard(by delta: Int) {
         let pool: [Board]
-        switch boardNavScope {
+        switch selection.navScope {
         case .favorites:
             pool = favorites.favoriteBoards()
         case .site(let s):
             pool = catalog.boards(for: s)
         }
-        guard pool.count > 1,
-              let idx = pool.firstIndex(where: { $0.id == selectedBoard.id })
-        else { return }
-        let next = ((idx + delta) % pool.count + pool.count) % pool.count
-        let nextBoard = pool[next]
-        // Atomic state batch — see `onSelectBoard` for why a single
-        // mutation matters (taskKey debouncing, no double-fetch).
+        // Atomic state batch — see `BoardSelection.select` for why a
+        // single mutation matters (taskKey debouncing, no double-fetch).
         withAnimation(.easeInOut(duration: 0.15)) {
-            selectedBoard = nextBoard
-            selectedFilter = nextBoard.defaultListFilter
-            searchQuery = nil
+            selection.step(by: delta, within: pool)
         }
     }
 
