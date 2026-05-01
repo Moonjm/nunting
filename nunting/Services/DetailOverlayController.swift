@@ -42,6 +42,12 @@ final class DetailOverlayController {
     /// Padded slightly past the spring's response so `animating` doesn't
     /// release mid-bounce. Must stay > `springResponse * 1000`.
     private static let animationLockMs: Int = 350
+    /// Fallback off-screen anchor when the very first `show(_:)` runs
+    /// before `containerWidth` has been measured. Larger than any
+    /// plausible device width (iPad Pro 12.9" landscape ≈ 1366pt) so a
+    /// race between scene activation and the first `onPreferenceChange`
+    /// can never leave a sliver of the overlay visible.
+    private static let unmeasuredContainerFallback: CGFloat = 4096
 
     /// Open `post`. If it's already the `activePost`, slide the
     /// existing overlay back into view (the underlying
@@ -59,7 +65,7 @@ final class DetailOverlayController {
         }
         // Fallback to a finite off-screen offset on the very first
         // open before the GeometryReader has measured `containerWidth`.
-        offset = containerWidth > 0 ? containerWidth : 1000
+        offset = containerWidth > 0 ? containerWidth : Self.unmeasuredContainerFallback
         activePost = post
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }

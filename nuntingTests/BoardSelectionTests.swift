@@ -41,6 +41,19 @@ final class BoardSelectionTests: XCTestCase {
         XCTAssertEqual(selection.navScope, .favorites)
     }
 
+    func testSelectSameBoardStillClearsSearchQuery() {
+        // 같은 보드 재선택도 search 를 클리어 — 미래에 "동일 보드면
+        // search 유지" 같은 최적화로 silently 회귀하지 않도록 못 박음.
+        // 사용자 동선상 드로어에서 같은 보드 다시 탭하는 건 "검색
+        // 그만 보고 메인 리스트로 돌아가고 싶다" 의도가 자연스러움.
+        let selection = BoardSelection(initialBoard: .clienNews, initialNavScope: .site(.clien))
+        selection.searchQuery = "딜"
+
+        selection.select(.clienNews, navScope: .site(.clien))
+
+        XCTAssertNil(selection.searchQuery, "동일 보드 select 도 search 클리어")
+    }
+
     func testSelectFromInvenMapleToClienClearsFilter() {
         let selection = BoardSelection(initialBoard: .invenMaple, initialNavScope: .favorites)
         XCTAssertNotNil(selection.filter, "invenMaple → 디폴트 'chu' 가 set")
