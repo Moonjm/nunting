@@ -63,14 +63,14 @@ struct Board: Identifiable, Hashable {
     var supportsSearch: Bool { searchQueryName != nil }
     var supportsPaging: Bool { pageQueryName != nil }
 
-    private func searchItems(query: String?) -> [(String, String)] {
+    nonisolated private func searchItems(query: String?) -> [(String, String)] {
         guard let searchQueryName,
               let query, !query.isEmpty
         else { return [] }
         return defaultSearchPrefixItems() + [(searchQueryName, query)]
     }
 
-    private func pageItems(page: Int?, isSearching: Bool) -> [(String, String)] {
+    nonisolated private func pageItems(page: Int?, isSearching: Bool) -> [(String, String)] {
         guard let pageQueryName, let page, page > 1 else { return [] }
         let name = Self.pageQueryName(for: site, pageQueryName: pageQueryName, isSearching: isSearching)
         let value = Self.pageQueryValue(for: site, page: page, isSearching: isSearching)
@@ -122,7 +122,7 @@ struct Board: Identifiable, Hashable {
         }
     }
 
-    private func defaultSearchPrefixItems() -> [(String, String)] {
+    nonisolated private func defaultSearchPrefixItems() -> [(String, String)] {
         switch site {
         case .clien:
             guard let boardID = Self.clienBoardID(from: path) else { return [] }
@@ -136,7 +136,7 @@ struct Board: Identifiable, Hashable {
         }
     }
 
-    private func searchPath(for listPath: String) -> String {
+    nonisolated private func searchPath(for listPath: String) -> String {
         switch site {
         case .clien:
             return "/service/search"
@@ -145,7 +145,7 @@ struct Board: Identifiable, Hashable {
         }
     }
 
-    private var searchBaseURL: URL {
+    nonisolated private var searchBaseURL: URL {
         switch site {
         case .clien:
             URL(string: "https://m.clien.net")!
@@ -154,7 +154,7 @@ struct Board: Identifiable, Hashable {
         }
     }
 
-    private static func clienBoardID(from path: String) -> String? {
+    nonisolated private static func clienBoardID(from path: String) -> String? {
         let cleanPath = path.components(separatedBy: "?").first ?? path
         guard let range = cleanPath.range(of: "/service/board/") else { return nil }
         let tail = cleanPath[range.upperBound...]
@@ -162,7 +162,7 @@ struct Board: Identifiable, Hashable {
         return id.isEmpty ? nil : String(id)
     }
 
-    private static func pageQueryName(for site: Site, pageQueryName: String, isSearching: Bool) -> String {
+    nonisolated private static func pageQueryName(for site: Site, pageQueryName: String, isSearching: Bool) -> String {
         switch site {
         case .clien where isSearching:
             "p"
@@ -171,7 +171,7 @@ struct Board: Identifiable, Hashable {
         }
     }
 
-    private static func pageQueryValue(for site: Site, page: Int, isSearching: Bool) -> Int {
+    nonisolated private static func pageQueryValue(for site: Site, page: Int, isSearching: Bool) -> Int {
         switch site {
         case .clien:
             // Clien uses zero-based offsets: page 2 => po/p=1.
@@ -233,8 +233,11 @@ extension Board {
     /// between `ContentView` (state seed) and `BoardListCache.prefetch`
     /// (so the prefetched key matches the live `BoardListView.taskKey`);
     /// `nonisolated` so the prefetch task group can read it off main.
+    /// The id is compared as a string literal rather than via
+    /// `Board.invenMaple.id` so the static-property lookup doesn't drag
+    /// MainActor isolation into this path under Swift 6 mode.
     nonisolated var defaultListFilter: BoardFilter? {
-        guard id == Board.invenMaple.id else { return nil }
+        guard id == "inven-maple" else { return nil }
         return filters.first { $0.id == "chu" }
     }
 
