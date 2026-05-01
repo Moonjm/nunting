@@ -37,6 +37,23 @@ final class DetailOverlayController {
     /// to compute hide offsets and visibility predicates.
     var containerWidth: CGFloat = 0
 
+    /// In-flight deferred animation from `show(_:)`'s replace branch.
+    /// Tracked so `hide()` (and a subsequent `show(_:)`) can cancel it
+    /// before the `Task.yield` resumes — otherwise a fast
+    /// show → hide sequence could let the show's animation override the
+    /// hide. The race is theoretical for current user-driven call sites
+    /// (tap then dismiss can't fit inside one runloop tick) but the
+    /// cancellation hook keeps future callers safe.
+    private var showTask: Task<Void, Never>?
+    /// In-flight 350ms timer from `beginAnimationLock`. Tracked so
+    /// rapid sequential commits (back-drag dismiss followed by a
+    /// forward-reveal within 350ms) don't have the older timer release
+    /// the lock early on the newer commit's spring — when that
+    /// happens, `PostDetailView`'s inner ScrollView lock drops mid-
+    /// settle and `contentOffset` can drift away from where the user
+    /// last left it.
+    private var animationLockTask: Task<Void, Never>?
+
     private static let springResponse: Double = 0.32
     private static let springDamping: Double = 0.85
     /// Padded slightly past the spring's response so `animating` doesn't
@@ -57,6 +74,8 @@ final class DetailOverlayController {
     /// next runloop tick so SwiftUI observes the off-screen starting
     /// position before the spring runs.
     func show(_ post: Post) {
+        // Drop any pending deferred-show before scheduling a new one.
+        showTask?.cancel()
         if activePost?.id == post.id {
             withAnimation(.spring(response: Self.springResponse, dampingFraction: Self.springDamping)) {
                 offset = 0
@@ -67,8 +86,15 @@ final class DetailOverlayController {
         // open before the GeometryReader has measured `containerWidth`.
         offset = containerWidth > 0 ? containerWidth : Self.unmeasuredContainerFallback
         activePost = post
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
+        showTask = Task { @MainActor [weak self] in
+            // Yield once so SwiftUI observes the off-screen anchor
+            // before the animation transaction starts — without this,
+            // the offscreen write and the animate-to-0 write could
+            // collapse into a single transaction and the spring
+            // wouldn't visibly animate in. Equivalent to the
+            // `DispatchQueue.main.async` semantic this used to use.
+            await Task.yield()
+            guard let self, !Task.isCancelled else { return }
             withAnimation(.spring(response: Self.springResponse, dampingFraction: Self.springDamping)) {
                 self.offset = 0
             }
@@ -77,8 +103,10 @@ final class DetailOverlayController {
 
     /// Slide the overlay off-screen right. Intentionally leaves
     /// `activePost` non-nil so a subsequent forward-swipe re-reveals
-    /// the same instance.
+    /// the same instance. Cancels any in-flight `show` animation so
+    /// hide can't be silently overridden by a stale show.
     func hide() {
+        showTask?.cancel()
         withAnimation(.spring(response: Self.springResponse, dampingFraction: Self.springDamping)) {
             offset = containerWidth
         }
@@ -86,10 +114,14 @@ final class DetailOverlayController {
 
     /// Hold `animating` true for slightly longer than the spring's
     /// response so the embedded scroll lock doesn't release mid-bounce.
+    /// Cancels any prior pending unlock so two rapid commits don't let
+    /// the first timer release the lock during the second spring.
     func beginAnimationLock() {
+        animationLockTask?.cancel()
         animating = true
-        Task { @MainActor [weak self] in
+        animationLockTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(Self.animationLockMs))
+            guard !Task.isCancelled else { return }
             self?.animating = false
         }
     }

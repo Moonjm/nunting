@@ -210,4 +210,46 @@ final class DetailOverlayControllerTests: XCTestCase {
         XCTAssertFalse(detail.isOverlayVisible,
                        "container 측정 전엔 'visible' 아님 — PostDetailView 의 디코드 게이팅이 false 받아야 함")
     }
+
+    // MARK: - Task lifecycle
+
+    func testShowFollowedByHideEndsHidden() async {
+        // show 의 deferred animation 이 yield 후 fire 된다고 해도, 그 사이
+        // hide() 가 호출됐다면 hide 가 요청한 hidden 상태로 정착해야 함.
+        // 기존 구현은 deferred 가 hide 를 silently override 하는 race 가 있었음.
+        let detail = DetailOverlayController()
+        detail.containerWidth = 400
+        let post = makePost()
+
+        detail.show(post)
+        detail.hide()
+        try? await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertEqual(detail.offset, 400,
+                       "show → hide 시퀀스의 최종 상태는 hidden — show 의 deferred animation 이 hide 를 override 하면 안 됨")
+    }
+
+    func testBeginAnimationLockReentryHonorsSecondCallFullDuration() async {
+        // 첫 호출의 350ms 타이머가 두번째 호출 도중 만료돼서 두번째
+        // lock 을 일찍 release 시키면, PostDetailView 의 inner scroll
+        // lock 이 spring settle 중간에 풀려 contentOffset drift 가
+        // 발생함. 이 테스트는 첫 호출 후 100ms 뒤에 두번째 호출 → 첫
+        // 호출의 deadline (t=350) 직후 시점 (t=400) 에 animating 이
+        // 여전히 true 인지 확인. 두번째 호출의 deadline 은 t=450.
+        let detail = DetailOverlayController()
+        detail.beginAnimationLock()
+        try? await Task.sleep(for: .milliseconds(100))
+        detail.beginAnimationLock()  // 첫 호출의 timer 를 cancel + 새로 350ms
+        XCTAssertTrue(detail.animating)
+
+        // 첫 호출 deadline 직후 (t=400) — 두번째 호출 deadline (t=450) 전.
+        try? await Task.sleep(for: .milliseconds(300))
+        XCTAssertTrue(detail.animating,
+                      "두번째 호출의 350ms 가 끝나기 전엔 첫 호출의 만료 timer 가 lock 을 release 하면 안 됨")
+
+        // 두번째 호출 deadline 이후 — release 됐어야 함.
+        try? await Task.sleep(for: .milliseconds(150))
+        XCTAssertFalse(detail.animating,
+                       "두번째 호출의 350ms 후엔 정상 release")
+    }
 }
