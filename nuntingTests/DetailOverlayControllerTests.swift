@@ -14,6 +14,20 @@ final class DetailOverlayControllerTests: XCTestCase {
 
     // MARK: - Helpers
 
+    /// Polls `offset` for up to `timeoutMs` until it equals `target`.
+    /// `show(_:)`'s replace-path defers the animation through a Task +
+    /// `Task.yield`; under XCTest's actor scheduler the yield-then-resume
+    /// timing flakes around a single sleep boundary, so poll until
+    /// settled instead of betting on one wall-clock window.
+    private func waitForOffset(_ detail: DetailOverlayController, equals target: CGFloat, timeoutMs: Int = 500) async {
+        let stepMs = 10
+        let steps = max(timeoutMs / stepMs, 1)
+        for _ in 0..<steps {
+            if abs(detail.offset - target) < 0.01 { return }
+            try? await Task.sleep(for: .milliseconds(stepMs))
+        }
+    }
+
     private func makePost(id: String = "test-1") -> Post {
         Post(
             id: id,
@@ -52,10 +66,10 @@ final class DetailOverlayControllerTests: XCTestCase {
         detail.show(post)
 
         XCTAssertEqual(detail.activePost?.id, post.id)
-        // show 의 다른-포스트 브랜치는 DispatchQueue.main.async 로 한 runloop
-        // 미루기 때문에 한 tick 양보 후 0 으로 settled 인지 확인.
-        try? await Task.sleep(for: .milliseconds(50))
-        XCTAssertEqual(detail.offset, 0, "한 runloop 후 spring 이 visible(0) 로 commit")
+        // show 의 replace-path 는 Task + Task.yield 로 한 frame 지연 후
+        // withAnimation { offset = 0 } 를 실행. 폴링으로 settle 확인.
+        await waitForOffset(detail, equals: 0)
+        XCTAssertEqual(detail.offset, 0, "yield 후 spring 이 visible(0) 로 commit")
     }
 
     func testShowSamePostKeepsActiveAndSlidesIn() {
@@ -83,10 +97,7 @@ final class DetailOverlayControllerTests: XCTestCase {
         detail.show(second)
 
         XCTAssertEqual(detail.activePost?.id, "b", "다른 포스트면 activePost 즉시 swap")
-        // offset 은 먼저 off-screen 으로 park 됐다 다음 tick 에 0 으로 spring.
-        // 같은 tick 에 쟀을 때 offset == containerWidth 인지 보장은 어려워서
-        // 행위만 (post 교체) 확인.
-        try? await Task.sleep(for: .milliseconds(50))
+        await waitForOffset(detail, equals: 0)
         XCTAssertEqual(detail.offset, 0)
     }
 
@@ -223,7 +234,7 @@ final class DetailOverlayControllerTests: XCTestCase {
 
         detail.show(post)
         detail.hide()
-        try? await Task.sleep(for: .milliseconds(50))
+        await waitForOffset(detail, equals: 400)
 
         XCTAssertEqual(detail.offset, 400,
                        "show → hide 시퀀스의 최종 상태는 hidden — show 의 deferred animation 이 hide 를 override 하면 안 됨")

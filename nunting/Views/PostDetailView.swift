@@ -1,6 +1,15 @@
 import SwiftUI
 import UIKit
 
+// TODO: PostDetailLoader extraction — split this view's
+// `load(renderReadyAt:)` (mid-function isLoading toggle, aagag
+// external-redirect dispatch, parallel comment-fetch with two-phase
+// commit on `detail`) into a dedicated `@Observable @MainActor`
+// loader, mirroring the BoardListLoader pattern from PR #39. Deferred
+// from PR #39 because the timing-sensitive comment-fetch commit makes
+// behavioral-equivalence verification non-trivial — needs its own
+// focused PR.
+
 struct PostDetailView: View, Equatable {
     let post: Post
     let readStore: ReadStore
