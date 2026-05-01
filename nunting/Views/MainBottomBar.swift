@@ -62,6 +62,16 @@ struct MainBottomBar: View {
                         else if dx > 40 { onPrev() }
                     }
             )
+
+            // Invisible right slot — matches the search button's flex
+            // claim so removing the favorite-toggle doesn't recenter
+            // search-icon + board-name. Keeping the bar's spatial
+            // partition intact means muscle memory for swipe-step /
+            // double-tap on the board name still hits the same area
+            // it did before.
+            Color.clear
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(false)
         }
         .frame(height: 50)
         .background(.bar)
