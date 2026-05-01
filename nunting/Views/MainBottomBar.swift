@@ -2,7 +2,6 @@ import SwiftUI
 
 struct MainBottomBar: View {
     let board: Board
-    let favorites: FavoritesStore
     let onBoardDoubleTap: () -> Void
     let onSearch: () -> Void
     let onPrev: () -> Void
@@ -58,13 +57,22 @@ struct MainBottomBar: View {
                     }
             )
 
-            barButton {
-                Image(systemName: favorites.isFavorite(board) ? "star.fill" : "star")
-                    .font(.callout)
-                    .foregroundStyle(favorites.isFavorite(board) ? Color.yellow : Color.primary)
-            } action: {
-                favorites.toggle(board)
-            }
+            // Phantom right slot. The favorite-toggle (별 버튼) used
+            // to live here but was removed by user request —
+            // accidental taps during normal swipe-step / double-tap
+            // interaction on the board name were silently un-
+            // favoriting boards. Add/remove favorites is still
+            // available in the side drawer (사이트 카탈로그 섹션의
+            // 별 아이콘).
+            //
+            // The slot itself stays as an invisible flex spacer
+            // matching the search button's `.frame(maxWidth: .infinity)`
+            // claim — without it the HStack collapses to a 50/50 split
+            // and search-icon + board-name shift left, breaking muscle
+            // memory for swipe-step and double-tap-reload areas.
+            Color.clear
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(false)
         }
         .frame(height: 50)
         .background(.bar)

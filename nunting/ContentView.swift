@@ -235,7 +235,6 @@ struct ContentView: View {
                 }
                 MainBottomBar(
                     board: selection.board,
-                    favorites: favorites,
                     onBoardDoubleTap: { selection.requestReload() },
                     onSearch: { searchSheetPresented = true },
                     onPrev: { stepBoard(by: -1) },
