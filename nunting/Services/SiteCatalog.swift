@@ -9,7 +9,13 @@ protocol SiteCatalog: Sendable {
     /// Fetch + parse the catalog as one or more named groups. Sites without
     /// natural grouping return a single group with `name: nil` so the drawer
     /// renders a flat list.
-    func fetchGroups(html: @Sendable (URL, String.Encoding) async throws -> String) async throws -> [BoardGroup]
+    ///
+    /// `html`'s third argument is an optional `User-Agent` override
+    /// (`nil` = shared session UA). Catalogs that need a desktop UA
+    /// pass `Networking.desktopUserAgent` per-request rather than
+    /// bypassing the seam — keeps store-level test fakes effective for
+    /// every catalog.
+    func fetchGroups(html: @Sendable (URL, String.Encoding, String?) async throws -> String) async throws -> [BoardGroup]
 }
 
 enum SiteCatalogFactory {
@@ -34,14 +40,14 @@ struct ClienCatalog: SiteCatalog {
         "sold",  // 회원중고장터
     ]
 
-    func fetchGroups(html fetcher: @Sendable (URL, String.Encoding) async throws -> String) async throws -> [BoardGroup] {
+    func fetchGroups(html fetcher: @Sendable (URL, String.Encoding, String?) async throws -> String) async throws -> [BoardGroup] {
         // Desktop home tags every board with the right class so we get the
         // exact 커뮤니티(`menu-list`) + 소모임(`menu-list somoim`) sets without
         // pulling in admin / sell / info-archive groups.
         guard let url = URL(string: "https://www.clien.net/") else {
             return [BoardGroup(id: "clien", name: nil, boards: Board.boards(for: .clien))]
         }
-        let body = try await fetcher(url, .utf8)
+        let body = try await fetcher(url, site.encoding, nil)
         let doc = try SwiftSoup.parse(body)
 
         var community: [Board] = []
@@ -95,12 +101,12 @@ struct ClienCatalog: SiteCatalog {
 struct CoolenjoyCatalog: SiteCatalog {
     let site: Site = .coolenjoy
 
-    func fetchGroups(html fetcher: @Sendable (URL, String.Encoding) async throws -> String) async throws -> [BoardGroup] {
+    func fetchGroups(html fetcher: @Sendable (URL, String.Encoding, String?) async throws -> String) async throws -> [BoardGroup] {
         // Any board page exposes the full side menu via `a.me-a` items.
         guard let url = URL(string: "https://coolenjoy.net/bbs/freeboard2") else {
             return [BoardGroup(id: "coolenjoy", name: nil, boards: Board.boards(for: .coolenjoy))]
         }
-        let body = try await fetcher(url, .utf8)
+        let body = try await fetcher(url, site.encoding, nil)
         let doc = try SwiftSoup.parse(body)
 
         var seen = Set<String>()
@@ -143,18 +149,18 @@ struct PpomppuCatalog: SiteCatalog {
     private static let homeURL = URL(string: "https://www.ppomppu.co.kr/")!
     private static let forumURL = URL(string: "https://www.ppomppu.co.kr/recent_forum_article.php")!
 
-    func fetchGroups(html fetcher: @Sendable (URL, String.Encoding) async throws -> String) async throws -> [BoardGroup] {
+    func fetchGroups(html fetcher: @Sendable (URL, String.Encoding, String?) async throws -> String) async throws -> [BoardGroup] {
         var seen = Set<String>()
         var deals: [Board] = []
         var community: [Board] = []
         var forum: [Board] = []
 
-        // Use desktop UA — `www.ppomppu.co.kr` serves a JS redirect to
-        // `m.ppomppu.co.kr` whenever it sees a mobile UA, which our default
-        // session User-Agent triggers.
-        if let homeBody = try? await Networking.fetchHTML(
-            url: Self.homeURL, encoding: site.encoding, userAgent: Networking.desktopUserAgent
-        ) {
+        // Desktop UA — `www.ppomppu.co.kr` serves a JS redirect to
+        // `m.ppomppu.co.kr` whenever it sees a mobile UA. Routed through
+        // the injected fetcher (third arg = UA override) so store-level
+        // test fakes intercept these requests like every other catalog.
+        let desktopUA = Networking.desktopUserAgent
+        if let homeBody = try? await fetcher(Self.homeURL, site.encoding, desktopUA) {
             let doc = (try? SwiftSoup.parse(homeBody)) ?? Document("")
             if let elements = try? doc.select("li.menu01 a[href*=zboard]") {
                 appendBoards(from: elements, into: &deals, seen: &seen)
@@ -164,9 +170,7 @@ struct PpomppuCatalog: SiteCatalog {
             }
         }
 
-        if let forumBody = try? await Networking.fetchHTML(
-            url: Self.forumURL, encoding: site.encoding, userAgent: Networking.desktopUserAgent
-        ) {
+        if let forumBody = try? await fetcher(Self.forumURL, site.encoding, desktopUA) {
             let doc = (try? SwiftSoup.parse(forumBody)) ?? Document("")
             if let elements = try? doc.select("div.forum_ranking_box a[href*=zboard]") {
                 appendBoards(from: elements, into: &forum, seen: &seen)
@@ -177,8 +181,6 @@ struct PpomppuCatalog: SiteCatalog {
         if !deals.isEmpty { groups.append(BoardGroup(id: "deals", name: "뽐뿌", boards: deals)) }
         if !community.isEmpty { groups.append(BoardGroup(id: "community", name: "커뮤니티", boards: community)) }
         if !forum.isEmpty { groups.append(BoardGroup(id: "forum", name: "포럼", boards: forum)) }
-        // Avoid stranding the user on a stale fetcher closure path.
-        _ = fetcher
         return groups.isEmpty
             ? [BoardGroup(id: "ppomppu", name: nil, boards: Board.boards(for: .ppomppu))]
             : groups

@@ -14,14 +14,20 @@ import Observation
 @Observable
 @MainActor
 final class BoardCatalogStore {
-    /// Narrow on purpose: matches what `ClienCatalog` / `CoolenjoyCatalog`
-    /// need today (just URL + encoding). `PpomppuCatalog` currently
-    /// bypasses this seam entirely because it requires
-    /// `Networking.desktopUserAgent` — that lift is step 3 of the
-    /// refactor plan, which is the natural place to widen this typealias
-    /// (e.g. add an optional `userAgent` parameter). Until then, store-
-    /// level test fakes only intercept clien / coolenjoy fetches.
-    typealias Fetcher = @Sendable (URL, String.Encoding) async throws -> String
+    /// Per-URL fetcher seam used by `SiteCatalog.fetchGroups`. The third
+    /// argument is an optional `User-Agent` override — `nil` = use the
+    /// shared session UA, non-`nil` = swap UA for that single request
+    /// (e.g. `PpomppuCatalog` needs `Networking.desktopUserAgent` because
+    /// `www.ppomppu.co.kr` serves a JS redirect to `m.` for mobile UAs).
+    /// Routing UA through the seam (rather than letting catalogs call
+    /// `Networking.fetchHTML` directly) means test fakes intercept every
+    /// catalog uniformly and we don't strand a per-catalog bypass path.
+    ///
+    /// If a future catalog needs a third request knob (cookies, Referer,
+    /// custom Accept), promote to a `FetchOptions` struct rather than
+    /// widening this tuple again — three positional args is already
+    /// the boundary where named fields earn their cost.
+    typealias Fetcher = @Sendable (URL, String.Encoding, String?) async throws -> String
 
     private(set) var groups: [Site: [BoardGroup]] = [:]
     /// Surfaced to the drawer header as a spinner. Only populated on the
@@ -41,8 +47,8 @@ final class BoardCatalogStore {
     private let now: @Sendable () -> Date
 
     init(
-        fetcher: @escaping Fetcher = { url, encoding in
-            try await Networking.fetchHTML(url: url, encoding: encoding)
+        fetcher: @escaping Fetcher = { url, encoding, userAgent in
+            try await Networking.fetchHTML(url: url, encoding: encoding, userAgent: userAgent)
         },
         staleTTL: TimeInterval = 6 * 60 * 60,
         now: @escaping @Sendable () -> Date = { Date() }
