@@ -56,6 +56,14 @@ struct BoardListView: View {
                 nextSearchURL = cached.nextSearchURL
                 loadMoreError = false
                 errorMessage = nil
+                // Clear stale `isLoading` from a cancelled prior task —
+                // its `defer` is gated on `key == taskKey` so an
+                // in-flight cold load that we just superseded leaves
+                // `isLoading = true` behind. Silent revalidate doesn't
+                // touch `isLoading`, so without this reset the body's
+                // `loadingView` branch could fire later if `posts` ever
+                // transiently empties (refresh, filter swap mid-flight).
+                isLoading = false
                 loadedKey = taskKey
                 await load(silent: true)
                 return
