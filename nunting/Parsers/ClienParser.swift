@@ -21,7 +21,11 @@ struct ClienParser: BoardParser {
     /// Tags the block-walker treats as "promote to a media block" markers.
     /// Used by `hasAnyDescendant(of:taggedAnyOf:)` to decide whether a
     /// wrapper element should recurse as blocks or flatten to inline text.
-    nonisolated private static let mediaTags: Set<String> = ["img", "iframe"]
+    /// Includes `video` so Clien's Froala GIF wrapper
+    /// (`<span class="fr-video" data-role="image-mp4"><video><source mp4>`)
+    /// recurse into the wrapper rather than flattening it as the
+    /// trailing `<button>GIF</button>` download chrome.
+    nonisolated private static let mediaTags: Set<String> = ["img", "iframe", "video"]
 
     /// `YYYY-MM-DD HH:MM(:SS)` — the timestamp Clien renders inside
     /// `div.post_date`. Used to slice out the modified timestamp when an
@@ -217,6 +221,23 @@ struct ClienParser: BoardParser {
                     if let image = try image(from: el) {
                         blocks.append(.image(image.url, aspectRatio: image.aspectRatio))
                     }
+                case "video":
+                    // Clien Froala editor wraps GIFs as
+                    // `<span class="fr-video"><video poster=...gif><source mp4></video><button>GIF</button></span>`.
+                    // Extract the mp4 source + gif poster so the inline
+                    // player can autoplay the loop. The trailing
+                    // `<button>GIF</button>` is UI chrome — handled by
+                    // the explicit case below so its text doesn't leak.
+                    if let url = try videoURL(from: el) {
+                        flush()
+                        blocks.append(.video(url, posterURL: try videoPoster(from: el)))
+                    }
+                case "button":
+                    // Body content never contains a user-meaningful
+                    // button. Clien's GIF wrapper trailing
+                    // `<button class="search_link">...GIF</button>` would
+                    // otherwise flatten to "GIF" prose under the video.
+                    continue
                 case "iframe":
                     // Clien embeds YouTube as <iframe src="…/embed/{id}">.
                     // Promote to an inline `.embed(.youtube, id:)` block so
@@ -289,6 +310,23 @@ struct ClienParser: BoardParser {
                 inline.appendText(textNode.text())
             }
         }
+    }
+
+    /// Pull the mp4 URL from a `<video>` element. Clien's Froala-rendered
+    /// GIFs embed the mp4 as a `<source>` child rather than the
+    /// `<video src=>` attribute, so check the child first and only fall
+    /// back to the bare `src` for non-Froala embeds. Strips trailing
+    /// fragments — Clien doesn't use them but other sites' parsers in
+    /// this codebase do, so we mirror the convention.
+    nonisolated private func videoURL(from el: Element) throws -> URL? {
+        var raw = try el.attr("src")
+        if raw.isEmpty, let source = try el.select("source").first() {
+            raw = try source.attr("src")
+        }
+        if let hash = raw.firstIndex(of: "#") {
+            raw = String(raw[..<hash])
+        }
+        return resolveHTTPURL(raw)
     }
 
     nonisolated private func image(from element: Element) throws -> (url: URL, aspectRatio: CGFloat?)? {
