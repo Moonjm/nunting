@@ -94,6 +94,14 @@ final class BoardListLoader {
         seenIDs = []
         currentPage = 1
         hasMorePages = true
+        // Reset both `isLoadingMore` and `loadMoreError` here even though
+        // `loadMore`'s `defer` normally clears `isLoadingMore`: a board /
+        // filter swap mid-paging orphans the in-flight `loadMore` task,
+        // and once `currentKey` advances, the orphan's `defer` skips the
+        // `isLoadingMore = false` write (key mismatch). Without this
+        // explicit clear the new board inherits a stuck spinner footer
+        // from the previous board's never-finished page.
+        isLoadingMore = false
         loadMoreError = false
         errorMessage = nil
         nextSearchURL = nil
