@@ -14,6 +14,13 @@ import Observation
 @Observable
 @MainActor
 final class BoardCatalogStore {
+    /// Narrow on purpose: matches what `ClienCatalog` / `CoolenjoyCatalog`
+    /// need today (just URL + encoding). `PpomppuCatalog` currently
+    /// bypasses this seam entirely because it requires
+    /// `Networking.desktopUserAgent` — that lift is step 3 of the
+    /// refactor plan, which is the natural place to widen this typealias
+    /// (e.g. add an optional `userAgent` parameter). Until then, store-
+    /// level test fakes only intercept clien / coolenjoy fetches.
     typealias Fetcher = @Sendable (URL, String.Encoding) async throws -> String
 
     private(set) var groups: [Site: [BoardGroup]] = [:]
@@ -58,6 +65,12 @@ final class BoardCatalogStore {
 
     func loadIfNeeded(_ site: Site) async {
         let isCold = groups[site] == nil
+        // Re-check staleness inside the entry guard, not just at the
+        // outer caller's site, because `revalidateLoadedCatalogs` reads
+        // `isCatalogStale` once per iteration and the await between
+        // iterations gives a drawer-driven `loadIfNeeded` a window to
+        // land first and stamp `lastFetchedAt`. This second check makes
+        // the per-call decision authoritative — don't simplify it away.
         let isStale = isCatalogStale(site)
         guard (isCold || isStale), !inFlight.contains(site) else { return }
         guard let catalog = SiteCatalogFactory.catalog(for: site) else { return }
@@ -99,7 +112,16 @@ final class BoardCatalogStore {
     /// `groups` — sites the user hasn't opened yet load lazily on next
     /// drawer navigation.
     func revalidateLoadedCatalogs() async {
+        // Snapshot — each `loadIfNeeded` await may mutate `groups` via
+        // `groups[site] = result`, so iterating the live keys would risk
+        // mutation-during-iteration.
         let candidates = Array(groups.keys)
+        // Sequential on purpose: scenePhase active already kicks
+        // `Networking.prewarmConnections()` and `ImageWarmup.warm()` in
+        // parallel right before this. Bursting N catalog fetches across
+        // a TaskGroup would just fight that prewarm batch for the same
+        // connection pool with no UX gain (these are silent — no spinner
+        // for the user to wait on). Keep serial.
         for site in candidates where isCatalogStale(site) {
             await loadIfNeeded(site)
         }
