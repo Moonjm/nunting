@@ -147,7 +147,15 @@ struct BoardListView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .background(Color("AppSurface").ignoresSafeArea())
+        // List background no longer needs `.ignoresSafeArea()` — the
+        // ZStack's bottom-most `Color("AppSurface").ignoresSafeArea()`
+        // (ContentView.body) already covers every safe-area band, so a
+        // second extending background here is redundant *and* was the
+        // race trigger that let `contentInset.bottom` settle at 0 on
+        // late `loadingView → listView` body swaps. With the bar moved
+        // to `.safeAreaInset(.bottom)`, this is just cosmetic — keep
+        // the AppSurface fill for the rows-area, drop the extension.
+        .background(Color("AppSurface"))
         .scrollDisabled(scrollLocked)
         .refreshable { await load() }
     }
