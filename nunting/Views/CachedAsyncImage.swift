@@ -1022,6 +1022,13 @@ actor ImageDataLoader {
         .cannotConnectToHost,      // -1004
     ]
 
+    /// First-attempt idle timeout. Session default (15 s) still backs
+    /// the retry attempt. Same rationale as `Networking.fetchHTML`'s
+    /// fast-fail: -1001 on a stale keep-alive connection isn't going
+    /// to recover by waiting longer, so cap the first attempt's idle
+    /// budget and let the retry's fresh dial pick up the slack.
+    private static let firstAttemptIdleTimeout: TimeInterval = 8
+
     /// `priority` is forwarded to `ImageThrottle.fetch.acquire`. Two
     /// concurrent callers for the same URL share one in-flight task —
     /// the FIRST caller's priority wins because the second sees the task
@@ -1058,7 +1065,10 @@ actor ImageDataLoader {
                 } catch {
                     return nil
                 }
-                let request = URLRequest(url: url)
+                var request = URLRequest(url: url)
+                if attempt == 1 {
+                    request.timeoutInterval = Self.firstAttemptIdleTimeout
+                }
                 do {
                     let (data, response) = try await Networking.session.data(for: request)
                     await ImageThrottle.fetch.release()
