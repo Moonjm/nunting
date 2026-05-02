@@ -282,7 +282,7 @@ struct PpomppuParser: BoardParser {
         let tag = element.tagName().lowercased()
         if tag == "img" {
             if let url = try imageURL(from: element) {
-                blocks.append(.image(url))
+                blocks.append(imageOrVideoBlock(for: url))
             }
             return
         }
@@ -323,7 +323,7 @@ struct PpomppuParser: BoardParser {
                 case "img":
                     flush()
                     if let url = try imageURL(from: el) {
-                        blocks.append(.image(url))
+                        blocks.append(imageOrVideoBlock(for: url))
                     }
                 case "video":
                     flush()
@@ -405,6 +405,28 @@ struct PpomppuParser: BoardParser {
                 inline.appendText(textNode.text())
             }
         }
+    }
+
+    /// Ppomppu wraps user-uploaded video files in `<img src="...mov">` /
+    /// `<img src="...mp4">` tags and relies on a desktop-only JS shim to
+    /// swap the element to a `<video>` player at runtime. The mobile site
+    /// (`m.ppomppu`) skips that swap entirely, so the raw `<img>` ships
+    /// pointing at video bytes that no `<img>` decoder can render — Safari
+    /// shows nothing, and our `CachedAsyncImage` decode returns nil and
+    /// flips to "다시 시도". When the parsed `<img src>` actually points at
+    /// a video container, route it to the inline video player instead.
+    /// Sample post: `m.ppomppu.co.kr/new/bbs_view.php?id=car&no=968820`
+    /// (an `IMG_*.mov` from iOS Photos) — desktop renders, mobile didn't.
+    nonisolated private static let videoPathExtensions: Set<String> = [
+        "mov", "mp4", "m4v", "webm",
+    ]
+
+    nonisolated private func imageOrVideoBlock(for url: URL) -> ContentBlock {
+        let ext = url.pathExtension.lowercased()
+        if Self.videoPathExtensions.contains(ext) {
+            return .video(url, posterURL: nil)
+        }
+        return .image(url)
     }
 
     nonisolated private func imageURL(from element: Element) throws -> URL? {

@@ -1010,6 +1010,18 @@ actor ImageDataLoader {
 
     private var inFlight: [URL: Task<Data?, Never>] = [:]
 
+    /// URLSession error codes worth retrying once. Same set used in
+    /// `Networking.fetchHTML` for HTML body fetches — duplicated
+    /// rather than promoted to a shared symbol so `Networking`
+    /// doesn't have to widen its API surface for one extra call
+    /// site. Lifted out of the per-error closure so the set isn't
+    /// reallocated on every catch path.
+    private static let transientURLErrorCodes: Set<URLError.Code> = [
+        .networkConnectionLost,    // -1005
+        .timedOut,                 // -1001
+        .cannotConnectToHost,      // -1004
+    ]
+
     /// `priority` is forwarded to `ImageThrottle.fetch.acquire`. Two
     /// concurrent callers for the same URL share one in-flight task —
     /// the FIRST caller's priority wins because the second sees the task
@@ -1025,22 +1037,46 @@ actor ImageDataLoader {
             defer {
                 Task { await ImageDataLoader.shared.cleanup(url: url) }
             }
-            do {
-                try await ImageThrottle.fetch.acquire(priority: priority)
-            } catch {
-                return nil
-            }
-            let request = URLRequest(url: url)
-            do {
-                let (data, response) = try await Networking.session.data(for: request)
-                await ImageThrottle.fetch.release()
-                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            // Up to one retry on transient URLSession errors. The dominant
+            // case observed on `i.aagag.com` (a HTTP/2 host shipping
+            // dozens of images per post) is the iOS pool handing out a
+            // stale keep-alive connection that the server has already
+            // closed; the first write hits a TCP RST and URLSession
+            // surfaces NSURLErrorNetworkConnectionLost (-1005) after
+            // ~280 ms with `40/N bytes` partial transfer. A single
+            // retry after a short backoff almost always succeeds because
+            // URLSession dials a fresh connection. Also covers -1001
+            // (timed out) and -1004 (cannot connect) which exhibit the
+            // same "transient, succeeds on second try" pattern.
+            // See radar #21663589.
+            let maxAttempts = 2
+            var attempt = 0
+            while true {
+                attempt += 1
+                do {
+                    try await ImageThrottle.fetch.acquire(priority: priority)
+                } catch {
                     return nil
                 }
-                return data
-            } catch {
-                await ImageThrottle.fetch.release()
-                return nil
+                let request = URLRequest(url: url)
+                do {
+                    let (data, response) = try await Networking.session.data(for: request)
+                    await ImageThrottle.fetch.release()
+                    if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                        return nil
+                    }
+                    return data
+                } catch {
+                    await ImageThrottle.fetch.release()
+                    let isTransient = (error as? URLError)
+                        .map { Self.transientURLErrorCodes.contains($0.code) }
+                        ?? false
+                    if isTransient && attempt < maxAttempts {
+                        try? await Task.sleep(for: .milliseconds(150))
+                        continue
+                    }
+                    return nil
+                }
             }
         }
         inFlight[url] = task

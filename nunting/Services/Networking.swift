@@ -119,6 +119,22 @@ struct Networking {
         return URLSession(configuration: config, delegate: redirectUpgrader, delegateQueue: nil)
     }()
 
+    /// URLSession transient errors retried by `fetchHTML` (and image
+    /// fetches in `ImageDataLoader`). Same root cause as the image-side
+    /// retry: the iOS pool occasionally hands out a stale keep-alive
+    /// connection whose remote half the server has already closed —
+    /// the first write hits a TCP RST and surfaces as -1005 in
+    /// ~280 ms, or as -1001 / -1004 when the connect leg itself fails.
+    /// Observed on `m.slrclub.com` HTML body fetches where one in N
+    /// detail opens used to fail with "본문이 안 나옴". A single retry
+    /// after a short backoff dials a fresh connection and clears it
+    /// in practice. See radar #21663589.
+    private static let transientURLErrorCodes: Set<URLError.Code> = [
+        .networkConnectionLost,    // -1005
+        .timedOut,                 // -1001
+        .cannotConnectToHost,      // -1004
+    ]
+
     static func fetchHTML(
         url: URL,
         encoding: String.Encoding = .utf8,
@@ -132,11 +148,29 @@ struct Networking {
         }
         request.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
         request.setValue("ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7", forHTTPHeaderField: "Accept-Language")
-        let (data, response) = try await session.data(for: request)
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw NetworkError.badResponse(http.statusCode)
+
+        let maxAttempts = 2
+        var attempt = 0
+        while true {
+            attempt += 1
+            do {
+                let (data, response) = try await session.data(for: request)
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    throw NetworkError.badResponse(http.statusCode)
+                }
+                return decodeHTML(data: data, encoding: encoding)
+            } catch {
+                let isTransient = (error as? URLError)
+                    .map { Self.transientURLErrorCodes.contains($0.code) }
+                    ?? false
+                if isTransient && attempt < maxAttempts {
+                    try? await Task.sleep(for: .milliseconds(150))
+                    try Task.checkCancellation()
+                    continue
+                }
+                throw error
+            }
         }
-        return decodeHTML(data: data, encoding: encoding)
     }
 
     /// Strict-then-lossy decode shared with the redirect-resolver path that
