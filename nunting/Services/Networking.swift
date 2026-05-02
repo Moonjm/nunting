@@ -355,6 +355,13 @@ struct Networking {
         }
     }
 
+    /// Same transient-retry policy as `fetchHTML`. Every current caller is a
+    /// read-only POST endpoint (SLR / Ddanzi / Inven / Aagag comment loaders
+    /// implemented as POST-as-GET), so a retry on -1005 / -1001 / -1004 cannot
+    /// cause a double-submit. Without this, a single wedged keep-alive
+    /// connection on the comment-host pool used to silently swallow the
+    /// comment list — `PostDetailLoader` `try?`-wraps `fetchAllComments`,
+    /// turning a transient network blip into "본문은 보이는데 댓글이 안 뜸".
     static func postForm(
         url: URL,
         parameters: [String: String],
@@ -364,7 +371,8 @@ struct Networking {
         /// default is correct for normal form POSTs; only override when a
         /// server specifically branches on this header. See `DdanziParser`
         /// for the current caller that needs this.
-        contentType: String = "application/x-www-form-urlencoded; charset=utf-8"
+        contentType: String = "application/x-www-form-urlencoded; charset=utf-8",
+        session: URLSession = Networking.session
     ) async throws -> Data {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -381,14 +389,35 @@ struct Networking {
         comps.queryItems = parameters.map { URLQueryItem(name: $0.key, value: $0.value) }
         request.httpBody = comps.percentEncodedQuery?.data(using: .utf8)
 
-        let (data, response) = try await session.data(for: request)
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            #if DEBUG
-            let preview = String(data: data.prefix(256), encoding: .utf8) ?? "<binary>"
-            print("[Networking.postForm] HTTP \(http.statusCode) for \(url.absoluteString): \(preview)")
-            #endif
-            throw NetworkError.badResponse(http.statusCode)
+        let maxAttempts = 2
+        var attempt = 0
+        while true {
+            attempt += 1
+            var attemptRequest = request
+            if attempt == 1 {
+                attemptRequest.timeoutInterval = firstAttemptIdleTimeout
+            }
+            do {
+                let (data, response) = try await session.data(for: attemptRequest)
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    #if DEBUG
+                    let preview = String(data: data.prefix(256), encoding: .utf8) ?? "<binary>"
+                    print("[Networking.postForm] HTTP \(http.statusCode) for \(url.absoluteString): \(preview)")
+                    #endif
+                    throw NetworkError.badResponse(http.statusCode)
+                }
+                return data
+            } catch {
+                let isTransient = (error as? URLError)
+                    .map { Self.transientURLErrorCodes.contains($0.code) }
+                    ?? false
+                if isTransient && attempt < maxAttempts {
+                    try? await Task.sleep(for: .milliseconds(150))
+                    try Task.checkCancellation()
+                    continue
+                }
+                throw error
+            }
         }
-        return data
     }
 }

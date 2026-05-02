@@ -366,6 +366,116 @@ final class NetworkingTests: XCTestCase {
         XCTAssertEqual(MockURLProtocol.attempts[2].timeoutInterval, 8, accuracy: 0.001)
         XCTAssertEqual(MockURLProtocol.attempts[3].timeoutInterval, 10, accuracy: 0.001)
     }
+
+    // MARK: - postForm retry
+
+    /// Symmetric with the fetchHTML happy-path test: one good response, one
+    /// captured request. Pins the no-retry-on-success invariant so a future
+    /// refactor that re-runs the loop unconditionally can't double-fire a
+    /// comment POST.
+    func testPostFormReturnsBodyOnFirstAttemptSuccess() async throws {
+        MockURLProtocol.handlers = [
+            .response(status: 200, body: "{\"c\":[]}"),
+        ]
+
+        let data = try await Networking.postForm(
+            url: URL(string: "https://example.com/comment_db/load.php")!,
+            parameters: ["id": "free"],
+            session: session
+        )
+
+        XCTAssertEqual(String(data: data, encoding: .utf8), "{\"c\":[]}")
+        XCTAssertEqual(MockURLProtocol.attempts.count, 1)
+    }
+
+    /// The actual user-facing failure that motivated this retry: SLR comment
+    /// POST hits a stale keep-alive connection (-1005) and `PostDetailLoader`'s
+    /// `try?` swallows the throw, leaving the user with body but no comments.
+    /// Without this retry, that single bounce permanently strips comments
+    /// from the post.
+    func testPostFormRetriesOnNetworkConnectionLostAndSucceeds() async throws {
+        MockURLProtocol.handlers = [
+            .failure(URLError(.networkConnectionLost)),
+            .response(status: 200, body: "{\"c\":[{\"pk\":\"x\"}]}"),
+        ]
+
+        let data = try await Networking.postForm(
+            url: URL(string: "https://example.com/comment_db/load.php")!,
+            parameters: [:],
+            session: session
+        )
+
+        XCTAssertEqual(String(data: data, encoding: .utf8), "{\"c\":[{\"pk\":\"x\"}]}")
+        XCTAssertEqual(MockURLProtocol.attempts.count, 2)
+    }
+
+    /// Retry exhaustion must surface the original URLError (not silently
+    /// succeed with empty data), so callers / SwiftUI views can distinguish
+    /// a real outage from "no comments yet". Pin all three transient codes
+    /// since they share the same wedged-pool root cause.
+    func testPostFormBothAttemptsTransientThrowsFinalError() async {
+        MockURLProtocol.handlers = [
+            .failure(URLError(.timedOut)),
+            .failure(URLError(.timedOut)),
+        ]
+
+        do {
+            _ = try await Networking.postForm(
+                url: URL(string: "https://example.com/")!,
+                parameters: [:],
+                session: session
+            )
+            XCTFail("expected failure")
+        } catch {
+            XCTAssertEqual((error as? URLError)?.code, .timedOut)
+            XCTAssertEqual(MockURLProtocol.attempts.count, 2)
+        }
+    }
+
+    /// HTTP error response is non-retryable — bumping a 500 again would just
+    /// double the load on a server that's already struggling. Same invariant
+    /// fetchHTML pins; symmetry is the goal.
+    func testPostFormDoesNotRetryOnHTTPErrorResponse() async {
+        MockURLProtocol.handlers = [
+            .response(status: 500, body: "boom"),
+        ]
+
+        do {
+            _ = try await Networking.postForm(
+                url: URL(string: "https://example.com/")!,
+                parameters: [:],
+                session: session
+            )
+            XCTFail("expected failure")
+        } catch let NetworkError.badResponse(code) {
+            XCTAssertEqual(code, 500)
+            XCTAssertEqual(MockURLProtocol.attempts.count, 1)
+        } catch {
+            XCTFail("expected NetworkError.badResponse, got \(error)")
+        }
+    }
+
+    /// Same per-attempt timeout shape as fetchHTML: first attempt 8 s, retry
+    /// strips the override and inherits the URLRequest natural default
+    /// (60 s, capped at session-config 15 s on the live session). Pin both
+    /// values so a future refactor that hardcodes 15 here decouples from the
+    /// session config.
+    func testPostFormAppliesShorterTimeoutOnFirstAttemptOnly() async {
+        MockURLProtocol.handlers = [
+            .failure(URLError(.networkConnectionLost)),
+            .failure(URLError(.networkConnectionLost)),
+        ]
+
+        _ = try? await Networking.postForm(
+            url: URL(string: "https://example.com/")!,
+            parameters: [:],
+            session: session
+        )
+
+        XCTAssertEqual(MockURLProtocol.attempts.count, 2)
+        XCTAssertEqual(MockURLProtocol.attempts[0].timeoutInterval, 8, accuracy: 0.001)
+        XCTAssertEqual(MockURLProtocol.attempts[1].timeoutInterval, 60, accuracy: 0.001)
+    }
 }
 
 // MARK: - URLProtocol mock
