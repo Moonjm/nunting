@@ -129,10 +129,10 @@ struct Networking {
     /// detail opens used to fail with "본문이 안 나옴". A single retry
     /// after a short backoff dials a fresh connection and clears it
     /// in practice. See radar #21663589.
-    private static let transientURLErrorCodes: Set<Int> = [
-        NSURLErrorNetworkConnectionLost,   // -1005
-        NSURLErrorTimedOut,                // -1001
-        NSURLErrorCannotConnectToHost,     // -1004
+    private static let transientURLErrorCodes: Set<URLError.Code> = [
+        .networkConnectionLost,    // -1005
+        .timedOut,                 // -1001
+        .cannotConnectToHost,      // -1004
     ]
 
     static func fetchHTML(
@@ -160,9 +160,9 @@ struct Networking {
                 }
                 return decodeHTML(data: data, encoding: encoding)
             } catch {
-                let ns = error as NSError
-                let isTransient = ns.domain == NSURLErrorDomain
-                    && transientURLErrorCodes.contains(ns.code)
+                let isTransient = (error as? URLError)
+                    .map { Self.transientURLErrorCodes.contains($0.code) }
+                    ?? false
                 if isTransient && attempt < maxAttempts {
                     try? await Task.sleep(for: .milliseconds(150))
                     try Task.checkCancellation()

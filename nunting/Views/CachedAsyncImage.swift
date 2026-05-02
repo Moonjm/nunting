@@ -1010,6 +1010,17 @@ actor ImageDataLoader {
 
     private var inFlight: [URL: Task<Data?, Never>] = [:]
 
+    /// URLSession error codes worth retrying once. Same set used in
+    /// `Networking.fetchHTML` for HTML body fetches — kept private to
+    /// each call site to avoid cross-module visibility leaks. Lifted
+    /// out of the per-error closure so the set isn't reallocated on
+    /// every catch path.
+    private static let transientURLErrorCodes: Set<URLError.Code> = [
+        .networkConnectionLost,    // -1005
+        .timedOut,                 // -1001
+        .cannotConnectToHost,      // -1004
+    ]
+
     /// `priority` is forwarded to `ImageThrottle.fetch.acquire`. Two
     /// concurrent callers for the same URL share one in-flight task —
     /// the FIRST caller's priority wins because the second sees the task
@@ -1056,14 +1067,9 @@ actor ImageDataLoader {
                     return data
                 } catch {
                     await ImageThrottle.fetch.release()
-                    let ns = error as NSError
-                    let transientCodes: Set<Int> = [
-                        NSURLErrorNetworkConnectionLost,   // -1005
-                        NSURLErrorTimedOut,                // -1001
-                        NSURLErrorCannotConnectToHost,     // -1004
-                    ]
-                    let isTransient = ns.domain == NSURLErrorDomain
-                        && transientCodes.contains(ns.code)
+                    let isTransient = (error as? URLError)
+                        .map { Self.transientURLErrorCodes.contains($0.code) }
+                        ?? false
                     if isTransient && attempt < maxAttempts {
                         try? await Task.sleep(for: .milliseconds(150))
                         continue
