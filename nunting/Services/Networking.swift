@@ -246,25 +246,73 @@ struct Networking {
     /// Resolve a URL by following redirects with HEAD (cheap) and falling back
     /// to GET (which captures the body so it can be reused). Returns the
     /// original URL with no body on total failure.
-    static func resolveFinalURL(_ url: URL) async -> ResolvedRedirect {
-        var request = URLRequest(url: url)
-        request.httpMethod = "HEAD"
-        request.timeoutInterval = 10
-        if let (_, response) = try? await session.data(for: request),
-           let final = response.url, final != url {
-            return ResolvedRedirect(url: final, prefetchedBody: nil)
+    ///
+    /// Both legs apply the same transient-retry policy as `fetchHTML`: a single
+    /// retry on -1005 / -1001 / -1004 after a 150 ms backoff, with the first
+    /// attempt using `firstAttemptIdleTimeout` so a wedged keep-alive
+    /// connection fails fast and the retry's fresh dial path kicks in. Without
+    /// this, the aagag → SLR / Ddanzi / etc. mirror redirect leg used to
+    /// silently fall through both HEAD and GET on a single bad pool entry,
+    /// surface the original aagag URL, and end with `AagagParser` running on
+    /// the source site's body — which the user sees as "불러오기 실패".
+    static func resolveFinalURL(
+        _ url: URL,
+        session: URLSession = Networking.session
+    ) async -> ResolvedRedirect {
+        if let result = await resolveAttempt(
+            url: url, method: "HEAD", captureBody: false, session: session
+        ), result.url != url {
+            return ResolvedRedirect(url: result.url, prefetchedBody: nil)
         }
         // Some endpoints reject HEAD or return 200 without redirecting; fall
         // back to GET. We capture `data` so callers can decode it directly
         // instead of re-fetching the same URL.
-        var get = URLRequest(url: url)
-        get.httpMethod = "GET"
-        get.timeoutInterval = 10
-        if let (data, response) = try? await session.data(for: get),
-           let final = response.url {
-            return ResolvedRedirect(url: final, prefetchedBody: data)
+        if let result = await resolveAttempt(
+            url: url, method: "GET", captureBody: true, session: session
+        ) {
+            return ResolvedRedirect(url: result.url, prefetchedBody: result.body)
         }
         return ResolvedRedirect(url: url, prefetchedBody: nil)
+    }
+
+    /// Single HEAD-or-GET pass with the same retry policy as `fetchHTML`. Returns
+    /// `nil` on permanent failure (HTTP error, non-transient URLError, retry
+    /// exhausted, etc.); callers that need the HEAD→GET fallback own the
+    /// branch logic themselves.
+    private static func resolveAttempt(
+        url: URL,
+        method: String,
+        captureBody: Bool,
+        session: URLSession
+    ) async -> (url: URL, body: Data?)? {
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = 10
+
+        let maxAttempts = 2
+        var attempt = 0
+        while true {
+            attempt += 1
+            var attemptRequest = request
+            if attempt == 1 {
+                attemptRequest.timeoutInterval = firstAttemptIdleTimeout
+            }
+            do {
+                let (data, response) = try await session.data(for: attemptRequest)
+                guard let final = response.url else { return nil }
+                return (final, captureBody ? data : nil)
+            } catch {
+                let isTransient = (error as? URLError)
+                    .map { Self.transientURLErrorCodes.contains($0.code) }
+                    ?? false
+                if isTransient && attempt < maxAttempts {
+                    try? await Task.sleep(for: .milliseconds(150))
+                    if Task.isCancelled { return nil }
+                    continue
+                }
+                return nil
+            }
+        }
     }
 
     /// Fire a best-effort `HEAD /` to every supported-site host so the

@@ -252,6 +252,120 @@ final class NetworkingTests: XCTestCase {
         XCTAssertEqual(second, 60, accuracy: 0.001,
                        "retry must NOT carry the first attempt's per-request override")
     }
+
+    // MARK: - resolveFinalURL retry
+
+    /// HEAD failing transient on attempt 1 must retry on the same leg before
+    /// falling back to GET — symmetric with `fetchHTML`'s policy. Without this,
+    /// the aagag → SLR mirror redirect step silently drops to GET on a single
+    /// stale-keepalive bounce, and a wedged pool can take down both legs.
+    func testResolveFinalURLHEADRetriesOnTransientThenFallsToGET() async {
+        // HEAD #1 fails transient, HEAD #2 succeeds with same URL (no redirect),
+        // so the resolver moves on to GET as the prefetched-body capture path.
+        MockURLProtocol.handlers = [
+            .failure(URLError(.networkConnectionLost)),
+            .response(status: 200, body: ""),
+            .response(status: 200, body: "<html>got</html>"),
+        ]
+
+        let result = await Networking.resolveFinalURL(
+            URL(string: "https://example.com/")!,
+            session: session
+        )
+
+        XCTAssertEqual(MockURLProtocol.attempts.count, 3)
+        XCTAssertEqual(result.prefetchedBody.flatMap { String(data: $0, encoding: .utf8) },
+                       "<html>got</html>")
+    }
+
+    /// GET fallback must also honor the retry policy. Pin this so a future
+    /// refactor that adds retry to HEAD only can't silently regress the GET
+    /// path — the wedged-pool failure mode the retry exists for is identical
+    /// on either method.
+    func testResolveFinalURLGETRetriesOnTransient() async {
+        MockURLProtocol.handlers = [
+            // HEAD exhausts retry transient → fall to GET.
+            .failure(URLError(.networkConnectionLost)),
+            .failure(URLError(.networkConnectionLost)),
+            // GET #1 transient, GET #2 succeeds.
+            .failure(URLError(.networkConnectionLost)),
+            .response(status: 200, body: "<html>g</html>"),
+        ]
+
+        let result = await Networking.resolveFinalURL(
+            URL(string: "https://example.com/")!,
+            session: session
+        )
+
+        XCTAssertEqual(MockURLProtocol.attempts.count, 4)
+        XCTAssertEqual(result.prefetchedBody.flatMap { String(data: $0, encoding: .utf8) },
+                       "<html>g</html>")
+    }
+
+    /// Total failure (both legs exhausted) must surface the original URL with
+    /// no body — callers (`PostDetailLoader.resolveDispatchedPost`) treat that
+    /// as "no redirect happened" and stay on the original parser. Returning a
+    /// stale or made-up URL here would silently route the wrong parser.
+    func testResolveFinalURLAllFailReturnsOriginalURL() async {
+        MockURLProtocol.handlers = [
+            .failure(URLError(.networkConnectionLost)),
+            .failure(URLError(.networkConnectionLost)),
+            .failure(URLError(.networkConnectionLost)),
+            .failure(URLError(.networkConnectionLost)),
+        ]
+
+        let url = URL(string: "https://example.com/")!
+        let result = await Networking.resolveFinalURL(url, session: session)
+
+        XCTAssertEqual(MockURLProtocol.attempts.count, 4)
+        XCTAssertEqual(result.url, url)
+        XCTAssertNil(result.prefetchedBody)
+    }
+
+    /// Non-transient errors (DNS, cancelled) must NOT trigger a retry on either
+    /// leg — same invariant as `fetchHTML`. A future widening of
+    /// `transientURLErrorCodes` that drags in `cannotFindHost` would silently
+    /// double network traffic for every dead-host call site.
+    func testResolveFinalURLDoesNotRetryNonTransient() async {
+        MockURLProtocol.handlers = [
+            .failure(URLError(.cannotFindHost)),  // HEAD: no retry
+            .failure(URLError(.cannotFindHost)),  // GET fallback: no retry
+        ]
+
+        let url = URL(string: "https://example.com/")!
+        let result = await Networking.resolveFinalURL(url, session: session)
+
+        XCTAssertEqual(MockURLProtocol.attempts.count, 2)
+        XCTAssertEqual(result.url, url)
+        XCTAssertNil(result.prefetchedBody)
+    }
+
+    /// Pin per-attempt timeout shape so the fast-fail-then-fresh-dial pattern
+    /// stays in place. First attempt of each leg uses
+    /// `firstAttemptIdleTimeout` (8 s); the retry strips the per-request
+    /// override and falls back to URLRequest's natural default (60 s, capped
+    /// at the session layer by `timeoutIntervalForRequest = 15`).
+    func testResolveFinalURLAppliesShorterTimeoutOnFirstAttemptPerLeg() async {
+        MockURLProtocol.handlers = [
+            .failure(URLError(.networkConnectionLost)),
+            .failure(URLError(.networkConnectionLost)),
+            .failure(URLError(.networkConnectionLost)),
+            .failure(URLError(.networkConnectionLost)),
+        ]
+
+        _ = await Networking.resolveFinalURL(
+            URL(string: "https://example.com/")!,
+            session: session
+        )
+
+        XCTAssertEqual(MockURLProtocol.attempts.count, 4)
+        // HEAD leg
+        XCTAssertEqual(MockURLProtocol.attempts[0].timeoutInterval, 8, accuracy: 0.001)
+        XCTAssertEqual(MockURLProtocol.attempts[1].timeoutInterval, 10, accuracy: 0.001)
+        // GET leg
+        XCTAssertEqual(MockURLProtocol.attempts[2].timeoutInterval, 8, accuracy: 0.001)
+        XCTAssertEqual(MockURLProtocol.attempts[3].timeoutInterval, 10, accuracy: 0.001)
+    }
 }
 
 // MARK: - URLProtocol mock
