@@ -135,11 +135,24 @@ struct Networking {
         .cannotConnectToHost,      // -1004
     ]
 
+    /// Per-request idle timeout applied to the FIRST attempt only. Session
+    /// default (`timeoutIntervalForRequest = 15`) still backs the retry
+    /// attempt. Rationale: -1001 (timed out) on the first attempt almost
+    /// always means the keep-alive connection is dead, not that the host
+    /// is genuinely slow — fail it faster so the retry's fresh-dial path
+    /// kicks in earlier. iOS's `timeoutInterval` is an *idle* timeout
+    /// (resets on every byte received), so 8 s of zero data flow is well
+    /// past the threshold for "live but slow" and squarely in
+    /// "connection is wedged" territory. Worst-case fetchHTML latency
+    /// drops from ~30 s (15+15) to ~23 s (8+15).
+    private static let firstAttemptIdleTimeout: TimeInterval = 8
+
     static func fetchHTML(
         url: URL,
         encoding: String.Encoding = .utf8,
         userAgent: String? = nil,
-        handlesCookies: Bool = true
+        handlesCookies: Bool = true,
+        session: URLSession = Networking.session
     ) async throws -> String {
         var request = URLRequest(url: url)
         request.httpShouldHandleCookies = handlesCookies
@@ -153,8 +166,12 @@ struct Networking {
         var attempt = 0
         while true {
             attempt += 1
+            var attemptRequest = request
+            if attempt == 1 {
+                attemptRequest.timeoutInterval = firstAttemptIdleTimeout
+            }
             do {
-                let (data, response) = try await session.data(for: request)
+                let (data, response) = try await session.data(for: attemptRequest)
                 if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                     throw NetworkError.badResponse(http.statusCode)
                 }
