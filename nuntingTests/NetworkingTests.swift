@@ -169,6 +169,60 @@ final class NetworkingTests: XCTestCase {
         }
     }
 
+    // MARK: - Cancellation
+
+    func testFetchHTMLDoesNotRetryAfterCancellationDuringBackoff() async {
+        // Pin the cancellation seam in `fetchHTML`'s retry loop:
+        // `try? await Task.sleep(...)` swallows CancellationError, so
+        // the only thing preventing a wasted second round-trip when the
+        // task is cancelled mid-backoff is the explicit
+        // `try Task.checkCancellation()` after the sleep. If a future
+        // refactor removes that line, this test catches the regression
+        // (attempts.count becomes 2).
+        MockURLProtocol.handlers = [
+            .failure(URLError(.networkConnectionLost)),
+            // No second handler staged — if the retry mistakenly fires,
+            // MockURLProtocol's empty-queue fallback throws
+            // URLError.unknown, but we'd still see attempts == 2.
+        ]
+
+        let task = Task {
+            try await Networking.fetchHTML(
+                url: URL(string: "https://example.com/")!,
+                session: session
+            )
+        }
+
+        // Wait long enough for the first attempt to dispatch and enter
+        // the 150 ms backoff sleep, but well short of the sleep's end.
+        try? await Task.sleep(for: .milliseconds(75))
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("expected error after cancellation")
+        } catch {
+            // Acceptable outcomes — order depends on whether the cancel
+            // raced ahead of the first attempt's failure or landed
+            // squarely in the backoff sleep:
+            //   * `CancellationError` from `try Task.checkCancellation()`
+            //   * original `URLError.networkConnectionLost` if
+            //     cancellation arrived after the catch made its retry
+            //     decision but before re-entering the loop
+            //   * `URLError.cancelled` if URLSession.data(for:) saw
+            //     cancellation in-flight on the first attempt
+            let acceptable = error is CancellationError
+                || (error as? URLError)?.code == .networkConnectionLost
+                || (error as? URLError)?.code == .cancelled
+            XCTAssertTrue(acceptable, "unexpected error type: \(error)")
+        }
+
+        XCTAssertLessThanOrEqual(
+            MockURLProtocol.attempts.count, 1,
+            "cancellation during backoff must not trigger a retry attempt"
+        )
+    }
+
     // MARK: - Per-attempt timeout
 
     func testFetchHTMLAppliesShorterTimeoutOnFirstAttemptOnly() async {
@@ -187,8 +241,16 @@ final class NetworkingTests: XCTestCase {
         let second = MockURLProtocol.attempts[1].timeoutInterval
         XCTAssertEqual(first, 8, accuracy: 0.001,
                        "first attempt should use the fast-fail idle timeout")
-        XCTAssertGreaterThan(second, first,
-                             "retry should fall back to the session default (no per-request override)")
+        // Layered timeout note: the URLRequest's natural default is 60 s
+        // (Apple's documented default), and `fetchHTML` deliberately
+        // skips the per-request override on retry. The effective timeout
+        // at the URLSession layer is then min(60, session config 15) =
+        // 15 s — but the URLRequest object itself reads 60. This
+        // assertion pins the "no per-request override on retry"
+        // invariant; do NOT "fix" the 60 to 15, that would hardcode a
+        // value that should track the session config.
+        XCTAssertEqual(second, 60, accuracy: 0.001,
+                       "retry must NOT carry the first attempt's per-request override")
     }
 }
 
@@ -204,12 +266,32 @@ final class MockURLProtocol: URLProtocol {
         case failure(Error)
     }
 
-    nonisolated(unsafe) static var handlers: [Handler] = []
-    nonisolated(unsafe) static var attempts: [URLRequest] = []
+    /// Serial queue guarding the static state below. `startLoading()`
+    /// runs on a URLSession-internal queue while tests read
+    /// `attempts` / write `handlers` from the test thread — without
+    /// synchronization this is a write-on-thread-A / read-on-thread-B
+    /// race that XCTest's currently-serial scheduling masks. Routing
+    /// every access through this queue restores the Swift-6 strict-
+    /// concurrency guarantee the rest of the codebase honors via
+    /// `actor` types.
+    private static let queue = DispatchQueue(label: "MockURLProtocol.state")
+    nonisolated(unsafe) private static var _handlers: [Handler] = []
+    nonisolated(unsafe) private static var _attempts: [URLRequest] = []
+
+    static var handlers: [Handler] {
+        get { queue.sync { _handlers } }
+        set { queue.sync { _handlers = newValue } }
+    }
+
+    static var attempts: [URLRequest] {
+        queue.sync { _attempts }
+    }
 
     static func reset() {
-        handlers = []
-        attempts = []
+        queue.sync {
+            _handlers = []
+            _attempts = []
+        }
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -217,12 +299,18 @@ final class MockURLProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        Self.attempts.append(request)
-        guard !Self.handlers.isEmpty else {
+        // Single critical section per call: append the captured request
+        // and pop the next handler atomically. Otherwise an interleaved
+        // reader could observe `attempts` having grown without the
+        // corresponding handler having been consumed yet.
+        let handler: Handler? = Self.queue.sync {
+            Self._attempts.append(self.request)
+            return Self._handlers.isEmpty ? nil : Self._handlers.removeFirst()
+        }
+        guard let handler else {
             client?.urlProtocol(self, didFailWithError: URLError(.unknown))
             return
         }
-        let handler = Self.handlers.removeFirst()
         switch handler {
         case .response(let status, let body, let headers):
             guard let url = request.url,
@@ -244,5 +332,10 @@ final class MockURLProtocol: URLProtocol {
         }
     }
 
+    /// All response/failure events are dispatched synchronously inside
+    /// `startLoading()`, so by the time `stopLoading` is called there
+    /// is no async work left to cancel. If a future handler dispatches
+    /// its response asynchronously (e.g. simulated slow network), this
+    /// will need to cancel that timer.
     override func stopLoading() {}
 }
