@@ -119,4 +119,101 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertEqual(videos.count, 1)
         XCTAssertEqual(videos.first?.absoluteString, "https://example.com/clip.mp4")
     }
+
+    // MARK: - Ppomppu
+
+    func testPpomppuImgPointingAtMovEmitsVideoBlockNotImage() throws {
+        // Real shape from m.ppomppu.co.kr/new/bbs_view.php?id=car&no=968820 —
+        // user-uploaded `.mov` is shipped as `<img src="...mov">` and the
+        // desktop-only JS shim that swaps it to `<video>` doesn't run on
+        // mobile. Without this routing the parser emits an `.image` block,
+        // `CachedAsyncImage` downloads the mov bytes, `CGImageSource`
+        // returns nil, and the slot flips to "다시 시도".
+        let html = """
+        <html><body>
+        <div class="bbs view">
+            <div class="cont" id="KH_Content">
+                <p>위 본문 텍스트</p>
+                <p>
+                  <img name="zb_target_resize"
+                       src="//cdn2.ppomppu.co.kr/zboard/data3/2026/0502/foo.mov"
+                       alt="IMG_6118.mov" />
+                </p>
+                <p>아래 본문 텍스트</p>
+            </div>
+        </div>
+        </body></html>
+        """
+        let parser = PpomppuParser()
+        let post = Post(
+            id: "ppomppu-car-968820",
+            site: .ppomppu,
+            boardID: "ppomppu-car",
+            title: "테스트",
+            author: "작성자",
+            date: nil,
+            dateText: "방금",
+            commentCount: 0,
+            url: URL(string: "https://m.ppomppu.co.kr/new/bbs_view.php?id=car&no=968820")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+
+        let videos = detail.blocks.compactMap { block -> URL? in
+            if case .video(let url, _) = block.kind { return url }
+            return nil
+        }
+        let images = detail.blocks.compactMap { block -> URL? in
+            if case .image(let url, _) = block.kind { return url }
+            return nil
+        }
+        XCTAssertEqual(videos.count, 1)
+        XCTAssertEqual(
+            videos.first?.absoluteString,
+            "https://cdn2.ppomppu.co.kr/zboard/data3/2026/0502/foo.mov"
+        )
+        XCTAssertTrue(images.isEmpty)
+    }
+
+    func testPpomppuImgPointingAtJpgStillEmitsImageBlock() throws {
+        // Sanity counterpart — the video extension routing must not steal
+        // ordinary still images. Same outer shape, just a `.jpg` src.
+        let html = """
+        <html><body>
+        <div class="bbs view">
+            <div class="cont" id="KH_Content">
+                <p><img src="//cdn2.ppomppu.co.kr/zboard/data3/2026/0502/foo.jpg" /></p>
+            </div>
+        </div>
+        </body></html>
+        """
+        let parser = PpomppuParser()
+        let post = Post(
+            id: "ppomppu-test",
+            site: .ppomppu,
+            boardID: "ppomppu-car",
+            title: "x",
+            author: "y",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://m.ppomppu.co.kr/new/bbs_view.php?id=car&no=0")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+        let images = detail.blocks.compactMap { block -> URL? in
+            if case .image(let url, _) = block.kind { return url }
+            return nil
+        }
+        let videos = detail.blocks.compactMap { block -> URL? in
+            if case .video(let url, _) = block.kind { return url }
+            return nil
+        }
+        XCTAssertEqual(images.count, 1)
+        XCTAssertEqual(
+            images.first?.absoluteString,
+            "https://cdn2.ppomppu.co.kr/zboard/data3/2026/0502/foo.jpg"
+        )
+        XCTAssertTrue(videos.isEmpty)
+    }
 }
