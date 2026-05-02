@@ -1011,10 +1011,11 @@ actor ImageDataLoader {
     private var inFlight: [URL: Task<Data?, Never>] = [:]
 
     /// URLSession error codes worth retrying once. Same set used in
-    /// `Networking.fetchHTML` for HTML body fetches — kept private to
-    /// each call site to avoid cross-module visibility leaks. Lifted
-    /// out of the per-error closure so the set isn't reallocated on
-    /// every catch path.
+    /// `Networking.fetchHTML` for HTML body fetches — duplicated
+    /// rather than promoted to a shared symbol so `Networking`
+    /// doesn't have to widen its API surface for one extra call
+    /// site. Lifted out of the per-error closure so the set isn't
+    /// reallocated on every catch path.
     private static let transientURLErrorCodes: Set<URLError.Code> = [
         .networkConnectionLost,    // -1005
         .timedOut,                 // -1001
