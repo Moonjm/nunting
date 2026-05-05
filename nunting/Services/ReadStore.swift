@@ -53,8 +53,19 @@ final class ReadStore {
         persist()
     }
 
+    /// Snapshot the FIFO list and offload JSON encoding + UserDefaults
+    /// write to a background task so a `markRead` triggered by the user's
+    /// detail-open tap doesn't pay an inline ~80 KB encode (full 5000-ID
+    /// cap) on the main actor before the overlay can animate in.
+    /// Snapshotting the array up-front isolates the background work from
+    /// later in-memory mutations.
     private func persist() {
-        guard let data = try? JSONEncoder().encode(order) else { return }
-        defaults.set(data, forKey: storageKey)
+        let snapshot = order
+        let key = storageKey
+        let store = defaults
+        Task.detached(priority: .utility) {
+            guard let data = try? JSONEncoder().encode(snapshot) else { return }
+            store.set(data, forKey: key)
+        }
     }
 }
