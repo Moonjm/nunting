@@ -614,7 +614,36 @@ private struct CommentRow: View {
         .padding(.leading, comment.isReply ? 20 : 0)
     }
 
+    /// Wraps `AttributedString` so it can live in `NSCache`, which only
+    /// stores `AnyObject` values.
+    private final class StyledBox {
+        let value: AttributedString
+        init(_ value: AttributedString) { self.value = value }
+    }
+
+    /// Memoizes `computeStyledContent` keyed by the raw comment string.
+    /// Output is a pure function of the input, so two comments with the
+    /// same text reuse the same parse. NSCache handles eviction under
+    /// memory pressure and bounds steady-state size via `countLimit`,
+    /// which keeps long-running sessions from accumulating every comment
+    /// the user has scrolled past.
+    private static let styledCache: NSCache<NSString, StyledBox> = {
+        let cache = NSCache<NSString, StyledBox>()
+        cache.countLimit = 1000
+        return cache
+    }()
+
     private func styledContent(_ text: String) -> AttributedString {
+        let key = text as NSString
+        if let cached = Self.styledCache.object(forKey: key) {
+            return cached.value
+        }
+        let result = Self.computeStyledContent(text)
+        Self.styledCache.setObject(StyledBox(result), forKey: key)
+        return result
+    }
+
+    private static func computeStyledContent(_ text: String) -> AttributedString {
         // First parse markdown so any `[label](<url>)` anchors that the
         // parser preserved become real `.link` spans. Falls back to plain
         // text if the parser rejects the input. Then apply the @mention
