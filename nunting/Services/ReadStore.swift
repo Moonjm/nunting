@@ -14,6 +14,14 @@ final class ReadStore {
     /// FIFO eviction queue — oldest first.
     private var order: [String]
 
+    /// Tail of the persist task chain. Each `persist()` call awaits this
+    /// before writing so concurrent detached tasks can't reorder their
+    /// `defaults.set` calls and leave a stale snapshot on disk.
+    /// `@ObservationIgnored` because no SwiftUI view should ever depend
+    /// on the persist queue's identity.
+    @ObservationIgnored
+    private var pendingPersist: Task<Void, Never>?
+
     init(defaults: UserDefaults = .standard, capacity: Int = 5000) {
         self.defaults = defaults
         self.capacity = capacity
@@ -53,8 +61,37 @@ final class ReadStore {
         persist()
     }
 
+    /// Snapshot the FIFO list and offload JSON encoding + UserDefaults
+    /// write to a background task so a `markRead` triggered by the user's
+    /// detail-open tap doesn't pay an inline ~80 KB encode (full 5000-ID
+    /// cap) on the main actor before the overlay can animate in.
+    /// Snapshotting `order` up-front isolates the background work from
+    /// later in-memory mutations.
+    ///
+    /// Two concurrency invariants need to hold:
+    /// 1. **Order**: rapid `markRead`s enqueue snapshots S1 → S2 → S3
+    ///    where each one is a superset of the previous. If detached
+    ///    tasks at the same priority interleave their `defaults.set`
+    ///    calls (which they can — separate tasks have no FIFO guarantee
+    ///    on the cooperative pool), an older snapshot can overwrite a
+    ///    newer one and silently drop ids until the next mutation.
+    ///    Each task chains `await previous?.value` so the writes serialize.
+    /// 2. **Durability under app-kill**: a tap-then-immediate-kill must
+    ///    not lose the read state for the post the user just opened.
+    ///    `.utility` is demotable under thermal/battery pressure and
+    ///    explicitly low-priority; `.userInitiated` keeps the write at
+    ///    the same QoS as the user's interactive workload, which is the
+    ///    correct floor for "this write reflects an action the user just
+    ///    performed."
     private func persist() {
-        guard let data = try? JSONEncoder().encode(order) else { return }
-        defaults.set(data, forKey: storageKey)
+        let snapshot = order
+        let key = storageKey
+        let store = defaults
+        let previous = pendingPersist
+        pendingPersist = Task.detached(priority: .userInitiated) {
+            _ = await previous?.value
+            guard let data = try? JSONEncoder().encode(snapshot) else { return }
+            store.set(data, forKey: key)
+        }
     }
 }
