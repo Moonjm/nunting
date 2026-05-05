@@ -287,6 +287,11 @@ struct Networking {
     ) async -> (url: URL, body: Data?)? {
         var request = URLRequest(url: url)
         request.httpMethod = method
+        // Tighter than `fetchHTML` / `postForm` (which inherit URLRequest's
+        // 60 s default capped at the session config's 15 s) because the
+        // resolver is a probe — a redirect target should arrive in well
+        // under 10 s on any host we list, and dragging this out only delays
+        // the GET fallback / detail dispatch downstream.
         request.timeoutInterval = 10
 
         let maxAttempts = 2
@@ -307,6 +312,13 @@ struct Networking {
                     ?? false
                 if isTransient && attempt < maxAttempts {
                     try? await Task.sleep(for: .milliseconds(150))
+                    // Cancellation is intentionally swallowed here (returned
+                    // as `nil`) rather than thrown — `resolveFinalURL`'s
+                    // signature is non-throwing. Callers MUST run a
+                    // `try Task.checkCancellation()` immediately after
+                    // `resolveFinalURL` so a cancelled task can't proceed
+                    // into a wasted parser dispatch. `PostDetailLoader.load`
+                    // already does this on the line after `resolveDispatchedPost`.
                     if Task.isCancelled { return nil }
                     continue
                 }

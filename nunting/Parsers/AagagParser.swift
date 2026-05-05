@@ -407,11 +407,19 @@ struct AagagParser: BoardParser {
             // historically gfycat / various CDNs — but most of those are
             // long dead (gfycat shut down Sep 2023, taking every embedded
             // `giant.gfycat.com/*.mp4` and `thumbs.gfycat.com/*-mobile.mp4`
-            // with it). The aagag mirror at `i.aagag.com/{q}.mp4` outlives
-            // those upstream shutdowns, so it's the canonical URL whenever
-            // present. Fall back to `mp4_url` only for posts where aagag
-            // didn't mirror (no `mp4_seq`), which in practice is `m == "vid"`
-            // / `m == "gif"` external embeds.
+            // with it). The aagag mirror outlives those upstream shutdowns,
+            // so it's the canonical URL whenever present.
+            //
+            // Fall through priority:
+            //   1. `mp4_seq` set → aagag mirror (confirmed ingested copy)
+            //   2. else `mp4_url` set → external embed (twitter/discord direct
+            //      links via `m == "vid"` posts that aagag didn't re-host)
+            //   3. else → q-based aagag mirror as a last-resort guess. This
+            //      branch is only reachable for `m == "vid"` / `m == "gif"`
+            //      payloads that ship neither `mp4_seq` NOR `mp4_url`, which
+            //      in practice means a malformed sTag — the URL probably
+            //      404s, but it's a better failure mode than dropping the
+            //      block entirely.
             let videoURLString: String
             if json["mp4_seq"] != nil {
                 videoURLString = "https://i.aagag.com/\(q).mp4"
