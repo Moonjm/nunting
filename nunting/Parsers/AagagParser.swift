@@ -400,30 +400,24 @@ struct AagagParser: BoardParser {
             || m == "gif"
 
         if isVideo {
-            // Prefer aagag's own CDN mirror when the payload signals an
-            // ingested video (`mp4_seq` is the per-item sequence id aagag
-            // assigns once the file is mirrored to `i.aagag.com/{q}.mp4`).
-            // Older posts ship `mp4_url` pointing at the original source —
-            // historically gfycat / various CDNs — but most of those are
-            // long dead (gfycat shut down Sep 2023, taking every embedded
-            // `giant.gfycat.com/*.mp4` and `thumbs.gfycat.com/*-mobile.mp4`
-            // with it). The aagag mirror outlives those upstream shutdowns,
-            // so it's the canonical URL whenever present.
+            // Prefer aagag's own CDN mirror by default. `mp4_seq` is the
+            // per-item sequence id aagag stamps once the file is ingested
+            // to `i.aagag.com/{q}.mp4`; its absence on an `m == "vid"` /
+            // `m == "gif"` payload means the post is an external embed
+            // (twitter / discord direct link) that aagag never re-hosted,
+            // so `mp4_url` is the only working URL.
             //
-            // Fall through priority:
-            //   1. `mp4_seq` set → aagag mirror (confirmed ingested copy)
-            //   2. else `mp4_url` set → external embed (twitter/discord direct
-            //      links via `m == "vid"` posts that aagag didn't re-host)
-            //   3. else → q-based aagag mirror as a last-resort guess. This
-            //      branch is only reachable for `m == "vid"` / `m == "gif"`
-            //      payloads that ship neither `mp4_seq` NOR `mp4_url`, which
-            //      in practice means a malformed sTag — the URL probably
-            //      404s, but it's a better failure mode than dropping the
-            //      block entirely.
+            // The "use mirror" branch also catches the malformed-sTag case
+            // (no `mp4_seq` AND no `mp4_url`) — the q-based URL probably
+            // 404s, but emitting the block is better than dropping it.
+            //
+            // Older posts ship `mp4_url` pointing at gfycat
+            // (`giant.gfycat.com/*.mp4`, `thumbs.gfycat.com/*-mobile.mp4`)
+            // which has been dead since Snap shut gfycat down in Sep 2023;
+            // those payloads always carry `mp4_seq` and the mirror branch
+            // recovers them.
             let videoURLString: String
-            if json["mp4_seq"] != nil {
-                videoURLString = "https://i.aagag.com/\(q).mp4"
-            } else if let mp4 = json["mp4_url"] as? String {
+            if json["mp4_seq"] == nil, let mp4 = json["mp4_url"] as? String {
                 videoURLString = absolutize(mp4)
             } else {
                 videoURLString = "https://i.aagag.com/\(q).mp4"
