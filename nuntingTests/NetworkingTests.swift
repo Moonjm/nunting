@@ -252,6 +252,230 @@ final class NetworkingTests: XCTestCase {
         XCTAssertEqual(second, 60, accuracy: 0.001,
                        "retry must NOT carry the first attempt's per-request override")
     }
+
+    // MARK: - resolveFinalURL retry
+
+    /// HEAD failing transient on attempt 1 must retry on the same leg before
+    /// falling back to GET — symmetric with `fetchHTML`'s policy. Without this,
+    /// the aagag → SLR mirror redirect step silently drops to GET on a single
+    /// stale-keepalive bounce, and a wedged pool can take down both legs.
+    func testResolveFinalURLHEADRetriesOnTransientThenFallsToGET() async {
+        // HEAD #1 fails transient, HEAD #2 succeeds with same URL (no redirect),
+        // so the resolver moves on to GET as the prefetched-body capture path.
+        MockURLProtocol.handlers = [
+            .failure(URLError(.networkConnectionLost)),
+            .response(status: 200, body: ""),
+            .response(status: 200, body: "<html>got</html>"),
+        ]
+
+        let result = await Networking.resolveFinalURL(
+            URL(string: "https://example.com/")!,
+            session: session
+        )
+
+        XCTAssertEqual(MockURLProtocol.attempts.count, 3)
+        XCTAssertEqual(result.prefetchedBody.flatMap { String(data: $0, encoding: .utf8) },
+                       "<html>got</html>")
+    }
+
+    /// GET fallback must also honor the retry policy. Pin this so a future
+    /// refactor that adds retry to HEAD only can't silently regress the GET
+    /// path — the wedged-pool failure mode the retry exists for is identical
+    /// on either method.
+    func testResolveFinalURLGETRetriesOnTransient() async {
+        MockURLProtocol.handlers = [
+            // HEAD exhausts retry transient → fall to GET.
+            .failure(URLError(.networkConnectionLost)),
+            .failure(URLError(.networkConnectionLost)),
+            // GET #1 transient, GET #2 succeeds.
+            .failure(URLError(.networkConnectionLost)),
+            .response(status: 200, body: "<html>g</html>"),
+        ]
+
+        let result = await Networking.resolveFinalURL(
+            URL(string: "https://example.com/")!,
+            session: session
+        )
+
+        XCTAssertEqual(MockURLProtocol.attempts.count, 4)
+        XCTAssertEqual(result.prefetchedBody.flatMap { String(data: $0, encoding: .utf8) },
+                       "<html>g</html>")
+    }
+
+    /// Total failure (both legs exhausted) must surface the original URL with
+    /// no body — callers (`PostDetailLoader.resolveDispatchedPost`) treat that
+    /// as "no redirect happened" and stay on the original parser. Returning a
+    /// stale or made-up URL here would silently route the wrong parser.
+    func testResolveFinalURLAllFailReturnsOriginalURL() async {
+        MockURLProtocol.handlers = [
+            .failure(URLError(.networkConnectionLost)),
+            .failure(URLError(.networkConnectionLost)),
+            .failure(URLError(.networkConnectionLost)),
+            .failure(URLError(.networkConnectionLost)),
+        ]
+
+        let url = URL(string: "https://example.com/")!
+        let result = await Networking.resolveFinalURL(url, session: session)
+
+        XCTAssertEqual(MockURLProtocol.attempts.count, 4)
+        XCTAssertEqual(result.url, url)
+        XCTAssertNil(result.prefetchedBody)
+    }
+
+    /// Non-transient errors (DNS, cancelled) must NOT trigger a retry on either
+    /// leg — same invariant as `fetchHTML`. A future widening of
+    /// `transientURLErrorCodes` that drags in `cannotFindHost` would silently
+    /// double network traffic for every dead-host call site.
+    func testResolveFinalURLDoesNotRetryNonTransient() async {
+        MockURLProtocol.handlers = [
+            .failure(URLError(.cannotFindHost)),  // HEAD: no retry
+            .failure(URLError(.cannotFindHost)),  // GET fallback: no retry
+        ]
+
+        let url = URL(string: "https://example.com/")!
+        let result = await Networking.resolveFinalURL(url, session: session)
+
+        XCTAssertEqual(MockURLProtocol.attempts.count, 2)
+        XCTAssertEqual(result.url, url)
+        XCTAssertNil(result.prefetchedBody)
+    }
+
+    /// Pin per-attempt timeout shape so the fast-fail-then-fresh-dial pattern
+    /// stays in place. First attempt of each leg uses
+    /// `firstAttemptIdleTimeout` (8 s); the retry strips the per-request
+    /// override and falls back to URLRequest's natural default (60 s, capped
+    /// at the session layer by `timeoutIntervalForRequest = 15`).
+    func testResolveFinalURLAppliesShorterTimeoutOnFirstAttemptPerLeg() async {
+        MockURLProtocol.handlers = [
+            .failure(URLError(.networkConnectionLost)),
+            .failure(URLError(.networkConnectionLost)),
+            .failure(URLError(.networkConnectionLost)),
+            .failure(URLError(.networkConnectionLost)),
+        ]
+
+        _ = await Networking.resolveFinalURL(
+            URL(string: "https://example.com/")!,
+            session: session
+        )
+
+        XCTAssertEqual(MockURLProtocol.attempts.count, 4)
+        // HEAD leg
+        XCTAssertEqual(MockURLProtocol.attempts[0].timeoutInterval, 8, accuracy: 0.001)
+        XCTAssertEqual(MockURLProtocol.attempts[1].timeoutInterval, 10, accuracy: 0.001)
+        // GET leg
+        XCTAssertEqual(MockURLProtocol.attempts[2].timeoutInterval, 8, accuracy: 0.001)
+        XCTAssertEqual(MockURLProtocol.attempts[3].timeoutInterval, 10, accuracy: 0.001)
+    }
+
+    // MARK: - postForm retry
+
+    /// Symmetric with the fetchHTML happy-path test: one good response, one
+    /// captured request. Pins the no-retry-on-success invariant so a future
+    /// refactor that re-runs the loop unconditionally can't double-fire a
+    /// comment POST.
+    func testPostFormReturnsBodyOnFirstAttemptSuccess() async throws {
+        MockURLProtocol.handlers = [
+            .response(status: 200, body: "{\"c\":[]}"),
+        ]
+
+        let data = try await Networking.postForm(
+            url: URL(string: "https://example.com/comment_db/load.php")!,
+            parameters: ["id": "free"],
+            session: session
+        )
+
+        XCTAssertEqual(String(data: data, encoding: .utf8), "{\"c\":[]}")
+        XCTAssertEqual(MockURLProtocol.attempts.count, 1)
+    }
+
+    /// The actual user-facing failure that motivated this retry: SLR comment
+    /// POST hits a stale keep-alive connection (-1005) and `PostDetailLoader`'s
+    /// `try?` swallows the throw, leaving the user with body but no comments.
+    /// Without this retry, that single bounce permanently strips comments
+    /// from the post.
+    func testPostFormRetriesOnNetworkConnectionLostAndSucceeds() async throws {
+        MockURLProtocol.handlers = [
+            .failure(URLError(.networkConnectionLost)),
+            .response(status: 200, body: "{\"c\":[{\"pk\":\"x\"}]}"),
+        ]
+
+        let data = try await Networking.postForm(
+            url: URL(string: "https://example.com/comment_db/load.php")!,
+            parameters: [:],
+            session: session
+        )
+
+        XCTAssertEqual(String(data: data, encoding: .utf8), "{\"c\":[{\"pk\":\"x\"}]}")
+        XCTAssertEqual(MockURLProtocol.attempts.count, 2)
+    }
+
+    /// Retry exhaustion must surface the original URLError (not silently
+    /// succeed with empty data), so callers / SwiftUI views can distinguish
+    /// a real outage from "no comments yet". Pin all three transient codes
+    /// since they share the same wedged-pool root cause.
+    func testPostFormBothAttemptsTransientThrowsFinalError() async {
+        MockURLProtocol.handlers = [
+            .failure(URLError(.timedOut)),
+            .failure(URLError(.timedOut)),
+        ]
+
+        do {
+            _ = try await Networking.postForm(
+                url: URL(string: "https://example.com/")!,
+                parameters: [:],
+                session: session
+            )
+            XCTFail("expected failure")
+        } catch {
+            XCTAssertEqual((error as? URLError)?.code, .timedOut)
+            XCTAssertEqual(MockURLProtocol.attempts.count, 2)
+        }
+    }
+
+    /// HTTP error response is non-retryable — bumping a 500 again would just
+    /// double the load on a server that's already struggling. Same invariant
+    /// fetchHTML pins; symmetry is the goal.
+    func testPostFormDoesNotRetryOnHTTPErrorResponse() async {
+        MockURLProtocol.handlers = [
+            .response(status: 500, body: "boom"),
+        ]
+
+        do {
+            _ = try await Networking.postForm(
+                url: URL(string: "https://example.com/")!,
+                parameters: [:],
+                session: session
+            )
+            XCTFail("expected failure")
+        } catch let NetworkError.badResponse(code) {
+            XCTAssertEqual(code, 500)
+            XCTAssertEqual(MockURLProtocol.attempts.count, 1)
+        } catch {
+            XCTFail("expected NetworkError.badResponse, got \(error)")
+        }
+    }
+
+    /// Same per-attempt timeout shape as fetchHTML: first attempt 8 s, retry
+    /// strips the override and inherits the URLRequest natural default
+    /// (60 s, capped at session-config 15 s on the live session). Pin both
+    /// values so a future refactor that hardcodes 15 here decouples from the
+    /// session config.
+    func testPostFormAppliesShorterTimeoutOnFirstAttemptOnly() async {
+        MockURLProtocol.handlers = [
+            .failure(URLError(.networkConnectionLost)),
+            .failure(URLError(.networkConnectionLost)),
+        ]
+
+        _ = try? await Networking.postForm(
+            url: URL(string: "https://example.com/")!,
+            parameters: [:],
+            session: session
+        )
+
+        XCTAssertEqual(MockURLProtocol.attempts.count, 2)
+        XCTAssertEqual(MockURLProtocol.attempts[0].timeoutInterval, 8, accuracy: 0.001)
+        XCTAssertEqual(MockURLProtocol.attempts[1].timeoutInterval, 60, accuracy: 0.001)
+    }
 }
 
 // MARK: - URLProtocol mock

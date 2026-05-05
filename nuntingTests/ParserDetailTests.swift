@@ -216,4 +216,95 @@ final class ParserDetailTests: XCTestCase {
         )
         XCTAssertTrue(videos.isEmpty)
     }
+
+    // MARK: - Aagag
+
+    func testAagagMp4SeqPayloadRoutesToOwnMirrorNotGfycat() throws {
+        // Real shape from aagag.com/issue/?idx=1065713 (and most pre-2024
+        // GIF-as-video posts): the sTag JSON ships `mp4_url` pointing at
+        // gfycat (`giant.gfycat.com/*.mp4` or `thumbs.gfycat.com/*-mobile.mp4`),
+        // which has been dead since Snap shut gfycat down in Sep 2023. Aagag
+        // mirrors the file at `i.aagag.com/{q}.mp4` and signals that mirror
+        // by stamping `mp4_seq`. Without this routing the parser hands the
+        // dead gfycat URL to AVPlayer, which sits on a connection forever
+        // and the user sees a black slot that never plays.
+        //
+        // The fixture below escapes the JSON the same way the live page
+        // does — the parser unescapes JS string escapes from
+        // `AAGAG_AA.content = "..."` before splitting on `[sTag]` markers.
+        let html = #"""
+        <html><body>
+        <h1 class="title">테스트</h1>
+        <span class="t odate">2026-05-05 12:00</span>
+        <script>
+        AAGAG_AA.content = "<p>[sTag]{\"m\":\"img\",\"q\":\"KXuWQ\",\"mp4_seq\":\"303608818\",\"mp4_url\":\"https:\/\/giant.gfycat.com\/Dead.mp4\",\"mp4m_url\":\"https:\/\/thumbs.gfycat.com\/Dead-mobile.mp4\",\"url\":\"https:\/\/thumbs.gfycat.com\/Dead-size_restricted.gif\"}[/sTag]</p>";
+        </script>
+        </body></html>
+        """#
+        let parser = AagagParser()
+        let post = Post(
+            id: "aagag-1065713",
+            site: .aagag,
+            boardID: "aagag-issue",
+            title: "테스트",
+            author: "",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://aagag.com/issue/?idx=1065713")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+
+        let videos = detail.blocks.compactMap { block -> URL? in
+            if case .video(let url, _) = block.kind { return url }
+            return nil
+        }
+        XCTAssertEqual(videos.count, 1)
+        XCTAssertEqual(
+            videos.first?.absoluteString,
+            "https://i.aagag.com/KXuWQ.mp4",
+            "mp4_seq present should route to aagag's own mirror, not the dead gfycat mp4_url"
+        )
+    }
+
+    func testAagagPayloadWithoutMp4SeqStillFallsBackToMp4URL() throws {
+        // Sanity counterpart — the mirror routing must not steal external
+        // embeds where aagag never ingested the file. `m == "vid"` payloads
+        // without `mp4_seq` (typically twitter / discord direct links) need
+        // to keep using `mp4_url`; routing them to `i.aagag.com/{q}.mp4`
+        // would 404 because aagag has no mirror to serve.
+        let html = #"""
+        <html><body>
+        <h1 class="title">vid embed</h1>
+        <script>
+        AAGAG_AA.content = "[sTag]{\"m\":\"vid\",\"q\":\"externalQ\",\"mp4_url\":\"https:\/\/cdn.example.com\/clip.mp4\"}[/sTag]";
+        </script>
+        </body></html>
+        """#
+        let parser = AagagParser()
+        let post = Post(
+            id: "aagag-vid",
+            site: .aagag,
+            boardID: "aagag-issue",
+            title: "x",
+            author: "",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://aagag.com/issue/?idx=0")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+        let videos = detail.blocks.compactMap { block -> URL? in
+            if case .video(let url, _) = block.kind { return url }
+            return nil
+        }
+        XCTAssertEqual(videos.count, 1)
+        XCTAssertEqual(
+            videos.first?.absoluteString,
+            "https://cdn.example.com/clip.mp4",
+            "without mp4_seq, mp4_url remains the source of truth"
+        )
+    }
 }

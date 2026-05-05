@@ -246,25 +246,85 @@ struct Networking {
     /// Resolve a URL by following redirects with HEAD (cheap) and falling back
     /// to GET (which captures the body so it can be reused). Returns the
     /// original URL with no body on total failure.
-    static func resolveFinalURL(_ url: URL) async -> ResolvedRedirect {
-        var request = URLRequest(url: url)
-        request.httpMethod = "HEAD"
-        request.timeoutInterval = 10
-        if let (_, response) = try? await session.data(for: request),
-           let final = response.url, final != url {
-            return ResolvedRedirect(url: final, prefetchedBody: nil)
+    ///
+    /// Both legs apply the same transient-retry policy as `fetchHTML`: a single
+    /// retry on -1005 / -1001 / -1004 after a 150 ms backoff, with the first
+    /// attempt using `firstAttemptIdleTimeout` so a wedged keep-alive
+    /// connection fails fast and the retry's fresh dial path kicks in. Without
+    /// this, the aagag → SLR / Ddanzi / etc. mirror redirect leg used to
+    /// silently fall through both HEAD and GET on a single bad pool entry,
+    /// surface the original aagag URL, and end with `AagagParser` running on
+    /// the source site's body — which the user sees as "불러오기 실패".
+    static func resolveFinalURL(
+        _ url: URL,
+        session: URLSession = Networking.session
+    ) async -> ResolvedRedirect {
+        if let result = await resolveAttempt(
+            url: url, method: "HEAD", captureBody: false, session: session
+        ), result.url != url {
+            return ResolvedRedirect(url: result.url, prefetchedBody: nil)
         }
         // Some endpoints reject HEAD or return 200 without redirecting; fall
         // back to GET. We capture `data` so callers can decode it directly
         // instead of re-fetching the same URL.
-        var get = URLRequest(url: url)
-        get.httpMethod = "GET"
-        get.timeoutInterval = 10
-        if let (data, response) = try? await session.data(for: get),
-           let final = response.url {
-            return ResolvedRedirect(url: final, prefetchedBody: data)
+        if let result = await resolveAttempt(
+            url: url, method: "GET", captureBody: true, session: session
+        ) {
+            return ResolvedRedirect(url: result.url, prefetchedBody: result.body)
         }
         return ResolvedRedirect(url: url, prefetchedBody: nil)
+    }
+
+    /// Single HEAD-or-GET pass with the same retry policy as `fetchHTML`. Returns
+    /// `nil` on permanent failure (HTTP error, non-transient URLError, retry
+    /// exhausted, etc.); callers that need the HEAD→GET fallback own the
+    /// branch logic themselves.
+    private static func resolveAttempt(
+        url: URL,
+        method: String,
+        captureBody: Bool,
+        session: URLSession
+    ) async -> (url: URL, body: Data?)? {
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        // Tighter than `fetchHTML` / `postForm` (which inherit URLRequest's
+        // 60 s default capped at the session config's 15 s) because the
+        // resolver is a probe — a redirect target should arrive in well
+        // under 10 s on any host we list, and dragging this out only delays
+        // the GET fallback / detail dispatch downstream.
+        request.timeoutInterval = 10
+
+        let maxAttempts = 2
+        var attempt = 0
+        while true {
+            attempt += 1
+            var attemptRequest = request
+            if attempt == 1 {
+                attemptRequest.timeoutInterval = firstAttemptIdleTimeout
+            }
+            do {
+                let (data, response) = try await session.data(for: attemptRequest)
+                guard let final = response.url else { return nil }
+                return (final, captureBody ? data : nil)
+            } catch {
+                let isTransient = (error as? URLError)
+                    .map { Self.transientURLErrorCodes.contains($0.code) }
+                    ?? false
+                if isTransient && attempt < maxAttempts {
+                    try? await Task.sleep(for: .milliseconds(150))
+                    // Cancellation is intentionally swallowed here (returned
+                    // as `nil`) rather than thrown — `resolveFinalURL`'s
+                    // signature is non-throwing. Callers MUST run a
+                    // `try Task.checkCancellation()` immediately after
+                    // `resolveFinalURL` so a cancelled task can't proceed
+                    // into a wasted parser dispatch. `PostDetailLoader.load`
+                    // already does this on the line after `resolveDispatchedPost`.
+                    if Task.isCancelled { return nil }
+                    continue
+                }
+                return nil
+            }
+        }
     }
 
     /// Fire a best-effort `HEAD /` to every supported-site host so the
@@ -307,6 +367,13 @@ struct Networking {
         }
     }
 
+    /// Same transient-retry policy as `fetchHTML`. Every current caller is a
+    /// read-only POST endpoint (SLR / Ddanzi / Inven / Aagag comment loaders
+    /// implemented as POST-as-GET), so a retry on -1005 / -1001 / -1004 cannot
+    /// cause a double-submit. Without this, a single wedged keep-alive
+    /// connection on the comment-host pool used to silently swallow the
+    /// comment list — `PostDetailLoader` `try?`-wraps `fetchAllComments`,
+    /// turning a transient network blip into "본문은 보이는데 댓글이 안 뜸".
     static func postForm(
         url: URL,
         parameters: [String: String],
@@ -316,7 +383,8 @@ struct Networking {
         /// default is correct for normal form POSTs; only override when a
         /// server specifically branches on this header. See `DdanziParser`
         /// for the current caller that needs this.
-        contentType: String = "application/x-www-form-urlencoded; charset=utf-8"
+        contentType: String = "application/x-www-form-urlencoded; charset=utf-8",
+        session: URLSession = Networking.session
     ) async throws -> Data {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -333,14 +401,35 @@ struct Networking {
         comps.queryItems = parameters.map { URLQueryItem(name: $0.key, value: $0.value) }
         request.httpBody = comps.percentEncodedQuery?.data(using: .utf8)
 
-        let (data, response) = try await session.data(for: request)
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            #if DEBUG
-            let preview = String(data: data.prefix(256), encoding: .utf8) ?? "<binary>"
-            print("[Networking.postForm] HTTP \(http.statusCode) for \(url.absoluteString): \(preview)")
-            #endif
-            throw NetworkError.badResponse(http.statusCode)
+        let maxAttempts = 2
+        var attempt = 0
+        while true {
+            attempt += 1
+            var attemptRequest = request
+            if attempt == 1 {
+                attemptRequest.timeoutInterval = firstAttemptIdleTimeout
+            }
+            do {
+                let (data, response) = try await session.data(for: attemptRequest)
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    #if DEBUG
+                    let preview = String(data: data.prefix(256), encoding: .utf8) ?? "<binary>"
+                    print("[Networking.postForm] HTTP \(http.statusCode) for \(url.absoluteString): \(preview)")
+                    #endif
+                    throw NetworkError.badResponse(http.statusCode)
+                }
+                return data
+            } catch {
+                let isTransient = (error as? URLError)
+                    .map { Self.transientURLErrorCodes.contains($0.code) }
+                    ?? false
+                if isTransient && attempt < maxAttempts {
+                    try? await Task.sleep(for: .milliseconds(150))
+                    try Task.checkCancellation()
+                    continue
+                }
+                throw error
+            }
         }
-        return data
     }
 }
