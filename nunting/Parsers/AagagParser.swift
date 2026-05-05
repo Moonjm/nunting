@@ -400,8 +400,26 @@ struct AagagParser: BoardParser {
             || m == "gif"
 
         if isVideo {
-            let videoURLString: String = (json["mp4_url"] as? String).map { absolutize($0) }
-                ?? "https://i.aagag.com/\(q).mp4"
+            // Prefer aagag's own CDN mirror when the payload signals an
+            // ingested video (`mp4_seq` is the per-item sequence id aagag
+            // assigns once the file is mirrored to `i.aagag.com/{q}.mp4`).
+            // Older posts ship `mp4_url` pointing at the original source —
+            // historically gfycat / various CDNs — but most of those are
+            // long dead (gfycat shut down Sep 2023, taking every embedded
+            // `giant.gfycat.com/*.mp4` and `thumbs.gfycat.com/*-mobile.mp4`
+            // with it). The aagag mirror at `i.aagag.com/{q}.mp4` outlives
+            // those upstream shutdowns, so it's the canonical URL whenever
+            // present. Fall back to `mp4_url` only for posts where aagag
+            // didn't mirror (no `mp4_seq`), which in practice is `m == "vid"`
+            // / `m == "gif"` external embeds.
+            let videoURLString: String
+            if json["mp4_seq"] != nil {
+                videoURLString = "https://i.aagag.com/\(q).mp4"
+            } else if let mp4 = json["mp4_url"] as? String {
+                videoURLString = absolutize(mp4)
+            } else {
+                videoURLString = "https://i.aagag.com/\(q).mp4"
+            }
             if let url = URL(string: videoURLString) {
                 return .video(url)
             }
