@@ -219,7 +219,11 @@ private enum BoardParserRegex {
         options: [.caseInsensitive]
     )
     nonisolated static let brokenTrailingEntity: NSRegularExpression = try! NSRegularExpression(
-        pattern: #"&[A-Za-z]{1,10}(?:\.{2,}|…)\s*$"#,
+        // `&#?` covers both named (`&quot`) and numeric (`&#39`, `&#x27`)
+        // entities. `[A-Za-z0-9]` (not just letters) lets us catch named
+        // entities that legitimately contain digits like `&sup2;`,
+        // `&frac34;` if their tail is sliced.
+        pattern: #"&#?[A-Za-z0-9]{1,10}(?:\.{2,}|…)\s*$"#,
         options: []
     )
 }
@@ -242,7 +246,10 @@ enum ParserText {
     /// to avoid eating valid endings like `Q&A` or `Tom&Jerry` that don't
     /// come from a server truncation. The 1-letter prefix is intentional
     /// — byte-truncation can land anywhere inside the entity, so `&q..`
-    /// is just as valid a fragment as `&quo..`.
+    /// is just as valid a fragment as `&quo..`. Numeric entities
+    /// (`&#39;`, `&#x27;`) and digit-bearing named entities (`&sup2;`,
+    /// `&frac34;`) are covered too — they show up rarely but `&#39;` for
+    /// apostrophe is common in Korean board titles.
     nonisolated static func cleanTitle(_ raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.contains("&") else { return trimmed }

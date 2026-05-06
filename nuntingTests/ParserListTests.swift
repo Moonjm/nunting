@@ -228,6 +228,21 @@ final class ParserListTests: XCTestCase {
             ParserText.cleanTitle("끝 &quot…"),
             "끝 …"
         )
+        // Numeric entity (`&#39;` for apostrophe) sliced mid-fragment.
+        XCTAssertEqual(
+            ParserText.cleanTitle("아빠 &#3.."),
+            "아빠 …"
+        )
+        // Hex numeric entity.
+        XCTAssertEqual(
+            ParserText.cleanTitle("문자 &#x2..."),
+            "문자 …"
+        )
+        // Digit-bearing named entity (`&sup2;`).
+        XCTAssertEqual(
+            ParserText.cleanTitle("수식 &sup2..."),
+            "수식 …"
+        )
     }
 
     func testCleanTitleLeavesIntactTitlesAlone() {
