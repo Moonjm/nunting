@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct BoardFilterBar: View {
+struct BoardFilterBar: View, Equatable {
     let board: Board
     /// The selection binding is passed through to each `Chip` rather than
     /// read here in the bar's body. That keeps SwiftUI's dependency
@@ -11,6 +11,17 @@ struct BoardFilterBar: View {
     /// the entire bar a dependency of every selection write, which is
     /// what was triggering the snap-to-leading symptom.
     @Binding var selection: BoardFilter?
+
+    /// Conform to `Equatable` (paired with `.equatable()` at the call
+    /// site) so SwiftUI's view-update path skips body recomputation
+    /// entirely when only `selection` changes — `==` ignores it on
+    /// purpose. Tap events still flow through `$selection` into the
+    /// per-chip subviews, which observe the binding individually and
+    /// re-render their capsule color without dragging the surrounding
+    /// `ScrollView` along.
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.board.id == rhs.board.id
+    }
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
