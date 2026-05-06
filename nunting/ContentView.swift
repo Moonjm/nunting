@@ -232,7 +232,6 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 if !selection.board.filters.isEmpty {
                     BoardFilterBar(board: selection.board, selection: $selection.filter)
-                        .equatable()
                 }
                 MainBottomBar(
                     board: selection.board,

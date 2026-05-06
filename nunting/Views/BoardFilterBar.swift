@@ -1,38 +1,27 @@
 import SwiftUI
+import UIKit
 
-struct BoardFilterBar: View, Equatable {
+/// Horizontal filter chip bar for the active board. Wraps a real
+/// `UIScrollView` via `UIViewRepresentable` because SwiftUI's
+/// `ScrollView` snapped back to offset 0 on every chip tap inside
+/// `safeAreaInset` on iOS 26 — every pure-SwiftUI workaround
+/// (`.scrollPosition(id:)`, per-chip dependency scoping,
+/// `.equatable()`, GeometryReader+ScrollViewReader) was either
+/// no-op or papered over it. UIKit's `UIScrollView` keeps its
+/// `contentOffset` across `updateUIView` calls by default, so the
+/// bar literally cannot move once the user has scrolled it.
+struct BoardFilterBar: View {
     let board: Board
-    /// The selection binding is passed through to each `Chip` rather than
-    /// read here in the bar's body. That keeps SwiftUI's dependency
-    /// tracking scoped per-chip — the bar's `ScrollView` body never
-    /// recomputes on chip taps, so the underlying UIScrollView's offset
-    /// (and any in-flight scroll gesture state) is preserved by default.
-    /// Reading `selection.wrappedValue` directly inside `body` would make
-    /// the entire bar a dependency of every selection write, which is
-    /// what was triggering the snap-to-leading symptom.
     @Binding var selection: BoardFilter?
 
-    /// Conform to `Equatable` (paired with `.equatable()` at the call
-    /// site) so SwiftUI's view-update path skips body recomputation
-    /// entirely when only `selection` changes — `==` ignores it on
-    /// purpose. Tap events still flow through `$selection` into the
-    /// per-chip subviews, which observe the binding individually and
-    /// re-render their capsule color without dragging the surrounding
-    /// `ScrollView` along.
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.board.id == rhs.board.id
-    }
-
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(tabItems) { item in
-                    Chip(item: item, selection: $selection)
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-        }
+        ChipScrollViewRepresentable(
+            board: board,
+            chips: tabItems,
+            selectedID: tabItems.first(where: { $0.isSelected(selection: selection) })?.id ?? FilterTabItem.all.id,
+            onTap: { item in selection = item.filter }
+        )
+        .frame(height: 38)
         .background(Color("AppSurface2"))
         .overlay(alignment: .top) { Divider() }
         .overlay(alignment: .bottom) { Divider() }
@@ -52,33 +41,7 @@ struct BoardFilterBar: View, Equatable {
     }
 }
 
-/// Per-chip view: reads `selection` so its color can react to taps, but
-/// the parent `BoardFilterBar` doesn't — meaning the bar's body (and
-/// `ScrollView` identity / offset) never invalidates on chip presses.
-private struct Chip: View {
-    let item: FilterTabItem
-    @Binding var selection: BoardFilter?
-
-    var body: some View {
-        let isSelected = item.isSelected(selection: selection)
-        Button {
-            selection = item.filter
-        } label: {
-            Text(item.label)
-                .font(.caption.weight(.medium))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 5)
-                .background(
-                    isSelected ? Color.accentColor : Color("AppSurface"),
-                    in: Capsule()
-                )
-                .foregroundStyle(isSelected ? Color.white : Color.primary)
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-private struct FilterTabItem: Identifiable {
+private struct FilterTabItem: Identifiable, Equatable {
     let id: String
     let label: String
     let filter: BoardFilter?
@@ -97,6 +60,132 @@ private struct FilterTabItem: Identifiable {
             filter.id == selection.id
         default:
             false
+        }
+    }
+
+    static func == (lhs: FilterTabItem, rhs: FilterTabItem) -> Bool {
+        lhs.id == rhs.id && lhs.label == rhs.label
+    }
+}
+
+/// UIKit-backed chip scroller. Build the button row once when the host
+/// board changes; otherwise just refresh capsule colors against
+/// `selectedID` without touching `contentOffset`.
+private struct ChipScrollViewRepresentable: UIViewRepresentable {
+    let board: Board
+    let chips: [FilterTabItem]
+    let selectedID: String
+    let onTap: (FilterTabItem) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onTap: onTap) }
+
+    func makeUIView(context: Context) -> UIScrollView {
+        let scroll = UIScrollView()
+        scroll.showsHorizontalScrollIndicator = false
+        scroll.alwaysBounceHorizontal = true
+        scroll.contentInset = UIEdgeInsets(top: 6, left: 12, bottom: 6, right: 12)
+        scroll.backgroundColor = .clear
+
+        let stack = UIStackView()
+        stack.axis = .horizontal
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        scroll.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor, constant: -12),
+        ])
+
+        context.coordinator.stack = stack
+        context.coordinator.boardID = board.id
+        context.coordinator.rebuild(chips: chips, selectedID: selectedID)
+
+        return scroll
+    }
+
+    func updateUIView(_ uiView: UIScrollView, context: Context) {
+        context.coordinator.onTap = onTap
+        // Rebuild the chip row only when the board (= chip set) actually
+        // changes. Tap-driven `selectedID` updates run a cheap repaint
+        // pass that doesn't touch `arrangedSubviews` — `contentOffset`
+        // sticks because UIKit doesn't reset it.
+        if context.coordinator.boardID != board.id {
+            context.coordinator.boardID = board.id
+            context.coordinator.rebuild(chips: chips, selectedID: selectedID)
+            uiView.contentOffset = .zero
+        } else {
+            context.coordinator.refreshSelection(selectedID: selectedID)
+        }
+    }
+
+    final class Coordinator {
+        var stack: UIStackView?
+        var boardID: String = ""
+        var chipIDs: [String] = []
+        var onTap: (FilterTabItem) -> Void
+        private var pendingChips: [FilterTabItem] = []
+
+        init(onTap: @escaping (FilterTabItem) -> Void) {
+            self.onTap = onTap
+        }
+
+        func rebuild(chips: [FilterTabItem], selectedID: String) {
+            guard let stack else { return }
+            stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+            chipIDs = chips.map(\.id)
+            pendingChips = chips
+            for (idx, chip) in chips.enumerated() {
+                let button = makeButton(for: chip, idx: idx)
+                applyStyle(button, isSelected: chip.id == selectedID)
+                stack.addArrangedSubview(button)
+            }
+        }
+
+        func refreshSelection(selectedID: String) {
+            guard let stack else { return }
+            for (idx, view) in stack.arrangedSubviews.enumerated() {
+                guard idx < chipIDs.count, let button = view as? UIButton else { continue }
+                applyStyle(button, isSelected: chipIDs[idx] == selectedID)
+            }
+        }
+
+        private func makeButton(for chip: FilterTabItem, idx: Int) -> UIButton {
+            let button = UIButton(type: .system)
+            button.tag = idx
+            button.titleLabel?.font = .systemFont(ofSize: 12, weight: .medium)
+            button.contentEdgeInsets = UIEdgeInsets(top: 5, left: 12, bottom: 5, right: 12)
+            button.setTitle(chip.label, for: .normal)
+            button.layer.masksToBounds = true
+            button.addAction(
+                UIAction { [weak self] _ in
+                    guard let self,
+                          self.pendingChips.indices.contains(idx)
+                    else { return }
+                    self.onTap(self.pendingChips[idx])
+                },
+                for: .touchUpInside
+            )
+            // Capsule corner radius is set after layout so the button has
+            // a real height to halve.
+            DispatchQueue.main.async { [weak button] in
+                guard let button else { return }
+                button.layer.cornerRadius = button.bounds.height / 2
+            }
+            return button
+        }
+
+        private func applyStyle(_ button: UIButton, isSelected: Bool) {
+            if isSelected {
+                button.backgroundColor = UIColor(named: "AccentColor") ?? .systemBlue
+                button.setTitleColor(.white, for: .normal)
+            } else {
+                button.backgroundColor = UIColor(named: "AppSurface") ?? .secondarySystemBackground
+                button.setTitleColor(.label, for: .normal)
+            }
         }
     }
 }
