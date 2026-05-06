@@ -216,9 +216,7 @@ extension Board {
         // pair on the `/mirror/` path with a single source code + `select=single`,
         // matching the URL aagag's web UI builds when a single chip is selected.
         // Labels mirror `AagagSourceTag` so the filter chips read the same as
-        // the per-row source badges. Order: `이슈모음` first (existing), then
-        // the 8 sources in the default `site=` list, then the remaining 6
-        // that aagag mirrors but doesn't include by default.
+        // the per-row source badges.
         filters: [
             BoardFilter(id: "issue", name: "이슈모음", replacementPath: "/issue/"),
             BoardFilter(id: "src-clien",   name: "끌량",  queryItems: ["site": "clien",   "select": "single"]),
@@ -228,12 +226,7 @@ extension Board {
             BoardFilter(id: "src-humor",   name: "웃대",  queryItems: ["site": "humor",   "select": "single"]),
             BoardFilter(id: "src-ddanzi",  name: "딴지",  queryItems: ["site": "ddanzi",  "select": "single"]),
             BoardFilter(id: "src-slrclub", name: "SLR",   queryItems: ["site": "slrclub", "select": "single"]),
-            BoardFilter(id: "src-damoang", name: "다뫙",  queryItems: ["site": "damoang", "select": "single"]),
-            BoardFilter(id: "src-ou",      name: "오유",  queryItems: ["site": "ou",      "select": "single"]),
-            BoardFilter(id: "src-mlbpark", name: "엠팍",  queryItems: ["site": "mlbpark", "select": "single"]),
-            BoardFilter(id: "src-ruli",    name: "루리",  queryItems: ["site": "ruli",    "select": "single"]),
             BoardFilter(id: "src-inven",   name: "인벤",  queryItems: ["site": "inven",   "select": "single"]),
-            BoardFilter(id: "src-fmkorea", name: "에펨",  queryItems: ["site": "fmkorea", "select": "single"]),
             BoardFilter(id: "src-etoland", name: "이토",  queryItems: ["site": "etoland", "select": "single"]),
         ],
         searchQueryName: "word",
