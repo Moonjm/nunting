@@ -544,6 +544,43 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertEqual(comments[0].likeCount, 2)
     }
 
+    func testEtolandEmojiStampSurfacesAsSticker() throws {
+        // Etocon (etoland's own sticker pack) comments ship with an empty
+        // `content` and an `emojiItem.path` pointing at the GIF. Without
+        // this branch the bubble would render as blank text. Real-world
+        // shape from post 9022801's second comment.
+        let html = """
+        <html><body>
+        <article>
+          <h1 class="body-m"><span class="truncate">제목</span></h1>
+          <div><div class="caption-s"><span class="nickname">x</span><time>2026-05-06 20:22</time></div></div>
+          <div class="view-content"><p>본문</p></div>
+        </article>
+        <script>self.__next_f.push([1,"6:[\\"$\\",\\"$L32\\",null,{\\"data\\":{\\"comments\\":[{\\"commentId\\":99,\\"parentId\\":null,\\"writeDateTimestamp\\":1,\\"recommendCount\\":0,\\"content\\":\\"\\",\\"emojiId\\":570,\\"emojiItem\\":{\\"id\\":570,\\"etoconId\\":23,\\"path\\":\\"https://btcdn.etoland.co.kr/static/media/images/etocon/23/22.gif\\",\\"order\\":22},\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"u\\"},\\"file\\":null,\\"childrenComments\\":[]}]}}]"])</script>
+        </body></html>
+        """
+        let parser = EtolandParser()
+        let post = Post(
+            id: "x",
+            site: .etoland,
+            boardID: "aagag",
+            title: "fallback",
+            author: "",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-1")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        XCTAssertEqual(detail.comments.count, 1)
+        XCTAssertEqual(detail.comments[0].content, "")
+        XCTAssertEqual(
+            detail.comments[0].stickerURL?.absoluteString,
+            "https://btcdn.etoland.co.kr/static/media/images/etocon/23/22.gif",
+            "emoji-only comment should surface emojiItem.path as stickerURL"
+        )
+    }
+
     func testEtolandCommentsSurfaceImageAndVideoAttachments() throws {
         // Three comments with attachments + one plain text:
         // 1) `file: { bfType: "image", bfFile: "/media/.../x.jpg" }` → stickerURL

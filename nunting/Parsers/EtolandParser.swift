@@ -475,6 +475,17 @@ struct EtolandParser: BoardParser {
             return nil
         }()
 
+        // Etocon emoji stamps: `content` is empty and the visual lives at
+        // `emojiItem.path`. Treat exactly like an image attachment so the
+        // existing comment renderer's `stickerURL` path picks them up.
+        let emojiSticker: URL? = {
+            guard attachedSticker == nil,
+                  let p = raw.emojiItem?.path,
+                  !p.isEmpty
+            else { return nil }
+            return URL(string: p)
+        }()
+
         // Comments whose entire body is a pasted image / video URL render as
         // a media bubble too — match the shape we already use for aagag /
         // humoruniv (`stripCommentHTML` + `extractCommentImageURL`). Only
@@ -499,7 +510,7 @@ struct EtolandParser: BoardParser {
             return ["mp4", "webm", "mov"].contains(ext) ? url : nil
         }()
 
-        let stickerURL = attachedSticker ?? contentSticker
+        let stickerURL = attachedSticker ?? emojiSticker ?? contentSticker
         let videoURL = attachedVideo ?? contentVideo
         // When the content text was *the* URL we just promoted, drop it
         // so the bubble doesn't render the URL string under its image.
@@ -559,6 +570,7 @@ struct EtolandParser: BoardParser {
         let member: RawMember?
         let childrenComments: [RawComment]?
         let file: RawFile?
+        let emojiItem: RawEmoji?
 
         struct RawMember: Decodable {
             let nickname: String?
@@ -568,6 +580,12 @@ struct EtolandParser: BoardParser {
             let bfFile: String?
             let bfType: String?
             let bfMp4File: String?
+        }
+        /// Etoland's "etocon" emoji stamps. When the user picks one as
+        /// their comment, `content` is empty and `path` holds the
+        /// already-absolute CDN URL of the GIF.
+        struct RawEmoji: Decodable {
+            let path: String?
         }
     }
 }
