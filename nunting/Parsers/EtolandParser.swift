@@ -83,9 +83,80 @@ struct EtolandParser: BoardParser {
         )
     }
 
-    // Comments live inline in the SSR React-Server-Component blob, so
-    // parseDetail extracts them directly — no separate fetch needed.
-    nonisolated func commentsURL(for post: Post) -> URL? { nil }
+    /// Etoland's SSR is non-deterministic: sometimes the page ships
+    /// comments inline in the `__next_f.push` blob, sometimes it emits a
+    /// `BAILOUT_TO_CLIENT_SIDE_RENDERING` template and the comment data
+    /// only lands after client-side hydration. parseDetail handles the
+    /// inline case; this URL is the fallback the loader hits when the
+    /// inline comments were absent.
+    nonisolated func commentsURL(for post: Post) -> URL? {
+        Self.commentsAPIURL(for: post.url)
+    }
+
+    /// Skip the network round-trip when `parseDetail` already extracted
+    /// comments from the SSR blob — checking for the JS-escaped
+    /// `"comments":[` marker is a 1-shot string scan, much cheaper than
+    /// the API call. When the marker is absent, fall through to the
+    /// public comments endpoint and JSON-decode the response.
+    nonisolated func fetchAllComments(
+        for post: Post,
+        detailHTML: String?,
+        fetcher: @escaping @Sendable (URL) async throws -> String
+    ) async throws -> [Comment] {
+        if let html = detailHTML, html.contains(#"\"comments\":["#) {
+            // Inline path won; whatever parseDetail surfaced is correct,
+            // so don't replace it with a parallel network result.
+            return []
+        }
+        guard let url = Self.commentsAPIURL(for: post.url) else { return [] }
+        let body = try await fetcher(url)
+        guard let data = body.data(using: .utf8),
+              let response = try? JSONDecoder().decode(APIResponse.self, from: data),
+              response.status == "ETOCD200000",
+              let comments = response.data?.comments
+        else { return [] }
+        var out: [Comment] = []
+        for r in comments { Self.flatten(r, into: &out, isReply: false) }
+        return out
+    }
+
+    /// Reverse-engineered from the etoland Next.js client (chunk
+    /// `0f7oc_gjz_r8m.js`): `apiClient.get(\`board/${boTable}/article/slug/${slug}/comments\`, { params })`
+    /// resolves to this absolute URL on the same host. Slug is the URL's
+    /// path tail past `/view/` (etoland leaves it URL-encoded; the API
+    /// expects it that way too, so we don't decode here).
+    nonisolated private static func commentsAPIURL(for postURL: URL) -> URL? {
+        guard let host = postURL.host?.lowercased(),
+              host.hasSuffix("etoland.co.kr")
+        else { return nil }
+        let parts = postURL.pathComponents.filter { $0 != "/" }
+        // Expected shape: ["b", "<boTable>", "view", "<slug>"]
+        guard parts.count >= 4,
+              parts[0] == "b",
+              parts[2] == "view"
+        else { return nil }
+        let boTable = parts[1]
+        let slug = parts[3]
+        guard !boTable.isEmpty, !slug.isEmpty else { return nil }
+        var comps = URLComponents()
+        comps.scheme = "https"
+        comps.host = "etoland.co.kr"
+        comps.path = "/api/v1/board/\(boTable)/article/slug/\(slug)/comments"
+        comps.queryItems = [
+            URLQueryItem(name: "comment_page", value: "0"),
+            URLQueryItem(name: "comm_page_size", value: "50"),
+        ]
+        return comps.url
+    }
+
+    nonisolated private struct APIResponse: Decodable {
+        let status: String
+        let data: APIData?
+
+        struct APIData: Decodable {
+            let comments: [RawComment]?
+        }
+    }
 
     // MARK: - Field extraction
 

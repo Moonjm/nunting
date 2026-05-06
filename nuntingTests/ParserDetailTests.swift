@@ -434,6 +434,116 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertTrue(prose.contains("본문 아래"))
     }
 
+    func testEtolandCommentsURLDerivedFromPostPath() throws {
+        // Public API: /api/v1/board/{boTable}/article/slug/{slug}/comments
+        // boTable + slug pulled from the post URL's `/b/{boTable}/view/{slug}`
+        // segments. Slug stays URL-encoded — etoland's API wants it that way.
+        let parser = EtolandParser()
+        let post = Post(
+            id: "x",
+            site: .etoland,
+            boardID: "aagag",
+            title: "t",
+            author: "",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-9022769")!
+        )
+        let url = parser.commentsURL(for: post)
+        XCTAssertEqual(url?.host, "etoland.co.kr")
+        XCTAssertEqual(url?.path, "/api/v1/board/etohumor07/article/slug/-9022769/comments")
+        let items = (URLComponents(url: url!, resolvingAgainstBaseURL: false)?.queryItems ?? [])
+            .reduce(into: [String: String]()) { $0[$1.name] = $1.value }
+        XCTAssertEqual(items["comment_page"], "0")
+        XCTAssertEqual(items["comm_page_size"], "50")
+
+        // Non-etoland URL must return nil so the loader doesn't try to
+        // reach the etoland API for an aagag-mirror redirect target that
+        // wasn't actually etoland.
+        let other = Post(
+            id: "y",
+            site: .etoland,
+            boardID: "aagag",
+            title: "t",
+            author: "",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://example.com/b/x/view/y")!
+        )
+        XCTAssertNil(parser.commentsURL(for: other))
+    }
+
+    func testEtolandFetchAllCommentsSkipsAPIWhenSSRHasInline() async throws {
+        // Inline SSR comments path — `fetchAllComments` must return []
+        // so the loader keeps `parsed.comments` (already filled by
+        // parseDetail) instead of overriding with a parallel API call.
+        let parser = EtolandParser()
+        let post = Post(
+            id: "x",
+            site: .etoland,
+            boardID: "aagag",
+            title: "t",
+            author: "",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-1")!
+        )
+        let inlineHTML = #"<script>self.__next_f.push([1,"...\"comments\":[{}]..."])</script>"#
+
+        var fetched = false
+        let comments = try await parser.fetchAllComments(
+            for: post,
+            detailHTML: inlineHTML
+        ) { _ in
+            fetched = true
+            return ""
+        }
+        XCTAssertTrue(comments.isEmpty)
+        XCTAssertFalse(fetched, "inline path must short-circuit before the network round-trip")
+    }
+
+    func testEtolandFetchAllCommentsParsesAPIResponseWhenSSRBailedOut() async throws {
+        // Bailout SSR path — detailHTML lacks `"comments":[`, so
+        // `fetchAllComments` must hit the API URL and decode the JSON.
+        // Fixture mirrors etoland's actual API envelope shape.
+        let parser = EtolandParser()
+        let post = Post(
+            id: "x",
+            site: .etoland,
+            boardID: "aagag",
+            title: "t",
+            author: "",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-9022769")!
+        )
+        let bailoutHTML = "<html><template data-dgst=\"BAILOUT_TO_CLIENT_SIDE_RENDERING\"></template></html>"
+        let apiBody = """
+        {"status":"ETOCD200000","data":{"comments":[{"commentId":1,"parentId":null,"writeDateTimestamp":1,"recommendCount":2,"content":"테스트","isAnonymous":false,"member":{"nickname":"a","image":null},"file":null,"childrenComments":[]}]}}
+        """
+
+        var hitURL: URL?
+        let comments = try await parser.fetchAllComments(
+            for: post,
+            detailHTML: bailoutHTML
+        ) { url in
+            hitURL = url
+            return apiBody
+        }
+        XCTAssertEqual(
+            hitURL?.path,
+            "/api/v1/board/etohumor07/article/slug/-9022769/comments",
+            "bailout path must call the public comments API"
+        )
+        XCTAssertEqual(comments.count, 1)
+        XCTAssertEqual(comments[0].content, "테스트")
+        XCTAssertEqual(comments[0].likeCount, 2)
+    }
+
     func testEtolandCommentsSurfaceImageAndVideoAttachments() throws {
         // Three comments with attachments + one plain text:
         // 1) `file: { bfType: "image", bfFile: "/media/.../x.jpg" }` → stickerURL
