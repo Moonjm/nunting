@@ -99,6 +99,38 @@ final class BoardURLTests: XCTestCase {
         XCTAssertEqual(url.absoluteString, "https://aagag.com/issue/?page=2")
     }
 
+    func testAagagSourceFilterOverridesDefaultSiteList() {
+        // Single-source filter must replace the default `site=A|B|...&select=multi`
+        // pair on `/mirror/` with `site=clien&select=single`. Ordering of the
+        // remaining query items isn't guaranteed by URLComponents — assert on
+        // the parsed item map instead.
+        let clien = Board.aagag.filters.first { $0.id == "src-clien" }!
+        let url = Board.aagag.url(filter: clien, search: nil, page: nil)
+        // URLComponents drops the trailing slash on the path component.
+        XCTAssertEqual(url.path, "/mirror")
+        let items = queryItems(of: url)
+        XCTAssertEqual(items["site"], "clien", "default `site=A|B|...` must be overridden")
+        XCTAssertEqual(items["select"], "single", "default `select=multi` must flip to single")
+    }
+
+    func testAagagSourceFilterPagingPreservesQuery() {
+        // Source filter + page must keep the overridden site/select pair
+        // and add the `page=` item.
+        let cook82 = Board.aagag.filters.first { $0.id == "src-82cook" }!
+        let url = Board.aagag.url(filter: cook82, search: nil, page: 3)
+        let items = queryItems(of: url)
+        XCTAssertEqual(items["site"], "82cook")
+        XCTAssertEqual(items["select"], "single")
+        XCTAssertEqual(items["page"], "3")
+    }
+
+    func testAagagAllSourceFiltersHaveDistinctCodes() {
+        let sourceFilters = Board.aagag.filters.filter { $0.id.hasPrefix("src-") }
+        let codes = sourceFilters.compactMap { $0.queryItems["site"] }
+        XCTAssertEqual(codes.count, sourceFilters.count, "every source filter sets `site`")
+        XCTAssertEqual(Set(codes).count, codes.count, "no duplicate site codes")
+    }
+
     // MARK: - Search
 
     func testClienNewsSearchSwapsBaseAndPath() {

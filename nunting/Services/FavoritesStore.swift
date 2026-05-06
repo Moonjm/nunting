@@ -58,6 +58,13 @@ final class FavoritesStore {
         if let data = defaults.data(forKey: storageKey),
            let decoded = try? JSONDecoder().decode([FavoriteBoardSnapshot].self, from: data) {
             self.snapshots = decoded
+            // Statically-defined boards (Board.all) own their `filters` /
+            // `path` definitions in source — refresh persisted snapshots
+            // against the current source-of-truth so structural updates
+            // (new filter chips, renamed paths) propagate on app upgrade
+            // without requiring the user to navigate into a site section
+            // (which is the only other place `merge(boards:)` is wired).
+            merge(boards: Board.all)
             return
         }
 

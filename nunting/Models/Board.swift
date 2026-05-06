@@ -86,7 +86,7 @@ struct Board: Identifiable, Hashable {
             "page"
         case .inven:
             "p"
-        case .humor, .bobae, .slr, .ddanzi, .cook82:
+        case .humor, .bobae, .slr, .ddanzi, .cook82, .etoland:
             // Mirror-only dispatch targets — no direct browsing, no paging.
             nil
         }
@@ -104,7 +104,7 @@ struct Board: Identifiable, Hashable {
             "svalue"
         case .aagag:
             "word"
-        case .humor, .bobae, .slr, .ddanzi, .cook82:
+        case .humor, .bobae, .slr, .ddanzi, .cook82, .etoland:
             nil
         }
     }
@@ -117,7 +117,7 @@ struct Board: Identifiable, Hashable {
             return defaultSearchQueryName(for: site)
         case .ppomppu, .aagag:
             return provided ?? defaultSearchQueryName(for: site)
-        case .humor, .bobae, .slr, .ddanzi, .cook82:
+        case .humor, .bobae, .slr, .ddanzi, .cook82, .etoland:
             return nil
         }
     }
@@ -131,7 +131,7 @@ struct Board: Identifiable, Hashable {
             return [("sfl", "wr_subject")]
         case .inven:
             return [("stype", "subject")]
-        case .ppomppu, .aagag, .humor, .bobae, .slr, .ddanzi, .cook82:
+        case .ppomppu, .aagag, .humor, .bobae, .slr, .ddanzi, .cook82, .etoland:
             return []
         }
     }
@@ -140,7 +140,7 @@ struct Board: Identifiable, Hashable {
         switch site {
         case .clien:
             return "/service/search"
-        case .coolenjoy, .inven, .ppomppu, .aagag, .humor, .bobae, .slr, .ddanzi, .cook82:
+        case .coolenjoy, .inven, .ppomppu, .aagag, .humor, .bobae, .slr, .ddanzi, .cook82, .etoland:
             return listPath
         }
     }
@@ -149,7 +149,7 @@ struct Board: Identifiable, Hashable {
         switch site {
         case .clien:
             URL(string: "https://m.clien.net")!
-        case .coolenjoy, .inven, .ppomppu, .aagag, .humor, .bobae, .slr, .ddanzi, .cook82:
+        case .coolenjoy, .inven, .ppomppu, .aagag, .humor, .bobae, .slr, .ddanzi, .cook82, .etoland:
             site.baseURL
         }
     }
@@ -166,7 +166,7 @@ struct Board: Identifiable, Hashable {
         switch site {
         case .clien where isSearching:
             "p"
-        case .clien, .coolenjoy, .inven, .ppomppu, .aagag, .humor, .bobae, .slr, .ddanzi, .cook82:
+        case .clien, .coolenjoy, .inven, .ppomppu, .aagag, .humor, .bobae, .slr, .ddanzi, .cook82, .etoland:
             pageQueryName
         }
     }
@@ -176,7 +176,7 @@ struct Board: Identifiable, Hashable {
         case .clien:
             // Clien uses zero-based offsets: page 2 => po/p=1.
             page - 1
-        case .coolenjoy, .inven, .ppomppu, .aagag, .humor, .bobae, .slr, .ddanzi, .cook82:
+        case .coolenjoy, .inven, .ppomppu, .aagag, .humor, .bobae, .slr, .ddanzi, .cook82, .etoland:
             page
         }
     }
@@ -212,8 +212,22 @@ extension Board {
         site: .aagag,
         name: "모음",
         path: "/mirror/?site=clien%7Cppomppu%7C82cook%7Cbobae%7Chumor%7Cddanzi%7Cslrclub%7Cdamoang&select=multi",
+        // Source filters override the default `site=A|B|...&select=multi` query
+        // pair on the `/mirror/` path with a single source code + `select=single`,
+        // matching the URL aagag's web UI builds when a single chip is selected.
+        // Labels mirror `AagagSourceTag` so the filter chips read the same as
+        // the per-row source badges.
         filters: [
             BoardFilter(id: "issue", name: "이슈모음", replacementPath: "/issue/"),
+            BoardFilter(id: "src-clien",   name: "끌량",  queryItems: ["site": "clien",   "select": "single"]),
+            BoardFilter(id: "src-ppomppu", name: "뽐뿌",  queryItems: ["site": "ppomppu", "select": "single"]),
+            BoardFilter(id: "src-82cook",  name: "82쿡",  queryItems: ["site": "82cook",  "select": "single"]),
+            BoardFilter(id: "src-bobae",   name: "보배",  queryItems: ["site": "bobae",   "select": "single"]),
+            BoardFilter(id: "src-humor",   name: "웃대",  queryItems: ["site": "humor",   "select": "single"]),
+            BoardFilter(id: "src-ddanzi",  name: "딴지",  queryItems: ["site": "ddanzi",  "select": "single"]),
+            BoardFilter(id: "src-slrclub", name: "SLR",   queryItems: ["site": "slrclub", "select": "single"]),
+            BoardFilter(id: "src-inven",   name: "인벤",  queryItems: ["site": "inven",   "select": "single"]),
+            BoardFilter(id: "src-etoland", name: "이토",  queryItems: ["site": "etoland", "select": "single"]),
         ],
         searchQueryName: "word",
         pageQueryName: "page"

@@ -148,6 +148,14 @@ struct PostDetailView: View, Equatable {
                 .padding()
             }
             .scrollDisabled(isScrollingBlocked)
+            // Pull-to-refresh re-fetches the post from origin. Etoland's
+            // SSR is non-deterministic about including comments inline
+            // (sometimes comments show up, sometimes the server bails
+            // out to client-side rendering and the SSR HTML lands here
+            // empty); refresh gives the user a manual retry path that
+            // also covers stale view counts / late-arriving edits on
+            // every other site.
+            .refreshable { await reloadDetail() }
         }
         // Fill the hosted container even when the SwiftUI ideal size would
         // otherwise be smaller — UIHostingController inside our overlay
@@ -229,6 +237,20 @@ struct PostDetailView: View, Equatable {
             guard scheduledGeneration == coverGeneration else { return }
             dismissCovering = false
         }
+    }
+
+    /// Pull-to-refresh handler. Drops the cache for this post and re-runs
+    /// the loader's network path. The view is already on screen, so the
+    /// render-commit gate that `task(id:)` uses isn't needed — pass an
+    /// already-elapsed deadline so the loader's `awaitRenderReady` is a
+    /// no-op and the new `detail` writes flush as soon as parsing returns.
+    private func reloadDetail() async {
+        await loader.load(
+            post: post,
+            cache: cache,
+            renderReadyAt: ContinuousClock.now,
+            forceFresh: true
+        )
     }
 
     /// Custom top bar. We present this view as a ZStack overlay (not through

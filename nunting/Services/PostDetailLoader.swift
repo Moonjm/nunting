@@ -71,9 +71,16 @@ final class PostDetailLoader {
     func load(
         post: Post,
         cache: PostDetailCache,
-        renderReadyAt: ContinuousClock.Instant
+        renderReadyAt: ContinuousClock.Instant,
+        forceFresh: Bool = false
     ) async {
-        if let entry = cache.get(id: post.id) {
+        // Pull-to-refresh path: drop the in-memory cache entry so the
+        // load below goes back to the network. URLSession may still serve
+        // a cached HTTP response; that's a separate layer to revisit if
+        // refresh stops feeling fresh in the wild.
+        if forceFresh {
+            cache.remove(id: post.id)
+        } else if let entry = cache.get(id: post.id) {
             detail = entry.detail
             isLoading = false
             return

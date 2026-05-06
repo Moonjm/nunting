@@ -307,4 +307,424 @@ final class ParserDetailTests: XCTestCase {
             "without mp4_seq, mp4_url remains the source of truth"
         )
     }
+
+    // MARK: - Etoland
+
+    func testEtolandDetailExtractsTitleMetaAndImageBody() throws {
+        // Mirrors etoland.co.kr's Next.js SSR shape: <article> with the post
+        // <h1> (icon + truncate-span title), a meta line carrying author /
+        // <time> / 조회 / 추천 / 댓글, then div.view-content with inline
+        // images that ship `data-src` (raw original) alongside the optimised
+        // CDN `src`. Assertion targets: title strips the badge img, meta
+        // numbers are pulled by Korean keyword (not position), the image
+        // block resolves to the original (data-src), not the WebP-960 src.
+        let html = """
+        <html><body>
+        <article>
+          <h1 class="body-m"><img src="hit.svg" alt="인기"/><span class="truncate">에토 본문 제목</span></h1>
+          <div>
+            <div class="caption-s">
+              <a href="/member/1"><span class="nickname">아라크드</span></a>
+              <time>2026-05-06 20:22:24</time>
+              <span>조회 2,580</span>
+              <span>추천 19</span>
+              <span>댓글 17</span>
+            </div>
+          </div>
+          <div class="view-content">
+            <p>본문 첫 줄</p>
+            <p><img class="image-content" src="https://cdn.etoland.co.kr/optimize/w_920,format_webp/raw.jpg" data-src="https://cdn.etoland.co.kr/raw.jpg" /></p>
+            <p>본문 마지막 줄</p>
+          </div>
+        </article>
+        </body></html>
+        """
+        let parser = EtolandParser()
+        let post = Post(
+            id: "aagag-eto-1",
+            site: .etoland,
+            boardID: "aagag",
+            title: "fallback",
+            author: "",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-9022643")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+        XCTAssertEqual(detail.post.title, "에토 본문 제목", "h1 span.truncate, badge img stripped")
+        XCTAssertEqual(detail.post.author, "아라크드")
+        XCTAssertEqual(detail.fullDateText, "2026-05-06 20:22:24")
+        XCTAssertEqual(detail.viewCount, 2580, "조회 N — comma stripped via filter(\\.isNumber)")
+        XCTAssertEqual(detail.post.recommendCount, 19)
+        XCTAssertEqual(detail.post.commentCount, 17)
+
+        let images = detail.blocks.compactMap { block -> URL? in
+            if case .image(let url, _) = block.kind { return url }
+            return nil
+        }
+        XCTAssertEqual(images.count, 1)
+        XCTAssertEqual(
+            images.first?.absoluteString,
+            "https://cdn.etoland.co.kr/raw.jpg",
+            "data-src (original) wins over the optimize/ WebP src"
+        )
+    }
+
+    func testEtolandDetailSuppressesCustomVideoPlayerOverlayText() throws {
+        // Etoland wraps `<video>` in a React custom player; sibling overlays
+        // (`Play video` button label, time readout `0:00/0:00`, speed `1x`)
+        // are visible only via CSS positioning. SwiftSoup's text walker
+        // treats them as prose and leaks them into the rendered body.
+        // Detect the `board-video-player` wrapper class and extract only
+        // the inner `<video>`.
+        let html = """
+        <html><body>
+        <article>
+          <h1 class="body-m"><span class="truncate">제목</span></h1>
+          <div><div class="caption-s"><span class="nickname">x</span><time>2026-05-06 20:22</time></div></div>
+          <div class="view-content">
+            <p>본문 위</p>
+            <div class="some-utility board-video-player" style="width:450px">
+              <div class="relative">
+                <video src="https://btcdn.etoland.co.kr/clip.mp4" muted="" loop="">
+                  <source src="https://btcdn.etoland.co.kr/clip.mp4" />
+                </video>
+                <button aria-label="Play video">Play video</button>
+                <div class="peer/controls">0:00 / 0:00 1x</div>
+              </div>
+            </div>
+            <p>본문 아래</p>
+          </div>
+        </article>
+        </body></html>
+        """
+        let parser = EtolandParser()
+        let post = Post(
+            id: "aagag-eto-v",
+            site: .etoland,
+            boardID: "aagag",
+            title: "fallback",
+            author: "",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-1")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+
+        let videos = detail.blocks.compactMap { block -> URL? in
+            if case .video(let url, _) = block.kind { return url }
+            return nil
+        }
+        XCTAssertEqual(videos.count, 1)
+        XCTAssertEqual(videos.first?.absoluteString, "https://btcdn.etoland.co.kr/clip.mp4")
+
+        let prose = detail.blocks.compactMap { block -> String? in
+            if case .richText(let segs) = block.kind {
+                return segs.compactMap { if case .text(let s) = $0 { return s } else { return nil } }.joined()
+            }
+            return nil
+        }.joined(separator: "\n")
+        XCTAssertFalse(prose.contains("0:00"), "time readout from custom-player overlay leaked into body text")
+        XCTAssertFalse(prose.contains("1x"), "speed selector label from overlay leaked into body text")
+        XCTAssertFalse(prose.contains("Play video"), "play button label leaked into body text")
+        XCTAssertTrue(prose.contains("본문 위"))
+        XCTAssertTrue(prose.contains("본문 아래"))
+    }
+
+    func testEtolandCommentsURLDerivedFromPostPath() throws {
+        // Public API: /api/v1/board/{boTable}/article/slug/{slug}/comments
+        // boTable + slug pulled from the post URL's `/b/{boTable}/view/{slug}`
+        // segments. Slug stays URL-encoded — etoland's API wants it that way.
+        let parser = EtolandParser()
+        let post = Post(
+            id: "x",
+            site: .etoland,
+            boardID: "aagag",
+            title: "t",
+            author: "",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-9022769")!
+        )
+        let url = parser.commentsURL(for: post)
+        XCTAssertEqual(url?.host, "etoland.co.kr")
+        XCTAssertEqual(url?.path, "/api/v1/board/etohumor07/article/slug/-9022769/comments")
+        let items = (URLComponents(url: url!, resolvingAgainstBaseURL: false)?.queryItems ?? [])
+            .reduce(into: [String: String]()) { $0[$1.name] = $1.value }
+        XCTAssertEqual(items["comment_page"], "0")
+        XCTAssertEqual(items["comm_page_size"], "50")
+
+        // Non-etoland URL must return nil so the loader doesn't try to
+        // reach the etoland API for an aagag-mirror redirect target that
+        // wasn't actually etoland.
+        let other = Post(
+            id: "y",
+            site: .etoland,
+            boardID: "aagag",
+            title: "t",
+            author: "",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://example.com/b/x/view/y")!
+        )
+        XCTAssertNil(parser.commentsURL(for: other))
+    }
+
+    func testEtolandFetchAllCommentsSkipsAPIWhenSSRHasInline() async throws {
+        // Inline SSR comments path — `fetchAllComments` must return []
+        // so the loader keeps `parsed.comments` (already filled by
+        // parseDetail) instead of overriding with a parallel API call.
+        let parser = EtolandParser()
+        let post = Post(
+            id: "x",
+            site: .etoland,
+            boardID: "aagag",
+            title: "t",
+            author: "",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-1")!
+        )
+        // Marker matches the wire envelope `"data":{"comments":[…]}`,
+        // not the bare `"comments":[` substring (which would false-positive
+        // on any user comment whose body literally contains that string).
+        let inlineHTML = #"<script>self.__next_f.push([1,"...\"data\":{\"comments\":[{}]}..."])</script>"#
+
+        var fetched = false
+        let comments = try await parser.fetchAllComments(
+            for: post,
+            detailHTML: inlineHTML
+        ) { _ in
+            fetched = true
+            return ""
+        }
+        XCTAssertTrue(comments.isEmpty)
+        XCTAssertFalse(fetched, "inline path must short-circuit before the network round-trip")
+    }
+
+    func testEtolandFetchAllCommentsParsesAPIResponseWhenSSRBailedOut() async throws {
+        // Bailout SSR path — detailHTML lacks `"comments":[`, so
+        // `fetchAllComments` must hit the API URL and decode the JSON.
+        // Fixture mirrors etoland's actual API envelope shape.
+        let parser = EtolandParser()
+        let post = Post(
+            id: "x",
+            site: .etoland,
+            boardID: "aagag",
+            title: "t",
+            author: "",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-9022769")!
+        )
+        let bailoutHTML = "<html><template data-dgst=\"BAILOUT_TO_CLIENT_SIDE_RENDERING\"></template></html>"
+        let apiBody = """
+        {"status":"ETOCD200000","data":{"comments":[{"commentId":1,"parentId":null,"writeDateTimestamp":1,"recommendCount":2,"content":"테스트","isAnonymous":false,"member":{"nickname":"a","image":null},"file":null,"childrenComments":[]}]}}
+        """
+
+        var hitURL: URL?
+        let comments = try await parser.fetchAllComments(
+            for: post,
+            detailHTML: bailoutHTML
+        ) { url in
+            hitURL = url
+            return apiBody
+        }
+        XCTAssertEqual(
+            hitURL?.path,
+            "/api/v1/board/etohumor07/article/slug/-9022769/comments",
+            "bailout path must call the public comments API"
+        )
+        XCTAssertEqual(comments.count, 1)
+        XCTAssertEqual(comments[0].content, "테스트")
+        XCTAssertEqual(comments[0].likeCount, 2)
+    }
+
+    func testEtolandCommentsPreserveEmojiViaSurrogatePairs() throws {
+        // JS-string-encoded JSON inside __next_f.push escapes supplementary-
+        // plane characters (emoji like 🐶 = U+1F436) as a UTF-16 surrogate
+        // pair: `🐶`. A naive `\u` decoder that only handles
+        // 4-hex Basic-Multilingual-Plane escapes silently drops both halves
+        // because `UnicodeScalar(0xD83D)` is nil for surrogate code points.
+        // Pin the pair-aware decoder so emoji-laden Korean comments survive.
+        // 가족 ❤️ = `가족 ❤️` (BMP, single \u each)
+        // 🐶 = `🐶` (surrogate pair)
+        let html = """
+        <html><body>
+        <article>
+          <h1 class="body-m"><span class="truncate">제목</span></h1>
+          <div><div class="caption-s"><span class="nickname">x</span><time>2026-05-06 20:22</time></div></div>
+          <div class="view-content"><p>본문</p></div>
+        </article>
+        <script>self.__next_f.push([1,"6:[\\"$\\",\\"$L32\\",null,{\\"data\\":{\\"comments\\":[{\\"commentId\\":1,\\"parentId\\":null,\\"writeDateTimestamp\\":1,\\"recommendCount\\":0,\\"content\\":\\"\\\\uAC00\\\\uC871 \\\\u2764\\\\uFE0F \\\\uD83D\\\\uDC36\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"u\\"},\\"file\\":null,\\"childrenComments\\":[]}]}}]"])</script>
+        </body></html>
+        """
+        let parser = EtolandParser()
+        let post = Post(
+            id: "x",
+            site: .etoland,
+            boardID: "aagag",
+            title: "fallback",
+            author: "",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-1")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        XCTAssertEqual(detail.comments.count, 1)
+        XCTAssertEqual(detail.comments[0].content, "가족 ❤\u{FE0F} 🐶")
+    }
+
+    func testEtolandEmojiStampSurfacesAsSticker() throws {
+        // Etocon (etoland's own sticker pack) comments ship with an empty
+        // `content` and an `emojiItem.path` pointing at the GIF. Without
+        // this branch the bubble would render as blank text. Real-world
+        // shape from post 9022801's second comment.
+        let html = """
+        <html><body>
+        <article>
+          <h1 class="body-m"><span class="truncate">제목</span></h1>
+          <div><div class="caption-s"><span class="nickname">x</span><time>2026-05-06 20:22</time></div></div>
+          <div class="view-content"><p>본문</p></div>
+        </article>
+        <script>self.__next_f.push([1,"6:[\\"$\\",\\"$L32\\",null,{\\"data\\":{\\"comments\\":[{\\"commentId\\":99,\\"parentId\\":null,\\"writeDateTimestamp\\":1,\\"recommendCount\\":0,\\"content\\":\\"\\",\\"emojiId\\":570,\\"emojiItem\\":{\\"id\\":570,\\"etoconId\\":23,\\"path\\":\\"https://btcdn.etoland.co.kr/static/media/images/etocon/23/22.gif\\",\\"order\\":22},\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"u\\"},\\"file\\":null,\\"childrenComments\\":[]}]}}]"])</script>
+        </body></html>
+        """
+        let parser = EtolandParser()
+        let post = Post(
+            id: "x",
+            site: .etoland,
+            boardID: "aagag",
+            title: "fallback",
+            author: "",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-1")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        XCTAssertEqual(detail.comments.count, 1)
+        XCTAssertEqual(detail.comments[0].content, "")
+        XCTAssertEqual(
+            detail.comments[0].stickerURL?.absoluteString,
+            "https://btcdn.etoland.co.kr/static/media/images/etocon/23/22.gif",
+            "emoji-only comment should surface emojiItem.path as stickerURL"
+        )
+    }
+
+    func testEtolandCommentsSurfaceImageAndVideoAttachments() throws {
+        // Three comments with attachments + one plain text:
+        // 1) `file: { bfType: "image", bfFile: "/media/.../x.jpg" }` → stickerURL
+        // 2) `file: { bfType: "video", bfMp4File: "/media/.../y.mp4" }` → videoURL
+        // 3) content is just an image URL (user pasted) → stickerURL + content cleared
+        // 4) plain text comment, no attachment
+        let html = """
+        <html><body>
+        <article>
+          <h1 class="body-m"><span class="truncate">제목</span></h1>
+          <div><div class="caption-s"><span class="nickname">x</span><time>2026-05-06 20:22</time></div></div>
+          <div class="view-content"><p>본문</p></div>
+        </article>
+        <script>self.__next_f.push([1,"6:[\\"$\\",\\"$L32\\",null,{\\"data\\":{\\"comments\\":[{\\"commentId\\":1,\\"parentId\\":null,\\"writeDateTimestamp\\":1,\\"recommendCount\\":0,\\"content\\":\\"이미지 첨부\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"a\\"},\\"file\\":{\\"bfFile\\":\\"/media/etohumor07/test/img.jpg\\",\\"bfType\\":\\"image\\",\\"bfMp4File\\":null},\\"childrenComments\\":[]},{\\"commentId\\":2,\\"parentId\\":null,\\"writeDateTimestamp\\":2,\\"recommendCount\\":0,\\"content\\":\\"비디오 첨부\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"b\\"},\\"file\\":{\\"bfFile\\":\\"/media/etohumor07/test/orig.mov\\",\\"bfType\\":\\"video\\",\\"bfMp4File\\":\\"/media/etohumor07/test/clip.mp4\\"},\\"childrenComments\\":[]},{\\"commentId\\":3,\\"parentId\\":null,\\"writeDateTimestamp\\":3,\\"recommendCount\\":0,\\"content\\":\\"https://btcdn.etoland.co.kr/static/media/etc/meme.jpg\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"c\\"},\\"file\\":null,\\"childrenComments\\":[]},{\\"commentId\\":4,\\"parentId\\":null,\\"writeDateTimestamp\\":4,\\"recommendCount\\":0,\\"content\\":\\"그냥 텍스트\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"d\\"},\\"file\\":null,\\"childrenComments\\":[]}]}}]"])</script>
+        </body></html>
+        """
+        let parser = EtolandParser()
+        let post = Post(
+            id: "aagag-eto-img",
+            site: .etoland,
+            boardID: "aagag",
+            title: "fallback",
+            author: "",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-1")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        XCTAssertEqual(detail.comments.count, 4)
+
+        XCTAssertEqual(
+            detail.comments[0].stickerURL?.absoluteString,
+            "https://btcdn.etoland.co.kr/static/media/etohumor07/test/img.jpg",
+            "image attachment resolves bfFile under the CDN /static base"
+        )
+        XCTAssertEqual(detail.comments[0].content, "이미지 첨부")
+
+        XCTAssertNil(detail.comments[1].stickerURL)
+        XCTAssertEqual(
+            detail.comments[1].videoURL?.absoluteString,
+            "https://btcdn.etoland.co.kr/static/media/etohumor07/test/clip.mp4",
+            "video attachment prefers bfMp4File (transcoded) over bfFile"
+        )
+
+        XCTAssertEqual(
+            detail.comments[2].stickerURL?.absoluteString,
+            "https://btcdn.etoland.co.kr/static/media/etc/meme.jpg",
+            "content-as-image-URL gets promoted to stickerURL"
+        )
+        XCTAssertEqual(
+            detail.comments[2].content,
+            "",
+            "promoted-URL content is cleared so the URL doesn't render under the image"
+        )
+
+        XCTAssertNil(detail.comments[3].stickerURL)
+        XCTAssertNil(detail.comments[3].videoURL)
+        XCTAssertEqual(detail.comments[3].content, "그냥 텍스트")
+    }
+
+    func testEtolandDetailExtractsCommentsFromSSRPayload() throws {
+        // Etoland comments live inside a __next_f.push([1,"...\"comments\":[...]..."])
+        // script tag — a JS-escaped JSON blob. Fixture mimics the real shape:
+        // two top-level comments where the second has a reply (childrenComments).
+        // The walker has to track `\"` quote toggles and ignore brackets inside
+        // string content (e.g. content with literal `]` characters).
+        let html = """
+        <html><body>
+        <article>
+          <h1 class="body-m"><span class="truncate">제목</span></h1>
+          <div><div class="caption-s"><span class="nickname">작성자</span><time>2026-05-06 20:22</time></div></div>
+          <div class="view-content"><p>본문</p></div>
+        </article>
+        <script>self.__next_f.push([1,"6:[\\"$\\",\\"$L32\\",null,{\\"data\\":{\\"comments\\":[{\\"wrId\\":1,\\"commentId\\":100,\\"parentId\\":null,\\"writeDateTimestamp\\":1778066655000,\\"recommendCount\\":8,\\"content\\":\\"첫 댓글 [대괄호 포함]\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"갑\\",\\"image\\":\\"https://etoland.co.kr/avatar1\\"},\\"childrenComments\\":[]},{\\"wrId\\":1,\\"commentId\\":200,\\"parentId\\":null,\\"writeDateTimestamp\\":1778067000000,\\"recommendCount\\":3,\\"content\\":\\"두번째\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"을\\",\\"image\\":null},\\"childrenComments\\":[{\\"wrId\\":1,\\"commentId\\":201,\\"parentId\\":200,\\"writeDateTimestamp\\":1778067100000,\\"recommendCount\\":0,\\"content\\":\\"답글\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"병\\",\\"image\\":null},\\"childrenComments\\":[]}]}]}}]"])</script>
+        </body></html>
+        """
+        let parser = EtolandParser()
+        let post = Post(
+            id: "aagag-eto-c",
+            site: .etoland,
+            boardID: "aagag",
+            title: "fallback",
+            author: "",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-1")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+        XCTAssertEqual(detail.comments.count, 3, "2 top-level + 1 nested reply, flattened")
+        XCTAssertEqual(detail.comments[0].id, "etoland-c-100")
+        XCTAssertEqual(detail.comments[0].author, "갑")
+        XCTAssertEqual(detail.comments[0].content, "첫 댓글 [대괄호 포함]", "literal `[` inside string content must not derail bracket-walker")
+        XCTAssertEqual(detail.comments[0].likeCount, 8)
+        XCTAssertFalse(detail.comments[0].isReply)
+        XCTAssertEqual(detail.comments[0].authIconURL?.absoluteString, "https://etoland.co.kr/avatar1")
+
+        XCTAssertEqual(detail.comments[1].id, "etoland-c-200")
+        XCTAssertEqual(detail.comments[1].author, "을")
+        XCTAssertFalse(detail.comments[1].isReply)
+
+        XCTAssertEqual(detail.comments[2].id, "etoland-c-201")
+        XCTAssertEqual(detail.comments[2].author, "병")
+        XCTAssertTrue(detail.comments[2].isReply, "childrenComments entry surfaces with isReply=true")
+    }
 }
