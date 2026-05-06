@@ -3,41 +3,72 @@ import SwiftUI
 struct BoardFilterBar: View {
     let board: Board
     @Binding var selection: BoardFilter?
-    /// Horizontal scroll offset, lifted into the parent so the position
-    /// survives the `safeAreaInset` content rebuild that fires on every
-    /// `selection` change. Holding this as `@State` inside `BoardFilterBar`
-    /// itself isn't enough — the inset's content closure re-evaluates,
-    /// SwiftUI tears the chip-bar subtree down, and the in-bar `@State`
-    /// resets to nil before the next `.scrollPosition` apply runs. Owning
-    /// the binding outside the bar keeps the leading-anchor stable across
-    /// rebuilds.
+    /// Leading-most visible chip id, lifted into the parent's `@State` so the
+    /// horizontal scroll offset survives the `safeAreaInset` content rebuild
+    /// that fires on every `selection` change. Pure SwiftUI alternatives
+    /// (`.scrollPosition(id:)`, plain `@State` inside the bar) intermittently
+    /// snap the underlying UIScrollView back to the leading edge on rebuild
+    /// in iOS 26 — visible as the bar flicking to "전체" every chip tap.
+    /// Tracking the anchor explicitly via `GeometryReader` + restoring it
+    /// via `ScrollViewReader.scrollTo` after the rebuild is a workaround
+    /// that doesn't depend on private SwiftUI scroll-restoration heuristics.
     @Binding var scrolledID: String?
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(tabItems) { item in
-                    tab(label: item.label, isSelected: item.isSelected(selection: selection)) {
-                        // No `withAnimation` here: animating a binding write
-                        // that ripples up through `safeAreaInset` triggers an
-                        // implicit transition on the entire chip bar, which
-                        // (combined with the parent rebuild) causes the
-                        // underlying UIScrollView to snap back to the leading
-                        // edge. The capsule color change still feels instant.
-                        selection = item.filter
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(tabItems) { item in
+                        tab(label: item.label, isSelected: item.isSelected(selection: selection)) {
+                            // No `withAnimation`: an animated binding write
+                            // ripples through `safeAreaInset` and triggers
+                            // an implicit transition that interferes with
+                            // the post-rebuild scroll restore below.
+                            selection = item.filter
+                        }
+                        .id(item.id)
+                        .background(
+                            GeometryReader { geo in
+                                Color.clear.preference(
+                                    key: ChipFramesKey.self,
+                                    value: [ChipFrame(id: item.id, minX: geo.frame(in: .named(Self.coordSpace)).minX)]
+                                )
+                            }
+                        )
                     }
-                    .id(item.id)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
+            .coordinateSpace(name: Self.coordSpace)
+            .onPreferenceChange(ChipFramesKey.self) { frames in
+                // Leading-most chip whose minX is at-or-past the scroll
+                // view's leading edge (frames with minX < 0 are scrolled
+                // out of view to the left; pick the smallest non-negative).
+                let visible = frames
+                    .filter { $0.minX >= -0.5 }
+                    .min(by: { $0.minX < $1.minX })
+                if let id = visible?.id, id != scrolledID {
+                    scrolledID = id
                 }
             }
-            .scrollTargetLayout()
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+            .onChange(of: selection?.id) { _, _ in
+                // The selection write rebuilt the bar; SwiftUI's default
+                // is to leave the underlying UIScrollView at offset 0.
+                // Re-anchor to the chip the user was looking at before
+                // they tapped so the bar stays put. No animation —
+                // animating the restore would itself look like a snap.
+                if let id = scrolledID {
+                    proxy.scrollTo(id, anchor: .leading)
+                }
+            }
         }
-        .scrollPosition(id: $scrolledID, anchor: .leading)
         .background(Color("AppSurface2"))
         .overlay(alignment: .top) { Divider() }
         .overlay(alignment: .bottom) { Divider() }
     }
+
+    private static let coordSpace = "BoardFilterBar.scroll"
 
     private var tabItems: [FilterTabItem] {
         if board.id == Board.invenMaple.id {
@@ -88,5 +119,17 @@ private struct FilterTabItem: Identifiable {
         default:
             false
         }
+    }
+}
+
+private struct ChipFrame: Equatable {
+    let id: String
+    let minX: CGFloat
+}
+
+private struct ChipFramesKey: PreferenceKey {
+    static let defaultValue: [ChipFrame] = []
+    static func reduce(value: inout [ChipFrame], nextValue: () -> [ChipFrame]) {
+        value.append(contentsOf: nextValue())
     }
 }
