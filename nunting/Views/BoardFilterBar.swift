@@ -15,7 +15,7 @@ struct BoardFilterBar: View {
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(spacing: 8) {
+            HStack(spacing: 8) {
                 ForEach(tabItems) { item in
                     tab(label: item.label, isSelected: item.isSelected(selection: selection)) {
                         // No `withAnimation` here: animating a binding write
