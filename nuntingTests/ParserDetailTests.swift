@@ -491,7 +491,10 @@ final class ParserDetailTests: XCTestCase {
             commentCount: 0,
             url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-1")!
         )
-        let inlineHTML = #"<script>self.__next_f.push([1,"...\"comments\":[{}]..."])</script>"#
+        // Marker matches the wire envelope `"data":{"comments":[…]}`,
+        // not the bare `"comments":[` substring (which would false-positive
+        // on any user comment whose body literally contains that string).
+        let inlineHTML = #"<script>self.__next_f.push([1,"...\"data\":{\"comments\":[{}]}..."])</script>"#
 
         var fetched = false
         let comments = try await parser.fetchAllComments(
@@ -542,6 +545,42 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertEqual(comments.count, 1)
         XCTAssertEqual(comments[0].content, "테스트")
         XCTAssertEqual(comments[0].likeCount, 2)
+    }
+
+    func testEtolandCommentsPreserveEmojiViaSurrogatePairs() throws {
+        // JS-string-encoded JSON inside __next_f.push escapes supplementary-
+        // plane characters (emoji like 🐶 = U+1F436) as a UTF-16 surrogate
+        // pair: `🐶`. A naive `\u` decoder that only handles
+        // 4-hex Basic-Multilingual-Plane escapes silently drops both halves
+        // because `UnicodeScalar(0xD83D)` is nil for surrogate code points.
+        // Pin the pair-aware decoder so emoji-laden Korean comments survive.
+        // 가족 ❤️ = `가족 ❤️` (BMP, single \u each)
+        // 🐶 = `🐶` (surrogate pair)
+        let html = """
+        <html><body>
+        <article>
+          <h1 class="body-m"><span class="truncate">제목</span></h1>
+          <div><div class="caption-s"><span class="nickname">x</span><time>2026-05-06 20:22</time></div></div>
+          <div class="view-content"><p>본문</p></div>
+        </article>
+        <script>self.__next_f.push([1,"6:[\\"$\\",\\"$L32\\",null,{\\"data\\":{\\"comments\\":[{\\"commentId\\":1,\\"parentId\\":null,\\"writeDateTimestamp\\":1,\\"recommendCount\\":0,\\"content\\":\\"\\\\uAC00\\\\uC871 \\\\u2764\\\\uFE0F \\\\uD83D\\\\uDC36\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"u\\"},\\"file\\":null,\\"childrenComments\\":[]}]}}]"])</script>
+        </body></html>
+        """
+        let parser = EtolandParser()
+        let post = Post(
+            id: "x",
+            site: .etoland,
+            boardID: "aagag",
+            title: "fallback",
+            author: "",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-1")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        XCTAssertEqual(detail.comments.count, 1)
+        XCTAssertEqual(detail.comments[0].content, "가족 ❤\u{FE0F} 🐶")
     }
 
     func testEtolandEmojiStampSurfacesAsSticker() throws {

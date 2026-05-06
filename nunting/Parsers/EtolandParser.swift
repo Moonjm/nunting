@@ -5,13 +5,17 @@ import SwiftSoup
 /// redirects — etoland's mobile detail URL pattern is
 /// `etoland.co.kr/b/{board}/view/{slug-or-id}-{post_id}`.
 ///
-/// Etoland is a Next.js SSR app, so the post body, title, and meta line are
-/// rendered into the initial HTML. Comments load via a client-side fetch
-/// after page hydration and aren't in the SSR response — `parseComments` /
-/// `fetchAllComments` return `[]` for now (the API surface they call is
-/// authenticated and not publicly documented). The body parser is the
-/// minimum useful surface to get etoland posts off the "외부 사이트로 이동"
-/// banner.
+/// Etoland is a Next.js SSR app. Title, meta, body blocks, and (sometimes)
+/// the full comment tree are rendered into the initial HTML inside a
+/// `__next_f.push([1, "<JS-string>"])` payload. parseDetail extracts all of
+/// those. Comments specifically are non-deterministic in SSR — the same
+/// post can ship with `\"comments\":[…]` inline on one request and emit a
+/// `BAILOUT_TO_CLIENT_SIDE_RENDERING` template on the next. When the
+/// inline payload is missing, `fetchAllComments` falls back to the public
+/// API at `/api/v1/board/{boTable}/article/slug/{slug}/comments`
+/// (reverse-engineered from the etoland Next.js client chunks) and decodes
+/// the same `RawComment` shape so attachments / etocon emoji / replies
+/// surface either way.
 struct EtolandParser: BoardParser {
     let site: Site = .etoland
 
@@ -94,16 +98,22 @@ struct EtolandParser: BoardParser {
     }
 
     /// Skip the network round-trip when `parseDetail` already extracted
-    /// comments from the SSR blob — checking for the JS-escaped
-    /// `"comments":[` marker is a 1-shot string scan, much cheaper than
-    /// the API call. When the marker is absent, fall through to the
-    /// public comments endpoint and JSON-decode the response.
+    /// comments from the SSR blob — checking for the JS-escaped envelope
+    /// shape is a 1-shot string scan, much cheaper than the API call.
+    /// When the marker is absent, fall through to the public comments
+    /// endpoint and JSON-decode the response.
     nonisolated func fetchAllComments(
         for post: Post,
         detailHTML: String?,
         fetcher: @escaping @Sendable (URL) async throws -> String
     ) async throws -> [Comment] {
-        if let html = detailHTML, html.contains(#"\"comments\":["#) {
+        // Match the wire envelope `"data":{"comments":[…]}` rather than the
+        // bare `"comments":[` substring — the latter false-positives on
+        // any user comment whose body literally contains `"comments":[`
+        // (programming/JSON discussion threads). Etoland always wraps the
+        // array under `data` in the SSR push, so the longer marker has
+        // effectively zero false-positive surface.
+        if let html = detailHTML, html.contains(#"\"data\":{\"comments\":["#) {
             // Inline path won; whatever parseDetail surfaced is correct,
             // so don't replace it with a parallel network result.
             return []
@@ -122,9 +132,13 @@ struct EtolandParser: BoardParser {
 
     /// Reverse-engineered from the etoland Next.js client (chunk
     /// `0f7oc_gjz_r8m.js`): `apiClient.get(\`board/${boTable}/article/slug/${slug}/comments\`, { params })`
-    /// resolves to this absolute URL on the same host. Slug is the URL's
-    /// path tail past `/view/` (etoland leaves it URL-encoded; the API
-    /// expects it that way too, so we don't decode here).
+    /// resolves to this absolute URL on the same host. Slug round-trip:
+    /// `URL.pathComponents` decodes percent-escapes, then assigning to
+    /// `URLComponents.path` re-encodes when serializing via `.url`, so the
+    /// final URL has the same encoding as the originating post URL. The
+    /// API accepts either encoding, so the round-trip is observationally
+    /// transparent — the decode/re-encode is just an artifact of how the
+    /// Foundation URL types work, not a deliberate choice.
     nonisolated private static func commentsAPIURL(for postURL: URL) -> URL? {
         guard let host = postURL.host?.lowercased(),
               host.hasSuffix("etoland.co.kr")
@@ -421,6 +435,18 @@ struct EtolandParser: BoardParser {
     /// `\uXXXX`) into their literal characters so the result is valid
     /// JSON. Other backslash sequences pass the second char through
     /// unchanged — etoland doesn't ship anything weirder than the above.
+    ///
+    /// `JSON.stringify` in Next.js encodes supplementary-plane characters
+    /// (emoji like 🐶 = U+1F436) as a UTF-16 surrogate pair —
+    /// `🐶`. `UnicodeScalar(_ v: UInt32)` returns `nil` for any
+    /// surrogate code point (U+D800–U+DFFF) by spec, so a naive per-`\u`
+    /// loop silently drops both halves and the emoji disappears. When we
+    /// see a high surrogate, peek the next 6 chars for a `\uXXXX` low
+    /// surrogate and combine via the standard
+    /// `0x10000 + (high - 0xD800) * 0x400 + (low - 0xDC00)` formula.
+    /// Stray (unpaired) surrogates fall through unchanged rather than
+    /// emitting a replacement char — they only show up in malformed
+    /// upstream payloads and we'd rather pass them along than lie.
     nonisolated private static func unescapeJSString(_ s: String) -> String {
         var out = ""
         out.reserveCapacity(s.count)
@@ -436,9 +462,23 @@ struct EtolandParser: BoardParser {
             case "t": out.append("\t")
             case "r": out.append("\r")
             case "u":
-                var hex = ""
-                for _ in 0..<4 { if let h = iter.next() { hex.append(h) } }
-                if let scalar = UInt32(hex, radix: 16).flatMap(UnicodeScalar.init) {
+                guard let code = readHex4(&iter) else { continue }
+                if (0xD800...0xDBFF).contains(code) {
+                    // High surrogate — peek `\uXXXX` low surrogate.
+                    guard let backslash = iter.next(), backslash == "\\",
+                          let u = iter.next(), u == "u",
+                          let low = readHex4(&iter),
+                          (0xDC00...0xDFFF).contains(low)
+                    else {
+                        // Unpaired high surrogate; emit nothing (Swift
+                        // can't make a Character from it anyway).
+                        continue
+                    }
+                    let combined = 0x10000 + (code - 0xD800) * 0x400 + (low - 0xDC00)
+                    if let scalar = UnicodeScalar(combined) {
+                        out.append(Character(scalar))
+                    }
+                } else if let scalar = UnicodeScalar(code) {
                     out.append(Character(scalar))
                 }
             default:
@@ -446,6 +486,15 @@ struct EtolandParser: BoardParser {
             }
         }
         return out
+    }
+
+    nonisolated private static func readHex4(_ iter: inout String.Iterator) -> UInt32? {
+        var hex = ""
+        for _ in 0..<4 {
+            guard let h = iter.next() else { return nil }
+            hex.append(h)
+        }
+        return UInt32(hex, radix: 16)
     }
 
     nonisolated private static func flatten(_ raw: RawComment, into out: inout [Comment], isReply: Bool) {
