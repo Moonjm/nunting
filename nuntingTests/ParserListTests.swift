@@ -209,4 +209,57 @@ final class ParserListTests: XCTestCase {
         XCTAssertEqual(posts[1].levelText, "humor")
         XCTAssertEqual(posts[1].url.path, "/mirror/re", "'./re?...' 도 동일하게 정규화")
     }
+
+    // MARK: - Title cleanup (broken HTML entity from server-side truncation)
+
+    func testCleanTitleStripsBrokenTrailingEntityFragment() {
+        // 82cook's enti.php list truncates by encoded byte length, which can
+        // slice in the middle of `&quot;` and produce `…&quo..` — SwiftSoup
+        // can't decode the partial fragment so it leaks as literal text.
+        XCTAssertEqual(
+            AagagParser.cleanTitle("최근 주위에 \"힘들다&quo.."),
+            "최근 주위에 \"힘들다…"
+        )
+        XCTAssertEqual(
+            AagagParser.cleanTitle("어떤 글 &amp..."),
+            "어떤 글 …"
+        )
+        XCTAssertEqual(
+            AagagParser.cleanTitle("끝 &quot…"),
+            "끝 …"
+        )
+    }
+
+    func testCleanTitleLeavesIntactTitlesAlone() {
+        // Valid Q&A / Tom&Jerry style titles must NOT be touched — the
+        // pattern is anchored by the truncation marker (`..` / `…`).
+        XCTAssertEqual(AagagParser.cleanTitle("Q&A 정리"), "Q&A 정리")
+        XCTAssertEqual(AagagParser.cleanTitle("Tom&Jerry"), "Tom&Jerry")
+        XCTAssertEqual(
+            AagagParser.cleanTitle("최근 주위에 \"힘들다\" 토로"),
+            "최근 주위에 \"힘들다\" 토로"
+        )
+        // No `&` short-circuit path.
+        XCTAssertEqual(AagagParser.cleanTitle("일반 제목"), "일반 제목")
+    }
+
+    func testAagagListCleansBrokenTitleEntity() throws {
+        let html = """
+        <html><body>
+        <table class="aalist">
+        <tr><td>
+            <a class="article" href="re?ss=cook82_999" ss="cook82_999">
+                <span class="rank bc_cook82">1</span>
+                <span class="title">최근 주위에 &quot;힘들다&quo..<span class="cmt">5</span></span>
+                <span class="date"><u>2분전</u></span>
+            </a>
+        </td></tr>
+        </table>
+        </body></html>
+        """
+        let parser = AagagParser()
+        let posts = try parser.parseList(html: html, board: .aagag)
+        XCTAssertEqual(posts.count, 1)
+        XCTAssertEqual(posts[0].title, "최근 주위에 \"힘들다…")
+    }
 }

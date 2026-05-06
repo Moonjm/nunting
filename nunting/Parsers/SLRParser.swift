@@ -129,9 +129,9 @@ struct SLRParser: BoardParser {
     // MARK: - Field extraction
 
     nonisolated private func extractTitle(in doc: Document, fallback: String) throws -> String {
-        let text = try doc.select(".subject").first()?.text()
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return text.isEmpty ? fallback : text
+        let text = try doc.select(".subject").first()?.text() ?? ""
+        let cleaned = Self.cleanTitle(text)
+        return cleaned.isEmpty ? fallback : cleaned
     }
 
     /// Mobile SLR crams author / time / view / recommend into a single

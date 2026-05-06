@@ -134,9 +134,9 @@ struct DdanziParser: BoardParser {
     // MARK: - Field extraction
 
     nonisolated private func extractTitle(in doc: Document, fallback: String) throws -> String {
-        let text = try doc.select(".boardR .top_title h1").first()?.text()
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return text.isEmpty ? fallback : text
+        let text = try doc.select(".boardR .top_title h1").first()?.text() ?? ""
+        let cleaned = Self.cleanTitle(text)
+        return cleaned.isEmpty ? fallback : cleaned
     }
 
     nonisolated private func extractAuthor(in doc: Document, fallback: String) throws -> String {

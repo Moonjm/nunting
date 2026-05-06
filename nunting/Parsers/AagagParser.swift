@@ -56,7 +56,7 @@ struct AagagParser: BoardParser {
             let titleEl = try el.select("span.title").first()
             let titleCopy = titleEl.flatMap { $0.copy() as? Element } ?? titleEl
             try titleCopy?.select("span.btmlayer, span.cmt").remove()
-            let title = try titleCopy?.text().trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let title = Self.cleanTitle(try titleCopy?.text() ?? "")
             guard !title.isEmpty else { continue }
 
             // Date: first <u> inside .date wrapper for mirror; .time for issue.
@@ -110,7 +110,8 @@ struct AagagParser: BoardParser {
     nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
         let titleEl = try doc.select("h1.title").first()
-        let title = try titleEl?.text().trimmingCharacters(in: .whitespacesAndNewlines) ?? post.title
+        let rawTitle = try titleEl?.text() ?? ""
+        let title = rawTitle.isEmpty ? post.title : Self.cleanTitle(rawTitle)
 
         // Issue detail content lives in `AAGAG_AA.content = "..."` inside a script tag,
         // with payloads encoded as `[sTag]{json}[/sTag]`.

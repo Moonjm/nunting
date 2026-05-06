@@ -183,6 +183,25 @@ extension BoardParser {
         resolveHTTPURL(try element.attr("poster"))
     }
 
+    /// Some boards (notably 82cook's enti.php list, and any aagag mirror
+    /// downstream of it) truncate titles by encoded byte length, slicing in
+    /// the middle of an HTML entity reference and producing trailing
+    /// fragments like `&quo..` that SwiftSoup's `.text()` cannot decode.
+    /// The visible result is literal `&quot;` text in the title bar. Strip
+    /// the broken fragment plus its truncation marker (`..`, `...`, `…`)
+    /// and replace with a clean ellipsis. Anchored by the truncation marker
+    /// to avoid eating valid endings like `Q&A` or `Tom&Jerry` that don't
+    /// come from a server truncation.
+    nonisolated static func cleanTitle(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.contains("&") else { return trimmed }
+        return trimmed.replacingOccurrences(
+            of: #"&[A-Za-z]{1,10}(?:\.{2,}|…)\s*$"#,
+            with: "…",
+            options: .regularExpression
+        )
+    }
+
     /// Extract a YouTube (or youtube-nocookie) video ID from a raw string
     /// — typically an `<iframe src>` value. Matches the canonical
     /// `/embed/{11-char-id}` shape used by every iframe embed code the
