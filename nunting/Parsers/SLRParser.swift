@@ -130,7 +130,7 @@ struct SLRParser: BoardParser {
 
     nonisolated private func extractTitle(in doc: Document, fallback: String) throws -> String {
         let text = try doc.select(".subject").first()?.text() ?? ""
-        let cleaned = Self.cleanTitle(text)
+        let cleaned = ParserText.cleanTitle(text)
         return cleaned.isEmpty ? fallback : cleaned
     }
 

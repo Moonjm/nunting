@@ -53,7 +53,7 @@ struct PpomppuParser: BoardParser {
 
             let titleCopy = titleEl.copy() as? Element ?? titleEl
             try titleCopy.select("img, span.rp, sup, .baseList-img").remove()
-            let title = Self.cleanTitle(try titleCopy.text())
+            let title = ParserText.cleanTitle(try titleCopy.text())
             guard !title.isEmpty else { return nil }
 
             let commentText = try row.select("span.rp").first()?.text() ?? ""

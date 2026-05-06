@@ -217,15 +217,15 @@ final class ParserListTests: XCTestCase {
         // slice in the middle of `&quot;` and produce `…&quo..` — SwiftSoup
         // can't decode the partial fragment so it leaks as literal text.
         XCTAssertEqual(
-            AagagParser.cleanTitle("최근 주위에 \"힘들다&quo.."),
+            ParserText.cleanTitle("최근 주위에 \"힘들다&quo.."),
             "최근 주위에 \"힘들다…"
         )
         XCTAssertEqual(
-            AagagParser.cleanTitle("어떤 글 &amp..."),
+            ParserText.cleanTitle("어떤 글 &amp..."),
             "어떤 글 …"
         )
         XCTAssertEqual(
-            AagagParser.cleanTitle("끝 &quot…"),
+            ParserText.cleanTitle("끝 &quot…"),
             "끝 …"
         )
     }
@@ -233,14 +233,14 @@ final class ParserListTests: XCTestCase {
     func testCleanTitleLeavesIntactTitlesAlone() {
         // Valid Q&A / Tom&Jerry style titles must NOT be touched — the
         // pattern is anchored by the truncation marker (`..` / `…`).
-        XCTAssertEqual(AagagParser.cleanTitle("Q&A 정리"), "Q&A 정리")
-        XCTAssertEqual(AagagParser.cleanTitle("Tom&Jerry"), "Tom&Jerry")
+        XCTAssertEqual(ParserText.cleanTitle("Q&A 정리"), "Q&A 정리")
+        XCTAssertEqual(ParserText.cleanTitle("Tom&Jerry"), "Tom&Jerry")
         XCTAssertEqual(
-            AagagParser.cleanTitle("최근 주위에 \"힘들다\" 토로"),
+            ParserText.cleanTitle("최근 주위에 \"힘들다\" 토로"),
             "최근 주위에 \"힘들다\" 토로"
         )
         // No `&` short-circuit path.
-        XCTAssertEqual(AagagParser.cleanTitle("일반 제목"), "일반 제목")
+        XCTAssertEqual(ParserText.cleanTitle("일반 제목"), "일반 제목")
     }
 
     func testAagagListCleansBrokenTitleEntity() throws {

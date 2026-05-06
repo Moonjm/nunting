@@ -211,7 +211,7 @@ struct CoolenjoyParser: BoardParser {
 
     nonisolated private func cleanedTitle(from anchor: Element) throws -> String {
         try anchor.select("span.sr-only").remove()
-        return Self.cleanTitle(try anchor.text())
+        return ParserText.cleanTitle(try anchor.text())
     }
 
     nonisolated private func authorName(from row: Element) throws -> String {

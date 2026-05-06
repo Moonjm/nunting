@@ -135,7 +135,7 @@ struct DdanziParser: BoardParser {
 
     nonisolated private func extractTitle(in doc: Document, fallback: String) throws -> String {
         let text = try doc.select(".boardR .top_title h1").first()?.text() ?? ""
-        let cleaned = Self.cleanTitle(text)
+        let cleaned = ParserText.cleanTitle(text)
         return cleaned.isEmpty ? fallback : cleaned
     }
 

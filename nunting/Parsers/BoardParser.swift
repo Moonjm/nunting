@@ -183,25 +183,6 @@ extension BoardParser {
         resolveHTTPURL(try element.attr("poster"))
     }
 
-    /// Some boards (notably 82cook's enti.php list, and any aagag mirror
-    /// downstream of it) truncate titles by encoded byte length, slicing in
-    /// the middle of an HTML entity reference and producing trailing
-    /// fragments like `&quo..` that SwiftSoup's `.text()` cannot decode.
-    /// The visible result is literal `&quot;` text in the title bar. Strip
-    /// the broken fragment plus its truncation marker (`..`, `...`, `…`)
-    /// and replace with a clean ellipsis. Anchored by the truncation marker
-    /// to avoid eating valid endings like `Q&A` or `Tom&Jerry` that don't
-    /// come from a server truncation.
-    nonisolated static func cleanTitle(_ raw: String) -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.contains("&") else { return trimmed }
-        return trimmed.replacingOccurrences(
-            of: #"&[A-Za-z]{1,10}(?:\.{2,}|…)\s*$"#,
-            with: "…",
-            options: .regularExpression
-        )
-    }
-
     /// Extract a YouTube (or youtube-nocookie) video ID from a raw string
     /// — typically an `<iframe src>` value. Matches the canonical
     /// `/embed/{11-char-id}` shape used by every iframe embed code the
@@ -237,6 +218,42 @@ private enum BoardParserRegex {
         pattern: #"youtube(?:-nocookie)?\.com/embed/([A-Za-z0-9_-]{11})"#,
         options: [.caseInsensitive]
     )
+    nonisolated static let brokenTrailingEntity: NSRegularExpression = try! NSRegularExpression(
+        pattern: #"&[A-Za-z]{1,10}(?:\.{2,}|…)\s*$"#,
+        options: []
+    )
+}
+
+/// Shared text-cleanup helpers reused across every parser. Pulled out of
+/// the `BoardParser` protocol extension so call sites can read as a
+/// neutral utility (e.g. `ParserText.cleanTitle(...)`) instead of
+/// dispatching through whichever concrete parser type happens to be in
+/// scope. `nonisolated` + `enum` (no instances) keeps the surface
+/// callable from any `nonisolated` parser code under Swift 6 strict
+/// concurrency.
+enum ParserText {
+    /// Some boards (notably 82cook's enti.php list, and any aagag mirror
+    /// downstream of it) truncate titles by encoded byte length, slicing in
+    /// the middle of an HTML entity reference and producing trailing
+    /// fragments like `&quo..` that SwiftSoup's `.text()` cannot decode.
+    /// The visible result is literal `&quot;` text in the title bar. Strip
+    /// the broken fragment plus its truncation marker (`..`, `...`, `…`)
+    /// and replace with a clean ellipsis. Anchored by the truncation marker
+    /// to avoid eating valid endings like `Q&A` or `Tom&Jerry` that don't
+    /// come from a server truncation. The 1-letter prefix is intentional
+    /// — byte-truncation can land anywhere inside the entity, so `&q..`
+    /// is just as valid a fragment as `&quo..`.
+    nonisolated static func cleanTitle(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.contains("&") else { return trimmed }
+        let ns = trimmed as NSString
+        let regex = BoardParserRegex.brokenTrailingEntity
+        let range = NSRange(location: 0, length: ns.length)
+        guard regex.firstMatch(in: trimmed, range: range) != nil else { return trimmed }
+        return regex.stringByReplacingMatches(
+            in: trimmed, range: range, withTemplate: "…"
+        )
+    }
 }
 
 /// Accumulates an `[InlineSegment]` for a single text block while a parser walks

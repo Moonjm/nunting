@@ -55,7 +55,7 @@ struct ClienParser: BoardParser {
             let rawTitle = try row.select("span[data-role=list-title-text]").first()?.text()
                 ?? row.select("div.list_subject").first()?.text()
                 ?? ""
-            let title = Self.cleanTitle(rawTitle)
+            let title = ParserText.cleanTitle(rawTitle)
 
             let author = try row.select("div.list_author span.nickname").first()?.text()
                 ?? row.attr("data-author-id")

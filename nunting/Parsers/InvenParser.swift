@@ -28,7 +28,7 @@ struct InvenParser: BoardParser {
                   scheme == "http" || scheme == "https"
             else { return nil }
 
-            let title = Self.cleanTitle(
+            let title = ParserText.cleanTitle(
                 try titleLink.select("span.subject").first()?.text() ?? ""
             )
             guard !title.isEmpty else { return nil }
