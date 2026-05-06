@@ -4,6 +4,14 @@ struct BoardFilterBar: View {
     let board: Board
     @Binding var selection: BoardFilter?
 
+    /// Tracks the leftmost visible chip so the horizontal scroll offset
+    /// survives chip taps. Without this, the `safeAreaInset` content
+    /// re-renders on every `selection` change and SwiftUI snaps the
+    /// underlying scroll view back to the leading edge — visible as the
+    /// bar jumping to "전체" the moment the user picks a filter from
+    /// the right side of the row.
+    @State private var scrolledID: String?
+
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
@@ -11,11 +19,14 @@ struct BoardFilterBar: View {
                     tab(label: item.label, isSelected: item.isSelected(selection: selection)) {
                         withAnimation(.easeInOut(duration: 0.15)) { selection = item.filter }
                     }
+                    .id(item.id)
                 }
             }
+            .scrollTargetLayout()
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
         }
+        .scrollPosition(id: $scrolledID, anchor: .leading)
         .background(Color("AppSurface2"))
         .overlay(alignment: .top) { Divider() }
         .overlay(alignment: .bottom) { Divider() }
