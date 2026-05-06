@@ -18,6 +18,8 @@ enum Site: String, CaseIterable, Identifiable, Codable {
     /// Aagag mirror-only target. Routes 82cook.com redirects to `Cook82Parser`.
     /// Swift enum cases can't start with a digit, so we flip the numeric prefix.
     case cook82
+    /// Aagag mirror-only target. Routes etoland.co.kr redirects to `EtolandParser`.
+    case etoland
 
     nonisolated var id: String { rawValue }
 
@@ -33,6 +35,7 @@ enum Site: String, CaseIterable, Identifiable, Codable {
         case .slr: "SLR클럽"
         case .ddanzi: "딴지일보"
         case .cook82: "82쿡"
+        case .etoland: "이토랜드"
         }
     }
 
@@ -48,6 +51,7 @@ enum Site: String, CaseIterable, Identifiable, Codable {
         case .slr: URL(string: "https://m.slrclub.com")!
         case .ddanzi: URL(string: "https://www.ddanzi.com")!
         case .cook82: URL(string: "https://www.82cook.com")!
+        case .etoland: URL(string: "https://etoland.co.kr")!
         }
     }
 
@@ -77,6 +81,7 @@ enum Site: String, CaseIterable, Identifiable, Codable {
         if host.hasSuffix("slrclub.com") { return .slr }
         if host.hasSuffix("ddanzi.com") { return .ddanzi }
         if host.hasSuffix("82cook.com") { return .cook82 }
+        if host.hasSuffix("etoland.co.kr") { return .etoland }
         return nil
     }
 }

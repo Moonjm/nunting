@@ -3,21 +3,28 @@ import SwiftUI
 struct BoardFilterBar: View {
     let board: Board
     @Binding var selection: BoardFilter?
-
-    /// Tracks the leftmost visible chip so the horizontal scroll offset
-    /// survives chip taps. Without this, the `safeAreaInset` content
-    /// re-renders on every `selection` change and SwiftUI snaps the
-    /// underlying scroll view back to the leading edge — visible as the
-    /// bar jumping to "전체" the moment the user picks a filter from
-    /// the right side of the row.
-    @State private var scrolledID: String?
+    /// Horizontal scroll offset, lifted into the parent so the position
+    /// survives the `safeAreaInset` content rebuild that fires on every
+    /// `selection` change. Holding this as `@State` inside `BoardFilterBar`
+    /// itself isn't enough — the inset's content closure re-evaluates,
+    /// SwiftUI tears the chip-bar subtree down, and the in-bar `@State`
+    /// resets to nil before the next `.scrollPosition` apply runs. Owning
+    /// the binding outside the bar keeps the leading-anchor stable across
+    /// rebuilds.
+    @Binding var scrolledID: String?
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
+            LazyHStack(spacing: 8) {
                 ForEach(tabItems) { item in
                     tab(label: item.label, isSelected: item.isSelected(selection: selection)) {
-                        withAnimation(.easeInOut(duration: 0.15)) { selection = item.filter }
+                        // No `withAnimation` here: animating a binding write
+                        // that ripples up through `safeAreaInset` triggers an
+                        // implicit transition on the entire chip bar, which
+                        // (combined with the parent rebuild) causes the
+                        // underlying UIScrollView to snap back to the leading
+                        // edge. The capsule color change still feels instant.
+                        selection = item.filter
                     }
                     .id(item.id)
                 }

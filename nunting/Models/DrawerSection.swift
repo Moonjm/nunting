@@ -31,12 +31,16 @@ enum DrawerSection: Hashable, Identifiable {
         case .site(.slr): "SLR"
         case .site(.ddanzi): "딴지"
         case .site(.cook82): "82쿡"
+        // Etoland is dispatch-only (filtered from `DrawerSection.all` via
+        // `dispatchOnly`) and never rendered in the drawer; the case exists
+        // purely to keep the switch exhaustive on `Site`.
+        case .site(.etoland): "이토"
         }
     }
 
     /// Sites that are dispatch-only targets (reached via aagag mirror
     /// redirects) and shouldn't appear in the drawer as browseable entries.
-    private static let dispatchOnly: Set<Site> = [.humor, .bobae, .slr, .ddanzi, .cook82]
+    private static let dispatchOnly: Set<Site> = [.humor, .bobae, .slr, .ddanzi, .cook82, .etoland]
 
     /// Sites browseable from the side drawer. Dispatch-only targets stay
     /// hidden so the drawer only lists sites the user can actually browse.

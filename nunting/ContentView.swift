@@ -32,6 +32,10 @@ struct ContentView: View {
     /// this line belong to the bar/chips, not the drawer/detail overlay.
     /// `.infinity` until first measurement so the fallback exclusion runs.
     @State private var bottomAreaTopY: CGFloat = .infinity
+    /// Leading-anchor of the filter chip bar's horizontal scroll. Lifted
+    /// here (rather than inside `BoardFilterBar`) so the offset survives
+    /// the safeAreaInset content rebuild that fires on every chip tap.
+    @State private var filterBarScrolledID: String?
     /// Lightweight gate the panGesture flips on whenever it sees any
     /// horizontal-dominant movement, even below the drawer/detail commit
     /// thresholds. Read by list rows in `onTapGesture` to suppress an
@@ -231,7 +235,11 @@ struct ContentView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 if !selection.board.filters.isEmpty {
-                    BoardFilterBar(board: selection.board, selection: $selection.filter)
+                    BoardFilterBar(
+                        board: selection.board,
+                        selection: $selection.filter,
+                        scrolledID: $filterBarScrolledID
+                    )
                 }
                 MainBottomBar(
                     board: selection.board,
@@ -254,6 +262,13 @@ struct ContentView: View {
             // Filter switches can swap the path entirely (BoardFilter.replacementPath),
             // so the prior search query may not be meaningful on the new endpoint.
             selection.searchQuery = nil
+        }
+        .onChange(of: selection.board.id) { _, _ in
+            // Different boards have different filter chip ids — the saved
+            // anchor from the previous board would point at a chip that no
+            // longer exists. Reset so the new board's bar starts at the
+            // leading edge.
+            filterBarScrolledID = nil
         }
         .sheet(isPresented: $searchSheetPresented) {
             SearchSheet(

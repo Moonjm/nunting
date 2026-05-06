@@ -307,4 +307,68 @@ final class ParserDetailTests: XCTestCase {
             "without mp4_seq, mp4_url remains the source of truth"
         )
     }
+
+    // MARK: - Etoland
+
+    func testEtolandDetailExtractsTitleMetaAndImageBody() throws {
+        // Mirrors etoland.co.kr's Next.js SSR shape: <article> with the post
+        // <h1> (icon + truncate-span title), a meta line carrying author /
+        // <time> / 조회 / 추천 / 댓글, then div.view-content with inline
+        // images that ship `data-src` (raw original) alongside the optimised
+        // CDN `src`. Assertion targets: title strips the badge img, meta
+        // numbers are pulled by Korean keyword (not position), the image
+        // block resolves to the original (data-src), not the WebP-960 src.
+        let html = """
+        <html><body>
+        <article>
+          <h1 class="body-m"><img src="hit.svg" alt="인기"/><span class="truncate">에토 본문 제목</span></h1>
+          <div>
+            <div class="caption-s">
+              <a href="/member/1"><span class="nickname">아라크드</span></a>
+              <time>2026-05-06 20:22:24</time>
+              <span>조회 2,580</span>
+              <span>추천 19</span>
+              <span>댓글 17</span>
+            </div>
+          </div>
+          <div class="view-content">
+            <p>본문 첫 줄</p>
+            <p><img class="image-content" src="https://cdn.etoland.co.kr/optimize/w_920,format_webp/raw.jpg" data-src="https://cdn.etoland.co.kr/raw.jpg" /></p>
+            <p>본문 마지막 줄</p>
+          </div>
+        </article>
+        </body></html>
+        """
+        let parser = EtolandParser()
+        let post = Post(
+            id: "aagag-eto-1",
+            site: .etoland,
+            boardID: "aagag",
+            title: "fallback",
+            author: "",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-9022643")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+        XCTAssertEqual(detail.post.title, "에토 본문 제목", "h1 span.truncate, badge img stripped")
+        XCTAssertEqual(detail.post.author, "아라크드")
+        XCTAssertEqual(detail.fullDateText, "2026-05-06 20:22:24")
+        XCTAssertEqual(detail.viewCount, 2580, "조회 N — comma stripped via filter(\\.isNumber)")
+        XCTAssertEqual(detail.post.recommendCount, 19)
+        XCTAssertEqual(detail.post.commentCount, 17)
+
+        let images = detail.blocks.compactMap { block -> URL? in
+            if case .image(let url, _) = block.kind { return url }
+            return nil
+        }
+        XCTAssertEqual(images.count, 1)
+        XCTAssertEqual(
+            images.first?.absoluteString,
+            "https://cdn.etoland.co.kr/raw.jpg",
+            "data-src (original) wins over the optimize/ WebP src"
+        )
+    }
 }
