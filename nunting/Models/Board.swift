@@ -212,8 +212,22 @@ extension Board {
         site: .aagag,
         name: "모음",
         path: "/mirror/?site=clien%7Cppomppu%7C82cook%7Cbobae%7Chumor%7Cddanzi%7Cslrclub%7Cdamoang&select=multi",
+        // Source filters override the default `site=A|B|...&select=multi` query
+        // pair on the `/mirror/` path with a single source code + `select=single`,
+        // matching the URL aagag's web UI builds when a single chip is selected.
+        // Labels mirror `AagagSourceTag` so the filter chips read the same as
+        // the per-row source badges. `이슈모음` stays first to preserve the
+        // existing tab order.
         filters: [
             BoardFilter(id: "issue", name: "이슈모음", replacementPath: "/issue/"),
+            BoardFilter(id: "src-clien",   name: "끌량",  queryItems: ["site": "clien",   "select": "single"]),
+            BoardFilter(id: "src-ppomppu", name: "뽐뿌",  queryItems: ["site": "ppomppu", "select": "single"]),
+            BoardFilter(id: "src-82cook",  name: "82쿡",  queryItems: ["site": "82cook",  "select": "single"]),
+            BoardFilter(id: "src-bobae",   name: "보배",  queryItems: ["site": "bobae",   "select": "single"]),
+            BoardFilter(id: "src-humor",   name: "웃대",  queryItems: ["site": "humor",   "select": "single"]),
+            BoardFilter(id: "src-ddanzi",  name: "딴지",  queryItems: ["site": "ddanzi",  "select": "single"]),
+            BoardFilter(id: "src-slrclub", name: "SLR",   queryItems: ["site": "slrclub", "select": "single"]),
+            BoardFilter(id: "src-damoang", name: "다뫙",  queryItems: ["site": "damoang", "select": "single"]),
         ],
         searchQueryName: "word",
         pageQueryName: "page"
