@@ -434,6 +434,67 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertTrue(prose.contains("본문 아래"))
     }
 
+    func testEtolandCommentsSurfaceImageAndVideoAttachments() throws {
+        // Three comments with attachments + one plain text:
+        // 1) `file: { bfType: "image", bfFile: "/media/.../x.jpg" }` → stickerURL
+        // 2) `file: { bfType: "video", bfMp4File: "/media/.../y.mp4" }` → videoURL
+        // 3) content is just an image URL (user pasted) → stickerURL + content cleared
+        // 4) plain text comment, no attachment
+        let html = """
+        <html><body>
+        <article>
+          <h1 class="body-m"><span class="truncate">제목</span></h1>
+          <div><div class="caption-s"><span class="nickname">x</span><time>2026-05-06 20:22</time></div></div>
+          <div class="view-content"><p>본문</p></div>
+        </article>
+        <script>self.__next_f.push([1,"6:[\\"$\\",\\"$L32\\",null,{\\"data\\":{\\"comments\\":[{\\"commentId\\":1,\\"parentId\\":null,\\"writeDateTimestamp\\":1,\\"recommendCount\\":0,\\"content\\":\\"이미지 첨부\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"a\\"},\\"file\\":{\\"bfFile\\":\\"/media/etohumor07/test/img.jpg\\",\\"bfType\\":\\"image\\",\\"bfMp4File\\":null},\\"childrenComments\\":[]},{\\"commentId\\":2,\\"parentId\\":null,\\"writeDateTimestamp\\":2,\\"recommendCount\\":0,\\"content\\":\\"비디오 첨부\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"b\\"},\\"file\\":{\\"bfFile\\":\\"/media/etohumor07/test/orig.mov\\",\\"bfType\\":\\"video\\",\\"bfMp4File\\":\\"/media/etohumor07/test/clip.mp4\\"},\\"childrenComments\\":[]},{\\"commentId\\":3,\\"parentId\\":null,\\"writeDateTimestamp\\":3,\\"recommendCount\\":0,\\"content\\":\\"https://btcdn.etoland.co.kr/static/media/etc/meme.jpg\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"c\\"},\\"file\\":null,\\"childrenComments\\":[]},{\\"commentId\\":4,\\"parentId\\":null,\\"writeDateTimestamp\\":4,\\"recommendCount\\":0,\\"content\\":\\"그냥 텍스트\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"d\\"},\\"file\\":null,\\"childrenComments\\":[]}]}}]"])</script>
+        </body></html>
+        """
+        let parser = EtolandParser()
+        let post = Post(
+            id: "aagag-eto-img",
+            site: .etoland,
+            boardID: "aagag",
+            title: "fallback",
+            author: "",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-1")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        XCTAssertEqual(detail.comments.count, 4)
+
+        XCTAssertEqual(
+            detail.comments[0].stickerURL?.absoluteString,
+            "https://btcdn.etoland.co.kr/static/media/etohumor07/test/img.jpg",
+            "image attachment resolves bfFile under the CDN /static base"
+        )
+        XCTAssertEqual(detail.comments[0].content, "이미지 첨부")
+
+        XCTAssertNil(detail.comments[1].stickerURL)
+        XCTAssertEqual(
+            detail.comments[1].videoURL?.absoluteString,
+            "https://btcdn.etoland.co.kr/static/media/etohumor07/test/clip.mp4",
+            "video attachment prefers bfMp4File (transcoded) over bfFile"
+        )
+
+        XCTAssertEqual(
+            detail.comments[2].stickerURL?.absoluteString,
+            "https://btcdn.etoland.co.kr/static/media/etc/meme.jpg",
+            "content-as-image-URL gets promoted to stickerURL"
+        )
+        XCTAssertEqual(
+            detail.comments[2].content,
+            "",
+            "promoted-URL content is cleared so the URL doesn't render under the image"
+        )
+
+        XCTAssertNil(detail.comments[3].stickerURL)
+        XCTAssertNil(detail.comments[3].videoURL)
+        XCTAssertEqual(detail.comments[3].content, "그냥 텍스트")
+    }
+
     func testEtolandDetailExtractsCommentsFromSSRPayload() throws {
         // Etoland comments live inside a __next_f.push([1,"...\"comments\":[...]..."])
         // script tag — a JS-escaped JSON blob. Fixture mimics the real shape:

@@ -385,18 +385,85 @@ struct EtolandParser: BoardParser {
         }()
         let dateText = raw.writeDateTimestamp.map(formatDate) ?? ""
         let avatarURL: URL? = raw.member?.image.flatMap { URL(string: $0) }
+        let trimmedContent = (raw.content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Image / video attachments live under `file: {...}` on the comment
+        // object — `bfType` discriminates, `bfFile` is a CDN-relative path
+        // resolved against `btcdn.etoland.co.kr/static`. Videos prefer
+        // `bfMp4File` (transcoded mp4) over `bfFile` (often the original
+        // upload format) so the inline player sees a directly-playable URL.
+        let attachedSticker: URL? = {
+            guard raw.file?.bfType == "image", let path = raw.file?.bfFile else { return nil }
+            return Self.cdnURL(path: path)
+        }()
+        let attachedVideo: URL? = {
+            guard raw.file?.bfType == "video" else { return nil }
+            if let mp4 = raw.file?.bfMp4File, !mp4.isEmpty,
+               let url = Self.cdnURL(path: mp4) { return url }
+            if let path = raw.file?.bfFile { return Self.cdnURL(path: path) }
+            return nil
+        }()
+
+        // Comments whose entire body is a pasted image / video URL render as
+        // a media bubble too — match the shape we already use for aagag /
+        // humoruniv (`stripCommentHTML` + `extractCommentImageURL`). Only
+        // promote when no `file` attachment already won, and only for the
+        // exact extensions etoland's own renderer treats as inline media.
+        let contentSticker: URL? = {
+            guard attachedSticker == nil, attachedVideo == nil,
+                  let url = URL(string: trimmedContent),
+                  let scheme = url.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https"
+            else { return nil }
+            let ext = url.pathExtension.lowercased()
+            return ["jpg", "jpeg", "png", "gif", "webp"].contains(ext) ? url : nil
+        }()
+        let contentVideo: URL? = {
+            guard attachedSticker == nil, attachedVideo == nil, contentSticker == nil,
+                  let url = URL(string: trimmedContent),
+                  let scheme = url.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https"
+            else { return nil }
+            let ext = url.pathExtension.lowercased()
+            return ["mp4", "webm", "mov"].contains(ext) ? url : nil
+        }()
+
+        let stickerURL = attachedSticker ?? contentSticker
+        let videoURL = attachedVideo ?? contentVideo
+        // When the content text was *the* URL we just promoted, drop it
+        // so the bubble doesn't render the URL string under its image.
+        let finalContent: String = {
+            if contentSticker != nil || contentVideo != nil { return "" }
+            return trimmedContent
+        }()
+
         out.append(Comment(
             id: "etoland-c-\(raw.commentId)",
             author: author,
             dateText: dateText,
-            content: raw.content ?? "",
+            content: finalContent,
             likeCount: raw.recommendCount ?? 0,
             isReply: isReply,
+            stickerURL: stickerURL,
+            videoURL: videoURL,
             authIconURL: avatarURL
         ))
         for child in raw.childrenComments ?? [] {
             flatten(child, into: &out, isReply: true)
         }
+    }
+
+    /// Etoland's `bfFile` / `bfMp4File` paths are CDN-relative; the static
+    /// host is `btcdn.etoland.co.kr/static`. Verified against
+    /// `/media/etohumor07/.../*.jpg` returning 200 from that base.
+    nonisolated private static func cdnURL(path: String) -> URL? {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") {
+            return URL(string: trimmed)
+        }
+        let normalized = trimmed.hasPrefix("/") ? trimmed : "/" + trimmed
+        return URL(string: "https://btcdn.etoland.co.kr/static" + normalized)
     }
 
     /// Etoland publishes timestamps as epoch milliseconds (UTC). Render
@@ -420,10 +487,16 @@ struct EtolandParser: BoardParser {
         let isAnonymous: Bool?
         let member: RawMember?
         let childrenComments: [RawComment]?
+        let file: RawFile?
 
         struct RawMember: Decodable {
             let nickname: String?
             let image: String?
+        }
+        struct RawFile: Decodable {
+            let bfFile: String?
+            let bfType: String?
+            let bfMp4File: String?
         }
     }
 }
