@@ -371,4 +371,51 @@ final class ParserDetailTests: XCTestCase {
             "data-src (original) wins over the optimize/ WebP src"
         )
     }
+
+    func testEtolandDetailExtractsCommentsFromSSRPayload() throws {
+        // Etoland comments live inside a __next_f.push([1,"...\"comments\":[...]..."])
+        // script tag — a JS-escaped JSON blob. Fixture mimics the real shape:
+        // two top-level comments where the second has a reply (childrenComments).
+        // The walker has to track `\"` quote toggles and ignore brackets inside
+        // string content (e.g. content with literal `]` characters).
+        let html = """
+        <html><body>
+        <article>
+          <h1 class="body-m"><span class="truncate">제목</span></h1>
+          <div><div class="caption-s"><span class="nickname">작성자</span><time>2026-05-06 20:22</time></div></div>
+          <div class="view-content"><p>본문</p></div>
+        </article>
+        <script>self.__next_f.push([1,"6:[\\"$\\",\\"$L32\\",null,{\\"data\\":{\\"comments\\":[{\\"wrId\\":1,\\"commentId\\":100,\\"parentId\\":null,\\"writeDateTimestamp\\":1778066655000,\\"recommendCount\\":8,\\"content\\":\\"첫 댓글 [대괄호 포함]\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"갑\\",\\"image\\":\\"https://etoland.co.kr/avatar1\\"},\\"childrenComments\\":[]},{\\"wrId\\":1,\\"commentId\\":200,\\"parentId\\":null,\\"writeDateTimestamp\\":1778067000000,\\"recommendCount\\":3,\\"content\\":\\"두번째\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"을\\",\\"image\\":null},\\"childrenComments\\":[{\\"wrId\\":1,\\"commentId\\":201,\\"parentId\\":200,\\"writeDateTimestamp\\":1778067100000,\\"recommendCount\\":0,\\"content\\":\\"답글\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"병\\",\\"image\\":null},\\"childrenComments\\":[]}]}]}}]"])</script>
+        </body></html>
+        """
+        let parser = EtolandParser()
+        let post = Post(
+            id: "aagag-eto-c",
+            site: .etoland,
+            boardID: "aagag",
+            title: "fallback",
+            author: "",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-1")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+        XCTAssertEqual(detail.comments.count, 3, "2 top-level + 1 nested reply, flattened")
+        XCTAssertEqual(detail.comments[0].id, "etoland-c-100")
+        XCTAssertEqual(detail.comments[0].author, "갑")
+        XCTAssertEqual(detail.comments[0].content, "첫 댓글 [대괄호 포함]", "literal `[` inside string content must not derail bracket-walker")
+        XCTAssertEqual(detail.comments[0].likeCount, 8)
+        XCTAssertFalse(detail.comments[0].isReply)
+        XCTAssertEqual(detail.comments[0].authIconURL?.absoluteString, "https://etoland.co.kr/avatar1")
+
+        XCTAssertEqual(detail.comments[1].id, "etoland-c-200")
+        XCTAssertEqual(detail.comments[1].author, "을")
+        XCTAssertFalse(detail.comments[1].isReply)
+
+        XCTAssertEqual(detail.comments[2].id, "etoland-c-201")
+        XCTAssertEqual(detail.comments[2].author, "병")
+        XCTAssertTrue(detail.comments[2].isReply, "childrenComments entry surfaces with isReply=true")
+    }
 }

@@ -79,13 +79,12 @@ struct EtolandParser: BoardParser {
             fullDateText: meta.dateText,
             viewCount: meta.viewCount,
             source: nil,
-            comments: []
+            comments: Self.extractComments(from: html)
         )
     }
 
-    // Comments load via client-side fetch after hydration; the SSR HTML only
-    // contains a skeleton loader, not the comment data. Surfacing none until
-    // the client API can be reverse-engineered.
+    // Comments live inline in the SSR React-Server-Component blob, so
+    // parseDetail extracts them directly — no separate fetch needed.
     nonisolated func commentsURL(for post: Post) -> URL? { nil }
 
     // MARK: - Field extraction
@@ -260,5 +259,143 @@ struct EtolandParser: BoardParser {
             if let url = resolveHTTPURL(s) { return url }
         }
         return nil
+    }
+
+    // MARK: - Comments
+
+    /// Etoland's Next.js page ships the full comment tree inline in a
+    /// `__next_f.push([1, "<JS-string>"])` script tag — the same data the
+    /// hydrated client would render. Pull the `"comments":[…]` array out
+    /// of the JS string by bracket-walking the HTML bytes (tracking
+    /// `\"` quote toggles and `\\` escapes), unescape JS string syntax
+    /// to recover real JSON, then decode and flatten the nested
+    /// `childrenComments` into a flat `[Comment]` with reply markers.
+    nonisolated private static func extractComments(from html: String) -> [Comment] {
+        guard let arrayJSON = extractCommentsArrayJS(from: html) else { return [] }
+        let unescaped = unescapeJSString("[" + arrayJSON + "]")
+        guard let data = unescaped.data(using: .utf8) else { return [] }
+        guard let raw = try? JSONDecoder().decode([RawComment].self, from: data) else { return [] }
+        var out: [Comment] = []
+        for r in raw { flatten(r, into: &out, isReply: false) }
+        return out
+    }
+
+    /// Return the contents of the first `\"comments\":[ … ]` array we find
+    /// in the HTML, exclusive of the outer brackets, still in JS-escaped
+    /// form. The walker keeps a depth counter for `[`/`{` and `]`/`}`,
+    /// toggling string state on `\"` and consuming any `\X` escape pair
+    /// in one step (so brackets that appear inside string content don't
+    /// throw the depth count off).
+    nonisolated private static func extractCommentsArrayJS(from html: String) -> String? {
+        let marker = #"\"comments\":["#
+        guard let r = html.range(of: marker) else { return nil }
+        let chars = Array(html[r.upperBound...])
+        var depth = 1
+        var inString = false
+        var i = 0
+        while i < chars.count {
+            let c = chars[i]
+            if c == "\\", i + 1 < chars.count {
+                let next = chars[i + 1]
+                if next == "\"" {
+                    inString.toggle()
+                }
+                i += 2
+                continue
+            }
+            if !inString {
+                if c == "[" || c == "{" {
+                    depth += 1
+                } else if c == "]" || c == "}" {
+                    depth -= 1
+                    if depth == 0 {
+                        return String(chars[0..<i])
+                    }
+                }
+            }
+            i += 1
+        }
+        return nil
+    }
+
+    /// Decode JS-string escapes (`\"`, `\\`, `\n`, `\t`, `\r`, `\/`,
+    /// `\uXXXX`) into their literal characters so the result is valid
+    /// JSON. Other backslash sequences pass the second char through
+    /// unchanged — etoland doesn't ship anything weirder than the above.
+    nonisolated private static func unescapeJSString(_ s: String) -> String {
+        var out = ""
+        out.reserveCapacity(s.count)
+        var iter = s.makeIterator()
+        while let c = iter.next() {
+            guard c == "\\" else { out.append(c); continue }
+            guard let next = iter.next() else { break }
+            switch next {
+            case "\"": out.append("\"")
+            case "\\": out.append("\\")
+            case "/": out.append("/")
+            case "n": out.append("\n")
+            case "t": out.append("\t")
+            case "r": out.append("\r")
+            case "u":
+                var hex = ""
+                for _ in 0..<4 { if let h = iter.next() { hex.append(h) } }
+                if let scalar = UInt32(hex, radix: 16).flatMap(UnicodeScalar.init) {
+                    out.append(Character(scalar))
+                }
+            default:
+                out.append(next)
+            }
+        }
+        return out
+    }
+
+    nonisolated private static func flatten(_ raw: RawComment, into out: inout [Comment], isReply: Bool) {
+        let author: String = {
+            if let nick = raw.member?.nickname, !nick.isEmpty { return nick }
+            if raw.isAnonymous == true { return "익명" }
+            return ""
+        }()
+        let dateText = raw.writeDateTimestamp.map(formatDate) ?? ""
+        let avatarURL: URL? = raw.member?.image.flatMap { URL(string: $0) }
+        out.append(Comment(
+            id: "etoland-c-\(raw.commentId)",
+            author: author,
+            dateText: dateText,
+            content: raw.content ?? "",
+            likeCount: raw.recommendCount ?? 0,
+            isReply: isReply,
+            authIconURL: avatarURL
+        ))
+        for child in raw.childrenComments ?? [] {
+            flatten(child, into: &out, isReply: true)
+        }
+    }
+
+    /// Etoland publishes timestamps as epoch milliseconds (UTC). Render
+    /// the user's local time zone via the same `YYYY-MM-DD HH:MM` shape
+    /// the rest of the app uses, so list-detail comment headers don't
+    /// need site-specific formatting.
+    nonisolated private static func formatDate(_ epochMillis: Int) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(epochMillis) / 1000)
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd HH:mm"
+        fmt.locale = Locale(identifier: "ko_KR")
+        return fmt.string(from: date)
+    }
+
+    nonisolated private struct RawComment: Decodable {
+        let commentId: Int
+        let parentId: Int?
+        let writeDateTimestamp: Int?
+        let recommendCount: Int?
+        let content: String?
+        let isAnonymous: Bool?
+        let member: RawMember?
+        let childrenComments: [RawComment]?
+
+        struct RawMember: Decodable {
+            let nickname: String?
+            let image: String?
+        }
     }
 }
