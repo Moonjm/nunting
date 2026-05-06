@@ -186,6 +186,24 @@ struct EtolandParser: BoardParser {
         if Self.skipTags.contains(tag) { return }
         if isHidden(el) { return }
 
+        // Etoland wraps `<video>` in a React-built custom player whose
+        // sibling overlays (play button, scrubber, time readout `0:00/0:00`,
+        // `1x` speed selector) are visible only via CSS positioning. The
+        // browser hides them on idle/hover; SwiftSoup's `.text()` walker
+        // treats them as plain prose and leaks the labels into the
+        // rendered post body. Detect the wrapper by its `board-video-player`
+        // class, extract just the inner `<video>` block, and skip every
+        // overlay sibling. Falling back to the generic `<video>` branch
+        // below covers the rare unwrapped case.
+        if tag == "div", Self.isVideoPlayerWrapper(el) {
+            if let video = try el.select("video").first(),
+               let url = try videoURL(from: video) {
+                flushInline(into: &blocks, inline: &inline)
+                blocks.append(.video(url, posterURL: try videoPoster(from: video)))
+            }
+            return
+        }
+
         switch tag {
         case "img":
             if let url = try realImageURL(from: el) {
@@ -259,6 +277,16 @@ struct EtolandParser: BoardParser {
             if let url = resolveHTTPURL(s) { return url }
         }
         return nil
+    }
+
+    /// Etoland's custom video-player wrapper carries `board-video-player`
+    /// among its (long, Tailwind-generated) class list. Match on whitespace-
+    /// separated tokens so the check stays correct if the surrounding
+    /// utility classes are reordered or renamed.
+    nonisolated private static func isVideoPlayerWrapper(_ el: Element) -> Bool {
+        guard let raw = try? el.attr("class"), !raw.isEmpty else { return false }
+        return raw.split(whereSeparator: { $0.isWhitespace })
+            .contains("board-video-player")
     }
 
     // MARK: - Comments

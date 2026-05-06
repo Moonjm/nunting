@@ -372,6 +372,68 @@ final class ParserDetailTests: XCTestCase {
         )
     }
 
+    func testEtolandDetailSuppressesCustomVideoPlayerOverlayText() throws {
+        // Etoland wraps `<video>` in a React custom player; sibling overlays
+        // (`Play video` button label, time readout `0:00/0:00`, speed `1x`)
+        // are visible only via CSS positioning. SwiftSoup's text walker
+        // treats them as prose and leaks them into the rendered body.
+        // Detect the `board-video-player` wrapper class and extract only
+        // the inner `<video>`.
+        let html = """
+        <html><body>
+        <article>
+          <h1 class="body-m"><span class="truncate">제목</span></h1>
+          <div><div class="caption-s"><span class="nickname">x</span><time>2026-05-06 20:22</time></div></div>
+          <div class="view-content">
+            <p>본문 위</p>
+            <div class="some-utility board-video-player" style="width:450px">
+              <div class="relative">
+                <video src="https://btcdn.etoland.co.kr/clip.mp4" muted="" loop="">
+                  <source src="https://btcdn.etoland.co.kr/clip.mp4" />
+                </video>
+                <button aria-label="Play video">Play video</button>
+                <div class="peer/controls">0:00 / 0:00 1x</div>
+              </div>
+            </div>
+            <p>본문 아래</p>
+          </div>
+        </article>
+        </body></html>
+        """
+        let parser = EtolandParser()
+        let post = Post(
+            id: "aagag-eto-v",
+            site: .etoland,
+            boardID: "aagag",
+            title: "fallback",
+            author: "",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-1")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+
+        let videos = detail.blocks.compactMap { block -> URL? in
+            if case .video(let url, _) = block.kind { return url }
+            return nil
+        }
+        XCTAssertEqual(videos.count, 1)
+        XCTAssertEqual(videos.first?.absoluteString, "https://btcdn.etoland.co.kr/clip.mp4")
+
+        let prose = detail.blocks.compactMap { block -> String? in
+            if case .richText(let segs) = block.kind {
+                return segs.compactMap { if case .text(let s) = $0 { return s } else { return nil } }.joined()
+            }
+            return nil
+        }.joined(separator: "\n")
+        XCTAssertFalse(prose.contains("0:00"), "time readout from custom-player overlay leaked into body text")
+        XCTAssertFalse(prose.contains("1x"), "speed selector label from overlay leaked into body text")
+        XCTAssertFalse(prose.contains("Play video"), "play button label leaked into body text")
+        XCTAssertTrue(prose.contains("본문 위"))
+        XCTAssertTrue(prose.contains("본문 아래"))
+    }
+
     func testEtolandDetailExtractsCommentsFromSSRPayload() throws {
         // Etoland comments live inside a __next_f.push([1,"...\"comments\":[...]..."])
         // script tag — a JS-escaped JSON blob. Fixture mimics the real shape:
