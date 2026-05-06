@@ -37,6 +37,14 @@ final class PostDetailCache {
         evictIfNeeded()
     }
 
+    /// Drop a single entry. Used by the detail's pull-to-refresh path so
+    /// the next `load(...)` call goes back to the network instead of
+    /// short-circuiting to the stale cache copy.
+    func remove(id: String) {
+        entries.removeValue(forKey: id)
+        order.removeAll { $0 == id }
+    }
+
     private func touch(_ id: String) {
         if let existing = order.firstIndex(of: id) {
             order.remove(at: existing)
