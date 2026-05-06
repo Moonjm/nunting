@@ -587,15 +587,24 @@ struct EtolandParser: BoardParser {
     /// Etoland's `bfFile` / `bfMp4File` paths are CDN-relative; the static
     /// host is `btcdn.etoland.co.kr/static`. Verified against
     /// `/media/etohumor07/.../*.jpg` returning 200 from that base.
+    /// `appendingPathComponent` percent-encodes any non-ASCII / unsafe
+    /// chars in the path, so an upload whose filename contains spaces
+    /// or Korean characters still resolves correctly — string concat
+    /// would have returned `nil` from `URL(string:)` for those.
     nonisolated private static func cdnURL(path: String) -> URL? {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") {
             return URL(string: trimmed)
         }
-        let normalized = trimmed.hasPrefix("/") ? trimmed : "/" + trimmed
-        return URL(string: "https://btcdn.etoland.co.kr/static" + normalized)
+        let normalized = trimmed.hasPrefix("/") ? String(trimmed.dropFirst()) : trimmed
+        return cdnBaseURL?.appendingPathComponent(normalized)
     }
+
+    /// Pre-built so `cdnURL` doesn't reparse the host string per call —
+    /// shows up cheaply but `flatten` runs once per comment and the
+    /// constant base is unchanging.
+    nonisolated private static let cdnBaseURL: URL? = URL(string: "https://btcdn.etoland.co.kr/static/")
 
     /// Etoland publishes timestamps as epoch milliseconds (UTC). Render
     /// the user's local time zone via the same `YYYY-MM-DD HH:MM` shape
@@ -603,11 +612,20 @@ struct EtolandParser: BoardParser {
     /// need site-specific formatting.
     nonisolated private static func formatDate(_ epochMillis: Int) -> String {
         let date = Date(timeIntervalSince1970: TimeInterval(epochMillis) / 1000)
+        return commentDateFormatter.string(from: date)
+    }
+
+    /// `DateFormatter` is expensive to construct (locale + format-string
+    /// resolution); long comment threads called this once per row in the
+    /// previous incarnation. Hoist a single shared formatter so each
+    /// subsequent comment is a simple `string(from:)` call. Same pattern
+    /// the other parsers use for hoisted regex compilations.
+    nonisolated private static let commentDateFormatter: DateFormatter = {
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyy-MM-dd HH:mm"
         fmt.locale = Locale(identifier: "ko_KR")
-        return fmt.string(from: date)
-    }
+        return fmt
+    }()
 
     nonisolated private struct RawComment: Decodable {
         let commentId: Int
