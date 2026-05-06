@@ -119,9 +119,9 @@ struct HumorParser: BoardParser {
     // MARK: - Field extraction
 
     nonisolated private func extractTitle(in doc: Document, fallback: String) throws -> String {
-        let text = try doc.select("#read_subject_div h2 a").first()?.text()
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return text.isEmpty ? fallback : text
+        let text = try doc.select("#read_subject_div h2 a").first()?.text() ?? ""
+        let cleaned = ParserText.cleanTitle(text)
+        return cleaned.isEmpty ? fallback : cleaned
     }
 
     nonisolated private func extractAuthor(in doc: Document, fallback: String) throws -> String {

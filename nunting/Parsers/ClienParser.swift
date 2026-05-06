@@ -52,9 +52,10 @@ struct ClienParser: BoardParser {
                   let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL
             else { return nil }
 
-            let title = try row.select("span[data-role=list-title-text]").first()?.text()
+            let rawTitle = try row.select("span[data-role=list-title-text]").first()?.text()
                 ?? row.select("div.list_subject").first()?.text()
                 ?? ""
+            let title = ParserText.cleanTitle(rawTitle)
 
             let author = try row.select("div.list_author span.nickname").first()?.text()
                 ?? row.attr("data-author-id")
@@ -73,7 +74,7 @@ struct ClienParser: BoardParser {
                 id: "\(board.id)-\(postID)",
                 site: site,
                 boardID: board.id,
-                title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+                title: title,
                 author: author,
                 date: nil,
                 dateText: dateText,
