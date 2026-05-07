@@ -354,12 +354,22 @@ struct EtolandParser: BoardParser {
         return nil
     }
 
+    /// Etoland's React video player renders the `<video>` lazily: the real
+    /// mp4 sits in `data-src=` and `src=` is left empty until the user taps
+    /// play (mirroring how `<Image>` ships `src` + `data-src` for the same
+    /// reason). Probe `data-src` first so the parser surfaces the URL even
+    /// when the page hasn't hydrated, then fall back to `src` and any
+    /// `<source>` children for older / non-lazy markup.
     nonisolated private func videoURL(from el: Element) throws -> URL? {
-        let src = try el.attr("src")
-        if let url = resolveHTTPURL(src) { return url }
+        for attr in ["data-src", "src"] {
+            let raw = try el.attr(attr)
+            if let url = resolveHTTPURL(raw) { return url }
+        }
         for source in try el.select("source") {
-            let s = try source.attr("src")
-            if let url = resolveHTTPURL(s) { return url }
+            for attr in ["data-src", "src"] {
+                let raw = try source.attr(attr)
+                if let url = resolveHTTPURL(raw) { return url }
+            }
         }
         return nil
     }

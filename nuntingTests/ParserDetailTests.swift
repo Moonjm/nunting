@@ -434,6 +434,52 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertTrue(prose.contains("본문 아래"))
     }
 
+    func testEtolandDetailExtractsLazyLoadedVideoFromDataSrc() throws {
+        // Real etoland markup ships `<video>` with `data-src=` only — `src=`
+        // is empty until the user taps play. A previous version of the
+        // parser checked `src` first and bailed when it was missing,
+        // dropping the video block entirely. Mirror the production shape
+        // (no `src`, no `<source>` children, only `data-src`) and assert
+        // we still surface the mp4.
+        let html = """
+        <html><body>
+        <article>
+          <h1 class="body-m"><span class="truncate">제목</span></h1>
+          <div><div class="caption-s"><span class="nickname">x</span><time>2026-05-07 13:51</time></div></div>
+          <div class="view-content">
+            <div class="board-video-player">
+              <div class="relative">
+                <video data-src="https://btcdn.etoland.co.kr/static/media/etohumor07/2026/0507/optimized/abc.mp4" muted="" loop="" playsInline="" preload="none"></video>
+              </div>
+            </div>
+          </div>
+        </article>
+        </body></html>
+        """
+        let parser = EtolandParser()
+        let post = Post(
+            id: "aagag-eto-v2",
+            site: .etoland,
+            boardID: "aagag",
+            title: "fallback",
+            author: "",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-1")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        let videos = detail.blocks.compactMap { block -> URL? in
+            if case .video(let url, _) = block.kind { return url }
+            return nil
+        }
+        XCTAssertEqual(videos.count, 1)
+        XCTAssertEqual(
+            videos.first?.absoluteString,
+            "https://btcdn.etoland.co.kr/static/media/etohumor07/2026/0507/optimized/abc.mp4"
+        )
+    }
+
     func testEtolandCommentsURLDerivedFromPostPath() throws {
         // Public API: /api/v1/board/{boTable}/article/slug/{slug}/comments
         // boTable + slug pulled from the post URL's `/b/{boTable}/view/{slug}`
