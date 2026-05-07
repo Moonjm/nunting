@@ -111,7 +111,9 @@ struct InvenParser: BoardParser {
     /// Tags the block-walker promotes to a media block. Paired with
     /// `hasAnyDescendant(of:taggedAnyOf:)` so wrapper elements decide
     /// recurse-vs-inline without doing a full `select("img"|"video")` walk.
-    nonisolated private static let mediaTags: Set<String> = ["img", "video"]
+    /// `iframe` is in here so `<a>` wrapping a YouTube embed iframe falls
+    /// through to the recurse-as-block path instead of emitting a bare link.
+    nonisolated private static let mediaTags: Set<String> = ["img", "video", "iframe"]
 
     nonisolated private func collectBlocks(from element: Element, into blocks: inout [ContentBlock]) throws {
         if isHidden(element) { return }
@@ -137,6 +139,16 @@ struct InvenParser: BoardParser {
             }
             return
         }
+        if tag == "iframe" {
+            // YouTube embeds arrive as `<figure><iframe src=".../embed/{id}">`.
+            // Promote to a `.embed(.youtube, id:)` block so the detail view
+            // renders a real thumbnail + tap-to-open affordance instead of
+            // the iframe being silently dropped.
+            if let id = youtubeEmbedID(from: try element.attr("src")) {
+                blocks.append(.embed(.youtube, id: id))
+            }
+            return
+        }
         if tag == "a" {
             // Pure anchor: no nested media → emit a single inline link and
             // return. When the anchor wraps `<img>` / `<video>` (forums
@@ -152,7 +164,7 @@ struct InvenParser: BoardParser {
                 return
             }
         }
-        if tag == "script" || tag == "style" || tag == "iframe" {
+        if tag == "script" || tag == "style" {
             return
         }
 
@@ -171,9 +183,18 @@ struct InvenParser: BoardParser {
                     if let url = try videoURL(from: el) {
                         blocks.append(.video(url, posterURL: try videoPoster(from: el)))
                     }
+                case "iframe":
+                    // YouTube embeds arrive as <iframe src=".../embed/{id}">.
+                    // Promote to a `.embed(.youtube, id:)` block so the
+                    // detail view renders the real thumbnail + tap-to-open
+                    // affordance instead of the iframe being silently dropped.
+                    if let id = youtubeEmbedID(from: (try? el.attr("src")) ?? "") {
+                        flush()
+                        blocks.append(.embed(.youtube, id: id))
+                    }
                 case "br":
                     inline.appendText("\n")
-                case "script", "style", "iframe":
+                case "script", "style":
                     continue
                 case "a":
                     // Anchor wrapping `<img>` / `<video>` falls through to

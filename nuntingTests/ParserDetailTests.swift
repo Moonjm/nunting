@@ -773,4 +773,130 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertEqual(detail.comments[2].author, "병")
         XCTAssertTrue(detail.comments[2].isReply, "childrenComments entry surfaces with isReply=true")
     }
+
+    // MARK: - Inven
+
+    func testInvenYoutubeIframePromotedToEmbedBlock() throws {
+        // Real shape from inven.co.kr/board/maple/5974/6548994 — Inven's
+        // editor wraps YouTube in `<figure><iframe src=".../embed/{id}">`.
+        // Earlier `collectBlocks` early-returned on every iframe, so the
+        // body ended up with only surrounding prose/images and the user
+        // saw no video at all. Mirror the production shape (two iframes
+        // interleaved with prose + an image) and assert each iframe
+        // surfaces as `.embed(.youtube, id:)` while the rest of the body
+        // is preserved in order.
+        let html = """
+        <html><body>
+        <section class="mo-board-view">
+          <div class="date">2026-05-07 12:00</div>
+          <div class="hit"><span>1234</span></div>
+          <div class="bbs-con">
+            <div id="imageCollectDiv" class="contentBody">
+              <div id="powerbbsContent">
+                <div>입장컷신</div>
+                <figure>
+                  <iframe src="https://www.youtube.com/embed/4QQedW1BDB4" width="740" height="416" frameborder="0" allowfullscreen="true"></iframe>
+                </figure>
+                <div><br></div>
+                <div>격파영상</div>
+                <figure>
+                  <iframe src="https://www.youtube.com/embed/S0aDEI54jRs" width="740" height="416" frameborder="0" allowfullscreen="true"></iframe>
+                </figure>
+                <div><img src="https://upload3.inven.co.kr/upload/2026/05/07/bbs/i1179489176.png" /></div>
+                <div>보상: 기운 2개 다조 20개</div>
+              </div>
+            </div>
+          </div>
+        </section>
+        </body></html>
+        """
+        let parser = InvenParser()
+        let post = Post(
+            id: "inven-maple-5974-6548994",
+            site: .inven,
+            boardID: "inven-maple",
+            title: "테스트",
+            author: "작성자",
+            date: nil,
+            dateText: "방금",
+            commentCount: 0,
+            url: URL(string: "https://www.inven.co.kr/board/maple/5974/6548994")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+
+        let embeds = detail.blocks.compactMap { block -> (EmbedProvider, String)? in
+            if case .embed(let provider, let id) = block.kind { return (provider, id) }
+            return nil
+        }
+        XCTAssertEqual(embeds.count, 2, "두 개의 youtube iframe이 모두 embed 블록으로 emit")
+        XCTAssertEqual(embeds.first?.0, .youtube)
+        XCTAssertEqual(embeds.first?.1, "4QQedW1BDB4")
+        XCTAssertEqual(embeds.last?.0, .youtube)
+        XCTAssertEqual(embeds.last?.1, "S0aDEI54jRs")
+
+        let images = detail.blocks.compactMap { block -> URL? in
+            if case .image(let url, _) = block.kind { return url }
+            return nil
+        }
+        XCTAssertEqual(images.count, 1, "iframe 처리가 기존 image 블록을 가로채면 안 됨")
+
+        let prose = detail.blocks.compactMap { block -> String? in
+            if case .richText(let segs) = block.kind {
+                return segs.compactMap { if case .text(let s) = $0 { return s } else { return nil } }.joined()
+            }
+            return nil
+        }.joined(separator: "\n")
+        XCTAssertTrue(prose.contains("입장컷신"))
+        XCTAssertTrue(prose.contains("격파영상"))
+        XCTAssertTrue(prose.contains("보상"))
+    }
+
+    func testInvenNonYoutubeIframeIsDropped() throws {
+        // Only YouTube iframes promote to an embed block — generic third-party
+        // iframes (ad slots, twitter widgets, anything we don't know how to
+        // render natively) should still be silently dropped, same as before.
+        // Sanity: prose around them stays intact and no embed leaks through.
+        let html = """
+        <html><body>
+        <section class="mo-board-view">
+          <div class="bbs-con">
+            <div id="imageCollectDiv">
+              <p>위 본문</p>
+              <iframe src="https://ad.example.com/banner.html" width="300" height="250"></iframe>
+              <p>아래 본문</p>
+            </div>
+          </div>
+        </section>
+        </body></html>
+        """
+        let parser = InvenParser()
+        let post = Post(
+            id: "inven-test",
+            site: .inven,
+            boardID: "inven-maple",
+            title: "x",
+            author: "y",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://www.inven.co.kr/board/maple/0/0")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+        let embeds = detail.blocks.compactMap { block -> (EmbedProvider, String)? in
+            if case .embed(let provider, let id) = block.kind { return (provider, id) }
+            return nil
+        }
+        XCTAssertTrue(embeds.isEmpty, "youtube가 아닌 iframe은 embed 블록을 만들면 안 됨")
+
+        let prose = detail.blocks.compactMap { block -> String? in
+            if case .richText(let segs) = block.kind {
+                return segs.compactMap { if case .text(let s) = $0 { return s } else { return nil } }.joined()
+            }
+            return nil
+        }.joined(separator: "\n")
+        XCTAssertTrue(prose.contains("위 본문"))
+        XCTAssertTrue(prose.contains("아래 본문"))
+    }
 }
