@@ -52,12 +52,17 @@ enum NetworkError: Error, LocalizedError {
 }
 
 struct Networking {
-    static let userAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+    nonisolated static let userAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
     /// Desktop UA for endpoints that serve a JS-redirect to mobile when given
     /// a mobile UA (e.g. ppomppu's `www.` host).
-    static let desktopUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+    nonisolated static let desktopUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
 
-    static let sharedCache: URLCache = {
+    // `nonisolated` so the `session` initializer below — also nonisolated —
+    // can reference this without crossing isolation boundaries. Default
+    // isolation under Swift 6 would otherwise infer MainActor for a plain
+    // `static let` on a non-actor type and break the default-argument
+    // references on `fetchHTML` / `resolveFinalURL` / `postForm`.
+    nonisolated static let sharedCache: URLCache = {
         let cache = URLCache(
             memoryCapacity: 50 * 1024 * 1024,
             diskCapacity: 200 * 1024 * 1024,
@@ -107,9 +112,14 @@ struct Networking {
         }
     }
 
-    private static let redirectUpgrader = RedirectHTTPSUpgrader()
+    // Stateless delegate (no stored mutable properties); `nonisolated` so it
+    // doesn't pull the `session` initializer below into MainActor inference.
+    nonisolated private static let redirectUpgrader = RedirectHTTPSUpgrader()
 
-    static let session: URLSession = {
+    // `nonisolated` so the default-argument references on `fetchHTML` /
+    // `resolveFinalURL` / `postForm` can read this from a nonisolated context
+    // under Swift 6 default-isolation. URLSession is documented thread-safe.
+    nonisolated static let session: URLSession = {
         _ = sharedCache
         let config = URLSessionConfiguration.default
         config.httpAdditionalHeaders = ["User-Agent": userAgent]
