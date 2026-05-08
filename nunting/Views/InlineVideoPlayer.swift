@@ -1,6 +1,7 @@
 import SwiftUI
 import AVKit
 import UIKit
+import WebKit
 
 struct InlineVideoPlayer: View {
     let url: URL
@@ -71,20 +72,37 @@ struct InlineVideoPlayer: View {
             // over. fullScreenCover doesn't unmount the underlying
             // view, so without the second clause the inline AVPlayer
             // would keep streaming alongside the fullscreen one.
-            InlineAutoplayVideoView(
-                url: url,
-                isPlaying: isVisible && !isPresented,
-                onAspectKnown: { aspect in
-                    // Guard against degenerate metadata (audio-only
-                    // tracks or assets where preferredTransform makes
-                    // both dimensions zero). Without the guard a
-                    // bogus aspect collapses the SwiftUI frame to
-                    // zero height and the slot disappears.
-                    if aspect.isFinite && aspect > 0 {
-                        measuredAspect = aspect
+            //
+            // WebM container is unsupported by AVFoundation regardless
+            // of the inner codec (VP9 plays fine in MP4 but not WebM),
+            // so etoland's webm uploads route through a WKWebView path
+            // — iOS WebKit decodes VP8/VP9-in-WebM since Safari 14.1.
+            if isWebmContainer {
+                WebmInlineWebView(
+                    url: url,
+                    isPlaying: isVisible && !isPresented,
+                    onAspectKnown: { aspect in
+                        if aspect.isFinite && aspect > 0 {
+                            measuredAspect = aspect
+                        }
                     }
-                }
-            )
+                )
+            } else {
+                InlineAutoplayVideoView(
+                    url: url,
+                    isPlaying: isVisible && !isPresented,
+                    onAspectKnown: { aspect in
+                        // Guard against degenerate metadata (audio-only
+                        // tracks or assets where preferredTransform makes
+                        // both dimensions zero). Without the guard a
+                        // bogus aspect collapses the SwiftUI frame to
+                        // zero height and the slot disappears.
+                        if aspect.isFinite && aspect > 0 {
+                            measuredAspect = aspect
+                        }
+                    }
+                )
+            }
         }
         .frame(maxWidth: .infinity)
         .aspectRatio(measuredAspect, contentMode: .fit)
@@ -108,7 +126,11 @@ struct InlineVideoPlayer: View {
                     if tapGate?.suppressed == true { return }
                     isPresented = true
                 }
-                .padding(.bottom, InlineAutoplayUIView.scrubBarStripHeight)
+                // The WebM (WKWebView) path has no custom UIKit scrub bar
+                // to dodge — its WKWebView is `isUserInteractionEnabled =
+                // false`, so the SwiftUI tap can safely cover the whole
+                // frame and route every tap to fullscreen.
+                .padding(.bottom, isWebmContainer ? 0 : InlineAutoplayUIView.scrubBarStripHeight)
         }
         .onScrollVisibilityChange(threshold: 0.1) { visible in
             // 0.1 (10%) instead of 0 so the player doesn't toggle
@@ -121,8 +143,22 @@ struct InlineVideoPlayer: View {
         }
         .accessibilityLabel("영상 재생")
         .fullScreenCover(isPresented: $isPresented) {
-            FullscreenVideoPlayer(url: url, onDismissBegin: onDismissBegin)
+            if isWebmContainer {
+                WebmFullscreenPlayer(url: url, onDismissBegin: onDismissBegin)
+            } else {
+                FullscreenVideoPlayer(url: url, onDismissBegin: onDismissBegin)
+            }
         }
+    }
+
+    /// Container-extension probe for the WKWebView fallback. Codec
+    /// (VP8/VP9/AV1) doesn't matter for AVFoundation gating — the
+    /// container itself is unsupported. Extensions on these board CDNs
+    /// are reliable; URLs without extensions just default to the
+    /// AVPlayer path and surface a load failure if they happen to be
+    /// webm-served-as-bytes.
+    private var isWebmContainer: Bool {
+        url.pathExtension.lowercased() == "webm"
     }
 
     /// Parser-supplied poster wins; otherwise fall back to the aagag CDN's
@@ -920,6 +956,277 @@ private struct AVPlayerControllerView: UIViewControllerRepresentable {
                 if translation.y > 70 || velocity.y > 550 {
                     hasDismissed = true
                     player?.pause()
+                    onDismiss()
+                }
+            }
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            true
+        }
+    }
+}
+
+// MARK: - WebM (WKWebView fallback)
+
+/// Inline WebM player. AVFoundation can't decode the WebM container
+/// (even when the inner codec is VP9, which AVPlayer otherwise
+/// supports inside MP4), so we hand the URL to WebKit instead — iOS
+/// Safari/WKWebView decode VP8/VP9-in-WebM since 14.1. Mirrors the
+/// AVPlayer-based `InlineAutoplayVideoView` API so the SwiftUI parent
+/// can branch on container without touching the surrounding chrome.
+private struct WebmInlineWebView: UIViewRepresentable {
+    let url: URL
+    let isPlaying: Bool
+    let onAspectKnown: (CGFloat) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onAspectKnown: onAspectKnown)
+    }
+
+    func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        // Required so the `<video>` plays in place instead of
+        // auto-presenting the system fullscreen player.
+        config.allowsInlineMediaPlayback = true
+        // Empty set = no user-gesture gate. Combined with the `muted`
+        // attribute on the `<video>` element, this lets autoplay kick
+        // off the moment the page loads — same gating Safari applies
+        // to muted HTML5 video.
+        config.mediaTypesRequiringUserActionForPlayback = []
+        let userContent = WKUserContentController()
+        userContent.add(context.coordinator, name: "aspectReady")
+        config.userContentController = userContent
+
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.scrollView.isScrollEnabled = false
+        webView.scrollView.bounces = false
+        webView.isOpaque = false
+        webView.backgroundColor = .clear
+        webView.scrollView.backgroundColor = .clear
+        webView.navigationDelegate = context.coordinator
+        // Touches must fall through to the SwiftUI `.onTapGesture`
+        // overlay above so a tap routes to fullscreen — exactly the
+        // way the AVPlayer path reserves the bottom strip for the
+        // scrub bar but the rest for fullscreen. The webm path has no
+        // scrub bar, so the entire frame is fullscreen-tap surface and
+        // the WKWebView only needs to render frames.
+        webView.isUserInteractionEnabled = false
+
+        webView.loadHTMLString(Self.htmlForInline(url: url), baseURL: url)
+        return webView
+    }
+
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        context.coordinator.onAspectKnown = onAspectKnown
+        context.coordinator.desiredPlaying = isPlaying
+        context.coordinator.applyPlaybackState(to: webView)
+    }
+
+    static func dismantleUIView(_ webView: WKWebView, coordinator: Coordinator) {
+        // WKUserContentController retains its message handlers strongly,
+        // so without an explicit removal the coordinator (and any
+        // closures it captures) outlives the SwiftUI dismantle and the
+        // WebKit content process keeps a reference until the webview
+        // itself is collected. Explicit removal lets ARC unwind on
+        // the same tick the SwiftUI view goes away.
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "aspectReady")
+        webView.stopLoading()
+        // Force WebKit to release its decoder reservation eagerly —
+        // navigating to a blank page tears down the `<video>` element
+        // before the WKWebView itself deallocates, matching the
+        // `replaceCurrentItem(with: nil)` pattern on the AVPlayer side.
+        webView.loadHTMLString("", baseURL: nil)
+    }
+
+    private static func htmlForInline(url: URL) -> String {
+        let src = url.absoluteString
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+        return """
+        <!DOCTYPE html>
+        <html><head>
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+        <style>
+          html, body { margin:0; padding:0; height:100%; background:transparent; overflow:hidden; }
+          video { width:100%; height:100%; object-fit:contain; display:block; background:transparent; }
+        </style>
+        </head><body>
+        <video src="\(src)" autoplay muted loop playsinline></video>
+        <script>
+          (function() {
+            var v = document.querySelector('video');
+            if (!v) return;
+            function report() {
+              if (v.videoWidth > 0 && v.videoHeight > 0
+                  && window.webkit && window.webkit.messageHandlers
+                  && window.webkit.messageHandlers.aspectReady) {
+                window.webkit.messageHandlers.aspectReady.postMessage({
+                  width: v.videoWidth,
+                  height: v.videoHeight
+                });
+              }
+            }
+            v.addEventListener('loadedmetadata', report);
+            if (v.readyState >= 1) report();
+          })();
+        </script>
+        </body></html>
+        """
+    }
+
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+        var onAspectKnown: (CGFloat) -> Void
+        var desiredPlaying = false
+        /// Tracks whether the initial `loadHTMLString` finished. Until
+        /// then any `evaluateJavaScript` is racing the page's parse
+        /// and the `document.querySelector('video')` would silently
+        /// return null. Gating on this flag means the first state
+        /// transition after load applies cleanly.
+        private var hasLoaded = false
+
+        init(onAspectKnown: @escaping (CGFloat) -> Void) {
+            self.onAspectKnown = onAspectKnown
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            hasLoaded = true
+            applyPlaybackState(to: webView)
+        }
+
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            guard message.name == "aspectReady",
+                  let body = message.body as? [String: Any],
+                  let w = (body["width"] as? NSNumber)?.doubleValue,
+                  let h = (body["height"] as? NSNumber)?.doubleValue,
+                  h > 0
+            else { return }
+            onAspectKnown(CGFloat(w / h))
+        }
+
+        func applyPlaybackState(to webView: WKWebView) {
+            guard hasLoaded else { return }
+            let js = desiredPlaying
+                ? "var v=document.querySelector('video'); if(v){v.play().catch(function(){});}"
+                : "var v=document.querySelector('video'); if(v){v.pause();}"
+            webView.evaluateJavaScript(js, completionHandler: nil)
+        }
+    }
+}
+
+/// Fullscreen counterpart of `WebmInlineWebView`. Uses HTML5 native
+/// controls (play/pause/scrub/volume) since we can't reuse
+/// `AVPlayerViewController` for an unsupported container; the user
+/// stays in-app and gets the same drag-down dismiss as the AVPlayer
+/// fullscreen path so the gesture vocabulary is consistent.
+private struct WebmFullscreenPlayer: View {
+    let url: URL
+    var onDismissBegin: () -> Void = {}
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            WebmFullscreenWebView(
+                url: url,
+                onDismiss: {
+                    onDismissBegin()
+                    dismiss()
+                }
+            )
+            .ignoresSafeArea()
+        }
+    }
+}
+
+private struct WebmFullscreenWebView: UIViewRepresentable {
+    let url: URL
+    let onDismiss: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onDismiss: onDismiss)
+    }
+
+    func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.allowsInlineMediaPlayback = true
+        config.mediaTypesRequiringUserActionForPlayback = []
+
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.scrollView.isScrollEnabled = false
+        webView.scrollView.bounces = false
+        webView.isOpaque = false
+        webView.backgroundColor = .black
+        webView.scrollView.backgroundColor = .black
+
+        webView.loadHTMLString(Self.htmlForFullscreen(url: url), baseURL: url)
+
+        // Drag-down-to-dismiss, matching `FullscreenVideoPlayer`'s
+        // gesture so the dismissal feel is identical regardless of
+        // container. `cancelsTouchesInView = false` keeps the HTML5
+        // controls reachable — taps land on the `<video>` chrome
+        // unless the gesture promotes to a vertical pan.
+        let pan = UIPanGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleDismissPan(_:))
+        )
+        pan.cancelsTouchesInView = false
+        pan.delegate = context.coordinator
+        webView.addGestureRecognizer(pan)
+
+        return webView
+    }
+
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        context.coordinator.onDismiss = onDismiss
+    }
+
+    static func dismantleUIView(_ webView: WKWebView, coordinator: Coordinator) {
+        webView.stopLoading()
+        webView.loadHTMLString("", baseURL: nil)
+    }
+
+    private static func htmlForFullscreen(url: URL) -> String {
+        let src = url.absoluteString
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+        // Start `muted` so autoplay isn't blocked by WebKit's
+        // unmuted-autoplay policy; the visible HTML5 controls let
+        // the user toggle audio if the clip has a soundtrack.
+        return """
+        <!DOCTYPE html>
+        <html><head>
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+        <style>
+          html, body { margin:0; padding:0; height:100%; background:#000; overflow:hidden; }
+          video { width:100%; height:100%; object-fit:contain; display:block; background:#000; }
+        </style>
+        </head><body>
+        <video src="\(src)" autoplay muted loop playsinline controls></video>
+        </body></html>
+        """
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var onDismiss: () -> Void
+        private var hasDismissed = false
+
+        init(onDismiss: @escaping () -> Void) {
+            self.onDismiss = onDismiss
+        }
+
+        @objc func handleDismissPan(_ recognizer: UIPanGestureRecognizer) {
+            guard !hasDismissed else { return }
+            let translation = recognizer.translation(in: recognizer.view)
+            let velocity = recognizer.velocity(in: recognizer.view)
+            guard translation.y > 0, abs(translation.y) > abs(translation.x) else { return }
+            if recognizer.state == .ended || recognizer.state == .cancelled {
+                if translation.y > 70 || velocity.y > 550 {
+                    hasDismissed = true
                     onDismiss()
                 }
             }
