@@ -181,8 +181,8 @@ struct HumorParser: BoardParser {
         // to 22+ image blocks: comment-author icons (icon-file.humoruniv),
         // timg thumb proxies, 11번가/G마켓 광고 CDN URLs, plus loose UI
         // GIFs (waitplz / blt_ad / memo_notice) that aren't in
-        // skipImageMarkers. Many simultaneous CachedAsyncImage placeholders
-        // → SwiftUI state-update churn + ImageThrottle queueing → the
+        // skipImageMarkers. Many simultaneous NetworkImage placeholders
+        // → SwiftUI state-update churn + downloader queueing → the
         // "이미지 하나가 hang하면 화면이 멈춘다" symptom.
         //
         // Prefer `div.body_editor` (the editor's own root inside wrap_copy)

@@ -1,6 +1,6 @@
 import SwiftUI
 import UIKit
-import ImageIO
+import SDWebImage
 
 struct ImageViewerItem: Identifiable {
     let url: URL
@@ -88,57 +88,39 @@ struct ImageViewer: View {
         image = nil
         failed = false
 
-        if let cached = ImageCache.shared.image(for: url, variant: "viewer") {
-            image = cached
-            return
+        // Cap the long edge so ultra-high-DPI devices don't ask the
+        // decoder to materialise a ~14k px image and peak memory
+        // unnecessarily. 4096 covers every iPhone/iPad retina class
+        // with headroom for pinch-to-zoom.
+        let maxPixelSize = min(max(2400 * displayScale, 1024), 4096)
+        let context: [SDWebImageContextOption: Any] = [
+            .imageThumbnailPixelSize: NSValue(cgSize: CGSize(width: maxPixelSize, height: maxPixelSize))
+        ]
+
+        // SDWebImageManager.loadImage handles fetch + decode + memory /
+        // disk cache. The `imageThumbnailPixelSize` context derives a
+        // separate cache key from the inline-body entry (which decodes
+        // at native resolution), so the viewer's thumbnail decode is
+        // its own cache namespace — same isolation the legacy
+        // `cacheVariant: "viewer"` provided.
+        let result: UIImage? = await withCheckedContinuation { continuation in
+            SDWebImageManager.shared.loadImage(
+                with: url.atsSafe,
+                options: [.retryFailed],
+                context: context,
+                progress: nil
+            ) { uiImage, _, _, _, _, _ in
+                continuation.resume(returning: uiImage)
+            }
         }
 
-        do {
-            // Same `http://` → `https://` promotion as `CachedAsyncImage`;
-            // without this, a body image that loaded (because the inline
-            // view upgrades) fails on zoom because the viewer fetches
-            // independently.
-            let (data, response) = try await Networking.session.data(for: URLRequest(url: url.atsSafe))
-            try Task.checkCancellation()
-            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                failed = true
-                return
-            }
-            let decoded = try await decodeOffMain(data: data, scale: displayScale)
-            try Task.checkCancellation()
-            if let decoded {
-                ImageCache.shared.store(decoded, for: url, variant: "viewer")
-                image = decoded
-            } else {
-                failed = true
-            }
-        } catch is CancellationError {
-            return
-        } catch {
+        guard !Task.isCancelled else { return }
+
+        if let result {
+            image = result
+        } else {
             failed = true
         }
-    }
-
-    private func decodeOffMain(data: Data, scale: CGFloat) async throws -> UIImage? {
-        try await Task.detached(priority: .userInitiated) {
-            try Task.checkCancellation()
-            // Clamp the thumbnail pixel size so ultra-high-DPI devices don't
-            // ask CoreGraphics to materialise a ~14k px thumbnail and peak
-            // memory unnecessarily. 4096 covers every iPhone/iPad retina
-            // class with headroom for pinch-to-zoom.
-            let maxPixelSize = min(max(2400 * scale, 1024), 4096)
-            let options: [CFString: Any] = [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceShouldCacheImmediately: true,
-                kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
-            ]
-            guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-                  let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
-            else { return nil }
-            try Task.checkCancellation()
-            return UIImage(cgImage: cg, scale: scale, orientation: .up)
-        }.value
     }
 }
 

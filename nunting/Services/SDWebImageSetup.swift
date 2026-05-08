@@ -10,17 +10,18 @@ import SDWebImageWebPCoder
 /// per-frame `CGImageSource` random-access cost that pinned the previous
 /// custom player's main thread.
 ///
-/// Cache and downloader limits mirror the legacy `ImageCache` / `ImageThrottle`
-/// budgets so the first cut behaves equivalently to the prior pipeline on
-/// memory + concurrent fetches; we'll tune from measurement once the wrapper
-/// is in production.
+/// Cache and downloader limits are sized for the same memory budget and
+/// concurrent-fetch profile the previous pipeline used (200 MB memory
+/// cache, 4 concurrent downloads); will tune from measurement once the
+/// wrapper has run in production for a release.
 enum SDWebImageSetup {
     static func configure() {
-        // libwebp coder must be inserted at the FRONT of the coder list,
-        // not appended. SDWebImage walks coders in order and the first one
-        // that claims the data wins; ImageIO's coder claims animated WebP
-        // (badly — same slow path as the old pipeline) so without
-        // `insertCoder` at index 0 the libwebp path never runs.
+        // `addCoder` appends to the coders array, but
+        // `SDImageCodersManager` walks coders **last-added-first** when
+        // resolving a decoder — so the libwebp path wins over the
+        // built-in ImageIO coder for `.webp` data without needing
+        // explicit positioning. This is the registration form the
+        // SDWebImage docs recommend.
         SDImageCodersManager.shared.addCoder(SDImageWebPCoder.shared)
 
         let cache = SDImageCache.shared
@@ -36,15 +37,20 @@ enum SDWebImageSetup {
         cache.config.maxDiskAge = 7 * 24 * 60 * 60
 
         let downloader = SDWebImageDownloader.shared
-        // Match `ImageThrottle.fetch` (4). Higher values let more images
-        // race for handshakes after scene-phase resume but spike the
-        // gestures-unresponsive window; lower starves the fetch queue on
+        // 4 concurrent fetches. Higher values let more images race
+        // for handshakes after scene-phase resume but spike the
+        // gestures-unresponsive window; lower starves the queue on
         // long detail pages.
         downloader.config.maxConcurrentDownloads = 4
-        // 8s first-attempt timeout to fast-fail stale keep-alive
+        // 8s timeout per attempt to fast-fail stale keep-alive
         // connections (the iOS pool's -1005 / -1001 case after
-        // backgrounding). SDWebImage retries internally on transient
-        // failures, so the second dial gets the session default.
+        // backgrounding). SDWebImage's internal retry re-issues with
+        // the same `downloadTimeout`, so worst-case end-to-end is
+        // ~16s (8s timeout × 2 attempts) before a failure surfaces —
+        // still inside the placeholder-fatigue threshold and an order
+        // of magnitude better than the URLSession 60s default that
+        // would freeze the slot for a full minute on a single bad
+        // pool entry.
         downloader.config.downloadTimeout = 8
 
         // Match the mobile Safari UA the rest of the app uses. Several

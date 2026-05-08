@@ -65,13 +65,16 @@ struct NetworkImage: View {
     /// upscaling 3× into a full-column white box.
     var clampsToNaturalWidth: Bool = false
 
-    /// Maps to SDWebImage's binary `.highPriority` flag — values > 0.5
-    /// move the fetch to the front of the downloader queue, replacing
-    /// the legacy fine-grained integer priority. Top-of-post body
-    /// images pass `1.0 / Float(1 + index)` so the topmost wins races
-    /// with deeper-but-already-realised LazyVStack cells; everything
-    /// else uses the default `0.5` (FIFO).
-    var priority: Float = 0.5
+    // Per-image priority intentionally absent. The legacy `loadPriority:
+    // index` integer queue is not faithfully expressible against
+    // SDWebImage's binary `.highPriority` flag (only the front-of-queue
+    // bucket exists) — the obvious mapping degenerated to "image 0
+    // gets the bump, images 1..N race FIFO," which preserves none of
+    // the ordering the comment claimed. Drop the parameter rather than
+    // ship a misleading no-op; if measurement (plan section 10) shows
+    // that fetch-queue depth on entry is the dominant first-image
+    // latency cost, revisit with `SDWebImageDownloaderConfig.executionOrder`
+    // = `.LIFO` plus the right enqueue order.
 
     @Environment(\.displayScale) private var displayScale
     @State private var hasBeenVisible = false
@@ -104,7 +107,6 @@ struct NetworkImage: View {
                 // retry placeholders right after the SD migration.
                 AnimatedImage(
                     url: url.atsSafe,
-                    options: priority > 0.5 ? [.highPriority] : [],
                     context: thumbnailContext
                 ) {
                     placeholder

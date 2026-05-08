@@ -274,3 +274,9 @@ actor VideoPlayerPool {
 - **Parser 단계에서 애니메이션 여부 사전 판별** — 디코드 전 URL 확장자/HEAD 응답으로 미리 알면 게이트 정책 차등화 가능.
 - **`ContentBlock`에 `.animatedImage` 추가** — 정적/애니메이션 분리 모델로 가야 정적 path를 더 가볍게 갈 수 있음. SD 적용 후 자연스럽게 따라오는 리팩토링.
 - **비디오 사운드 토글 UX** — 시작은 muted, 탭하면 unmute. 어디서 탭 받을지 (오버레이? 탭 영역?) UX 결정 필요.
+
+### 알려진 한계
+
+- **`https://` → `http://` 리다이렉트 케이스 미대응.** 옛 `Networking.session`엔 `RedirectHTTPSUpgrader` URLSessionTaskDelegate가 있어 30x 응답의 `Location` 헤더가 `http://`로 와도 `https://`로 재작성했음. SDWebImage는 자체 URLSession을 쓰고 이 delegate가 없음. 사전 `url.atsSafe`로 원본 URL의 `http://`만 업그레이드하므로, 원본이 `https://`였는데 서버가 `http://`로 redirect하는 케이스(클리언에서 stale guest cookie 시 관측됨, 이미지 CDN에선 드묾)는 ATS에 막혀 실패. 사용자 리포트 들어오면 `SDWebImageDownloaderConfig.sessionConfiguration` + 동등 delegate로 복원 필요.
+- **본문 이미지 priority 지표 사라짐.** 옛 정수 큐(`loadPriority: index`)는 글 위에서부터 순차 로드 보장이 있었으나, SDWebImage의 binary `.highPriority` 플래그는 이 의미를 보존 못 함. 이번 마이그레이션에선 priority 자체를 제거. LazyVStack realize 순서가 자연스럽게 top-down이라 체감 영향 작을 가능성 높지만, 측정(10번 "fetch 큐 깊이") 후 필요 시 `executionOrder = .LIFO` + 적절한 enqueue 순서로 복원 가능.
+- **`-1005` / `-1001` / `-1004` 1회 transient retry 일부 손실.** 옛 `ImageDataLoader`는 첫 시도 후 150ms backoff + 재시도 로직이 있었음. SDWebImage도 `.retryFailed` 옵션 + 자체 retry가 있어 동등 효과 기대되지만, 정확한 retry 횟수/타이밍은 SD 내부 구현. 백그라운드 복귀 직후 fetch 실패율이 늘면 `requestModifier`로 명시적 재시도 정책 주입 검토.

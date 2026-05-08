@@ -316,20 +316,12 @@ struct PostDetailView: View, Equatable {
             // aspect-ratio frame came back, the running content height
             // contracted, and the viewport (deep at the comments) landed
             // past content-end — "back-drag from comments area → blank
-            // screen". Fetch / decode throughput is already bounded by
-            // `ImageThrottle` inside `CachedAsyncImage`, so losing the
-            // lazy gate doesn't burst concurrent downloads.
+            // screen". Concurrent fetches are now capped at 4 by
+            // `SDWebImageDownloader.config.maxConcurrentDownloads`
+            // (set in `SDWebImageSetup`), so dropping the lazy gate
+            // doesn't burst the downloader.
             VStack(alignment: .leading, spacing: 12) {
-                // `enumerated()` so each image / video-poster block can
-                // pass its document position as `loadPriority`. The
-                // `ImageThrottle` queue serves lower priorities first, so
-                // a long post's images load top-down even when SwiftUI's
-                // eager VStack starts every `.task(id:)` at once. The
-                // queue is sorted by raw priority value, so any
-                // monotonically increasing per-block index works — only
-                // the relative order matters, not the magnitude or
-                // whether non-image blocks consume an index.
-                ForEach(Array(detail.blocks.enumerated()), id: \.element.id) { index, block in
+                ForEach(Array(detail.blocks.enumerated()), id: \.element.id) { _, block in
                     switch block.kind {
                     case .richText(let segments):
                         Text(attributedString(from: segments))
@@ -345,10 +337,6 @@ struct PostDetailView: View, Equatable {
                         // matching the behaviour the legacy
                         // `CachedAsyncImage(visibilityGated: true,
                         // clampsToNaturalWidth: true)` form had.
-                        // `1.0 / Float(1 + index)` collapses to a
-                        // monotonically decreasing priority so the
-                        // topmost body image outranks deeper ones when
-                        // SDWebImageDownloader saturates.
                         //
                         // No `thumbnailMaxPointSize` — body images can
                         // be either short-and-wide (normal photos) or
@@ -364,8 +352,7 @@ struct PostDetailView: View, Equatable {
                             url: url,
                             aspectRatio: aspectRatio,
                             visibilityGated: true,
-                            clampsToNaturalWidth: true,
-                            priority: 1.0 / Float(1 + index)
+                            clampsToNaturalWidth: true
                         )
                         .contentShape(Rectangle())
                         .onTapGesture {
@@ -377,8 +364,7 @@ struct PostDetailView: View, Equatable {
                             url: url,
                             posterURL: posterURL,
                             tapGate: tapGate,
-                            onDismissBegin: { beginDismissCover() },
-                            posterLoadPriority: index
+                            onDismissBegin: { beginDismissCover() }
                         )
                     case .dealLink(let url, let label):
                         DealLinkBanner(url: url, label: label)
