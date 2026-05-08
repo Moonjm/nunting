@@ -359,11 +359,10 @@ struct PostDetailView: View, Equatable {
                             if tapGate?.suppressed == true { return }
                             selectedImage = ImageViewerItem(url: url)
                         }
-                    case .video(let url, let posterURL, let aspectRatio):
+                    case .video(let url, let posterURL):
                         InlineVideoPlayer(
                             url: url,
                             posterURL: posterURL,
-                            aspectRatio: aspectRatio,
                             tapGate: tapGate,
                             onDismissBegin: { beginDismissCover() }
                         )

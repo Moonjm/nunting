@@ -284,7 +284,7 @@ struct EtolandParser: BoardParser {
             if let video = try el.select("video").first(),
                let url = try videoURL(from: video) {
                 flushInline(into: &blocks, inline: &inline)
-                blocks.append(.video(url, posterURL: try videoPoster(from: video), aspectRatio: try videoAspect(from: video)))
+                blocks.append(.video(url, posterURL: try videoPoster(from: video)))
             }
             return
         }
@@ -299,7 +299,7 @@ struct EtolandParser: BoardParser {
         case "video":
             if let url = try videoURL(from: el) {
                 flushInline(into: &blocks, inline: &inline)
-                blocks.append(.video(url, posterURL: try videoPoster(from: el), aspectRatio: try videoAspect(from: el)))
+                blocks.append(.video(url, posterURL: try videoPoster(from: el)))
             }
             return
         case "iframe":

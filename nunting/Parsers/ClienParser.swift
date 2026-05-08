@@ -231,7 +231,7 @@ struct ClienParser: BoardParser {
                     // the explicit case below so its text doesn't leak.
                     if let url = try videoURL(from: el) {
                         flush()
-                        blocks.append(.video(url, posterURL: try videoPoster(from: el), aspectRatio: try videoAspect(from: el)))
+                        blocks.append(.video(url, posterURL: try videoPoster(from: el)))
                     }
                 case "button":
                     // Body content never contains a user-meaningful
