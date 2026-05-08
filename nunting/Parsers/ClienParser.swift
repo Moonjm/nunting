@@ -429,7 +429,25 @@ struct ClienParser: BoardParser {
             // matches the pattern every other parser in this patch uses.
             convertAnchorsToMarkdown(in: copy)
             let content = try copy.text().trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !content.isEmpty else { continue }
+
+            // Comment-level image attachments live in a sibling
+            // `div.comment-img` *outside* `comment_view`, so the text
+            // walk above misses them entirely. Pull the first
+            // attach-image directly off the row — that's the same
+            // marker Clien's own renderer uses to distinguish a real
+            // upload from inline emoji or quoted-post thumbnails.
+            // Without this, image-only comments were silently dropped
+            // by the `content.isEmpty` guard below and text-with-image
+            // comments rendered the caption alone.
+            let attachedImage: URL? = (try? row.select("img[data-role=attach-image]").first())
+                .flatMap { try? $0.attr("src") }
+                .flatMap { $0.isEmpty ? nil : URL(string: $0) }
+
+            // Allow image-only comments through. The guard now drops
+            // the row only when there's neither a caption nor an
+            // attachment, which is the genuine empty case (deleted
+            // content placeholder) we still want to skip.
+            guard !content.isEmpty || attachedImage != nil else { continue }
 
             let likeText = try row.select("strong[id^=setLikeCount_]").first()?.text()
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? "0"
@@ -447,7 +465,8 @@ struct ClienParser: BoardParser {
                 dateText: dateText,
                 content: content,
                 likeCount: likeCount,
-                isReply: isReply
+                isReply: isReply,
+                stickerURL: attachedImage
             ))
         }
         return results
