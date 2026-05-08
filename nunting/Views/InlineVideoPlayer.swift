@@ -246,29 +246,62 @@ final class InlineAutoplayUIView: UIView {
     func setPlaying(_ playing: Bool) {
         wantsPlay = playing
         if playing {
-            // Lazy create: defer AVPlayer instantiation until something
-            // actually wants to play. Off-screen video blocks (the
-            // "LazyVStack realised but not visible" set) thus sit
-            // player-less and don't count against the pool cap.
             if player == nil {
-                acquireAndCreatePlayer()
+                // No player yet — either initial state or we were
+                // evicted earlier. Try to acquire a slot. If the
+                // pool denies (all leases playing), the view stays
+                // poster-only and the pool will call us back via
+                // `tryRecreatePlayer()` when a slot opens.
+                tryRecreatePlayer()
+            } else {
+                player?.play()
             }
-            player?.play()
         } else {
-            // Pause keeps the player alive (and the pool slot).
-            // Resuming on next setPlaying(true) is a single-call play()
-            // with no recreate cost, which matters for the
-            // fullscreen-cover-up-and-back transition path where the
-            // user sees no player gap.
-            player?.pause()
+            if player != nil {
+                // Has player. Notify pool the slot is paused so it's
+                // eligible for eviction in favour of another view's
+                // acquire (or a waiter's promotion). Keep the
+                // player alive for fast resume on the next
+                // setPlaying(true) — fullscreen cover toggle and
+                // brief scroll flickers benefit from the avoided
+                // recreate cost.
+                VideoPlayerPool.shared.notifyPaused(self)
+                player?.pause()
+            } else {
+                // Was waiting (no player but wantsPlay had been true).
+                // User no longer wants playback here, so cancel the
+                // wait — frees the queue position for any later
+                // genuine waiter and prevents the pool from
+                // promoting us into a pointless player creation.
+                VideoPlayerPool.shared.release(self)
+            }
         }
+    }
+
+    /// Called by `VideoPlayerPool` to either:
+    ///   1. Notify of an eviction (when the pool pulled this view's
+    ///      lease to make room for another) — `tearDownPlayer` runs
+    ///      synchronously below in `releasePlayerForPoolEviction`.
+    ///   2. Promote this view from the waiter list (when a slot
+    ///      freed up) — this method retries `acquire` and creates
+    ///      the player on success.
+    func tryRecreatePlayer() {
+        guard wantsPlay, player == nil, url != nil else { return }
+        if VideoPlayerPool.shared.acquire(self) {
+            createPlayer()
+            player?.play()
+        }
+        // If denied here too (race: another view acquired between
+        // promotion and this retry), the pool re-queues us and the
+        // next `notifyPaused`/`release` will re-promote.
     }
 
     /// Called by `VideoPlayerPool` when this view's lease is being
     /// evicted to make room for another. The pool has already removed
     /// us from its lease list, so we just tear down the player.
-    /// `url` is preserved — if the view becomes visible again later
-    /// and `setPlaying(true)` runs, we re-acquire and recreate.
+    /// `url` is preserved and `wantsPlay` is unchanged — if the view
+    /// is still visible the pool will re-promote us when a slot opens
+    /// (via the waiter list logic).
     func releasePlayerForPoolEviction() {
         tearDownPlayer()
     }
@@ -283,12 +316,12 @@ final class InlineAutoplayUIView: UIView {
         wantsPlay = false
     }
 
-    private func acquireAndCreatePlayer() {
+    /// Build the AVPlayer + layer + observers for the current `url`.
+    /// Pool acquire is the caller's responsibility (`setPlaying(true)`
+    /// → `tryRecreatePlayer` handles it). Pre-conditions: `url` set,
+    /// `player` nil, pool lease already acquired.
+    private func createPlayer() {
         guard let url, player == nil else { return }
-        // Pool may evict another view's player before returning. The
-        // evicted view stays mounted (poster visible) — its
-        // `releasePlayerForPoolEviction` just nilled its AVPlayer.
-        VideoPlayerPool.shared.acquire(self)
 
         let safeURL = url.atsSafe
         let asset = AVURLAsset(url: safeURL)

@@ -4,21 +4,32 @@ import UIKit
 /// Caps the number of concurrent `AVPlayer` instances alive for inline
 /// body videos. Each `InlineAutoplayUIView` requests a lease before
 /// instantiating its player; when the pool is at capacity and a new view
-/// arrives, the least-recently-leased view is told to release its
-/// player. Bounds memory residency on long detail pages with many video
-/// blocks — each AVPlayer + its decoded frame buffer is ~10-20 MB, so
-/// without a cap a 10-video aagag long-form would peak ~150 MB just on
-/// players.
+/// arrives, the pool evicts the oldest paused leaseholder (preferred)
+/// or denies the new request and queues it as a waiter (when every
+/// existing lease is actively playing). Bounds memory residency on
+/// long detail pages with many video blocks — each AVPlayer + its
+/// decoded frame buffer is ~10-20 MB, so without a cap a 10-video
+/// aagag long-form would peak ~150 MB just on players.
 ///
-/// Eviction policy: pure FIFO of acquire timestamps. Refined eviction
-/// (prefer-paused-over-playing, prefer-off-screen-over-on-screen) was
-/// considered but dropped — on iPhone viewport sizes only 1-2 videos
-/// can be on-screen at once, so the LRU entry is essentially always an
-/// off-screen one already.
+/// Eviction policy:
+///   1. Refresh in place when the requesting view already holds a lease.
+///   2. Free slot available → grant immediately.
+///   3. At cap with at least one paused lease → evict oldest paused,
+///      grant to requester.
+///   4. At cap, every lease playing → deny, queue as waiter. When some
+///      leaseholder later pauses (or releases entirely), the pool
+///      promotes the oldest waiter via `tryRecreatePlayer()`.
 ///
-/// `@MainActor` because the lease list is touched from
-/// `InlineAutoplayUIView` lifecycle methods (which SwiftUI runs on
-/// main) and the eviction callback fires UIView teardown — both must
+/// The waiter path is the bug fix for "scroll past 4 visible videos →
+/// the just-evicted-but-still-on-screen one stays on its poster forever
+/// because no SwiftUI state change re-fires its `setPlaying`." Without
+/// the explicit promotion callback, the view has no signal to retry
+/// acquire and is stuck poster-only until the user scrolls it
+/// off-and-back-on.
+///
+/// `@MainActor` because the lease/waiter lists are touched from UIView
+/// lifecycle methods (which SwiftUI runs on main) and the eviction +
+/// promotion callbacks fire UIView teardown / recreate — both must
 /// stay on the main thread.
 @MainActor
 final class VideoPlayerPool {
@@ -33,42 +44,121 @@ final class VideoPlayerPool {
 
     private struct Lease {
         weak var view: InlineAutoplayUIView?
+        /// `false` while the view's `setPlaying(true)` is the most
+        /// recent state, `true` after `notifyPaused`. Eviction prefers
+        /// paused entries — playing entries are only evicted when
+        /// every other lease is also playing AND a new acquire arrives,
+        /// in which case the displaced view goes to the waiter list.
+        var isPaused: Bool
     }
 
-    /// Front = oldest, back = newest. Eviction takes from front.
+    private struct Waiter {
+        weak var view: InlineAutoplayUIView?
+    }
+
+    /// Front = oldest, back = newest. Eviction prefers paused entries
+    /// from the front of the list.
     private var leases: [Lease] = []
+    /// Views that asked for a lease but were denied because every
+    /// existing lease was playing. Drained in FIFO order whenever a
+    /// lease pauses or releases.
+    private var waiters: [Waiter] = []
 
     private init() {}
 
-    /// Register a view as needing a player. May evict the oldest
-    /// existing leaseholder to stay under `maxConcurrent`. Idempotent
-    /// for an already-registered view: re-acquiring just refreshes the
-    /// view's position to the back of the queue (so a recently-active
-    /// player isn't first to be evicted by the next `acquire`).
-    func acquire(_ view: InlineAutoplayUIView) {
-        // Compact dead refs from prior dismantles that didn't hit
-        // `release` (e.g. SwiftUI dropped the representable without a
-        // dismantle event — rare, but the WeakBox guards against it).
-        leases.removeAll { $0.view == nil }
-        // Refresh: drop any existing entry for this view so the
-        // re-append below puts it at the back.
-        leases.removeAll { $0.view === view }
-        // Evict oldest until under cap. Loop instead of single removal
-        // so a backlog from compaction doesn't leave us over.
-        while leases.count >= Self.maxConcurrent {
-            if let oldest = leases.first?.view {
-                oldest.releasePlayerForPoolEviction()
-            }
-            leases.removeFirst()
+    /// Request a lease for `view`. Returns `true` if granted (caller
+    /// should now create/use its AVPlayer), `false` if denied (caller
+    /// should stay player-less and wait — the pool will call
+    /// `view.tryRecreatePlayer()` when a slot opens).
+    @discardableResult
+    func acquire(_ view: InlineAutoplayUIView) -> Bool {
+        compactDeadRefs()
+
+        // Already in pool: refresh position to back, clear paused
+        // flag. Equivalent to a fresh acquire from eviction-policy
+        // perspective.
+        if let i = leases.firstIndex(where: { $0.view === view }) {
+            leases.remove(at: i)
+            leases.append(Lease(view: view, isPaused: false))
+            removeFromWaiters(view)
+            return true
         }
-        leases.append(Lease(view: view))
+
+        // Free slot.
+        if leases.count < Self.maxConcurrent {
+            leases.append(Lease(view: view, isPaused: false))
+            removeFromWaiters(view)
+            return true
+        }
+
+        // At cap. Try to evict an oldest paused entry first — these
+        // are off-screen or fullscreen-occluded views that don't
+        // need their decoder right now.
+        if let pausedIdx = leases.firstIndex(where: { $0.isPaused }) {
+            let evicted = leases.remove(at: pausedIdx)
+            evicted.view?.releasePlayerForPoolEviction()
+            leases.append(Lease(view: view, isPaused: false))
+            removeFromWaiters(view)
+            return true
+        }
+
+        // All leases playing. Deny + queue. Caller (the view)
+        // should render its poster only and wait for the pool's
+        // promotion callback. Idempotent: the same view asking
+        // twice in a row stays at its current waiter position.
+        if !waiters.contains(where: { $0.view === view }) {
+            waiters.append(Waiter(view: view))
+        }
+        return false
     }
 
-    /// Drop a view's lease without telling the view to release its
-    /// player — the view itself is doing teardown and will release in
-    /// its own cleanup. Use `acquire` from a different view to actively
-    /// kick this one's player out.
+    /// View tells pool it paused but still wants to keep its lease
+    /// (e.g. fullscreen cover up, scrolled to viewport edge). Marks
+    /// the slot as eviction-eligible and promotes a waiter if one is
+    /// queued — the just-paused slot can now be ceded to a waiting
+    /// visible view.
+    func notifyPaused(_ view: InlineAutoplayUIView) {
+        if let i = leases.firstIndex(where: { $0.view === view }) {
+            leases[i].isPaused = true
+        }
+        promoteWaiterIfPossible()
+    }
+
+    /// Full removal from both lease and waiter lists. Used by view
+    /// teardown / dismantle / URL change. After this returns the
+    /// freed slot may be granted to the oldest waiter.
     func release(_ view: InlineAutoplayUIView) {
         leases.removeAll { $0.view === view || $0.view == nil }
+        removeFromWaiters(view)
+        promoteWaiterIfPossible()
+    }
+
+    private func promoteWaiterIfPossible() {
+        compactDeadRefs()
+        guard !waiters.isEmpty else { return }
+        // Grant only if we'd actually succeed: free slot or at least
+        // one paused lease. Otherwise leave the waiter where they
+        // are; another `notifyPaused`/`release` will re-trigger.
+        let canGrant = leases.count < Self.maxConcurrent
+            || leases.contains(where: { $0.isPaused })
+        guard canGrant else { return }
+        let waiter = waiters.removeFirst()
+        guard let view = waiter.view else {
+            // Stale waiter; re-try with the next one to keep draining.
+            promoteWaiterIfPossible()
+            return
+        }
+        // Hand control to the view; it will call back into `acquire`
+        // and (given canGrant above) succeed.
+        view.tryRecreatePlayer()
+    }
+
+    private func removeFromWaiters(_ view: InlineAutoplayUIView) {
+        waiters.removeAll { $0.view === view || $0.view == nil }
+    }
+
+    private func compactDeadRefs() {
+        leases.removeAll { $0.view == nil }
+        waiters.removeAll { $0.view == nil }
     }
 }
