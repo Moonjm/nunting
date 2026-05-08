@@ -184,6 +184,7 @@ final class InlineAutoplayUIView: UIView {
     private(set) var url: URL?
     private var player: AVPlayer?
     private var playerLayer: AVPlayerLayer?
+    private let scrubBar = VideoScrubBarView()
     private var endObservation: NSObjectProtocol?
     /// Latest `setPlaying` value. Stored so `setURL` (which doesn't
     /// create a player by itself) and pool-eviction recovery (which
@@ -209,12 +210,14 @@ final class InlineAutoplayUIView: UIView {
         // making the host view itself transparent lets the SwiftUI
         // poster show through during preroll and in any letterbox area.
         isOpaque = false
+        addSubview(scrubBar)
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         backgroundColor = .clear
         isOpaque = false
+        addSubview(scrubBar)
     }
 
     deinit {
@@ -228,6 +231,23 @@ final class InlineAutoplayUIView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         playerLayer?.frame = bounds
+        // Scrub bar sits at the bottom of the video frame. The view's
+        // outer height includes touch-target padding above the visible
+        // 3pt bar; pinning it to a 30pt strip at the bottom gives the
+        // user a comfortable drag area without occluding much of the
+        // video. Tap on this strip is absorbed by the scrub bar's own
+        // gesture recognizers, so the SwiftUI parent's
+        // `.onTapGesture` (fullscreen trigger) only fires for taps
+        // above this region — the intended split between "scrub" and
+        // "open fullscreen".
+        let scrubHeight: CGFloat = 30
+        scrubBar.frame = CGRect(
+            x: 0,
+            y: bounds.height - scrubHeight,
+            width: bounds.width,
+            height: scrubHeight
+        )
+        bringSubviewToFront(scrubBar)
     }
 
     func setURL(_ newURL: URL) {
@@ -395,6 +415,7 @@ final class InlineAutoplayUIView: UIView {
 
         self.player = p
         self.playerLayer = layer
+        scrubBar.player = p
     }
 
     private func tearDownPlayer() {
@@ -404,6 +425,12 @@ final class InlineAutoplayUIView: UIView {
             NotificationCenter.default.removeObserver(endObservation)
         }
         endObservation = nil
+        // Drop scrub-bar reference BEFORE nulling the player so the
+        // bar's periodic time observer is removed from the live
+        // player (its `player.didSet` calls
+        // `removeTimeObserver(timeObserver)`); otherwise we'd leak
+        // the observer attached to the about-to-be-released player.
+        scrubBar.player = nil
         player?.pause()
         // `replaceCurrentItem(with: nil)` releases the AVPlayerItem +
         // its decoder reservation eagerly; without it the OS holds the
@@ -414,6 +441,158 @@ final class InlineAutoplayUIView: UIView {
         player = nil
         playerLayer?.removeFromSuperlayer()
         playerLayer = nil
+    }
+}
+
+/// Minimal scrub bar — a 3pt-thick progress line at the bottom of the
+/// inline video, with a 30pt touch strip wrapped around it for
+/// comfortable drag/tap. Renders nothing else (no thumb, no time, no
+/// play button) so the inline video keeps its "moving image" feel.
+/// Tap anywhere on the strip seeks to that position; pan drags the
+/// playhead live then commits on touch-up.
+private final class VideoScrubBarView: UIView {
+    /// Strong-ish ref via `weak` so the view itself doesn't keep the
+    /// AVPlayer alive past the `InlineAutoplayUIView`'s tear-down.
+    /// Setter installs/removes the periodic time observer.
+    weak var player: AVPlayer? {
+        didSet {
+            if oldValue === player { return }
+            removeTimeObserverFromPreviousPlayer(oldValue)
+            installTimeObserver()
+            updateFill()
+        }
+    }
+
+    /// Visible bar height. 3pt is the thinnest that's still
+    /// comfortably visible on a retina display; a thicker bar would
+    /// pull the eye away from the actual video frame above.
+    private let barHeight: CGFloat = 3
+
+    private let backgroundLayer = CALayer()
+    private let fillLayer = CALayer()
+
+    /// `addPeriodicTimeObserver` returns an `Any` token; held so
+    /// `removeTimeObserver` can pair off correctly when the player
+    /// changes or the bar is torn down.
+    private var timeObserverToken: Any?
+    /// `true` between drag/pan `.began` and `.ended`. While true the
+    /// fill renders from `dragProgress` instead of the player's clock,
+    /// so the scrub feels live (no lag while the player processes the
+    /// seek). On touch-up we seek and clear the flag.
+    private var isDragging = false
+    private var dragProgress: Double = 0
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        // Darken the resting bar so it's visible over both light
+        // (snow / sky scenes) and dark (night / black-letterbox)
+        // video backgrounds. The fill is brighter for contrast.
+        backgroundLayer.backgroundColor = UIColor.white.withAlphaComponent(0.32).cgColor
+        fillLayer.backgroundColor = UIColor.white.withAlphaComponent(0.95).cgColor
+        layer.addSublayer(backgroundLayer)
+        layer.addSublayer(fillLayer)
+
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        addGestureRecognizer(pan)
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        addGestureRecognizer(tap)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        removeTimeObserverFromPreviousPlayer(player)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let barY = bounds.height - barHeight
+        backgroundLayer.frame = CGRect(x: 0, y: barY, width: bounds.width, height: barHeight)
+        updateFill()
+    }
+
+    private func updateFill() {
+        let progress = displayProgress()
+        let barY = bounds.height - barHeight
+        let fillWidth = bounds.width * CGFloat(progress)
+        // Disable implicit CALayer animation so the fill tracks
+        // playback continuously without the default 0.25s cross-fade
+        // every time the periodic observer ticks (4× per second).
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        fillLayer.frame = CGRect(x: 0, y: barY, width: fillWidth, height: barHeight)
+        CATransaction.commit()
+    }
+
+    private func displayProgress() -> Double {
+        if isDragging { return dragProgress }
+        guard let player, let item = player.currentItem else { return 0 }
+        let duration = item.duration.seconds
+        guard duration.isFinite, duration > 0 else { return 0 }
+        let current = player.currentTime().seconds
+        return min(1, max(0, current / duration))
+    }
+
+    @objc private func handleTap(_ recognizer: UITapGestureRecognizer) {
+        let location = recognizer.location(in: self)
+        let progress = max(0, min(1, location.x / bounds.width))
+        seekToProgress(progress)
+    }
+
+    @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
+        let location = recognizer.location(in: self)
+        let progress = max(0, min(1, location.x / bounds.width))
+        switch recognizer.state {
+        case .began:
+            isDragging = true
+            dragProgress = progress
+            updateFill()
+        case .changed:
+            dragProgress = progress
+            updateFill()
+        case .ended, .cancelled, .failed:
+            isDragging = false
+            seekToProgress(progress)
+        default:
+            break
+        }
+    }
+
+    private func seekToProgress(_ progress: Double) {
+        guard let player, let item = player.currentItem else { return }
+        let duration = item.duration.seconds
+        guard duration.isFinite, duration > 0 else { return }
+        // Zero tolerance so the bar lands exactly where the user
+        // dragged. Default tolerance can offset the actual seek by
+        // ~half a keyframe interval, which is visible as the fill
+        // jumping back slightly after touch-up.
+        let target = CMTime(seconds: progress * duration, preferredTimescale: 600)
+        player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+    }
+
+    private func installTimeObserver() {
+        guard let player else { return }
+        // 4 Hz tick is plenty for a 3pt bar — the eye can't resolve
+        // sub-quarter-second movement on something that thin. Higher
+        // rates (10-30 Hz) wake the main thread for no visual gain.
+        let interval = CMTime(seconds: 0.25, preferredTimescale: 600)
+        timeObserverToken = player.addPeriodicTimeObserver(
+            forInterval: interval,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self, !self.isDragging else { return }
+            self.updateFill()
+        }
+    }
+
+    private func removeTimeObserverFromPreviousPlayer(_ previous: AVPlayer?) {
+        if let token = timeObserverToken, let previous {
+            previous.removeTimeObserver(token)
+        }
+        timeObserverToken = nil
     }
 }
 
