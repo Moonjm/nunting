@@ -34,6 +34,16 @@ struct InlineVideoPlayer: View {
     /// inline player also pauses while the fullscreen cover is up,
     /// avoiding two AVPlayers streaming the same asset in parallel.
     @State private var isVisible = false
+    /// Aspect ratio reserved for the player frame. Starts at the
+    /// landscape default (16:9 = ~1.78) because most board-uploaded
+    /// videos are landscape and that's the better-than-nothing
+    /// layout reservation before AVAsset metadata loads. Once the
+    /// underlying `InlineAutoplayUIView` finishes reading the
+    /// video track's `naturalSize` × `preferredTransform`, it
+    /// fires `onAspectKnown` and we snap to the source's true
+    /// aspect — vertical clips (9:16 ≈ 0.56) then render tall
+    /// instead of letterbox-bound inside a 16:9 box.
+    @State private var measuredAspect: CGFloat = 16.0 / 9.0
 
     var body: some View {
         ZStack {
@@ -42,11 +52,10 @@ struct InlineVideoPlayer: View {
             if let resolvedPoster {
                 // Backdrop poster shown until the AVPlayer renders its
                 // first frame. `AVPlayerLayer` with `.resizeAspect` is
-                // transparent in the letterbox area, so for non-16:9
-                // sources the poster also fills the bars; with the
-                // fixed 16:9 frame applied below most sources match
-                // and the poster only matters during the preroll
-                // window (typically <1s on Wi-Fi).
+                // transparent in any letterbox area, so the poster
+                // also fills bars when source aspect doesn't match
+                // the reserved frame (mostly during the preroll
+                // window before `measuredAspect` snaps in).
                 NetworkImage(
                     url: resolvedPoster,
                     thumbnailMaxPointSize: 720
@@ -62,10 +71,23 @@ struct InlineVideoPlayer: View {
             // over. fullScreenCover doesn't unmount the underlying
             // view, so without the second clause the inline AVPlayer
             // would keep streaming alongside the fullscreen one.
-            InlineAutoplayVideoView(url: url, isPlaying: isVisible && !isPresented)
+            InlineAutoplayVideoView(
+                url: url,
+                isPlaying: isVisible && !isPresented,
+                onAspectKnown: { aspect in
+                    // Guard against degenerate metadata (audio-only
+                    // tracks or assets where preferredTransform makes
+                    // both dimensions zero). Without the guard a
+                    // bogus aspect collapses the SwiftUI frame to
+                    // zero height and the slot disappears.
+                    if aspect.isFinite && aspect > 0 {
+                        measuredAspect = aspect
+                    }
+                }
+            )
         }
         .frame(maxWidth: .infinity)
-        .aspectRatio(16.0 / 9.0, contentMode: .fit)
+        .aspectRatio(measuredAspect, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .contentShape(Rectangle())
         .onTapGesture {
@@ -114,15 +136,29 @@ struct InlineVideoPlayer: View {
 private struct InlineAutoplayVideoView: UIViewRepresentable {
     let url: URL
     let isPlaying: Bool
+    /// Fired on the main actor once the AVAsset's video track reports
+    /// its `naturalSize × preferredTransform`. Lets the SwiftUI parent
+    /// snap its `.aspectRatio` modifier from the 16:9 default to the
+    /// source's true aspect so vertical clips render tall instead of
+    /// being letterboxed inside a landscape frame. May fire 0 or 1
+    /// times per `setURL` call (audio-only assets or load failures
+    /// just don't fire).
+    let onAspectKnown: (CGFloat) -> Void
 
     func makeUIView(context: Context) -> InlineAutoplayUIView {
         let view = InlineAutoplayUIView()
+        view.onAspectKnown = onAspectKnown
         view.setURL(url)
         view.setPlaying(isPlaying)
         return view
     }
 
     func updateUIView(_ uiView: InlineAutoplayUIView, context: Context) {
+        // Refresh the closure on every SwiftUI re-evaluation so it
+        // always points at the current @State storage (parent's
+        // `measuredAspect` setter), not whatever closure happened to
+        // be captured at `makeUIView` time.
+        uiView.onAspectKnown = onAspectKnown
         if uiView.url != url {
             uiView.setURL(url)
         }
@@ -151,6 +187,16 @@ private final class InlineAutoplayUIView: UIView {
     /// mid-lifecycle), and we need to know whether the new player
     /// should auto-resume on attach.
     private var wantsPlay = false
+    /// Fired once per asset load with the source's true aspect ratio
+    /// (width / height after preferredTransform). Replaced by
+    /// `updateUIView` on every SwiftUI re-evaluation so the closure
+    /// captures the current state setter, not the one alive at
+    /// `makeUIView` time.
+    var onAspectKnown: ((CGFloat) -> Void)?
+    /// Aspect-load task handle. Held so a URL change mid-load can
+    /// cancel the previous task before its callback fires against
+    /// the new asset and reports the wrong aspect.
+    private var aspectTask: Task<Void, Never>?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -180,8 +226,41 @@ private final class InlineAutoplayUIView: UIView {
         teardown()
         self.url = url
 
-        let item = AVPlayerItem(url: url.atsSafe)
+        let safeURL = url.atsSafe
+        let asset = AVURLAsset(url: safeURL)
+        let item = AVPlayerItem(asset: asset)
         let p = AVPlayer(playerItem: item)
+
+        // Asynchronously read the source's aspect ratio so the SwiftUI
+        // parent can swap its layout reservation from 16:9 to the
+        // actual aspect — vital for vertical clips. Done off the main
+        // actor; the callback is hopped back via `await MainActor.run`.
+        // Cancellation: a new `setURL` call invalidates this task by
+        // dropping the handle (next `aspectTask = Task { ... }`
+        // overwrite); we also `cancel()` in `teardown` for the
+        // dismantle path.
+        aspectTask = Task { [weak self] in
+            do {
+                let tracks = try await asset.loadTracks(withMediaType: .video)
+                guard let track = tracks.first else { return }
+                let (size, transform) = try await track.load(.naturalSize, .preferredTransform)
+                let displayed = size.applying(transform)
+                let w = abs(displayed.width)
+                let h = abs(displayed.height)
+                guard h > 0 else { return }
+                let aspect = w / h
+                await MainActor.run {
+                    guard let self, !Task.isCancelled else { return }
+                    self.onAspectKnown?(aspect)
+                }
+            } catch {
+                // Swallow load errors — the 16:9 default stands and
+                // the player itself will surface playback failures
+                // via the AVPlayerItem status path if the asset is
+                // unreachable. No need to cascade an aspect-load
+                // failure into a separate UI state.
+            }
+        }
         // Muted autoplay is the only form iOS allows without a user
         // gesture. Silent switch is irrelevant for muted output, so
         // the inline preview plays regardless of the device's silent
@@ -235,6 +314,8 @@ private final class InlineAutoplayUIView: UIView {
     }
 
     func teardown() {
+        aspectTask?.cancel()
+        aspectTask = nil
         if let endObservation {
             NotificationCenter.default.removeObserver(endObservation)
         }
