@@ -1001,6 +1001,19 @@ private struct AVPlayerControllerView: UIViewControllerRepresentable {
 
 // MARK: - WebM (WKWebView fallback)
 
+/// Escape every character that's significant inside an HTML attribute
+/// or a `<script>` body so a parser-supplied URL can't break out of
+/// `src="…"` and inject markup. Both webm players splice the raw URL
+/// into a `loadHTMLString` template, so the escape is the only barrier
+/// between attacker bytes and a same-origin script context.
+private func htmlAttributeEscaped(_ s: String) -> String {
+    s.replacingOccurrences(of: "&", with: "&amp;")
+        .replacingOccurrences(of: "<", with: "&lt;")
+        .replacingOccurrences(of: ">", with: "&gt;")
+        .replacingOccurrences(of: "\"", with: "&quot;")
+        .replacingOccurrences(of: "'", with: "&#39;")
+}
+
 /// Inline WebM player. AVFoundation can't decode the WebM container
 /// (even when the inner codec is VP9, which AVPlayer otherwise
 /// supports inside MP4), so we hand the URL to WebKit instead — iOS
@@ -1045,7 +1058,13 @@ private struct WebmInlineWebView: UIViewRepresentable {
         // the WKWebView only needs to render frames.
         webView.isUserInteractionEnabled = false
 
-        webView.loadHTMLString(Self.htmlForInline(url: url), baseURL: url)
+        // Match the AVPlayer path's `atsSafe` upgrade — a parser-emitted
+        // `http://` URL would otherwise be blocked by ATS and surface as
+        // a silent black frame inside the WKWebView with no diagnostic.
+        // Apply to both the `<video src>` and the document's `baseURL`
+        // so any same-origin subresources resolve over https too.
+        let safe = url.atsSafe
+        webView.loadHTMLString(Self.htmlForInline(url: safe), baseURL: safe)
         return webView
     }
 
@@ -1072,9 +1091,15 @@ private struct WebmInlineWebView: UIViewRepresentable {
     }
 
     private static func htmlForInline(url: URL) -> String {
-        let src = url.absoluteString
-            .replacingOccurrences(of: "&", with: "&amp;")
-            .replacingOccurrences(of: "\"", with: "&quot;")
+        // URL bytes come from third-party board HTML via the parsers,
+        // and `URL(string:)` accepts characters that aren't valid in a
+        // strict RFC 3986 path/query (especially in fragments and query
+        // strings). Escape the full set of HTML-attribute-significant
+        // characters so an attacker-crafted URL can't break out of the
+        // `src="…"` quoting and inject markup or a `<script>` block —
+        // anything injected here would run in this WKWebView's origin
+        // with reach to the `aspectReady` script-message handler.
+        let src = htmlAttributeEscaped(url.absoluteString)
         return """
         <!DOCTYPE html>
         <html><head>
@@ -1192,7 +1217,8 @@ private struct WebmFullscreenWebView: UIViewRepresentable {
         webView.backgroundColor = .black
         webView.scrollView.backgroundColor = .black
 
-        webView.loadHTMLString(Self.htmlForFullscreen(url: url), baseURL: url)
+        let safe = url.atsSafe
+        webView.loadHTMLString(Self.htmlForFullscreen(url: safe), baseURL: safe)
 
         // Drag-down-to-dismiss, matching `FullscreenVideoPlayer`'s
         // gesture so the dismissal feel is identical regardless of
@@ -1220,9 +1246,7 @@ private struct WebmFullscreenWebView: UIViewRepresentable {
     }
 
     private static func htmlForFullscreen(url: URL) -> String {
-        let src = url.absoluteString
-            .replacingOccurrences(of: "&", with: "&amp;")
-            .replacingOccurrences(of: "\"", with: "&quot;")
+        let src = htmlAttributeEscaped(url.absoluteString)
         // Start `muted` so autoplay isn't blocked by WebKit's
         // unmuted-autoplay policy; the visible HTML5 controls let
         // the user toggle audio if the clip has a soundtrack.
