@@ -114,7 +114,21 @@ struct NetworkImage: View {
                         measuredAspect = image.size.width / image.size.height
                     }
                     if measuredNaturalPointWidth == nil {
-                        measuredNaturalPointWidth = image.size.width
+                        // SDWebImage decodes UIImages at the device
+                        // scale (typically 3 on retina iPhones), so
+                        // `image.size.width` is the *point* width =
+                        // pixel width / scale. Multiplying back by
+                        // `image.scale` recovers the source's pixel
+                        // count, which matches the legacy
+                        // `CachedAsyncImage` convention of decoding at
+                        // scale 1 (where points and pixels were the
+                        // same number). Without this conversion the
+                        // `clampsToNaturalWidth` cap shrinks every body
+                        // image to one-third of its intended frame on
+                        // retina — observed regression: aagag's tall
+                        // ~800px wide images rendering at ~133pt on a
+                        // 390pt column.
+                        measuredNaturalPointWidth = image.size.width * image.scale
                     }
                 }
                 .onFailure { _ in

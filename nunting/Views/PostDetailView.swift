@@ -349,10 +349,20 @@ struct PostDetailView: View, Equatable {
                         // monotonically decreasing priority so the
                         // topmost body image outranks deeper ones when
                         // SDWebImageDownloader saturates.
+                        //
+                        // No `thumbnailMaxPointSize` — body images can
+                        // be either short-and-wide (normal photos) or
+                        // tall-and-narrow (aagag long-form panels). SD's
+                        // thumbnail caps the LONG edge of a single
+                        // bounding box, so a 1000pt cap shrinks an
+                        // 800×6000 panel to 400×3000 and the result
+                        // renders blurry on the column. Decoding at
+                        // native resolution costs more memory but
+                        // `SDImageCache`'s 200MB cap evicts older
+                        // entries to keep total residency bounded.
                         NetworkImage(
                             url: url,
                             aspectRatio: aspectRatio,
-                            thumbnailMaxPointSize: 1000,
                             visibilityGated: true,
                             clampsToNaturalWidth: true,
                             priority: 1.0 / Float(1 + index)
