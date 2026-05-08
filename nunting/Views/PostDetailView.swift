@@ -337,27 +337,24 @@ struct PostDetailView: View, Equatable {
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     case .image(let url, let aspectRatio):
-                        // Body images now go through SDWebImage's
+                        // Body images go through SDWebImage's
                         // `AnimatedImage` (libwebp for animated WebP /
                         // GIF / APNG, native fast path for stills) via
-                        // `VisibilityGatedAnimatedImage` — the latter
-                        // preserves the viewport-intersection load gate
-                        // and tap-to-retry behaviour that
-                        // `CachedAsyncImage` provided. Other callers
-                        // (comment icons, video posters, sticker, etc.)
-                        // still use `CachedAsyncImage` for now; we'll
-                        // migrate them after measuring this hot-path
-                        // change in isolation.
-                        VisibilityGatedAnimatedImage(
+                        // `NetworkImage` — viewport-intersection load
+                        // gate + natural-width clamp + tap-to-retry,
+                        // matching the behaviour the legacy
+                        // `CachedAsyncImage(visibilityGated: true,
+                        // clampsToNaturalWidth: true)` form had.
+                        // `1.0 / Float(1 + index)` collapses to a
+                        // monotonically decreasing priority so the
+                        // topmost body image outranks deeper ones when
+                        // SDWebImageDownloader saturates.
+                        NetworkImage(
                             url: url,
                             aspectRatio: aspectRatio,
-                            // SDWebImage `Float` priority replaces the
-                            // legacy block-index integer queue. Higher
-                            // values load first, so invert the index so
-                            // top-of-post images outrank deeper ones.
-                            // 1.0 / (1 + index) gives [1.0, 0.5, 0.33, …]
-                            // which monotonically decreases without ever
-                            // hitting 0 (which SD treats as default).
+                            thumbnailMaxPointSize: 1000,
+                            visibilityGated: true,
+                            clampsToNaturalWidth: true,
                             priority: 1.0 / Float(1 + index)
                         )
                         .contentShape(Rectangle())
@@ -459,7 +456,7 @@ private struct YouTubeBanner: View {
                 .aspectRatio(16.0 / 9.0, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
-                CachedAsyncImage(url: thumbnailURL, maxDimension: 720)
+                NetworkImage(url: thumbnailURL, thumbnailMaxPointSize: 720)
                     .frame(maxWidth: .infinity)
                     .aspectRatio(16.0 / 9.0, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -599,14 +596,14 @@ private struct CommentRow: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 if let levelURL = comment.levelIconURL {
-                    CachedAsyncImage(url: levelURL, maxDimension: 48, showsPlaceholder: false)
+                    NetworkImage(url: levelURL, thumbnailMaxPointSize: 48, showsPlaceholder: false)
                         .frame(width: 16, height: 16)
                 }
                 Text(comment.author)
                     .font(.caption)
                     .fontWeight(.medium)
                 if let iconURL = comment.authIconURL {
-                    CachedAsyncImage(url: iconURL, maxDimension: 48, showsPlaceholder: false)
+                    NetworkImage(url: iconURL, thumbnailMaxPointSize: 48, showsPlaceholder: false)
                         .frame(width: 14, height: 14)
                 }
                 Text(comment.dateText)
@@ -637,7 +634,7 @@ private struct CommentRow: View {
                 }
             } else if let stickerURL = comment.stickerURL {
                 HStack(spacing: 0) {
-                    CachedAsyncImage(url: stickerURL, maxDimension: 280)
+                    NetworkImage(url: stickerURL, thumbnailMaxPointSize: 280)
                         .frame(maxWidth: 200, maxHeight: 140)
                         .contentShape(Rectangle())
                         .onTapGesture { onImageTap(stickerURL) }
