@@ -337,15 +337,28 @@ struct PostDetailView: View, Equatable {
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     case .image(let url, let aspectRatio):
-                        CachedAsyncImage(
+                        // Body images now go through SDWebImage's
+                        // `AnimatedImage` (libwebp for animated WebP /
+                        // GIF / APNG, native fast path for stills) via
+                        // `VisibilityGatedAnimatedImage` — the latter
+                        // preserves the viewport-intersection load gate
+                        // and tap-to-retry behaviour that
+                        // `CachedAsyncImage` provided. Other callers
+                        // (comment icons, video posters, sticker, etc.)
+                        // still use `CachedAsyncImage` for now; we'll
+                        // migrate them after measuring this hot-path
+                        // change in isolation.
+                        VisibilityGatedAnimatedImage(
                             url: url,
-                            maxDimension: 1000,
-                            maxPixelArea: 8_000_000,
                             aspectRatio: aspectRatio,
-                            cacheVariant: "article-inline",
-                            loadPriority: index,
-                            clampsToNaturalWidth: true,
-                            visibilityGated: true
+                            // SDWebImage `Float` priority replaces the
+                            // legacy block-index integer queue. Higher
+                            // values load first, so invert the index so
+                            // top-of-post images outrank deeper ones.
+                            // 1.0 / (1 + index) gives [1.0, 0.5, 0.33, …]
+                            // which monotonically decreases without ever
+                            // hitting 0 (which SD treats as default).
+                            priority: 1.0 / Float(1 + index)
                         )
                         .contentShape(Rectangle())
                         .onTapGesture {

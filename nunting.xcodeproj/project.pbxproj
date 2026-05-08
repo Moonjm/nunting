@@ -7,6 +7,9 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		6E8E6C462FAD5F2A009B0A9E /* SDWebImage in Frameworks */ = {isa = PBXBuildFile; productRef = 6E8E6C452FAD5F2A009B0A9E /* SDWebImage */; };
+		6E8E6C492FAD5F5C009B0A9E /* SDWebImageSwiftUI in Frameworks */ = {isa = PBXBuildFile; productRef = 6E8E6C482FAD5F5C009B0A9E /* SDWebImageSwiftUI */; };
+		6E8E6C4C2FAD5F7A009B0A9E /* SDWebImageWebPCoder in Frameworks */ = {isa = PBXBuildFile; productRef = 6E8E6C4B2FAD5F7A009B0A9E /* SDWebImageWebPCoder */; };
 		6ED66F832F92705500A64087 /* SwiftSoup in Frameworks */ = {isa = PBXBuildFile; productRef = 6ED66F822F92705500A64087 /* SwiftSoup */; };
 /* End PBXBuildFile section */
 
@@ -43,6 +46,9 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				6E8E6C492FAD5F5C009B0A9E /* SDWebImageSwiftUI in Frameworks */,
+				6E8E6C462FAD5F2A009B0A9E /* SDWebImage in Frameworks */,
+				6E8E6C4C2FAD5F7A009B0A9E /* SDWebImageWebPCoder in Frameworks */,
 				6ED66F832F92705500A64087 /* SwiftSoup in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -96,6 +102,9 @@
 			name = nunting;
 			packageProductDependencies = (
 				6ED66F822F92705500A64087 /* SwiftSoup */,
+				6E8E6C452FAD5F2A009B0A9E /* SDWebImage */,
+				6E8E6C482FAD5F5C009B0A9E /* SDWebImageSwiftUI */,
+				6E8E6C4B2FAD5F7A009B0A9E /* SDWebImageWebPCoder */,
 			);
 			productName = nunting;
 			productReference = 6ED66F732F926F2700A64087 /* nunting.app */;
@@ -154,6 +163,9 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				6ED66F812F92705500A64087 /* XCRemoteSwiftPackageReference "SwiftSoup" */,
+				6E8E6C442FAD5F2A009B0A9E /* XCRemoteSwiftPackageReference "SDWebImage" */,
+				6E8E6C472FAD5F5C009B0A9E /* XCRemoteSwiftPackageReference "SDWebImageSwiftUI" */,
+				6E8E6C4A2FAD5F7A009B0A9E /* XCRemoteSwiftPackageReference "SDWebImageWebPCoder" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 6ED66F742F926F2700A64087 /* Products */;
@@ -496,6 +508,30 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		6E8E6C442FAD5F2A009B0A9E /* XCRemoteSwiftPackageReference "SDWebImage" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/SDWebImage/SDWebImage";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 5.21.7;
+			};
+		};
+		6E8E6C472FAD5F5C009B0A9E /* XCRemoteSwiftPackageReference "SDWebImageSwiftUI" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/SDWebImage/SDWebImageSwiftUI";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 3.1.4;
+			};
+		};
+		6E8E6C4A2FAD5F7A009B0A9E /* XCRemoteSwiftPackageReference "SDWebImageWebPCoder" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/SDWebImage/SDWebImageWebPCoder";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.15.0;
+			};
+		};
 		6ED66F812F92705500A64087 /* XCRemoteSwiftPackageReference "SwiftSoup" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/scinfu/SwiftSoup";
@@ -507,6 +543,21 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		6E8E6C452FAD5F2A009B0A9E /* SDWebImage */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 6E8E6C442FAD5F2A009B0A9E /* XCRemoteSwiftPackageReference "SDWebImage" */;
+			productName = SDWebImage;
+		};
+		6E8E6C482FAD5F5C009B0A9E /* SDWebImageSwiftUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 6E8E6C472FAD5F5C009B0A9E /* XCRemoteSwiftPackageReference "SDWebImageSwiftUI" */;
+			productName = SDWebImageSwiftUI;
+		};
+		6E8E6C4B2FAD5F7A009B0A9E /* SDWebImageWebPCoder */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 6E8E6C4A2FAD5F7A009B0A9E /* XCRemoteSwiftPackageReference "SDWebImageWebPCoder" */;
+			productName = SDWebImageWebPCoder;
+		};
 		6ED66F822F92705500A64087 /* SwiftSoup */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 6ED66F812F92705500A64087 /* XCRemoteSwiftPackageReference "SwiftSoup" */;
