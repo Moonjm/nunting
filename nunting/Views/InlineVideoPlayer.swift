@@ -34,35 +34,28 @@ struct InlineVideoPlayer: View {
     /// inline player also pauses while the fullscreen cover is up,
     /// avoiding two AVPlayers streaming the same asset in parallel.
     @State private var isVisible = false
-    /// Aspect ratio reserved for the player frame, set once AVAsset
-    /// metadata loads. While `nil` the slot renders a compact loading
-    /// strip instead of a fully-sized 16:9 placeholder; that way a
-    /// 9:16 vertical clip never visibly transforms from landscape to
-    /// portrait when the aspect snaps in. The trade-off is every video
-    /// pays a brief loading window before reveal — typically 50-300ms
-    /// on Wi-Fi, since track metadata sits in the file header and
-    /// loads ahead of full-frame buffering. After 5 s with no
-    /// metadata, falls back to 16:9 so the slot doesn't hang on a
-    /// loading strip when the asset is unreachable.
-    @State private var measuredAspect: CGFloat?
+    /// Aspect ratio reserved for the player frame. Starts at the
+    /// landscape default (16:9 = ~1.78) because most board-uploaded
+    /// videos are landscape and that's the better-than-nothing
+    /// layout reservation before AVAsset metadata loads. Once the
+    /// underlying `InlineAutoplayUIView` finishes reading the
+    /// video track's `naturalSize` × `preferredTransform`, it
+    /// fires `onAspectKnown` and we snap to the source's true
+    /// aspect — vertical clips (9:16 ≈ 0.56) then render tall
+    /// instead of letterbox-bound inside a 16:9 box.
+    @State private var measuredAspect: CGFloat = 16.0 / 9.0
 
     var body: some View {
         ZStack {
             Color.black
 
-            // Pre-reveal: only the loading indicator. Showing the
-            // poster too early would itself need a frame to lay out
-            // in (= the very 16:9-vs-natural reservation we're
-            // avoiding), so postpone all visual content until the
-            // aspect is known.
-            if measuredAspect == nil {
-                ProgressView()
-                    .tint(.white.opacity(0.6))
-            } else if let resolvedPoster {
+            if let resolvedPoster {
                 // Backdrop poster shown until the AVPlayer renders its
-                // first frame. Now that the slot is sized correctly,
-                // the poster sits in its final aspect with no
-                // post-load transformation.
+                // first frame. `AVPlayerLayer` with `.resizeAspect` is
+                // transparent in any letterbox area, so the poster
+                // also fills bars when source aspect doesn't match
+                // the reserved frame (mostly during the preroll
+                // window before `measuredAspect` snaps in).
                 NetworkImage(
                     url: resolvedPoster,
                     thumbnailMaxPointSize: 720
@@ -73,18 +66,14 @@ struct InlineVideoPlayer: View {
                     .foregroundStyle(.white.opacity(0.55))
             }
 
-            // The video view stays mounted in both phases — that's
-            // what drives the AVAsset metadata load that fires
-            // `onAspectKnown`. Playback is gated on the aspect having
-            // arrived (`measuredAspect != nil`) so frames don't
-            // visibly resize when the slot expands from the loading
-            // strip to its final aspect; we get a clean reveal +
-            // play instead of a play-then-resize sequence. AND with
-            // visibility / not-presented covers the off-screen and
-            // fullscreen-active cases.
+            // `isPlaying` ANDs visibility with NOT-presented so the
+            // inline player pauses while the fullscreen cover takes
+            // over. fullScreenCover doesn't unmount the underlying
+            // view, so without the second clause the inline AVPlayer
+            // would keep streaming alongside the fullscreen one.
             InlineAutoplayVideoView(
                 url: url,
-                isPlaying: measuredAspect != nil && isVisible && !isPresented,
+                isPlaying: isVisible && !isPresented,
                 onAspectKnown: { aspect in
                     // Guard against degenerate metadata (audio-only
                     // tracks or assets where preferredTransform makes
@@ -98,7 +87,7 @@ struct InlineVideoPlayer: View {
             )
         }
         .frame(maxWidth: .infinity)
-        .videoSlotFrame(aspect: measuredAspect)
+        .aspectRatio(measuredAspect, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .contentShape(Rectangle())
         .onTapGesture {
@@ -118,18 +107,6 @@ struct InlineVideoPlayer: View {
         .fullScreenCover(isPresented: $isPresented) {
             FullscreenVideoPlayer(url: url, onDismissBegin: onDismissBegin)
         }
-        .task(id: url) {
-            // Failsafe: if AVAsset metadata never arrives (asset
-            // 404 / unreachable host / corrupt header), fall back to
-            // 16:9 after 5 s so the slot doesn't hang on the loading
-            // strip forever. Picked > the typical metadata window
-            // (50-300 ms) by ~20× so the reveal is never racy on
-            // slow networks but a truly broken URL still surfaces a
-            // visible (empty) frame instead of an invisible one.
-            try? await Task.sleep(for: .seconds(5))
-            guard !Task.isCancelled, measuredAspect == nil else { return }
-            measuredAspect = 16.0 / 9.0
-        }
     }
 
     /// Parser-supplied poster wins; otherwise fall back to the aagag CDN's
@@ -145,24 +122,6 @@ struct InlineVideoPlayer: View {
         guard last.hasSuffix(".mp4") else { return nil }
         let q = String(last.dropLast(4))
         return URL(string: "https://i.aagag.com/o/\(q).jpg")
-    }
-}
-
-private extension View {
-    /// Compact loading strip while aspect is unknown, full
-    /// aspect-ratio frame once it is. Pulling the conditional out of
-    /// `body` keeps the modifier chain readable and lets the
-    /// loading-strip height live as a single named constant. 60 pt
-    /// is small enough that the eventual expand-to-aspect doesn't
-    /// look like a layout collapse and large enough to host the
-    /// progress indicator without crowding it.
-    @ViewBuilder
-    func videoSlotFrame(aspect: CGFloat?) -> some View {
-        if let aspect {
-            self.aspectRatio(aspect, contentMode: .fit)
-        } else {
-            self.frame(minHeight: 60, maxHeight: 60)
-        }
     }
 }
 
