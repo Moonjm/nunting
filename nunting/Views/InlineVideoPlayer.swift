@@ -7,10 +7,11 @@ struct InlineVideoPlayer: View {
     /// Poster image the parser already discovered (e.g. HTML5
     /// `<video poster="...">` or a site-specific CDN pattern). When nil the
     /// view falls back to the aagag `/o/{q}.jpg` convention and, failing
-    /// that, a plain film-icon placeholder.
+    /// that, a plain film-icon placeholder. Used as the visual backdrop
+    /// shown until the AVPlayer produces its first frame.
     var posterURL: URL? = nil
     /// Set by ContentView's `panGesture` while a back-drag is in flight
-    /// so releasing a finger over the play button doesn't push
+    /// so releasing a finger over the inline video doesn't push
     /// fullscreen playback when the user only intended to leave the
     /// detail screen.
     var tapGate: TapSuppressionGate? = nil
@@ -27,41 +28,59 @@ struct InlineVideoPlayer: View {
     var onDismissBegin: () -> Void = {}
 
     @State private var isPresented = false
+    /// `onScrollVisibilityChange` callback target. Drives the inline
+    /// AVPlayer's play/pause so an off-screen video doesn't keep its
+    /// decoder spinning. Combined with `!isPresented` (see body) so the
+    /// inline player also pauses while the fullscreen cover is up,
+    /// avoiding two AVPlayers streaming the same asset in parallel.
+    @State private var isVisible = false
 
     var body: some View {
-        Button {
+        ZStack {
+            Color.black
+
+            if let resolvedPoster {
+                // Backdrop poster shown until the AVPlayer renders its
+                // first frame. `AVPlayerLayer` with `.resizeAspect` is
+                // transparent in the letterbox area, so for non-16:9
+                // sources the poster also fills the bars; with the
+                // fixed 16:9 frame applied below most sources match
+                // and the poster only matters during the preroll
+                // window (typically <1s on Wi-Fi).
+                NetworkImage(
+                    url: resolvedPoster,
+                    thumbnailMaxPointSize: 720
+                )
+            } else {
+                Image(systemName: "film")
+                    .font(.system(size: 42, weight: .regular))
+                    .foregroundStyle(.white.opacity(0.55))
+            }
+
+            // `isPlaying` ANDs visibility with NOT-presented so the
+            // inline player pauses while the fullscreen cover takes
+            // over. fullScreenCover doesn't unmount the underlying
+            // view, so without the second clause the inline AVPlayer
+            // would keep streaming alongside the fullscreen one.
+            InlineAutoplayVideoView(url: url, isPlaying: isVisible && !isPresented)
+        }
+        .frame(maxWidth: .infinity)
+        .aspectRatio(16.0 / 9.0, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .contentShape(Rectangle())
+        .onTapGesture {
             if tapGate?.suppressed == true { return }
             isPresented = true
-        } label: {
-            ZStack {
-                Color.black
-
-                if let resolvedPoster {
-                    NetworkImage(
-                        url: resolvedPoster,
-                        thumbnailMaxPointSize: 720
-                    )
-                } else {
-                    Image(systemName: "film")
-                        .font(.system(size: 42, weight: .regular))
-                        .foregroundStyle(.white.opacity(0.55))
-                }
-
-                Circle()
-                    .fill(Color.black.opacity(0.58))
-                    .frame(width: 58, height: 58)
-
-                Image(systemName: "play.fill")
-                    .font(.system(size: 25, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .offset(x: 2)
-            }
-            .frame(maxWidth: .infinity)
-            .aspectRatio(16.0 / 9.0, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .onScrollVisibilityChange(threshold: 0.1) { visible in
+            // 0.1 (10%) instead of 0 so the player doesn't toggle
+            // play/pause for sub-pixel frame movement during the
+            // ScrollView's first layout pass; visible AVPlayer
+            // play()/pause() are documented as cheap but on a long
+            // post the back-to-back churn was visible as a frame
+            // hiccup.
+            isVisible = visible
+        }
         .accessibilityLabel("영상 재생")
         .fullScreenCover(isPresented: $isPresented) {
             FullscreenVideoPlayer(url: url, onDismissBegin: onDismissBegin)
@@ -81,6 +100,156 @@ struct InlineVideoPlayer: View {
         guard last.hasSuffix(".mp4") else { return nil }
         let q = String(last.dropLast(4))
         return URL(string: "https://i.aagag.com/o/\(q).jpg")
+    }
+}
+
+/// SwiftUI bridge for the inline `AVPlayerLayer`. Uses
+/// `UIViewRepresentable` because `VideoPlayer` (the SwiftUI native)
+/// always shows transport controls, and we want a passive moving-image
+/// look — controls only appear in the fullscreen `AVPlayerViewController`
+/// after a tap. Each instance owns its own AVPlayer for the lifetime
+/// of the SwiftUI view; a future `VideoPlayerPool` will lease these
+/// out from a capped pool to bound memory on long posts with many
+/// videos.
+private struct InlineAutoplayVideoView: UIViewRepresentable {
+    let url: URL
+    let isPlaying: Bool
+
+    func makeUIView(context: Context) -> InlineAutoplayUIView {
+        let view = InlineAutoplayUIView()
+        view.setURL(url)
+        view.setPlaying(isPlaying)
+        return view
+    }
+
+    func updateUIView(_ uiView: InlineAutoplayUIView, context: Context) {
+        if uiView.url != url {
+            uiView.setURL(url)
+        }
+        uiView.setPlaying(isPlaying)
+    }
+
+    static func dismantleUIView(_ uiView: InlineAutoplayUIView, coordinator: ()) {
+        // SwiftUI's representable lifecycle drops the view here when
+        // its parent goes away (e.g. PostDetailView pop, LazyVStack
+        // derealize on long-distance scroll). Without explicit
+        // teardown, the AVPlayer + its KVO observers + the
+        // didPlayToEndTimeNotification token would survive until ARC
+        // walked them down — which is enough to leave a paused player
+        // holding its decoder reservation past the view's lifetime.
+        uiView.teardown()
+    }
+}
+
+private final class InlineAutoplayUIView: UIView {
+    private(set) var url: URL?
+    private var player: AVPlayer?
+    private var playerLayer: AVPlayerLayer?
+    private var endObservation: NSObjectProtocol?
+    /// Latest `setPlaying` value. Stored because `setURL` may run
+    /// before the first `setPlaying` call (when URL changes
+    /// mid-lifecycle), and we need to know whether the new player
+    /// should auto-resume on attach.
+    private var wantsPlay = false
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        // The AVPlayerLayer renders into this view's layer hierarchy;
+        // making the host view itself transparent lets the SwiftUI
+        // poster show through during preroll and in any letterbox area.
+        isOpaque = false
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        backgroundColor = .clear
+        isOpaque = false
+    }
+
+    deinit {
+        teardown()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        playerLayer?.frame = bounds
+    }
+
+    func setURL(_ url: URL) {
+        teardown()
+        self.url = url
+
+        let item = AVPlayerItem(url: url.atsSafe)
+        let p = AVPlayer(playerItem: item)
+        // Muted autoplay is the only form iOS allows without a user
+        // gesture. Silent switch is irrelevant for muted output, so
+        // the inline preview plays regardless of the device's silent
+        // mode — same UX Safari ships for `<video muted autoplay>`.
+        p.isMuted = true
+        // `.none` keeps AVPlayer from inserting its own end-of-playback
+        // gap; the loop is driven by `didPlayToEndTimeNotification`
+        // below so the seek + play happens back-to-back.
+        p.actionAtItemEnd = .none
+        // Skip the implicit preroll wait. `automaticallyWaitsToMinimizeStalling`
+        // = true defers `play()` until the player has buffered enough
+        // data to play through; for short looped clips on board CDNs
+        // that's overkill and adds 1-3s of black before first frame.
+        // Setting false makes `play()` start the moment the decoder
+        // produces a frame, accepting brief stalls on slow networks
+        // in exchange for a snappier feel on the typical Wi-Fi path.
+        p.automaticallyWaitsToMinimizeStalling = false
+
+        let layer = AVPlayerLayer(player: p)
+        layer.videoGravity = .resizeAspect
+        layer.frame = bounds
+        self.layer.addSublayer(layer)
+
+        // Loop on end-of-playback. Same pattern the FullscreenVideoPlayer
+        // uses — AVPlayer (vs AVQueuePlayer + AVPlayerLooper) keeps the
+        // teardown path simple and matches the typical short reaction-clip
+        // length boards ship.
+        endObservation = NotificationCenter.default.addObserver(
+            forName: AVPlayerItem.didPlayToEndTimeNotification,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self, let player = self.player else { return }
+            player.seek(to: .zero)
+            if self.wantsPlay { player.play() }
+        }
+
+        self.player = p
+        self.playerLayer = layer
+
+        if wantsPlay { p.play() }
+    }
+
+    func setPlaying(_ playing: Bool) {
+        wantsPlay = playing
+        if playing {
+            player?.play()
+        } else {
+            player?.pause()
+        }
+    }
+
+    func teardown() {
+        if let endObservation {
+            NotificationCenter.default.removeObserver(endObservation)
+        }
+        endObservation = nil
+        player?.pause()
+        // `replaceCurrentItem(with: nil)` releases the AVPlayerItem +
+        // its decoder reservation eagerly; without it the OS holds the
+        // resources until ARC walks the player down, which on a long
+        // post with many video blocks compounds into a measurable
+        // pressure spike at LazyVStack derealize boundaries.
+        player?.replaceCurrentItem(with: nil)
+        player = nil
+        playerLayer?.removeFromSuperlayer()
+        playerLayer = nil
+        url = nil
     }
 }
 
