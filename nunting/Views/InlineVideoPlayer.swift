@@ -202,6 +202,13 @@ final class InlineAutoplayUIView: UIView {
     private var playerLayer: AVPlayerLayer?
     private let scrubBar = VideoScrubBarView()
     private var endObservation: NSObjectProtocol?
+    /// KVO on `AVPlayerItem.status`. Triggers pool release + player
+    /// teardown when the item moves to `.failed` so a 404 / corrupt
+    /// stream / unreachable host doesn't permanently consume one of
+    /// the pool's three lease slots — without this, a long post with
+    /// one bad URL silently caps inline playback to two videos for
+    /// the rest of the page.
+    private var statusObservation: NSKeyValueObservation?
     /// Latest `setPlaying` value. Stored so `setURL` (which doesn't
     /// create a player by itself) and pool-eviction recovery (which
     /// recreates a player when the view next becomes visible) can read
@@ -335,10 +342,21 @@ final class InlineAutoplayUIView: UIView {
 
     /// Called by `VideoPlayerPool` when this view's lease is being
     /// evicted to make room for another. The pool has already removed
-    /// us from its lease list, so we just tear down the player.
-    /// `url` is preserved and `wantsPlay` is unchanged — if the view
-    /// is still visible the pool will re-promote us when a slot opens
-    /// (via the waiter list logic).
+    /// us from its lease list; we just tear down the player. `url`
+    /// is preserved so the next `setPlaying(true)` can recreate.
+    ///
+    /// Recovery path: in current call sites, eviction targets only
+    /// **paused** leases (`Lease.isPaused == true`), which by
+    /// invariant means the view's most recent SwiftUI state was
+    /// `setPlaying(false)` (`wantsPlay == false`). Recovery happens
+    /// when SwiftUI later fires `setPlaying(true)` on visibility
+    /// return — NOT via the waiter list. The waiter list applies
+    /// only to views that asked for a lease and got denied because
+    /// every existing slot was actively playing; an evicted view
+    /// is dropped on the floor here. If a future change ever evicts
+    /// a `wantsPlay == true` lease (e.g., a "playing slot can be
+    /// preempted by a higher-priority view" feature), this method
+    /// would also need to enqueue the evicted view as a waiter.
     func releasePlayerForPoolEviction() {
         tearDownPlayer()
     }
@@ -409,7 +427,27 @@ final class InlineAutoplayUIView: UIView {
         // Setting false makes `play()` start the moment the decoder
         // produces a frame, accepting brief stalls on slow networks
         // in exchange for a snappier feel on the typical Wi-Fi path.
+        // TODO(deferred per body-media-refactor.md §8): on cellular
+        // / Low Power Mode, flip this back to `true` (or skip
+        // autoplay entirely) so weak connections don't stutter-loop
+        // every video that scrolls into view. The §8 work also adds
+        // a Settings toggle for the cellular auto-play preference.
         p.automaticallyWaitsToMinimizeStalling = false
+
+        // Observe AVPlayerItem.status. On `.failed` (404, malformed
+        // stream, ATS block on a redirect, etc.), release the pool
+        // lease and tear down the player so a single bad URL doesn't
+        // hold one of the three pool slots indefinitely. The poster
+        // stays on screen — no special failure UI for now, matching
+        // the inline-image fail-silent stance for decorative slots.
+        statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
+            guard item.status == .failed else { return }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                VideoPlayerPool.shared.release(self)
+                self.tearDownPlayer()
+            }
+        }
 
         let layer = AVPlayerLayer(player: p)
         layer.videoGravity = .resizeAspect
@@ -438,6 +476,8 @@ final class InlineAutoplayUIView: UIView {
     private func tearDownPlayer() {
         aspectTask?.cancel()
         aspectTask = nil
+        statusObservation?.invalidate()
+        statusObservation = nil
         if let endObservation {
             NotificationCenter.default.removeObserver(endObservation)
         }
