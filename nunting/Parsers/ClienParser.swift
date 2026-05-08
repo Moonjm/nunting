@@ -439,9 +439,18 @@ struct ClienParser: BoardParser {
             // Without this, image-only comments were silently dropped
             // by the `content.isEmpty` guard below and text-with-image
             // comments rendered the caption alone.
-            let attachedImage: URL? = (try? row.select("img[data-role=attach-image]").first())
-                .flatMap { try? $0.attr("src") }
-                .flatMap { $0.isEmpty ? nil : URL(string: $0) }
+            //
+            // Routed through `resolveHTTPURL` so the same trim +
+            // scheme allow-list (`http(s)` only) the body image and
+            // video paths use applies here too — keeps a future
+            // Clien markup change that inlined a `data:` or
+            // whitespace-padded src from leaking past the parser.
+            let attachedImage: URL? = {
+                guard let img = try? row.select("img[data-role=attach-image]").first(),
+                      let src = try? img.attr("src")
+                else { return nil }
+                return resolveHTTPURL(src)
+            }()
 
             // Allow image-only comments through. The guard now drops
             // the row only when there's neither a caption nor an
