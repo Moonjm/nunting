@@ -177,15 +177,19 @@ private struct InlineAutoplayVideoView: UIViewRepresentable {
     }
 }
 
-private final class InlineAutoplayUIView: UIView {
+/// Internal (not file-private) so `VideoPlayerPool` can hold weak refs
+/// for its eviction callbacks. Same UIView the SwiftUI representable
+/// above wraps — there's no second consumer.
+final class InlineAutoplayUIView: UIView {
     private(set) var url: URL?
     private var player: AVPlayer?
     private var playerLayer: AVPlayerLayer?
     private var endObservation: NSObjectProtocol?
-    /// Latest `setPlaying` value. Stored because `setURL` may run
-    /// before the first `setPlaying` call (when URL changes
-    /// mid-lifecycle), and we need to know whether the new player
-    /// should auto-resume on attach.
+    /// Latest `setPlaying` value. Stored so `setURL` (which doesn't
+    /// create a player by itself) and pool-eviction recovery (which
+    /// recreates a player when the view next becomes visible) can read
+    /// the desired state — the SwiftUI representable only re-runs
+    /// `setPlaying` on state change, not periodically.
     private var wantsPlay = false
     /// Fired once per asset load with the source's true aspect ratio
     /// (width / height after preferredTransform). Replaced by
@@ -214,7 +218,11 @@ private final class InlineAutoplayUIView: UIView {
     }
 
     deinit {
-        teardown()
+        // deinit can't await, so call the synchronous portion directly.
+        // VideoPlayerPool.release would also be appropriate but the
+        // weak reference in the pool's lease list will compact itself
+        // on the next acquire — no leak.
+        tearDownPlayer()
     }
 
     override func layoutSubviews() {
@@ -222,9 +230,65 @@ private final class InlineAutoplayUIView: UIView {
         playerLayer?.frame = bounds
     }
 
-    func setURL(_ url: URL) {
-        teardown()
-        self.url = url
+    func setURL(_ newURL: URL) {
+        if url == newURL { return }
+        // URL change mid-lifetime: tear down current player (if any)
+        // and reset URL. Player creation is now deferred to
+        // `setPlaying(true)`; the SwiftUI representable's
+        // `updateUIView` will call setPlaying right after setURL with
+        // the latest desired state, so a play-while-visible swap
+        // recreates the player against the new URL on the same tick.
+        VideoPlayerPool.shared.release(self)
+        tearDownPlayer()
+        url = newURL
+    }
+
+    func setPlaying(_ playing: Bool) {
+        wantsPlay = playing
+        if playing {
+            // Lazy create: defer AVPlayer instantiation until something
+            // actually wants to play. Off-screen video blocks (the
+            // "LazyVStack realised but not visible" set) thus sit
+            // player-less and don't count against the pool cap.
+            if player == nil {
+                acquireAndCreatePlayer()
+            }
+            player?.play()
+        } else {
+            // Pause keeps the player alive (and the pool slot).
+            // Resuming on next setPlaying(true) is a single-call play()
+            // with no recreate cost, which matters for the
+            // fullscreen-cover-up-and-back transition path where the
+            // user sees no player gap.
+            player?.pause()
+        }
+    }
+
+    /// Called by `VideoPlayerPool` when this view's lease is being
+    /// evicted to make room for another. The pool has already removed
+    /// us from its lease list, so we just tear down the player.
+    /// `url` is preserved — if the view becomes visible again later
+    /// and `setPlaying(true)` runs, we re-acquire and recreate.
+    func releasePlayerForPoolEviction() {
+        tearDownPlayer()
+    }
+
+    /// Full SwiftUI dismantle path. Release pool lease too (deinit
+    /// will catch it via weak compaction otherwise, but releasing
+    /// eagerly frees the slot for the next acquire one frame sooner).
+    func teardown() {
+        VideoPlayerPool.shared.release(self)
+        tearDownPlayer()
+        url = nil
+        wantsPlay = false
+    }
+
+    private func acquireAndCreatePlayer() {
+        guard let url, player == nil else { return }
+        // Pool may evict another view's player before returning. The
+        // evicted view stays mounted (poster visible) — its
+        // `releasePlayerForPoolEviction` just nilled its AVPlayer.
+        VideoPlayerPool.shared.acquire(self)
 
         let safeURL = url.atsSafe
         let asset = AVURLAsset(url: safeURL)
@@ -235,10 +299,8 @@ private final class InlineAutoplayUIView: UIView {
         // parent can swap its layout reservation from 16:9 to the
         // actual aspect — vital for vertical clips. Done off the main
         // actor; the callback is hopped back via `await MainActor.run`.
-        // Cancellation: a new `setURL` call invalidates this task by
-        // dropping the handle (next `aspectTask = Task { ... }`
-        // overwrite); we also `cancel()` in `teardown` for the
-        // dismantle path.
+        // Cancellation: `tearDownPlayer` cancels the handle so a
+        // pool eviction mid-load doesn't fire a stale aspect callback.
         aspectTask = Task { [weak self] in
             do {
                 let tracks = try await asset.loadTracks(withMediaType: .video)
@@ -300,20 +362,9 @@ private final class InlineAutoplayUIView: UIView {
 
         self.player = p
         self.playerLayer = layer
-
-        if wantsPlay { p.play() }
     }
 
-    func setPlaying(_ playing: Bool) {
-        wantsPlay = playing
-        if playing {
-            player?.play()
-        } else {
-            player?.pause()
-        }
-    }
-
-    func teardown() {
+    private func tearDownPlayer() {
         aspectTask?.cancel()
         aspectTask = nil
         if let endObservation {
@@ -330,7 +381,6 @@ private final class InlineAutoplayUIView: UIView {
         player = nil
         playerLayer?.removeFromSuperlayer()
         playerLayer = nil
-        url = nil
     }
 }
 
