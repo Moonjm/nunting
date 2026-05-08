@@ -316,20 +316,12 @@ struct PostDetailView: View, Equatable {
             // aspect-ratio frame came back, the running content height
             // contracted, and the viewport (deep at the comments) landed
             // past content-end — "back-drag from comments area → blank
-            // screen". Fetch / decode throughput is already bounded by
-            // `ImageThrottle` inside `CachedAsyncImage`, so losing the
-            // lazy gate doesn't burst concurrent downloads.
+            // screen". Concurrent fetches are now capped at 4 by
+            // `SDWebImageDownloader.config.maxConcurrentDownloads`
+            // (set in `SDWebImageSetup`), so dropping the lazy gate
+            // doesn't burst the downloader.
             VStack(alignment: .leading, spacing: 12) {
-                // `enumerated()` so each image / video-poster block can
-                // pass its document position as `loadPriority`. The
-                // `ImageThrottle` queue serves lower priorities first, so
-                // a long post's images load top-down even when SwiftUI's
-                // eager VStack starts every `.task(id:)` at once. The
-                // queue is sorted by raw priority value, so any
-                // monotonically increasing per-block index works — only
-                // the relative order matters, not the magnitude or
-                // whether non-image blocks consume an index.
-                ForEach(Array(detail.blocks.enumerated()), id: \.element.id) { index, block in
+                ForEach(Array(detail.blocks.enumerated()), id: \.element.id) { _, block in
                     switch block.kind {
                     case .richText(let segments):
                         Text(attributedString(from: segments))
@@ -337,15 +329,30 @@ struct PostDetailView: View, Equatable {
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     case .image(let url, let aspectRatio):
-                        CachedAsyncImage(
+                        // Body images go through SDWebImage's
+                        // `AnimatedImage` (libwebp for animated WebP /
+                        // GIF / APNG, native fast path for stills) via
+                        // `NetworkImage` — viewport-intersection load
+                        // gate + natural-width clamp + tap-to-retry,
+                        // matching the behaviour the legacy
+                        // `CachedAsyncImage(visibilityGated: true,
+                        // clampsToNaturalWidth: true)` form had.
+                        //
+                        // No `thumbnailMaxPointSize` — body images can
+                        // be either short-and-wide (normal photos) or
+                        // tall-and-narrow (aagag long-form panels). SD's
+                        // thumbnail caps the LONG edge of a single
+                        // bounding box, so a 1000pt cap shrinks an
+                        // 800×6000 panel to 400×3000 and the result
+                        // renders blurry on the column. Decoding at
+                        // native resolution costs more memory but
+                        // `SDImageCache`'s 200MB cap evicts older
+                        // entries to keep total residency bounded.
+                        NetworkImage(
                             url: url,
-                            maxDimension: 1000,
-                            maxPixelArea: 8_000_000,
                             aspectRatio: aspectRatio,
-                            cacheVariant: "article-inline",
-                            loadPriority: index,
-                            clampsToNaturalWidth: true,
-                            visibilityGated: true
+                            visibilityGated: true,
+                            clampsToNaturalWidth: true
                         )
                         .contentShape(Rectangle())
                         .onTapGesture {
@@ -357,8 +364,7 @@ struct PostDetailView: View, Equatable {
                             url: url,
                             posterURL: posterURL,
                             tapGate: tapGate,
-                            onDismissBegin: { beginDismissCover() },
-                            posterLoadPriority: index
+                            onDismissBegin: { beginDismissCover() }
                         )
                     case .dealLink(let url, let label):
                         DealLinkBanner(url: url, label: label)
@@ -446,7 +452,7 @@ private struct YouTubeBanner: View {
                 .aspectRatio(16.0 / 9.0, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
-                CachedAsyncImage(url: thumbnailURL, maxDimension: 720)
+                NetworkImage(url: thumbnailURL, thumbnailMaxPointSize: 720)
                     .frame(maxWidth: .infinity)
                     .aspectRatio(16.0 / 9.0, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -586,14 +592,14 @@ private struct CommentRow: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 if let levelURL = comment.levelIconURL {
-                    CachedAsyncImage(url: levelURL, maxDimension: 48, showsPlaceholder: false)
+                    NetworkImage(url: levelURL, thumbnailMaxPointSize: 48, showsPlaceholder: false)
                         .frame(width: 16, height: 16)
                 }
                 Text(comment.author)
                     .font(.caption)
                     .fontWeight(.medium)
                 if let iconURL = comment.authIconURL {
-                    CachedAsyncImage(url: iconURL, maxDimension: 48, showsPlaceholder: false)
+                    NetworkImage(url: iconURL, thumbnailMaxPointSize: 48, showsPlaceholder: false)
                         .frame(width: 14, height: 14)
                 }
                 Text(comment.dateText)
@@ -624,7 +630,7 @@ private struct CommentRow: View {
                 }
             } else if let stickerURL = comment.stickerURL {
                 HStack(spacing: 0) {
-                    CachedAsyncImage(url: stickerURL, maxDimension: 280)
+                    NetworkImage(url: stickerURL, thumbnailMaxPointSize: 280)
                         .frame(maxWidth: 200, maxHeight: 140)
                         .contentShape(Rectangle())
                         .onTapGesture { onImageTap(stickerURL) }

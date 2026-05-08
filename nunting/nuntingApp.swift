@@ -21,6 +21,14 @@ struct nuntingApp: App {
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: [])
         try? AVAudioSession.sharedInstance().setActive(true)
         #endif
+
+        // Register libwebp coder + cache budgets BEFORE the first
+        // `AnimatedImage` view materialises. A late `addCoder` would let
+        // the first round of WebP fetches go through ImageIO and stay
+        // cached as ImageIO-decoded `.image` results — subsequent
+        // animated WebP would still play but the first ones would
+        // forever load slow on cache hits.
+        SDWebImageSetup.configure()
     }
 
     var body: some Scene {

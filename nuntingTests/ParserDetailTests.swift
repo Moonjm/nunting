@@ -127,8 +127,8 @@ final class ParserDetailTests: XCTestCase {
         // user-uploaded `.mov` is shipped as `<img src="...mov">` and the
         // desktop-only JS shim that swaps it to `<video>` doesn't run on
         // mobile. Without this routing the parser emits an `.image` block,
-        // `CachedAsyncImage` downloads the mov bytes, `CGImageSource`
-        // returns nil, and the slot flips to "다시 시도".
+        // SDWebImage downloads the mov bytes, the decoder rejects them,
+        // and the slot flips to "다시 시도".
         let html = """
         <html><body>
         <div class="bbs view">
