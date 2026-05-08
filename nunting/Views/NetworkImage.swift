@@ -93,8 +93,17 @@ struct NetworkImage: View {
                     Color.clear
                 }
             } else if !visibilityGated || hasBeenVisible {
+                // `.atsSafe` upgrades plain `http://` to `https://` so
+                // ATS-clean CDNs serve through without an
+                // `NSAllowsArbitraryLoads` exception. Mirrors the
+                // legacy `CachedAsyncImage` pre-fetch URL transform —
+                // missing this caused board image CDNs that publish
+                // their canonical `<img src>` as `http://` (carisyou,
+                // some tistory mirrors) to silently fail on first
+                // load, which surfaced as a flood of "다시 시도"
+                // retry placeholders right after the SD migration.
                 AnimatedImage(
-                    url: url,
+                    url: url.atsSafe,
                     options: priority > 0.5 ? [.highPriority] : [],
                     context: thumbnailContext
                 ) {

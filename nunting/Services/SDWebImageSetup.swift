@@ -46,5 +46,16 @@ enum SDWebImageSetup {
         // backgrounding). SDWebImage retries internally on transient
         // failures, so the second dial gets the session default.
         downloader.config.downloadTimeout = 8
+
+        // Match the mobile Safari UA the rest of the app uses. Several
+        // Korean board image CDNs (the ones embedded in ppomppu /
+        // humor / aagag bodies) reject the default `SDWebImage/x.y.z`
+        // UA with 403 — observed regression after the migration:
+        // body images flipping to the "다시 시도" retry placeholder en
+        // masse on first load. `Networking.userAgent` is the same
+        // string `URLSession` uses for HTML fetches, so the image and
+        // HTML legs of a single post visit identify identically and
+        // CDNs treat the second leg as a continuation of the first.
+        downloader.setValue(Networking.userAgent, forHTTPHeaderField: "User-Agent")
     }
 }
