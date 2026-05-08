@@ -89,9 +89,9 @@ struct InlineVideoPlayer: View {
         .frame(maxWidth: .infinity)
         .aspectRatio(measuredAspect, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        // Tap-to-fullscreen overlay carved to exclude the bottom 48pt
-        // strip where the scrub bar's UIKit gesture recognizers live.
-        // A whole-frame `.onTapGesture` on the outer ZStack would race
+        // Tap-to-fullscreen overlay carved to exclude the bottom strip
+        // where the scrub bar's UIKit gesture recognizers live. A
+        // whole-frame `.onTapGesture` on the outer ZStack would race
         // SwiftUI's gesture system against the underlying UIKit
         // recognizers — and SwiftUI usually wins for taps that don't
         // turn into pans, so a tap on the scrub bar would open
@@ -99,8 +99,8 @@ struct InlineVideoPlayer: View {
         // to the top region leaves the bottom strip as plain SwiftUI
         // dead space; touches there fall through to the
         // `InlineAutoplayUIView` (which contains the scrub bar) and
-        // its UIKit gestures fire normally. 48 matches
-        // `InlineAutoplayUIView.layoutSubviews`'s `scrubHeight`.
+        // its UIKit gestures fire normally. The constant is owned by
+        // the UIView side so the two coordinate spaces can't drift.
         .overlay(alignment: .top) {
             Color.clear
                 .contentShape(Rectangle())
@@ -108,7 +108,7 @@ struct InlineVideoPlayer: View {
                     if tapGate?.suppressed == true { return }
                     isPresented = true
                 }
-                .padding(.bottom, 48)
+                .padding(.bottom, InlineAutoplayUIView.scrubBarStripHeight)
         }
         .onScrollVisibilityChange(threshold: 0.1) { visible in
             // 0.1 (10%) instead of 0 so the player doesn't toggle
@@ -196,7 +196,22 @@ private struct InlineAutoplayVideoView: UIViewRepresentable {
 /// Internal (not file-private) so `VideoPlayerPool` can hold weak refs
 /// for its eviction callbacks. Same UIView the SwiftUI representable
 /// above wraps — there's no second consumer.
+///
+/// `@MainActor` is explicit even though `UIView` already implies it
+/// under Swift 6 default-isolation. Pinning it at the type level
+/// hardens the contract `VideoPlayerPool` relies on (the pool is
+/// `@MainActor` and assumes it can call this view's methods
+/// synchronously) against future Swift mode changes or accidental
+/// `nonisolated` overrides on individual methods.
+@MainActor
 final class InlineAutoplayUIView: UIView {
+    /// Bottom strip height reserved for the scrub bar's UIKit gesture
+    /// recognizers. The SwiftUI tap-to-fullscreen overlay excludes
+    /// the same height via `.padding(.bottom:)` so the two
+    /// coordinate spaces stay in lockstep — a single owner here
+    /// prevents silent drift if either side is later tuned.
+    static let scrubBarStripHeight: CGFloat = 48
+
     private(set) var url: URL?
     private var player: AVPlayer?
     private var playerLayer: AVPlayerLayer?
@@ -244,11 +259,14 @@ final class InlineAutoplayUIView: UIView {
     }
 
     deinit {
-        // deinit can't await, so call the synchronous portion directly.
-        // VideoPlayerPool.release would also be appropriate but the
-        // weak reference in the pool's lease list will compact itself
-        // on the next acquire — no leak.
-        tearDownPlayer()
+        // `deinit` is nonisolated in Swift 6 even on a `@MainActor`
+        // class. UIView's deallocation is documented to occur on the
+        // main thread, so `MainActor.assumeIsolated` is safe and
+        // gives `tearDownPlayer` (which touches UIKit + AVPlayer
+        // observer state) the actor context it needs.
+        MainActor.assumeIsolated {
+            tearDownPlayer()
+        }
     }
 
     override func layoutSubviews() {
@@ -256,20 +274,19 @@ final class InlineAutoplayUIView: UIView {
         playerLayer?.frame = bounds
         // Scrub bar sits at the bottom of the video frame. The view's
         // outer height includes touch-target padding above the visible
-        // 3pt bar; pinning it to a 48pt strip at the bottom (Apple
-        // HIG's 44pt minimum + a few pt headroom) gives a comfortable
-        // drag area on the thin bar without forcing pixel-perfect
-        // aim. Tap on this strip is absorbed by the scrub bar's own
-        // gesture recognizers, so the SwiftUI parent's
-        // `.onTapGesture` (fullscreen trigger) only fires for taps
-        // above this region — the intended split between "scrub" and
-        // "open fullscreen".
-        let scrubHeight: CGFloat = 48
+        // 3pt bar; pinning it to a `scrubBarStripHeight`-tall strip at
+        // the bottom (Apple HIG's 44pt minimum + a few pt headroom)
+        // gives a comfortable drag area on the thin bar without
+        // forcing pixel-perfect aim. Tap on this strip is absorbed
+        // by the scrub bar's own gesture recognizers, so the SwiftUI
+        // parent's `.onTapGesture` (fullscreen trigger) only fires
+        // for taps above this region — the intended split between
+        // "scrub" and "open fullscreen".
         scrubBar.frame = CGRect(
             x: 0,
-            y: bounds.height - scrubHeight,
+            y: bounds.height - Self.scrubBarStripHeight,
             width: bounds.width,
-            height: scrubHeight
+            height: Self.scrubBarStripHeight
         )
         bringSubviewToFront(scrubBar)
     }
