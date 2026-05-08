@@ -580,6 +580,14 @@ private final class VideoScrubBarView: UIView {
 
     private let backgroundLayer = CALayer()
     private let fillLayer = CALayer()
+    /// Translucent black fade behind the bar. The resting track is
+    /// white-32% and the fill is white-95%; on videos with bright
+    /// pixels at the bottom edge (snow, sky, white-background webcomics)
+    /// both layers blend into the frame and the bar disappears.
+    /// Painting a short dark gradient under the bar gives consistent
+    /// contrast regardless of source content, while staying
+    /// unobtrusive enough to preserve the "moving image" feel.
+    private let backdropGradient = CAGradientLayer()
 
     /// `addPeriodicTimeObserver` returns an `Any` token; held so
     /// `removeTimeObserver` can pair off correctly when the player
@@ -600,6 +608,13 @@ private final class VideoScrubBarView: UIView {
         // video backgrounds. The fill is brighter for contrast.
         backgroundLayer.backgroundColor = UIColor.white.withAlphaComponent(0.32).cgColor
         fillLayer.backgroundColor = UIColor.white.withAlphaComponent(0.95).cgColor
+        backdropGradient.colors = [
+            UIColor.black.withAlphaComponent(0).cgColor,
+            UIColor.black.withAlphaComponent(0.55).cgColor,
+        ]
+        backdropGradient.startPoint = CGPoint(x: 0.5, y: 0)
+        backdropGradient.endPoint = CGPoint(x: 0.5, y: 1)
+        layer.addSublayer(backdropGradient)
         layer.addSublayer(backgroundLayer)
         layer.addSublayer(fillLayer)
 
@@ -621,6 +636,20 @@ private final class VideoScrubBarView: UIView {
         super.layoutSubviews()
         let barY = bounds.height - barHeight
         backgroundLayer.frame = CGRect(x: 0, y: barY, width: bounds.width, height: barHeight)
+        // Disable implicit CALayer animation so a frame change during
+        // bounds updates (e.g. aspect ratio snap on first metadata
+        // load) doesn't cross-fade the gradient through a visible
+        // transition.
+        let backdropHeight: CGFloat = 18
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        backdropGradient.frame = CGRect(
+            x: 0,
+            y: bounds.height - backdropHeight,
+            width: bounds.width,
+            height: backdropHeight
+        )
+        CATransaction.commit()
         updateFill()
     }
 
