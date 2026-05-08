@@ -89,10 +89,26 @@ struct InlineVideoPlayer: View {
         .frame(maxWidth: .infinity)
         .aspectRatio(measuredAspect, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .contentShape(Rectangle())
-        .onTapGesture {
-            if tapGate?.suppressed == true { return }
-            isPresented = true
+        // Tap-to-fullscreen overlay carved to exclude the bottom 48pt
+        // strip where the scrub bar's UIKit gesture recognizers live.
+        // A whole-frame `.onTapGesture` on the outer ZStack would race
+        // SwiftUI's gesture system against the underlying UIKit
+        // recognizers — and SwiftUI usually wins for taps that don't
+        // turn into pans, so a tap on the scrub bar would open
+        // fullscreen instead of seeking. Restricting the SwiftUI tap
+        // to the top region leaves the bottom strip as plain SwiftUI
+        // dead space; touches there fall through to the
+        // `InlineAutoplayUIView` (which contains the scrub bar) and
+        // its UIKit gestures fire normally. 48 matches
+        // `InlineAutoplayUIView.layoutSubviews`'s `scrubHeight`.
+        .overlay(alignment: .top) {
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    if tapGate?.suppressed == true { return }
+                    isPresented = true
+                }
+                .padding(.bottom, 48)
         }
         .onScrollVisibilityChange(threshold: 0.1) { visible in
             // 0.1 (10%) instead of 0 so the player doesn't toggle
