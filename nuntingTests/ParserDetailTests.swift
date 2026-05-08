@@ -51,7 +51,7 @@ final class ParserDetailTests: XCTestCase {
 
         // 1) 정확히 하나의 video 블록
         let videos = detail.blocks.compactMap { block -> (URL, URL?)? in
-            if case .video(let url, let posterURL) = block.kind {
+            if case .video(let url, let posterURL, _) = block.kind {
                 return (url, posterURL)
             }
             return nil
@@ -113,7 +113,7 @@ final class ParserDetailTests: XCTestCase {
 
         let detail = try parser.parseDetail(html: html, post: post)
         let videos = detail.blocks.compactMap { block -> URL? in
-            if case .video(let url, _) = block.kind { return url }
+            if case .video(let url, _, _) = block.kind { return url }
             return nil
         }
         XCTAssertEqual(videos.count, 1)
@@ -160,7 +160,7 @@ final class ParserDetailTests: XCTestCase {
         let detail = try parser.parseDetail(html: html, post: post)
 
         let videos = detail.blocks.compactMap { block -> URL? in
-            if case .video(let url, _) = block.kind { return url }
+            if case .video(let url, _, _) = block.kind { return url }
             return nil
         }
         let images = detail.blocks.compactMap { block -> URL? in
@@ -206,7 +206,7 @@ final class ParserDetailTests: XCTestCase {
             return nil
         }
         let videos = detail.blocks.compactMap { block -> URL? in
-            if case .video(let url, _) = block.kind { return url }
+            if case .video(let url, _, _) = block.kind { return url }
             return nil
         }
         XCTAssertEqual(images.count, 1)
@@ -257,7 +257,7 @@ final class ParserDetailTests: XCTestCase {
         let detail = try parser.parseDetail(html: html, post: post)
 
         let videos = detail.blocks.compactMap { block -> URL? in
-            if case .video(let url, _) = block.kind { return url }
+            if case .video(let url, _, _) = block.kind { return url }
             return nil
         }
         XCTAssertEqual(videos.count, 1)
@@ -297,7 +297,7 @@ final class ParserDetailTests: XCTestCase {
 
         let detail = try parser.parseDetail(html: html, post: post)
         let videos = detail.blocks.compactMap { block -> URL? in
-            if case .video(let url, _) = block.kind { return url }
+            if case .video(let url, _, _) = block.kind { return url }
             return nil
         }
         XCTAssertEqual(videos.count, 1)
@@ -415,7 +415,7 @@ final class ParserDetailTests: XCTestCase {
         let detail = try parser.parseDetail(html: html, post: post)
 
         let videos = detail.blocks.compactMap { block -> URL? in
-            if case .video(let url, _) = block.kind { return url }
+            if case .video(let url, _, _) = block.kind { return url }
             return nil
         }
         XCTAssertEqual(videos.count, 1)
@@ -470,7 +470,7 @@ final class ParserDetailTests: XCTestCase {
         )
         let detail = try parser.parseDetail(html: html, post: post)
         let videos = detail.blocks.compactMap { block -> URL? in
-            if case .video(let url, _) = block.kind { return url }
+            if case .video(let url, _, _) = block.kind { return url }
             return nil
         }
         XCTAssertEqual(videos.count, 1)

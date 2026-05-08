@@ -10,6 +10,13 @@ struct InlineVideoPlayer: View {
     /// that, a plain film-icon placeholder. Used as the visual backdrop
     /// shown until the AVPlayer produces its first frame.
     var posterURL: URL? = nil
+    /// Parser-derived aspect ratio (from `<video width × height>` or
+    /// inline style). When non-nil it seeds `measuredAspect` so the
+    /// player frame is sized correctly from first layout — vertical
+    /// clips don't briefly render at 16:9 and snap to 9:16. When nil
+    /// the player still falls back to AVAsset metadata after the
+    /// asset's video track loads.
+    var aspectRatio: CGFloat? = nil
     /// Set by ContentView's `panGesture` while a back-drag is in flight
     /// so releasing a finger over the inline video doesn't push
     /// fullscreen playback when the user only intended to leave the
@@ -34,16 +41,33 @@ struct InlineVideoPlayer: View {
     /// inline player also pauses while the fullscreen cover is up,
     /// avoiding two AVPlayers streaming the same asset in parallel.
     @State private var isVisible = false
-    /// Aspect ratio reserved for the player frame. Starts at the
-    /// landscape default (16:9 = ~1.78) because most board-uploaded
-    /// videos are landscape and that's the better-than-nothing
-    /// layout reservation before AVAsset metadata loads. Once the
-    /// underlying `InlineAutoplayUIView` finishes reading the
-    /// video track's `naturalSize` × `preferredTransform`, it
-    /// fires `onAspectKnown` and we snap to the source's true
-    /// aspect — vertical clips (9:16 ≈ 0.56) then render tall
-    /// instead of letterbox-bound inside a 16:9 box.
-    @State private var measuredAspect: CGFloat = 16.0 / 9.0
+    /// Aspect ratio reserved for the player frame. Seeded from the
+    /// parser-supplied `aspectRatio` when available so first layout
+    /// already matches the source — no visible 16:9 → natural-aspect
+    /// height jump for vertical clips. Falls back to a landscape
+    /// 16:9 default for sources whose HTML didn't carry width/height
+    /// hints; in that case `InlineAutoplayUIView.onAspectKnown`
+    /// snaps in once AVAsset metadata loads.
+    @State private var measuredAspect: CGFloat
+
+    init(
+        url: URL,
+        posterURL: URL? = nil,
+        aspectRatio: CGFloat? = nil,
+        tapGate: TapSuppressionGate? = nil,
+        onDismissBegin: @escaping () -> Void = {}
+    ) {
+        self.url = url
+        self.posterURL = posterURL
+        self.aspectRatio = aspectRatio
+        self.tapGate = tapGate
+        self.onDismissBegin = onDismissBegin
+        // Seed @State from the parser-derived aspect when available —
+        // SwiftUI's default `@State = …` initializer only takes a
+        // literal, so explicit `_measuredAspect = State(initialValue:)`
+        // is the way to thread an init param into starting state.
+        _measuredAspect = State(initialValue: aspectRatio.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? 16.0 / 9.0)
+    }
 
     var body: some View {
         ZStack {

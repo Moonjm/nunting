@@ -216,7 +216,7 @@ struct SLRParser: BoardParser {
         case "video":
             if let url = try videoURL(from: el) {
                 flushInline(into: &blocks, inline: &inline)
-                blocks.append(.video(url, posterURL: try videoPoster(from: el)))
+                blocks.append(.video(url, posterURL: try videoPoster(from: el), aspectRatio: try videoAspect(from: el)))
             }
             return
         case "iframe":

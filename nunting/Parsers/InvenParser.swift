@@ -135,7 +135,7 @@ struct InvenParser: BoardParser {
         }
         if tag == "video" {
             if let url = try videoURL(from: element) {
-                blocks.append(.video(url, posterURL: try videoPoster(from: element)))
+                blocks.append(.video(url, posterURL: try videoPoster(from: element), aspectRatio: try videoAspect(from: element)))
             }
             return
         }
@@ -181,7 +181,7 @@ struct InvenParser: BoardParser {
                 case "video":
                     flush()
                     if let url = try videoURL(from: el) {
-                        blocks.append(.video(url, posterURL: try videoPoster(from: el)))
+                        blocks.append(.video(url, posterURL: try videoPoster(from: el), aspectRatio: try videoAspect(from: el)))
                     }
                 case "iframe":
                     // YouTube embeds arrive as <iframe src=".../embed/{id}">.

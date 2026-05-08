@@ -183,6 +183,56 @@ extension BoardParser {
         resolveHTTPURL(try element.attr("poster"))
     }
 
+    /// Aspect ratio (width / height) extracted from a `<video>` element's
+    /// HTML, in priority order:
+    ///   1. `width` + `height` attributes (numeric, no units)
+    ///   2. `style="width:Xpx;height:Ypx"` inline style
+    /// Returns `nil` when neither yields a usable pair, which signals the
+    /// inline player to fall back to AVAsset metadata. Pre-resolving
+    /// this at parse time avoids the visible 16:9 → natural-aspect
+    /// height jump that vertical clips otherwise show ~100-300 ms after
+    /// the player attaches.
+    nonisolated func videoAspect(from element: Element) throws -> CGFloat? {
+        if let aspect = aspectFromAttrs(width: try element.attr("width"), height: try element.attr("height")) {
+            return aspect
+        }
+        return aspectFromStyle(try element.attr("style"))
+    }
+
+    nonisolated private func aspectFromAttrs(width: String, height: String) -> CGFloat? {
+        guard let w = Double(width.trimmingCharacters(in: .whitespaces)),
+              let h = Double(height.trimmingCharacters(in: .whitespaces)),
+              w > 0, h > 0
+        else { return nil }
+        return CGFloat(w / h)
+    }
+
+    nonisolated private func aspectFromStyle(_ style: String) -> CGFloat? {
+        // Pull `width:NNNpx` / `height:NNNpx` out of an inline style
+        // string. Sufficient for the boards' machine-generated CSS
+        // (`width:640px;height:360px`); not a general CSS parser, so
+        // calc() / vw / em / em are all skipped — those would have
+        // come from a hand-written embed and aren't worth the
+        // engineering for a layout-reservation hint that has a
+        // working AVAsset fallback.
+        guard let w = pixelValue(in: style, key: "width"),
+              let h = pixelValue(in: style, key: "height"),
+              w > 0, h > 0
+        else { return nil }
+        return CGFloat(w / h)
+    }
+
+    nonisolated private func pixelValue(in style: String, key: String) -> Double? {
+        let pattern = "\(key)\\s*:\\s*([0-9]+(?:\\.[0-9]+)?)\\s*px"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+        else { return nil }
+        let ns = style as NSString
+        guard let match = regex.firstMatch(in: style, range: NSRange(location: 0, length: ns.length)),
+              match.numberOfRanges >= 2
+        else { return nil }
+        return Double(ns.substring(with: match.range(at: 1)))
+    }
+
     /// Extract a YouTube (or youtube-nocookie) video ID from a raw string
     /// — typically an `<iframe src>` value. Matches the canonical
     /// `/embed/{11-char-id}` shape used by every iframe embed code the

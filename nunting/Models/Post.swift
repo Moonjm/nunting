@@ -57,7 +57,14 @@ struct ContentBlock: Identifiable, Hashable {
     enum Kind: Hashable {
         case richText([InlineSegment])
         case image(url: URL, aspectRatio: CGFloat?)
-        case video(url: URL, posterURL: URL?)
+        /// `aspectRatio` is the parser-derived width/height ratio (from
+        /// `<video width=…>` × `<video height=…>` or inline style).
+        /// When non-nil the inline player reserves the correct frame
+        /// from first layout — without it, the view starts at a 16:9
+        /// default and snaps to the AVAsset-derived aspect a few
+        /// hundred ms after metadata loads, producing a visible
+        /// height jump for vertical clips.
+        case video(url: URL, posterURL: URL?, aspectRatio: CGFloat?)
         case dealLink(url: URL, label: String)
         case embed(provider: EmbedProvider, id: String)
     }
@@ -71,8 +78,8 @@ struct ContentBlock: Identifiable, Hashable {
     nonisolated static func image(_ url: URL, aspectRatio: CGFloat? = nil) -> ContentBlock {
         .init(id: UUID(), kind: .image(url: url, aspectRatio: aspectRatio))
     }
-    nonisolated static func video(_ url: URL, posterURL: URL? = nil) -> ContentBlock {
-        .init(id: UUID(), kind: .video(url: url, posterURL: posterURL))
+    nonisolated static func video(_ url: URL, posterURL: URL? = nil, aspectRatio: CGFloat? = nil) -> ContentBlock {
+        .init(id: UUID(), kind: .video(url: url, posterURL: posterURL, aspectRatio: aspectRatio))
     }
     nonisolated static func dealLink(_ url: URL, label: String) -> ContentBlock {
         .init(id: UUID(), kind: .dealLink(url: url, label: label))
