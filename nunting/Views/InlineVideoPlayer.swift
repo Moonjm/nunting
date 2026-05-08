@@ -233,14 +233,15 @@ final class InlineAutoplayUIView: UIView {
         playerLayer?.frame = bounds
         // Scrub bar sits at the bottom of the video frame. The view's
         // outer height includes touch-target padding above the visible
-        // 3pt bar; pinning it to a 30pt strip at the bottom gives the
-        // user a comfortable drag area without occluding much of the
-        // video. Tap on this strip is absorbed by the scrub bar's own
+        // 3pt bar; pinning it to a 48pt strip at the bottom (Apple
+        // HIG's 44pt minimum + a few pt headroom) gives a comfortable
+        // drag area on the thin bar without forcing pixel-perfect
+        // aim. Tap on this strip is absorbed by the scrub bar's own
         // gesture recognizers, so the SwiftUI parent's
         // `.onTapGesture` (fullscreen trigger) only fires for taps
         // above this region — the intended split between "scrub" and
         // "open fullscreen".
-        let scrubHeight: CGFloat = 30
+        let scrubHeight: CGFloat = 48
         scrubBar.frame = CGRect(
             x: 0,
             y: bounds.height - scrubHeight,
