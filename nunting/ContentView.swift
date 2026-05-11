@@ -294,14 +294,25 @@ struct ContentView: View {
 
     /// Walk the key window's view hierarchy to find the (at most one)
     /// UITextView that currently has a non-empty selection, then
-    /// return `true` if `point` lies within 44pt of either of its
-    /// selection-handle anchors. UITextView's own handle hit-area is
-    /// tight (~22pt), so a touch landing slightly off the visible
-    /// blue circle isn't recognized as a handle drag — which then
-    /// leaves the touch to fall into back-swipe classification even
-    /// though the user clearly meant to grab the handle. Inflate to
-    /// the HIG-standard 44pt tap target so "close enough" touches
-    /// block back-drag.
+    /// return `true` if `point` lies within an asymmetric box around
+    /// either of its selection-handle anchors. UITextView's own
+    /// handle hit-area is tight (~22pt), so a touch landing slightly
+    /// off the visible blue circle isn't recognized as a handle drag
+    /// and falls into back-swipe classification. Inflate the
+    /// effective hit zone — but as a wide-but-short box, not a
+    /// 44pt-radius circle:
+    ///   * Horizontal `±28pt`: generous slop for users aiming
+    ///     sideways of the handle.
+    ///   * Vertical `±15pt`: tight enough that handles on adjacent
+    ///     text lines don't bleed into each other. A 22pt-line-height
+    ///     post body (default Dynamic Type) puts the line above the
+    ///     selection's first/last line 22pt+ away from the anchor —
+    ///     outside the 15pt vertical extent — so a back-swipe started
+    ///     on a nearby line still routes to back-drag, not to a
+    ///     phantom handle grab on a different line. (A circular 44pt
+    ///     radius reached up to 2 lines above/below for the same
+    ///     line height, which is what produced the "3-line body,
+    ///     bottom-line selection, back-drag from line 1 freezes" bug.)
     ///
     /// `point` is in key-window coordinates (panGesture uses
     /// `coordinateSpace: .global`).
@@ -313,7 +324,7 @@ struct ContentView: View {
         else { return false }
         guard let tv = findTextViewWithActiveSelection(in: window) else { return false }
         return tv.selectionHandleAnchorsInWindow().contains { anchor in
-            hypot(point.x - anchor.x, point.y - anchor.y) <= 44
+            abs(point.x - anchor.x) <= 28 && abs(point.y - anchor.y) <= 15
         }
     }
 
