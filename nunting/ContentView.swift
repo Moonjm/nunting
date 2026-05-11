@@ -299,12 +299,27 @@ struct ContentView: View {
     private var panGesture: some Gesture {
         DragGesture(minimumDistance: 6)
             .onChanged { value in
-                // While a UITextView selection is active inside the
-                // detail overlay, every horizontal finger tick is the
-                // user dragging a selection handle — committing to a
-                // back-drag here pulls the overlay off-screen mid-
-                // selection. Bail before any state mutation so the
-                // text view's pan recognizer wins unopposed.
+                // The drag started over a UITextView (body or comment
+                // SelectableRichText). UITextView's own selection
+                // gestures (loupe / handle pan) are recognized
+                // simultaneously with this DragGesture, and on iOS
+                // 17+ they fire `textViewDidChangeSelection` only
+                // asynchronously after the first finger tick — so a
+                // gate driven purely off that delegate races our
+                // horizontal classifier and we lose. Hit-testing the
+                // touch origin gives us a synchronous "this is a
+                // text interaction" answer on the very first tick.
+                // Refresh the gate on every tick so the TTL stays
+                // hot through the entire drag.
+                if touchStartedOnTextView(at: value.startLocation) {
+                    textSelectionGate.touch()
+                    return
+                }
+                // Fallback: even if the touch didn't start over a
+                // text view (e.g. user dragged the on-screen
+                // selection handle, which can sit slightly outside
+                // the text view's bounds), the delegate-driven gate
+                // still catches an in-flight selection drag.
                 if textSelectionGate.isActive { return }
                 // Don't fight the bottom-bar swipe (board step) when the drag
                 // started inside the bar's hit area.
@@ -362,7 +377,7 @@ struct ContentView: View {
                 // TTL deadline that lapses on its own (see the class
                 // doccomment for why this matters when `.onEnded` is
                 // skipped entirely).
-                if textSelectionGate.isActive {
+                if touchStartedOnTextView(at: value.startLocation) || textSelectionGate.isActive {
                     resetDragState()
                     return
                 }
@@ -444,6 +459,32 @@ struct ContentView: View {
         dragDirection = nil
         dragLockBaseline = 0
         scrollLocked = false
+    }
+
+    /// Walk the UIKit view hierarchy at the drag's origin and ask
+    /// "is anything along that view's responder chain a UITextView?"
+    /// — covers both a touch that landed directly on the text body
+    /// and one that landed on a `UITextSelectionDisplayInteraction`
+    /// subview (selection handle / pill / loupe target), which on
+    /// iOS 17+ hit-tests to a private subview that's still rooted
+    /// in the host UITextView via `superview`.
+    ///
+    /// `value.startLocation` is in this view's local coordinate
+    /// space; ContentView is mounted full-screen, so local ≈ key
+    /// window coordinates and the window's `hitTest` works directly
+    /// against that point without an explicit conversion.
+    private func touchStartedOnTextView(at point: CGPoint) -> Bool {
+        guard let window = UIApplication.shared
+            .connectedScenes
+            .compactMap({ ($0 as? UIWindowScene)?.keyWindow })
+            .first
+        else { return false }
+        var hit: UIView? = window.hitTest(point, with: nil)
+        while let view = hit {
+            if view is UITextView { return true }
+            hit = view.superview
+        }
+        return false
     }
 
     private func startedInBottomBar(_ value: DragGesture.Value) -> Bool {
