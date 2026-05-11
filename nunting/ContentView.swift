@@ -292,15 +292,16 @@ struct ContentView: View {
         -drawerWidth + drawerWidth * drawerProgress
     }
 
-    /// Walk the key window's view hierarchy and return `true` if
-    /// `point` lies within 44pt of either selection handle on any
-    /// UITextView that currently has a non-empty selection. UITextView's
-    /// own handle hit-area is tight (~22pt), so a touch landing
-    /// slightly off the visible blue circle isn't recognized by
-    /// UITextView as a handle drag — which then leaves the touch to
-    /// fall into back-swipe classification even though the user
-    /// clearly meant to grab the handle. Inflate to the HIG-standard
-    /// 44pt tap target so "close enough" touches block back-drag.
+    /// Walk the key window's view hierarchy to find the (at most one)
+    /// UITextView that currently has a non-empty selection, then
+    /// return `true` if `point` lies within 44pt of either of its
+    /// selection-handle anchors. UITextView's own handle hit-area is
+    /// tight (~22pt), so a touch landing slightly off the visible
+    /// blue circle isn't recognized as a handle drag — which then
+    /// leaves the touch to fall into back-swipe classification even
+    /// though the user clearly meant to grab the handle. Inflate to
+    /// the HIG-standard 44pt tap target so "close enough" touches
+    /// block back-drag.
     ///
     /// `point` is in key-window coordinates (panGesture uses
     /// `coordinateSpace: .global`).
@@ -310,31 +311,29 @@ struct ContentView: View {
             .compactMap({ ($0 as? UIWindowScene)?.keyWindow })
             .first
         else { return false }
-        return windowContainsSelectionHandleNear(point, radius: 44, in: window)
+        guard let tv = findTextViewWithActiveSelection(in: window) else { return false }
+        return tv.selectionHandleAnchorsInWindow().contains { anchor in
+            hypot(point.x - anchor.x, point.y - anchor.y) <= 44
+        }
     }
 
-    private func windowContainsSelectionHandleNear(
-        _ point: CGPoint,
-        radius: CGFloat,
-        in view: UIView
-    ) -> Bool {
+    /// Recurse the view tree and stop at the first UITextView with a
+    /// non-empty selection. Across the app at most one text view can
+    /// hold the system selection at any moment (selecting in one
+    /// clears the prior selection), so we don't have to enumerate the
+    /// entire tree — first match wins.
+    private func findTextViewWithActiveSelection(in view: UIView) -> UITextView? {
         if let tv = view as? UITextView,
            let range = tv.selectedTextRange,
            !range.isEmpty {
-            let startRect = tv.caretRect(for: range.start)
-            let endRect = tv.caretRect(for: range.end)
-            // Start handle sits at the top of the start caret rect;
-            // end handle sits at the bottom of the end caret rect.
-            // `convert(_:to: nil)` walks up to window space.
-            let startHandle = tv.convert(CGPoint(x: startRect.midX, y: startRect.minY), to: nil)
-            let endHandle = tv.convert(CGPoint(x: endRect.midX, y: endRect.maxY), to: nil)
-            if hypot(point.x - startHandle.x, point.y - startHandle.y) <= radius { return true }
-            if hypot(point.x - endHandle.x, point.y - endHandle.y) <= radius { return true }
+            return tv
         }
         for sub in view.subviews {
-            if windowContainsSelectionHandleNear(point, radius: radius, in: sub) { return true }
+            if let hit = findTextViewWithActiveSelection(in: sub) {
+                return hit
+            }
         }
-        return false
+        return nil
     }
 
     private var panGesture: some Gesture {
@@ -573,6 +572,38 @@ final class TapSuppressionGate {
 
     func suppress(for duration: TimeInterval = 0.25) {
         suppressedUntil = Date().addingTimeInterval(duration)
+    }
+}
+
+private extension UITextView {
+    /// Window-coordinate positions of the two selection handles for
+    /// the current `selectedTextRange`. Uses `selectionRects(for:)`
+    /// (rather than `caretRect(for:)` of the range endpoints) so
+    /// selections ending on a soft line-wrap return the visual end
+    /// of the previous line rather than a zero-width rect at x=0 on
+    /// the next line — handles sit at the trailing glyph position,
+    /// not at the start of the next line. Returns `[]` when no
+    /// selection rects are available.
+    func selectionHandleAnchorsInWindow() -> [CGPoint] {
+        guard let range = selectedTextRange, !range.isEmpty else { return [] }
+        let rects = selectionRects(for: range)
+        guard !rects.isEmpty else { return [] }
+        // Start handle sits at the top-left of the rect that contains
+        // the selection start; end handle at the bottom-right of the
+        // rect that contains the selection end. `containsStart` /
+        // `containsEnd` flag those rects directly.
+        let startRect = rects.first(where: { $0.containsStart })?.rect
+            ?? rects.first?.rect
+        let endRect = rects.first(where: { $0.containsEnd })?.rect
+            ?? rects.last?.rect
+        var anchors: [CGPoint] = []
+        if let r = startRect {
+            anchors.append(convert(CGPoint(x: r.minX, y: r.minY), to: nil))
+        }
+        if let r = endRect {
+            anchors.append(convert(CGPoint(x: r.maxX, y: r.maxY), to: nil))
+        }
+        return anchors
     }
 }
 
