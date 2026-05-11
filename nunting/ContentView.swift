@@ -251,9 +251,14 @@ struct ContentView: View {
             }
             .background(
                 GeometryReader { proxy in
+                    // `.global` so the value lines up with the
+                    // `.global` panGesture's `value.startLocation.y`
+                    // — both are now in window coordinates and the
+                    // existing `>= bottomAreaTopY` comparison stays
+                    // correct without converting at gesture time.
                     Color.clear.preference(
                         key: BottomAreaTopKey.self,
-                        value: proxy.frame(in: .named("contentRoot")).minY
+                        value: proxy.frame(in: .global).minY
                     )
                 }
             )
@@ -297,7 +302,13 @@ struct ContentView: View {
     }
 
     private var panGesture: some Gesture {
-        DragGesture(minimumDistance: 6)
+        // `.global` so `value.startLocation` arrives in key-window
+        // coordinates and `touchStartedOnTextView` can pass it
+        // straight into `UIWindow.hitTest(_:with:)` — without this,
+        // local space starts below the top safe-area inset and every
+        // hit-test was checking a window point ~47pt higher than the
+        // user's actual finger, missing the UITextView underneath.
+        DragGesture(minimumDistance: 6, coordinateSpace: .global)
             .onChanged { value in
                 // The drag started over a UITextView (body or comment
                 // SelectableRichText). UITextView's own selection
@@ -469,10 +480,11 @@ struct ContentView: View {
     /// iOS 17+ hit-tests to a private subview that's still rooted
     /// in the host UITextView via `superview`.
     ///
-    /// `value.startLocation` is in this view's local coordinate
-    /// space; ContentView is mounted full-screen, so local ≈ key
-    /// window coordinates and the window's `hitTest` works directly
-    /// against that point without an explicit conversion.
+    /// `point` is already in key-window coordinates because the
+    /// panGesture uses `coordinateSpace: .global`. An earlier
+    /// version used local coordinates here and silently mis-hit-
+    /// tested by the top safe-area inset (~47-59pt on iPhones), so
+    /// the function returned false for every text-area drag.
     private func touchStartedOnTextView(at point: CGPoint) -> Bool {
         guard let window = UIApplication.shared
             .connectedScenes
