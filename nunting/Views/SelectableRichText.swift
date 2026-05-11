@@ -132,6 +132,15 @@ struct SelectableRichText: UIViewRepresentable {
     final class Coordinator: NSObject, UITextViewDelegate, UIGestureRecognizerDelegate {
         var onLinkTap: (URL) -> Void = { _ in }
         weak var selectionGate: TextSelectionGate?
+        /// Previous selection range, kept so `textViewDidChangeSelection`
+        /// can distinguish "user is actively modifying the selection"
+        /// (range non-empty AND changed since last fire — handle drag,
+        /// menu Select → drag) from "selection just cleared" (range
+        /// went empty) or "no change" (idempotent fire from programmatic
+        /// `attributedText` assignment). Only the first case should
+        /// touch the gate; the other two would block back-swipes
+        /// after a single tap on text.
+        private var lastReportedRange: NSRange = NSRange(location: NSNotFound, length: 0)
 
         /// iOS 17+ primary-action API. Intercept link taps and route
         /// through the SwiftUI `openURL` environment so the host's
@@ -151,18 +160,26 @@ struct SelectableRichText: UIViewRepresentable {
             return defaultAction
         }
 
-        // Note: `textViewDidChangeSelection` is deliberately NOT
-        // overridden. Earlier iterations used it to refresh the
-        // selection gate, but it also fires for selection clears
-        // (e.g. a single tap on text that just dismisses a prior
-        // selection) — which made the gate go hot for any tap and
-        // blocked the next back-swipe over the same text region.
-        // Instead, gate refreshing is driven entirely by:
-        //   1. `handleSelectionLongPress` — fires after 0.12s of
-        //      holding within 10pt (loupe / long-press intent)
-        //   2. `ContentView.touchStartedOnSelectionHandle` — hit-test
-        //      catches a touch landing on a selection-handle subview
-        // Pure swipes on text body therefore never refresh the gate.
+        /// Fires whenever the wrapped UITextView's selection range
+        /// changes. Touch the shared gate ONLY for "active selection
+        /// modification" ticks — non-empty range that differs from
+        /// the previous fire. This filters out:
+        ///   - Selection clears (range goes to length 0) — happens
+        ///     on a single tap that dismisses a prior selection;
+        ///     activating the gate here would block the next
+        ///     back-swipe over the same text.
+        ///   - Idempotent fires from programmatic `attributedText`
+        ///     assignment in `updateUIView` (range unchanged from
+        ///     the previous report — typically still `NSNotFound`).
+        /// Handle drags fire continuously with changing non-empty
+        /// ranges, so they refresh the gate every ~16ms.
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            let current = textView.selectedRange
+            defer { lastReportedRange = current }
+            guard current.length > 0 else { return }
+            if NSEqualRanges(current, lastReportedRange) { return }
+            selectionGate?.touch()
+        }
 
         /// Fires at 0.12s of holding (within 10pt) on the wrapped
         /// UITextView. By this point UITextView's own selection

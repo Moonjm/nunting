@@ -310,20 +310,18 @@ struct ContentView: View {
         // user's actual finger, missing the UITextView underneath.
         DragGesture(minimumDistance: 6, coordinateSpace: .global)
             .onChanged { value in
-                // Touch landed on a UITextView's selection handle
-                // (descendant subview, not the text body) — block
-                // back-drag so a handle-extend doesn't pull the
-                // overlay off-screen. Refresh the gate every tick
-                // so the TTL covers the entire drag.
-                if touchStartedOnSelectionHandle(at: value.startLocation) {
-                    textSelectionGate.touch()
-                    return
-                }
-                // Loupe / long-press path: `SelectableRichText`'s
-                // own 0.12s long-press recognizer touches this gate
-                // when the user holds before moving. A pure fast
-                // swipe (>10pt within 0.12s) never trips that
-                // recognizer, so it falls through to back-drag.
+                // Selection-interaction guard. The gate is touched by
+                // SelectableRichText's coordinator from two signals,
+                // both of which exclude pure swipes on body text:
+                //   1. UITextView's `textViewDidChangeSelection` fires
+                //      with a non-empty changed range (handle drag,
+                //      menu "Select" → drag) — pure swipes don't
+                //      change the selection range so they pass.
+                //   2. A 0.12s `UILongPressGestureRecognizer` fires
+                //      `.began` when the user holds within 10pt for
+                //      120ms (loupe / long-press intent) — fast
+                //      swipes exceed allowable movement before the
+                //      duration elapses, so they never trip it.
                 if textSelectionGate.isActive { return }
                 // Don't fight the bottom-bar swipe (board step) when the drag
                 // started inside the bar's hit area.
@@ -381,7 +379,7 @@ struct ContentView: View {
                 // TTL deadline that lapses on its own (see the class
                 // doccomment for why this matters when `.onEnded` is
                 // skipped entirely).
-                if touchStartedOnSelectionHandle(at: value.startLocation) || textSelectionGate.isActive {
+                if textSelectionGate.isActive {
                     resetDragState()
                     return
                 }
@@ -463,44 +461,6 @@ struct ContentView: View {
         dragDirection = nil
         dragLockBaseline = 0
         scrollLocked = false
-    }
-
-    /// Returns true ONLY when the touch lands on a UITextView's
-    /// *descendant* subview (a `UITextSelectionDisplayInteraction`
-    /// selection handle, pill, or loupe-target view) — i.e. the
-    /// user is grabbing a handle to extend an existing selection.
-    /// A touch that lands directly on the UITextView itself (plain
-    /// body text) returns false so a back-swipe over text still
-    /// works for users who just want to leave the post.
-    ///
-    /// The loupe phase (long-press, then move) is intentionally not
-    /// covered here — it's handled by SelectableRichText's own
-    /// 0.12s `UILongPressGestureRecognizer`, which touches the
-    /// shared `textSelectionGate` so subsequent onChanged ticks
-    /// bail. Pure swipes that exceed UILongPress's allowable
-    /// movement (10pt) within 0.12s never trip that recognizer,
-    /// so they fall through to normal back-drag classification.
-    ///
-    /// `point` is already in key-window coordinates because
-    /// panGesture uses `coordinateSpace: .global`.
-    private func touchStartedOnSelectionHandle(at point: CGPoint) -> Bool {
-        guard let window = UIApplication.shared
-            .connectedScenes
-            .compactMap({ ($0 as? UIWindowScene)?.keyWindow })
-            .first
-        else { return false }
-        guard let hitView = window.hitTest(point, with: nil) else { return false }
-        var current: UIView? = hitView
-        while let view = current {
-            if let tv = view as? UITextView {
-                // Hit the text view itself → plain text, allow
-                // back-swipe. Hit a descendant subview → selection
-                // UI element, block back-swipe.
-                return hitView !== tv
-            }
-            current = view.superview
-        }
-        return false
     }
 
     private func startedInBottomBar(_ value: DragGesture.Value) -> Bool {
