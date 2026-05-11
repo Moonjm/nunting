@@ -58,6 +58,29 @@ struct SelectableRichText: UIViewRepresentable {
         tv.dataDetectorTypes = []
         tv.delegate = context.coordinator
         tv.setContentCompressionResistancePriority(.required, for: .vertical)
+
+        // Short-fuse long-press that touches `selectionGate` after
+        // 0.12s of holding within 10pt. Discriminates "loupe /
+        // long-press intent" from "pure swipe":
+        //   - User holds still → long-press fires at 0.12s → gate
+        //     active → subsequent finger movement bails ContentView's
+        //     back-drag.
+        //   - User moves >10pt within 0.12s (fast swipe) → long-press
+        //     fails before firing → gate stays cold → back-drag
+        //     proceeds normally.
+        // `cancelsTouchesInView = false` and the delegate's
+        // `shouldRecognizeSimultaneouslyWith` returning true keep
+        // UITextView's own selection gestures alive — we're only
+        // observing, not claiming the touch.
+        let longPress = UILongPressGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleSelectionLongPress(_:))
+        )
+        longPress.minimumPressDuration = 0.12
+        longPress.cancelsTouchesInView = false
+        longPress.delegate = context.coordinator
+        tv.addGestureRecognizer(longPress)
+
         return tv
     }
 
@@ -114,7 +137,7 @@ struct SelectableRichText: UIViewRepresentable {
         coordinator.selectionGate?.reset()
     }
 
-    final class Coordinator: NSObject, UITextViewDelegate {
+    final class Coordinator: NSObject, UITextViewDelegate, UIGestureRecognizerDelegate {
         var onLinkTap: (URL) -> Void = { _ in }
         weak var selectionGate: TextSelectionGate?
         /// Flipped `true` while `updateUIView` is in the middle of
@@ -154,6 +177,32 @@ struct SelectableRichText: UIViewRepresentable {
         func textViewDidChangeSelection(_ textView: UITextView) {
             guard !suppressSelectionReporting else { return }
             selectionGate?.touch()
+        }
+
+        /// Fires at 0.12s of holding (within 10pt) on the wrapped
+        /// UITextView. By this point UITextView's own selection
+        /// gestures are also recognizing — we just observe to mark
+        /// the gate active so the host panGesture bails when the
+        /// user starts moving the loupe.
+        @objc func handleSelectionLongPress(_ gesture: UILongPressGestureRecognizer) {
+            switch gesture.state {
+            case .began, .changed:
+                selectionGate?.touch()
+            default:
+                break
+            }
+        }
+
+        /// Lets our long-press observer co-exist with UITextView's
+        /// internal selection / loupe / handle pan recognizers —
+        /// without simultaneous recognition, one would force the
+        /// other to fail and the selection gestures we're meant to
+        /// observe would never start.
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            true
         }
     }
 }

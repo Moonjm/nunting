@@ -310,27 +310,20 @@ struct ContentView: View {
         // user's actual finger, missing the UITextView underneath.
         DragGesture(minimumDistance: 6, coordinateSpace: .global)
             .onChanged { value in
-                // The drag started over a UITextView (body or comment
-                // SelectableRichText). UITextView's own selection
-                // gestures (loupe / handle pan) are recognized
-                // simultaneously with this DragGesture, and on iOS
-                // 17+ they fire `textViewDidChangeSelection` only
-                // asynchronously after the first finger tick — so a
-                // gate driven purely off that delegate races our
-                // horizontal classifier and we lose. Hit-testing the
-                // touch origin gives us a synchronous "this is a
-                // text interaction" answer on the very first tick.
-                // Refresh the gate on every tick so the TTL stays
-                // hot through the entire drag.
-                if touchStartedOnTextView(at: value.startLocation) {
+                // Touch landed on a UITextView's selection handle
+                // (descendant subview, not the text body) — block
+                // back-drag so a handle-extend doesn't pull the
+                // overlay off-screen. Refresh the gate every tick
+                // so the TTL covers the entire drag.
+                if touchStartedOnSelectionHandle(at: value.startLocation) {
                     textSelectionGate.touch()
                     return
                 }
-                // Fallback: even if the touch didn't start over a
-                // text view (e.g. user dragged the on-screen
-                // selection handle, which can sit slightly outside
-                // the text view's bounds), the delegate-driven gate
-                // still catches an in-flight selection drag.
+                // Loupe / long-press path: `SelectableRichText`'s
+                // own 0.12s long-press recognizer touches this gate
+                // when the user holds before moving. A pure fast
+                // swipe (>10pt within 0.12s) never trips that
+                // recognizer, so it falls through to back-drag.
                 if textSelectionGate.isActive { return }
                 // Don't fight the bottom-bar swipe (board step) when the drag
                 // started inside the bar's hit area.
@@ -388,7 +381,7 @@ struct ContentView: View {
                 // TTL deadline that lapses on its own (see the class
                 // doccomment for why this matters when `.onEnded` is
                 // skipped entirely).
-                if touchStartedOnTextView(at: value.startLocation) || textSelectionGate.isActive {
+                if touchStartedOnSelectionHandle(at: value.startLocation) || textSelectionGate.isActive {
                     resetDragState()
                     return
                 }
@@ -472,29 +465,40 @@ struct ContentView: View {
         scrollLocked = false
     }
 
-    /// Walk the UIKit view hierarchy at the drag's origin and ask
-    /// "is anything along that view's responder chain a UITextView?"
-    /// — covers both a touch that landed directly on the text body
-    /// and one that landed on a `UITextSelectionDisplayInteraction`
-    /// subview (selection handle / pill / loupe target), which on
-    /// iOS 17+ hit-tests to a private subview that's still rooted
-    /// in the host UITextView via `superview`.
+    /// Returns true ONLY when the touch lands on a UITextView's
+    /// *descendant* subview (a `UITextSelectionDisplayInteraction`
+    /// selection handle, pill, or loupe-target view) — i.e. the
+    /// user is grabbing a handle to extend an existing selection.
+    /// A touch that lands directly on the UITextView itself (plain
+    /// body text) returns false so a back-swipe over text still
+    /// works for users who just want to leave the post.
     ///
-    /// `point` is already in key-window coordinates because the
-    /// panGesture uses `coordinateSpace: .global`. An earlier
-    /// version used local coordinates here and silently mis-hit-
-    /// tested by the top safe-area inset (~47-59pt on iPhones), so
-    /// the function returned false for every text-area drag.
-    private func touchStartedOnTextView(at point: CGPoint) -> Bool {
+    /// The loupe phase (long-press, then move) is intentionally not
+    /// covered here — it's handled by SelectableRichText's own
+    /// 0.12s `UILongPressGestureRecognizer`, which touches the
+    /// shared `textSelectionGate` so subsequent onChanged ticks
+    /// bail. Pure swipes that exceed UILongPress's allowable
+    /// movement (10pt) within 0.12s never trip that recognizer,
+    /// so they fall through to normal back-drag classification.
+    ///
+    /// `point` is already in key-window coordinates because
+    /// panGesture uses `coordinateSpace: .global`.
+    private func touchStartedOnSelectionHandle(at point: CGPoint) -> Bool {
         guard let window = UIApplication.shared
             .connectedScenes
             .compactMap({ ($0 as? UIWindowScene)?.keyWindow })
             .first
         else { return false }
-        var hit: UIView? = window.hitTest(point, with: nil)
-        while let view = hit {
-            if view is UITextView { return true }
-            hit = view.superview
+        guard let hitView = window.hitTest(point, with: nil) else { return false }
+        var current: UIView? = hitView
+        while let view = current {
+            if let tv = view as? UITextView {
+                // Hit the text view itself → plain text, allow
+                // back-swipe. Hit a descendant subview → selection
+                // UI element, block back-swipe.
+                return hitView !== tv
+            }
+            current = view.superview
         }
         return false
     }
