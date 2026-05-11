@@ -48,13 +48,6 @@ struct ContentView: View {
     /// finger when they release.
     @State private var detailMediaTapGate = TapSuppressionGate()
 
-    /// Set by `SelectableRichText` while a `UITextView` selection is
-    /// non-empty (handle drag in progress or text selected awaiting
-    /// menu action). Read at the top of `panGesture` to bail the
-    /// back-drag entirely so a rightward selection-handle drag
-    /// doesn't pull the overlay off-screen.
-    @State private var textSelectionGate = TextSelectionGate()
-
     private let drawerWidth: CGFloat = 300
     /// Height of the bottom bar area (bar + filter chips + safe area buffer)
     /// where horizontal swipes should belong to the board-step gesture, not
@@ -132,7 +125,6 @@ struct ContentView: View {
                     readStore: readStore,
                     cache: detailCache,
                     tapGate: detailMediaTapGate,
-                    textSelectionGate: textSelectionGate,
                     isOverlayVisible: detail.isOverlayVisible,
                     // `scrollLocked` is set by `panGesture`'s horizontal
                     // classification; `detail.animating` extends the lock
@@ -356,42 +348,17 @@ struct ContentView: View {
         // ~47-59pt off on iPhones with notch / Dynamic Island.
         DragGesture(minimumDistance: 6, coordinateSpace: .global)
             .onChanged { value in
-                // Expand UITextView's tight selection-handle hit area
-                // to the HIG-standard 44pt tap target. A touch that
-                // starts within 44pt of either handle is treated as
-                // handle-grab intent — refresh the gate every tick so
-                // its 180ms TTL stays hot through the entire drag.
-                let nearHandle = touchStartedNearSelectionHandle(at: value.startLocation)
-                if nearHandle {
-                    textSelectionGate.touch()
-                }
-                if nearHandle || textSelectionGate.isActive {
-                    // Selection-interaction guard. The gate is touched
-                    // by SelectableRichText's coordinator from three
-                    // signals, each excluding pure swipes on body text:
-                    //   1. `SelectionTrackingTextView.becomeFirstResponder`
-                    //      — UITextView entering selection mode.
-                    //   2. A 0.12s `UILongPressGestureRecognizer` —
-                    //      loupe / hold intent.
-                    //   3. Filtered `textViewDidChangeSelection` — range
-                    //      modifications (handle drag, menu Select →
-                    //      drag).
-                    //
-                    // If a prior tick had already classified as
-                    // horizontal and moved `detail.offset` before the
-                    // gate flipped on, snap the overlay back to its
-                    // pre-drag base so it doesn't sit stranded mid-
-                    // screen for the rest of the drag.
-                    if dragDirection == .horizontal,
-                       detail.activePost != nil,
-                       detail.offset != detail.offsetBase {
-                        detail.beginAnimationLock()
-                        let target = detail.offsetBase
-                        withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
-                            detail.offset = target
-                            dragOffset = 0
-                        }
-                    }
+                // The one and only selection-related back-drag guard:
+                // if the touch started within 44pt of a visible
+                // selection handle (expanded HIG tap target around
+                // UITextView's own tight handle hit area), bail so
+                // the handle-pan can run without our overlay sliding
+                // out underneath it. Every other interaction —
+                // including loupe / long-press / menu invocations —
+                // falls through to normal back-drag classification.
+                // `value.startLocation` is stable across ticks so the
+                // check is consistent for the whole drag.
+                if touchStartedNearSelectionHandle(at: value.startLocation) {
                     return
                 }
                 // Don't fight the bottom-bar swipe (board step) when the drag
@@ -450,23 +417,7 @@ struct ContentView: View {
                 // TTL deadline that lapses on its own (see the class
                 // doccomment for why this matters when `.onEnded` is
                 // skipped entirely).
-                if textSelectionGate.isActive {
-                    // Mid-drag the gate activated, and a prior tick may
-                    // have already moved `detail.offset` interactively
-                    // — without this snap-back, the overlay strands at
-                    // wherever the last pre-gate tick left it and the
-                    // user sees a screenshot like the bug report
-                    // (overlay frozen at ~30% offset).
-                    if dragDirection == .horizontal,
-                       detail.activePost != nil,
-                       detail.offset != detail.offsetBase {
-                        detail.beginAnimationLock()
-                        let target = detail.offsetBase
-                        withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
-                            detail.offset = target
-                            dragOffset = 0
-                        }
-                    }
+                if touchStartedNearSelectionHandle(at: value.startLocation) {
                     resetDragState()
                     return
                 }
@@ -628,46 +579,6 @@ final class TapSuppressionGate {
 
     func suppress(for duration: TimeInterval = 0.25) {
         suppressedUntil = Date().addingTimeInterval(duration)
-    }
-}
-
-/// Mirrors `TapSuppressionGate`'s "shared mutable flag" pattern but for
-/// the inverse case — children (e.g. `SelectableRichText`'s wrapped
-/// `UITextView`) reporting *up* to `ContentView.panGesture` that a
-/// selection-handle drag is in progress so the back-swipe pan should
-/// stay out of its way.
-///
-/// Drag-right on a selection handle previously raced
-/// `panGesture.onChanged`'s horizontal classifier and pulled the
-/// detail overlay off-screen mid-selection. With this gate active,
-/// `panGesture` bails before mutating any drag state, leaving the
-/// UITextView's handle pan to win unopposed.
-///
-/// TTL-based: `UITextView.textViewDidChangeSelection` fires every
-/// tick while a handle or loupe is being dragged and goes silent the
-/// moment the user lifts their finger. Storing the timestamp of the
-/// most recent fire and reading `isActive` as "less than 180ms ago"
-/// gives:
-///   * Active drag → gate continuously `true` (next tick refreshes it
-///     before TTL elapses)
-///   * Settled selection (text still highlighted, user idle) → gate
-///     decays to `false`, so back-swipe works as soon as the user
-///     stops moving their finger — they don't have to tap-away first
-///   * Programmatic `attributedText` writes from `updateUIView` also
-///     fire `textViewDidChangeSelection`, but the delegate's
-///     `NSEqualRanges` filter rejects them because the range stays
-///     identical to the previous report — so SwiftUI re-evals don't
-///     phantom-activate the gate.
-final class TextSelectionGate {
-    var lastChangeAt: Date = .distantPast
-    static let ttl: TimeInterval = 0.18
-
-    var isActive: Bool {
-        Date().timeIntervalSince(lastChangeAt) < Self.ttl
-    }
-
-    func touch() {
-        lastChangeAt = Date()
     }
 }
 

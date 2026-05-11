@@ -10,12 +10,6 @@ struct PostDetailView: View, Equatable {
     /// doesn't open a viewer / fullscreen player when the user was only
     /// trying to leave the detail screen.
     var tapGate: TapSuppressionGate? = nil
-    /// Inverse-direction gate: `SelectableRichText`'s coordinator
-    /// raises this while a `UITextView` selection is non-empty so
-    /// ContentView's back-drag pan stays out of a selection-handle
-    /// drag's way. Read-only at this layer — just forwarded into the
-    /// `SelectableRichText` instances below.
-    var textSelectionGate: TextSelectionGate? = nil
     /// True while the overlay is actually on-screen. Keep-alive means the
     /// view instance survives `hideDetail()` with only `detailOffset`
     /// animated off — UIKit never deallocates the hosted scrollview, so
@@ -142,7 +136,6 @@ struct PostDetailView: View, Equatable {
                         CommentsSection(
                             comments: comments,
                             tapGate: tapGate,
-                            textSelectionGate: textSelectionGate,
                             onImageTap: { url in
                                 if tapGate?.suppressed == true { return }
                                 selectedImage = ImageViewerItem(url: url)
@@ -340,8 +333,7 @@ struct PostDetailView: View, Equatable {
                         // the `openURL` environment override above.
                         SelectableRichText(
                             attributedString: attributedString(from: segments),
-                            font: .preferredFont(forTextStyle: .body),
-                            selectionGate: textSelectionGate
+                            font: .preferredFont(forTextStyle: .body)
                         )
                         .frame(maxWidth: .infinity, alignment: .leading)
                     case .image(let url, let aspectRatio):
@@ -562,7 +554,6 @@ private struct SourceBanner: View {
 private struct CommentsSection: View {
     let comments: [Comment]
     var tapGate: TapSuppressionGate? = nil
-    var textSelectionGate: TextSelectionGate? = nil
     let onImageTap: (URL) -> Void
     let onVideoDismissBegin: () -> Void
 
@@ -587,7 +578,6 @@ private struct CommentsSection: View {
                     CommentRow(
                         comment: comment,
                         tapGate: tapGate,
-                        textSelectionGate: textSelectionGate,
                         onImageTap: onImageTap,
                         onVideoDismissBegin: onVideoDismissBegin
                     )
@@ -603,7 +593,6 @@ private struct CommentsSection: View {
 private struct CommentRow: View {
     let comment: Comment
     var tapGate: TapSuppressionGate? = nil
-    var textSelectionGate: TextSelectionGate? = nil
     let onImageTap: (URL) -> Void
     let onVideoDismissBegin: () -> Void
 
@@ -634,8 +623,7 @@ private struct CommentRow: View {
             if !comment.content.isEmpty {
                 SelectableRichText(
                     attributedString: styledContent(comment.content),
-                    font: .preferredFont(forTextStyle: .subheadline),
-                    selectionGate: textSelectionGate
+                    font: .preferredFont(forTextStyle: .subheadline)
                 )
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
