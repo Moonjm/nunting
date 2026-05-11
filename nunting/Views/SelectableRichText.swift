@@ -1,6 +1,29 @@
 import SwiftUI
 import UIKit
 
+/// UITextView subclass whose only job is to forward the
+/// `becomeFirstResponder` transition into a `TextSelectionGate`.
+/// UITextView with `isSelectable = true` becomes first responder
+/// when the user initiates a selection interaction (long-press →
+/// loupe, menu present, handle drag) but NOT for inert taps on
+/// non-editable text. That makes it the most reliable single
+/// signal of "user is starting a selection here, keep the host's
+/// back-drag out of the way" — more reliable than either the
+/// gesture-recognizer fires or the delegate selection callback,
+/// both of which we've seen vary between long body posts and
+/// short comments.
+final class SelectionTrackingTextView: UITextView {
+    weak var selectionGate: TextSelectionGate?
+
+    override func becomeFirstResponder() -> Bool {
+        let didBecome = super.becomeFirstResponder()
+        if didBecome {
+            selectionGate?.touch()
+        }
+        return didBecome
+    }
+}
+
 /// SwiftUI `Text` + `.textSelection(.enabled)` only surfaces the system
 /// "select all + copy" context menu — it does not support the
 /// magnifying-glass + drag-handle range selection users expect from
@@ -34,7 +57,7 @@ struct SelectableRichText: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIView(context: Context) -> UITextView {
-        let tv = UITextView()
+        let tv = SelectionTrackingTextView()
         tv.isEditable = false
         tv.isSelectable = true
         // Disable internal scrolling so SwiftUI's parent ScrollView
@@ -91,6 +114,9 @@ struct SelectableRichText: UIViewRepresentable {
         // deep-link mode toggle).
         context.coordinator.onLinkTap = { url in openURL(url) }
         context.coordinator.selectionGate = selectionGate
+        // Keep the subclass's gate pointer in sync — without this
+        // the `becomeFirstResponder` override observes nil.
+        (tv as? SelectionTrackingTextView)?.selectionGate = selectionGate
 
         let ns = NSMutableAttributedString(attributedString)
         let full = NSRange(location: 0, length: ns.length)
