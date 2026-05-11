@@ -300,6 +300,53 @@ struct ContentView: View {
         -drawerWidth + drawerWidth * drawerProgress
     }
 
+    /// Walk the key window's view hierarchy and return `true` if
+    /// `point` lies within 44pt of either selection handle on any
+    /// UITextView that currently has a non-empty selection. UITextView's
+    /// own handle hit-area is tight (~22pt diameter), so a touch
+    /// landing slightly off the visible blue circle isn't recognized
+    /// by UITextView as a handle drag — which then leaves the touch
+    /// to be classified as a back-swipe even though the user clearly
+    /// meant to grab the handle. Inflate the effective hit zone to
+    /// the Apple-HIG-standard 44pt tap target so "close enough"
+    /// touches block back-drag.
+    ///
+    /// `point` is in key-window coordinates (panGesture uses
+    /// `coordinateSpace: .global`).
+    private func touchStartedNearSelectionHandle(at point: CGPoint) -> Bool {
+        guard let window = UIApplication.shared
+            .connectedScenes
+            .compactMap({ ($0 as? UIWindowScene)?.keyWindow })
+            .first
+        else { return false }
+        return windowContainsSelectionHandleNear(point, radius: 44, in: window)
+    }
+
+    private func windowContainsSelectionHandleNear(
+        _ point: CGPoint,
+        radius: CGFloat,
+        in view: UIView
+    ) -> Bool {
+        if let tv = view as? UITextView,
+           let range = tv.selectedTextRange,
+           !range.isEmpty {
+            let startRect = tv.caretRect(for: range.start)
+            let endRect = tv.caretRect(for: range.end)
+            // Start handle sits at the top of the start caret rect;
+            // end handle sits at the bottom of the end caret rect.
+            // `convert(_:to: nil)` walks the superview chain up to
+            // the window's coordinate system.
+            let startHandle = tv.convert(CGPoint(x: startRect.midX, y: startRect.minY), to: nil)
+            let endHandle = tv.convert(CGPoint(x: endRect.midX, y: endRect.maxY), to: nil)
+            if hypot(point.x - startHandle.x, point.y - startHandle.y) <= radius { return true }
+            if hypot(point.x - endHandle.x, point.y - endHandle.y) <= radius { return true }
+        }
+        for sub in view.subviews {
+            if windowContainsSelectionHandleNear(point, radius: radius, in: sub) { return true }
+        }
+        return false
+    }
+
     private var panGesture: some Gesture {
         // `.global` so `value.startLocation` shares the same window-
         // coordinate space as `bottomAreaTopY` (which `BottomAreaTopKey`
@@ -309,18 +356,25 @@ struct ContentView: View {
         // ~47-59pt off on iPhones with notch / Dynamic Island.
         DragGesture(minimumDistance: 6, coordinateSpace: .global)
             .onChanged { value in
+                // Expand UITextView's tight selection-handle hit area
+                // to the HIG-standard 44pt tap target. A touch that
+                // starts within 44pt of either handle is treated as
+                // handle-grab intent — refresh the gate every tick so
+                // its 180ms TTL stays hot through the entire drag.
+                if touchStartedNearSelectionHandle(at: value.startLocation) {
+                    textSelectionGate.touch()
+                    return
+                }
                 // Selection-interaction guard. The gate is touched by
-                // SelectableRichText's coordinator from two signals,
-                // both of which exclude pure swipes on body text:
-                //   1. UITextView's `textViewDidChangeSelection` fires
-                //      with a non-empty changed range (handle drag,
-                //      menu "Select" → drag) — pure swipes don't
-                //      change the selection range so they pass.
-                //   2. A 0.12s `UILongPressGestureRecognizer` fires
-                //      `.began` when the user holds within 10pt for
-                //      120ms (loupe / long-press intent) — fast
-                //      swipes exceed allowable movement before the
-                //      duration elapses, so they never trip it.
+                // SelectableRichText's coordinator from three signals,
+                // each excluding pure swipes on body text:
+                //   1. `SelectionTrackingTextView.becomeFirstResponder`
+                //      — UITextView entering selection mode.
+                //   2. A 0.12s `UILongPressGestureRecognizer` —
+                //      loupe / hold intent.
+                //   3. Filtered `textViewDidChangeSelection` — range
+                //      modifications (handle drag, menu Select →
+                //      drag).
                 if textSelectionGate.isActive { return }
                 // Don't fight the bottom-bar swipe (board step) when the drag
                 // started inside the bar's hit area.
