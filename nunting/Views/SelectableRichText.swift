@@ -186,14 +186,13 @@ struct SelectableRichText: UIViewRepresentable {
         return CGSize(width: width, height: ceil(fitted.height))
     }
 
-    static func dismantleUIView(_ uiView: UITextView, coordinator: Coordinator) {
-        // Defensive clear: if the SwiftUI view is removed mid-drag
-        // (e.g. user navigates away with a selection still in flight),
-        // the gate's TTL would naturally decay anyway, but resetting
-        // the timestamp avoids a 180ms window where back-drag is
-        // unexpectedly blocked after the source view is already gone.
-        coordinator.selectionGate?.reset()
-    }
+    // No `dismantleUIView` override: the selection gate is shared
+    // across every `SelectableRichText` instance in the post (body
+    // text + every comment row). LazyVStack derealizing a comment
+    // row would fire `dismantleUIView` and a `reset()` here would
+    // clobber an in-flight selection happening on a different,
+    // still-mounted instance. The gate's 180ms TTL handles cleanup
+    // naturally — far cheaper than risking cross-instance interference.
 
     final class Coordinator: NSObject, UITextViewDelegate, UIGestureRecognizerDelegate {
         var onLinkTap: (URL) -> Void = { _ in }

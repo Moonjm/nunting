@@ -581,10 +581,6 @@ final class TextSelectionGate {
     func touch() {
         lastChangeAt = Date()
     }
-
-    func reset() {
-        lastChangeAt = .distantPast
-    }
 }
 
 private struct BottomAreaTopKey: PreferenceKey {
