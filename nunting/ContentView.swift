@@ -292,53 +292,6 @@ struct ContentView: View {
         -drawerWidth + drawerWidth * drawerProgress
     }
 
-    /// Walk the key window's view hierarchy and return `true` if
-    /// `point` lies within 44pt of either selection handle on any
-    /// UITextView that currently has a non-empty selection. UITextView's
-    /// own handle hit-area is tight (~22pt diameter), so a touch
-    /// landing slightly off the visible blue circle isn't recognized
-    /// by UITextView as a handle drag — which then leaves the touch
-    /// to be classified as a back-swipe even though the user clearly
-    /// meant to grab the handle. Inflate the effective hit zone to
-    /// the Apple-HIG-standard 44pt tap target so "close enough"
-    /// touches block back-drag.
-    ///
-    /// `point` is in key-window coordinates (panGesture uses
-    /// `coordinateSpace: .global`).
-    private func touchStartedNearSelectionHandle(at point: CGPoint) -> Bool {
-        guard let window = UIApplication.shared
-            .connectedScenes
-            .compactMap({ ($0 as? UIWindowScene)?.keyWindow })
-            .first
-        else { return false }
-        return windowContainsSelectionHandleNear(point, radius: 44, in: window)
-    }
-
-    private func windowContainsSelectionHandleNear(
-        _ point: CGPoint,
-        radius: CGFloat,
-        in view: UIView
-    ) -> Bool {
-        if let tv = view as? UITextView,
-           let range = tv.selectedTextRange,
-           !range.isEmpty {
-            let startRect = tv.caretRect(for: range.start)
-            let endRect = tv.caretRect(for: range.end)
-            // Start handle sits at the top of the start caret rect;
-            // end handle sits at the bottom of the end caret rect.
-            // `convert(_:to: nil)` walks the superview chain up to
-            // the window's coordinate system.
-            let startHandle = tv.convert(CGPoint(x: startRect.midX, y: startRect.minY), to: nil)
-            let endHandle = tv.convert(CGPoint(x: endRect.midX, y: endRect.maxY), to: nil)
-            if hypot(point.x - startHandle.x, point.y - startHandle.y) <= radius { return true }
-            if hypot(point.x - endHandle.x, point.y - endHandle.y) <= radius { return true }
-        }
-        for sub in view.subviews {
-            if windowContainsSelectionHandleNear(point, radius: radius, in: sub) { return true }
-        }
-        return false
-    }
-
     private var panGesture: some Gesture {
         // `.global` so `value.startLocation` shares the same window-
         // coordinate space as `bottomAreaTopY` (which `BottomAreaTopKey`
@@ -348,19 +301,6 @@ struct ContentView: View {
         // ~47-59pt off on iPhones with notch / Dynamic Island.
         DragGesture(minimumDistance: 6, coordinateSpace: .global)
             .onChanged { value in
-                // The one and only selection-related back-drag guard:
-                // if the touch started within 44pt of a visible
-                // selection handle (expanded HIG tap target around
-                // UITextView's own tight handle hit area), bail so
-                // the handle-pan can run without our overlay sliding
-                // out underneath it. Every other interaction —
-                // including loupe / long-press / menu invocations —
-                // falls through to normal back-drag classification.
-                // `value.startLocation` is stable across ticks so the
-                // check is consistent for the whole drag.
-                if touchStartedNearSelectionHandle(at: value.startLocation) {
-                    return
-                }
                 // Don't fight the bottom-bar swipe (board step) when the drag
                 // started inside the bar's hit area.
                 if startedInBottomBar(value) { return }
@@ -417,10 +357,6 @@ struct ContentView: View {
                 // TTL deadline that lapses on its own (see the class
                 // doccomment for why this matters when `.onEnded` is
                 // skipped entirely).
-                if touchStartedNearSelectionHandle(at: value.startLocation) {
-                    resetDragState()
-                    return
-                }
                 if startedInBottomBar(value) {
                     resetDragState()
                     return
