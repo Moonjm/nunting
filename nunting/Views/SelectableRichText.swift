@@ -247,11 +247,26 @@ struct SelectableRichText: UIViewRepresentable {
         }
 
         /// Fires at 0.12s of holding (within 10pt) on the wrapped
-        /// UITextView. By this point UITextView's own selection
-        /// gestures are also recognizing — we just observe to mark
-        /// the gate active so the host panGesture bails when the
-        /// user starts moving the loupe.
+        /// UITextView. Its only job is to discriminate "long-press →
+        /// loupe / selection entry" from "swipe-too-slow-to-escape-
+        /// allowable-movement" — for the FIRST case the user is
+        /// about to enter selection mode so we want the host's
+        /// back-drag to stay out of the way.
+        ///
+        /// When a selection is *already* active, this recognizer fires
+        /// for any touch that lingers within 10pt for 0.12s — including
+        /// a gentle back-swipe the user clearly intends as
+        /// navigation. Guard against that: with selection live, handle
+        /// grabs are caught by `ContentView.touchStartedNearSelectionHandle`
+        /// (44pt radius) and any range modification is caught by the
+        /// filtered `textViewDidChangeSelection`, so we don't need
+        /// this signal there too — bailing here lets the back-swipe
+        /// fall through.
         @objc func handleSelectionLongPress(_ gesture: UILongPressGestureRecognizer) {
+            if let tv = gesture.view as? UITextView,
+               tv.selectedTextRange?.isEmpty == false {
+                return
+            }
             switch gesture.state {
             case .began, .changed:
                 selectionGate?.touch()
