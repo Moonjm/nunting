@@ -179,7 +179,6 @@ struct ContentView: View {
         .onPreferenceChange(ContainerWidthKey.self) { newWidth in
             detail.updateContainerWidth(newWidth)
         }
-        .coordinateSpace(name: "contentRoot")
         .onPreferenceChange(BottomAreaTopKey.self) { bottomAreaTopY = $0 }
         .simultaneousGesture(panGesture)
         .task {
@@ -302,12 +301,12 @@ struct ContentView: View {
     }
 
     private var panGesture: some Gesture {
-        // `.global` so `value.startLocation` arrives in key-window
-        // coordinates and `touchStartedOnTextView` can pass it
-        // straight into `UIWindow.hitTest(_:with:)` — without this,
-        // local space starts below the top safe-area inset and every
-        // hit-test was checking a window point ~47pt higher than the
-        // user's actual finger, missing the UITextView underneath.
+        // `.global` so `value.startLocation` shares the same window-
+        // coordinate space as `bottomAreaTopY` (which `BottomAreaTopKey`
+        // publishes via `frame(in: .global).minY`). Without the match,
+        // the local-coordinate start point sits below the top safe-
+        // area inset and `startedInBottomBar`'s `>=` comparison was
+        // ~47-59pt off on iPhones with notch / Dynamic Island.
         DragGesture(minimumDistance: 6, coordinateSpace: .global)
             .onChanged { value in
                 // Selection-interaction guard. The gate is touched by
@@ -567,9 +566,10 @@ final class TapSuppressionGate {
 ///     decays to `false`, so back-swipe works as soon as the user
 ///     stops moving their finger — they don't have to tap-away first
 ///   * Programmatic `attributedText` writes from `updateUIView` also
-///     fire the delegate; the `isSuppressed` flag flipped around
-///     `tv.attributedText = …` in `updateUIView` filters those out
-///     so a SwiftUI re-eval doesn't phantom-activate the gate
+///     fire `textViewDidChangeSelection`, but the delegate's
+///     `NSEqualRanges` filter rejects them because the range stays
+///     identical to the previous report — so SwiftUI re-evals don't
+///     phantom-activate the gate.
 final class TextSelectionGate {
     var lastChangeAt: Date = .distantPast
     static let ttl: TimeInterval = 0.18

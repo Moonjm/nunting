@@ -120,9 +120,39 @@ struct SelectableRichText: UIViewRepresentable {
 
         let ns = NSMutableAttributedString(attributedString)
         let full = NSRange(location: 0, length: ns.length)
+
+        // `AttributedString(markdown:)` (used by `styledContent` for
+        // comments) encodes `**bold**` / `*italic*` as
+        // `inlinePresentationIntent` attributes, not `.font` with bold
+        // /italic traits. SwiftUI's `Text` renderer consults that
+        // attribute; UIKit's TextKit does not, so without this
+        // translation step bold and italic spans render in plain roman.
+        // Synthesize a `.font` with the appropriate `UIFontDescriptor`
+        // traits for every intent run BEFORE the base-font fallback so
+        // those ranges win.
+        ns.enumerateAttribute(.inlinePresentationIntent, in: full, options: []) { value, range, _ in
+            // `InlinePresentationIntent` rawValue is `UInt` but the
+            // attribute round-trips through `NSNumber` when bridged
+            // into `NSAttributedString`, so cast via that and extract
+            // `.uintValue` instead of forcing `as? UInt` (which fails
+            // for the boxed NSNumber).
+            guard let raw = (value as? NSNumber)?.uintValue else { return }
+            let intent = InlinePresentationIntent(rawValue: raw)
+            var traits: UIFontDescriptor.SymbolicTraits = []
+            if intent.contains(.stronglyEmphasized) { traits.insert(.traitBold) }
+            if intent.contains(.emphasized) { traits.insert(.traitItalic) }
+            guard !traits.isEmpty else { return }
+            let base = (ns.attribute(.font, at: range.location, effectiveRange: nil) as? UIFont) ?? font
+            if let descriptor = base.fontDescriptor.withSymbolicTraits(traits) {
+                // `size: 0` keeps the descriptor's own size — preserves
+                // Dynamic Type scaling that the base font carries.
+                ns.addAttribute(.font, value: UIFont(descriptor: descriptor, size: 0), range: range)
+            }
+        }
+
         // Apply base font/color only where the AttributedString hasn't
         // set its own — preserves the parser's link accent color,
-        // markdown bold/italic, and mention tints.
+        // markdown bold/italic (now translated above), and mention tints.
         ns.enumerateAttribute(.font, in: full, options: []) { value, range, _ in
             if value == nil {
                 ns.addAttribute(.font, value: font, range: range)
@@ -133,7 +163,17 @@ struct SelectableRichText: UIViewRepresentable {
                 ns.addAttribute(.foregroundColor, value: UIColor.label, range: range)
             }
         }
-        tv.attributedText = ns
+
+        // Guard against `attributedText` reassignment when the content
+        // hasn't actually changed — every assignment resets
+        // `selectedRange` to (0, 0), which would clobber an in-progress
+        // user selection during the SwiftUI re-eval cascades that fire
+        // continuously during back-drag animations or container-size
+        // updates. `isEqual(to:)` is content equality (string + attribute
+        // runs) and cheap relative to a TextKit layout pass.
+        if !ns.isEqual(to: tv.attributedText ?? NSAttributedString()) {
+            tv.attributedText = ns
+        }
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
