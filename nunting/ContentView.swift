@@ -539,12 +539,35 @@ final class TapSuppressionGate {
 /// `panGesture` bails before mutating any drag state, leaving the
 /// UITextView's handle pan to win unopposed.
 ///
-/// No TTL — selection state has clean delegate hooks
-/// (`textViewDidChangeSelection`) and the SelectableRichText
-/// dismantle/deinit paths defensively clear the flag so a stale
-/// `true` can't strand the pan gesture.
+/// TTL-based: `UITextView.textViewDidChangeSelection` fires every
+/// tick while a handle or loupe is being dragged and goes silent the
+/// moment the user lifts their finger. Storing the timestamp of the
+/// most recent fire and reading `isActive` as "less than 180ms ago"
+/// gives:
+///   * Active drag → gate continuously `true` (next tick refreshes it
+///     before TTL elapses)
+///   * Settled selection (text still highlighted, user idle) → gate
+///     decays to `false`, so back-swipe works as soon as the user
+///     stops moving their finger — they don't have to tap-away first
+///   * Programmatic `attributedText` writes from `updateUIView` also
+///     fire the delegate; the `isSuppressed` flag flipped around
+///     `tv.attributedText = …` in `updateUIView` filters those out
+///     so a SwiftUI re-eval doesn't phantom-activate the gate
 final class TextSelectionGate {
-    var isActive: Bool = false
+    var lastChangeAt: Date = .distantPast
+    static let ttl: TimeInterval = 0.18
+
+    var isActive: Bool {
+        Date().timeIntervalSince(lastChangeAt) < Self.ttl
+    }
+
+    func touch() {
+        lastChangeAt = Date()
+    }
+
+    func reset() {
+        lastChangeAt = .distantPast
+    }
 }
 
 private struct BottomAreaTopKey: PreferenceKey {

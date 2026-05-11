@@ -84,7 +84,15 @@ struct SelectableRichText: UIViewRepresentable {
                 ns.addAttribute(.foregroundColor, value: UIColor.label, range: range)
             }
         }
+        // Setting `attributedText` synchronously fires
+        // `textViewDidChangeSelection` because UIKit resets the
+        // selection range. Gate that programmatic fire so it doesn't
+        // refresh the back-swipe-suppression TTL on every SwiftUI
+        // re-eval and leave the gate stranded `active` for ~200ms
+        // each update.
+        context.coordinator.suppressSelectionReporting = true
         tv.attributedText = ns
+        context.coordinator.suppressSelectionReporting = false
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
@@ -98,17 +106,24 @@ struct SelectableRichText: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ uiView: UITextView, coordinator: Coordinator) {
-        // Defensive clear: if the SwiftUI view is removed mid-selection
-        // (e.g. user navigates away while text is selected), the
-        // coordinator's didChangeSelection cleanup won't fire and the
-        // gate would strand `true`, blocking every future back-drag
-        // until app restart.
-        coordinator.selectionGate?.isActive = false
+        // Defensive clear: if the SwiftUI view is removed mid-drag
+        // (e.g. user navigates away with a selection still in flight),
+        // the gate's TTL would naturally decay anyway, but resetting
+        // the timestamp avoids a 180ms window where back-drag is
+        // unexpectedly blocked after the source view is already gone.
+        coordinator.selectionGate?.reset()
     }
 
     final class Coordinator: NSObject, UITextViewDelegate {
         var onLinkTap: (URL) -> Void = { _ in }
         weak var selectionGate: TextSelectionGate?
+        /// Flipped `true` while `updateUIView` is in the middle of
+        /// assigning `attributedText` — UIKit fires
+        /// `textViewDidChangeSelection` synchronously from that
+        /// setter even though no user gesture caused it. Without
+        /// this gate, every SwiftUI re-eval would phantom-refresh
+        /// the back-swipe-suppression TTL.
+        var suppressSelectionReporting = false
 
         /// iOS 17+ primary-action API. Intercept link taps and route
         /// through the SwiftUI `openURL` environment so the host's
@@ -129,18 +144,16 @@ struct SelectableRichText: UIViewRepresentable {
         }
 
         /// Fires on every selection range update — including each
-        /// tick while the user is dragging a selection handle. Mirror
-        /// the "is there a visible selection right now" question into
-        /// `selectionGate` so `ContentView.panGesture` can bail before
-        /// classifying the same finger movement as a back-drag.
+        /// tick while the user is dragging a selection handle or
+        /// loupe. Refresh the gate's "recent activity" timestamp so
+        /// `ContentView.panGesture` bails during the drag itself but
+        /// stops suppressing the moment the user lifts their finger
+        /// (~180ms after the last tick). Settled selections — text
+        /// highlighted but the user is just looking at it — let
+        /// back-swipe through normally.
         func textViewDidChangeSelection(_ textView: UITextView) {
-            let hasSelection: Bool
-            if let range = textView.selectedTextRange, !range.isEmpty {
-                hasSelection = true
-            } else {
-                hasSelection = false
-            }
-            selectionGate?.isActive = hasSelection
+            guard !suppressSelectionReporting else { return }
+            selectionGate?.touch()
         }
     }
 }
