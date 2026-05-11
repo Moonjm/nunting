@@ -15,6 +15,13 @@ import UIKit
 struct SelectableRichText: UIViewRepresentable {
     let attributedString: AttributedString
     let font: UIFont
+    /// Raised whenever the wrapped `UITextView` reports a non-empty
+    /// selection so `ContentView.panGesture` knows to stay out of a
+    /// selection-handle drag's way — a rightward handle drag was
+    /// previously racing the back-swipe pan and pulling the detail
+    /// overlay off-screen mid-selection. Optional so previews and
+    /// other call sites without a host pan gesture can omit it.
+    var selectionGate: TextSelectionGate? = nil
 
     /// `openURL` is read from this view's own environment, NOT the
     /// parent's — `.environment(\.openURL, …)` set on an ancestor
@@ -60,6 +67,7 @@ struct SelectableRichText: UIViewRepresentable {
         // when ancestors swap out the OpenURLAction — e.g. a
         // deep-link mode toggle).
         context.coordinator.onLinkTap = { url in openURL(url) }
+        context.coordinator.selectionGate = selectionGate
 
         let ns = NSMutableAttributedString(attributedString)
         let full = NSRange(location: 0, length: ns.length)
@@ -89,8 +97,18 @@ struct SelectableRichText: UIViewRepresentable {
         return CGSize(width: width, height: ceil(fitted.height))
     }
 
+    static func dismantleUIView(_ uiView: UITextView, coordinator: Coordinator) {
+        // Defensive clear: if the SwiftUI view is removed mid-selection
+        // (e.g. user navigates away while text is selected), the
+        // coordinator's didChangeSelection cleanup won't fire and the
+        // gate would strand `true`, blocking every future back-drag
+        // until app restart.
+        coordinator.selectionGate?.isActive = false
+    }
+
     final class Coordinator: NSObject, UITextViewDelegate {
         var onLinkTap: (URL) -> Void = { _ in }
+        weak var selectionGate: TextSelectionGate?
 
         /// iOS 17+ primary-action API. Intercept link taps and route
         /// through the SwiftUI `openURL` environment so the host's
@@ -108,6 +126,21 @@ struct SelectableRichText: UIViewRepresentable {
                 return UIAction(title: defaultAction.title) { _ in handler(url) }
             }
             return defaultAction
+        }
+
+        /// Fires on every selection range update — including each
+        /// tick while the user is dragging a selection handle. Mirror
+        /// the "is there a visible selection right now" question into
+        /// `selectionGate` so `ContentView.panGesture` can bail before
+        /// classifying the same finger movement as a back-drag.
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            let hasSelection: Bool
+            if let range = textView.selectedTextRange, !range.isEmpty {
+                hasSelection = true
+            } else {
+                hasSelection = false
+            }
+            selectionGate?.isActive = hasSelection
         }
     }
 }

@@ -48,6 +48,13 @@ struct ContentView: View {
     /// finger when they release.
     @State private var detailMediaTapGate = TapSuppressionGate()
 
+    /// Set by `SelectableRichText` while a `UITextView` selection is
+    /// non-empty (handle drag in progress or text selected awaiting
+    /// menu action). Read at the top of `panGesture` to bail the
+    /// back-drag entirely so a rightward selection-handle drag
+    /// doesn't pull the overlay off-screen.
+    @State private var textSelectionGate = TextSelectionGate()
+
     private let drawerWidth: CGFloat = 300
     /// Height of the bottom bar area (bar + filter chips + safe area buffer)
     /// where horizontal swipes should belong to the board-step gesture, not
@@ -125,6 +132,7 @@ struct ContentView: View {
                     readStore: readStore,
                     cache: detailCache,
                     tapGate: detailMediaTapGate,
+                    textSelectionGate: textSelectionGate,
                     isOverlayVisible: detail.isOverlayVisible,
                     // `scrollLocked` is set by `panGesture`'s horizontal
                     // classification; `detail.animating` extends the lock
@@ -291,6 +299,13 @@ struct ContentView: View {
     private var panGesture: some Gesture {
         DragGesture(minimumDistance: 6)
             .onChanged { value in
+                // While a UITextView selection is active inside the
+                // detail overlay, every horizontal finger tick is the
+                // user dragging a selection handle — committing to a
+                // back-drag here pulls the overlay off-screen mid-
+                // selection. Bail before any state mutation so the
+                // text view's pan recognizer wins unopposed.
+                if textSelectionGate.isActive { return }
                 // Don't fight the bottom-bar swipe (board step) when the drag
                 // started inside the bar's hit area.
                 if startedInBottomBar(value) { return }
@@ -347,6 +362,10 @@ struct ContentView: View {
                 // TTL deadline that lapses on its own (see the class
                 // doccomment for why this matters when `.onEnded` is
                 // skipped entirely).
+                if textSelectionGate.isActive {
+                    resetDragState()
+                    return
+                }
                 if startedInBottomBar(value) {
                     resetDragState()
                     return
@@ -506,6 +525,26 @@ final class TapSuppressionGate {
     func suppress(for duration: TimeInterval = 0.25) {
         suppressedUntil = Date().addingTimeInterval(duration)
     }
+}
+
+/// Mirrors `TapSuppressionGate`'s "shared mutable flag" pattern but for
+/// the inverse case — children (e.g. `SelectableRichText`'s wrapped
+/// `UITextView`) reporting *up* to `ContentView.panGesture` that a
+/// selection-handle drag is in progress so the back-swipe pan should
+/// stay out of its way.
+///
+/// Drag-right on a selection handle previously raced
+/// `panGesture.onChanged`'s horizontal classifier and pulled the
+/// detail overlay off-screen mid-selection. With this gate active,
+/// `panGesture` bails before mutating any drag state, leaving the
+/// UITextView's handle pan to win unopposed.
+///
+/// No TTL — selection state has clean delegate hooks
+/// (`textViewDidChangeSelection`) and the SelectableRichText
+/// dismantle/deinit paths defensively clear the flag so a stale
+/// `true` can't strand the pan gesture.
+final class TextSelectionGate {
+    var isActive: Bool = false
 }
 
 private struct BottomAreaTopKey: PreferenceKey {
