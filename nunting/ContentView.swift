@@ -361,21 +361,39 @@ struct ContentView: View {
                 // starts within 44pt of either handle is treated as
                 // handle-grab intent — refresh the gate every tick so
                 // its 180ms TTL stays hot through the entire drag.
-                if touchStartedNearSelectionHandle(at: value.startLocation) {
+                let nearHandle = touchStartedNearSelectionHandle(at: value.startLocation)
+                if nearHandle {
                     textSelectionGate.touch()
+                }
+                if nearHandle || textSelectionGate.isActive {
+                    // Selection-interaction guard. The gate is touched
+                    // by SelectableRichText's coordinator from three
+                    // signals, each excluding pure swipes on body text:
+                    //   1. `SelectionTrackingTextView.becomeFirstResponder`
+                    //      — UITextView entering selection mode.
+                    //   2. A 0.12s `UILongPressGestureRecognizer` —
+                    //      loupe / hold intent.
+                    //   3. Filtered `textViewDidChangeSelection` — range
+                    //      modifications (handle drag, menu Select →
+                    //      drag).
+                    //
+                    // If a prior tick had already classified as
+                    // horizontal and moved `detail.offset` before the
+                    // gate flipped on, snap the overlay back to its
+                    // pre-drag base so it doesn't sit stranded mid-
+                    // screen for the rest of the drag.
+                    if dragDirection == .horizontal,
+                       detail.activePost != nil,
+                       detail.offset != detail.offsetBase {
+                        detail.beginAnimationLock()
+                        let target = detail.offsetBase
+                        withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
+                            detail.offset = target
+                            dragOffset = 0
+                        }
+                    }
                     return
                 }
-                // Selection-interaction guard. The gate is touched by
-                // SelectableRichText's coordinator from three signals,
-                // each excluding pure swipes on body text:
-                //   1. `SelectionTrackingTextView.becomeFirstResponder`
-                //      — UITextView entering selection mode.
-                //   2. A 0.12s `UILongPressGestureRecognizer` —
-                //      loupe / hold intent.
-                //   3. Filtered `textViewDidChangeSelection` — range
-                //      modifications (handle drag, menu Select →
-                //      drag).
-                if textSelectionGate.isActive { return }
                 // Don't fight the bottom-bar swipe (board step) when the drag
                 // started inside the bar's hit area.
                 if startedInBottomBar(value) { return }
@@ -433,6 +451,22 @@ struct ContentView: View {
                 // doccomment for why this matters when `.onEnded` is
                 // skipped entirely).
                 if textSelectionGate.isActive {
+                    // Mid-drag the gate activated, and a prior tick may
+                    // have already moved `detail.offset` interactively
+                    // — without this snap-back, the overlay strands at
+                    // wherever the last pre-gate tick left it and the
+                    // user sees a screenshot like the bug report
+                    // (overlay frozen at ~30% offset).
+                    if dragDirection == .horizontal,
+                       detail.activePost != nil,
+                       detail.offset != detail.offsetBase {
+                        detail.beginAnimationLock()
+                        let target = detail.offsetBase
+                        withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
+                            detail.offset = target
+                            dragOffset = 0
+                        }
+                    }
                     resetDragState()
                     return
                 }
