@@ -560,15 +560,17 @@ final class InlineAutoplayUIView: UIView {
 /// play button) so the inline video keeps its "moving image" feel.
 /// Tap anywhere on the strip seeks to that position; pan drags the
 /// playhead live then commits on touch-up.
-/// `accessibilityIdentifier` stamped on every `VideoScrubBarView`.
-/// ContentView's back-drag matches against this when hit-testing the
-/// drag's start location, so a drag that begins inside the scrub
-/// strip never drives the detail-screen slide.
-enum InlineVideoScrubBarMarker {
-    static let identifier = "InlineVideoScrubBar"
-}
+/// Marker conformance used by `ContentView`'s back-drag hit-test to
+/// detect that a touch started inside an inline video's scrub strip
+/// without exposing the otherwise-`private` `VideoScrubBarView` to
+/// other files. A type check (`is InlineVideoScrubBarMarking`) keeps
+/// the contract refactor-safe — a string `accessibilityIdentifier`
+/// would collide with VoiceOver / UI-test instrumentation and could
+/// be silently shadowed by a future contributor who doesn't know
+/// gesture routing depends on it.
+protocol InlineVideoScrubBarMarking: AnyObject {}
 
-private final class VideoScrubBarView: UIView {
+private final class VideoScrubBarView: UIView, InlineVideoScrubBarMarking {
 
     /// Strong-ish ref via `weak` so the view itself doesn't keep the
     /// AVPlayer alive past the `InlineAutoplayUIView`'s tear-down.
@@ -614,16 +616,18 @@ private final class VideoScrubBarView: UIView {
     /// quick taps as seek while routing scroll attempts to the
     /// parent ScrollView.
     private let tap = UITapGestureRecognizer()
+    /// Last scroll view whose pan `tap` was made to require to fail.
+    /// Tracked so re-entry to a window (the scrub bar's parent
+    /// `InlineAutoplayUIView` is reused via `VideoPlayerPool`, so
+    /// `didMoveToWindow` may fire multiple times against different
+    /// scroll views) doesn't accumulate dependencies — `require(toFail:)`
+    /// has no dedup, and a stale entry would force `tap` to wait for
+    /// an unrelated scroll view that never tracks the current touch.
+    private weak var tapRequiredScrollPan: UIPanGestureRecognizer?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear
-        // Marker so ContentView's global back-drag (a SwiftUI
-        // DragGesture that runs simultaneously with our UIKit pan)
-        // can hit-test its `startLocation` and skip drags that began
-        // inside the scrub strip. Without this, dragging the bar
-        // rightward would scrub AND slide the detail screen out.
-        accessibilityIdentifier = InlineVideoScrubBarMarker.identifier
         // Darken the resting bar so it's visible over both light
         // (snow / sky scenes) and dark (night / black-letterbox)
         // video backgrounds. The fill is brighter for contrast.
@@ -670,7 +674,10 @@ private final class VideoScrubBarView: UIView {
         var current: UIView? = superview
         while let c = current {
             if let sv = c as? UIScrollView {
-                tap.require(toFail: sv.panGestureRecognizer)
+                if sv.panGestureRecognizer !== tapRequiredScrollPan {
+                    tap.require(toFail: sv.panGestureRecognizer)
+                    tapRequiredScrollPan = sv.panGestureRecognizer
+                }
                 return
             }
             current = c.superview
@@ -738,19 +745,27 @@ private final class VideoScrubBarView: UIView {
             dragProgress = progress
             updateFill()
         case .ended:
-            // Only seek on a clean release. Gating on `isDragging`
-            // skips the case where the directional pan failed in
-            // `.possible` (vertical drag) and never went through
-            // `.began` — the action still fires once with the
-            // terminal state and would otherwise jump the playhead
-            // to wherever the scroll-attempt touch happened to land.
+            // `.ended` only follows `.began`/`.changed`, so `isDragging`
+            // is always set when we land here. The gate is defensive —
+            // belt-and-braces against any future code path that fails
+            // the recognizer after `.began` and then somehow surfaces
+            // `.ended`. UIKit doesn't fire the action when a continuous
+            // recognizer transitions `.possible → .failed`, so the
+            // directional pan's vertical-drag self-fail never reaches
+            // this switch.
             if isDragging {
                 isDragging = false
                 seekToProgress(progress)
             }
         case .cancelled, .failed:
-            // Abort: snap the fill back to the player's clock if we
-            // were mid-scrub; never seek to the touch position.
+            // Mid-drag abort. `.cancelled` is the case that actually
+            // fires here — UIKit sends it when an external interruption
+            // (incoming call, scroll view claiming the touch, view
+            // detachment) yanks a recognized continuous gesture out
+            // from under us. `.failed` is bundled for symmetry but
+            // does not fire for `.possible → .failed`. Snap the fill
+            // back to the player's clock instead of stranding it at
+            // the abort point; never seek.
             if isDragging {
                 isDragging = false
                 updateFill()

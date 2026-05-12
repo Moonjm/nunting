@@ -331,15 +331,16 @@ struct ContentView: View {
     }
 
     /// True when the back-drag's starting touch landed inside an
-    /// inline video's scrub strip. Each `VideoScrubBarView` stamps
-    /// its UIView with `InlineVideoScrubBarMarker.identifier` so a
-    /// hit-test in window coordinates can walk up from whatever view
-    /// the touch resolved to. Bailing here keeps a rightward scrub
-    /// drag from also driving the detail-screen back-slide: the
-    /// scrub UIKit pan starts at 10pt of horizontal motion while
-    /// this SwiftUI DragGesture begins at 6pt, so without the skip
-    /// the back-drag would have a 4pt head start and lock direction
-    /// to horizontal before the scrub had a chance to take over.
+    /// inline video's scrub strip. `VideoScrubBarView` conforms to
+    /// `InlineVideoScrubBarMarking`; hit-testing the key window at
+    /// `point` and walking the superview chain catches every active
+    /// strip without exposing the otherwise-private class. Bailing
+    /// here keeps a rightward scrub drag from also driving the
+    /// detail-screen back-slide: the scrub UIKit pan starts at 10pt
+    /// of horizontal motion while this SwiftUI DragGesture begins
+    /// at 6pt, so without the skip the back-drag would have a 4pt
+    /// head start and lock direction to horizontal before the scrub
+    /// had a chance to take over.
     private func touchStartedOnScrubBar(at point: CGPoint) -> Bool {
         guard let window = UIApplication.shared
             .connectedScenes
@@ -348,9 +349,7 @@ struct ContentView: View {
         else { return false }
         var view = window.hitTest(point, with: nil)
         while let v = view {
-            if v.accessibilityIdentifier == InlineVideoScrubBarMarker.identifier {
-                return true
-            }
+            if v is InlineVideoScrubBarMarking { return true }
             view = v.superview
         }
         return false
