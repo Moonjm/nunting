@@ -330,6 +330,31 @@ struct ContentView: View {
         }
     }
 
+    /// True when the back-drag's starting touch landed inside an
+    /// inline video's scrub strip. `VideoScrubBarView` conforms to
+    /// `InlineVideoScrubBarMarking`; hit-testing the key window at
+    /// `point` and walking the superview chain catches every active
+    /// strip without exposing the otherwise-private class. Bailing
+    /// here keeps a rightward scrub drag from also driving the
+    /// detail-screen back-slide: the scrub UIKit pan starts at 10pt
+    /// of horizontal motion while this SwiftUI DragGesture begins
+    /// at 6pt, so without the skip the back-drag would have a 4pt
+    /// head start and lock direction to horizontal before the scrub
+    /// had a chance to take over.
+    private func touchStartedOnScrubBar(at point: CGPoint) -> Bool {
+        guard let window = UIApplication.shared
+            .connectedScenes
+            .compactMap({ ($0 as? UIWindowScene)?.keyWindow })
+            .first
+        else { return false }
+        var view = window.hitTest(point, with: nil)
+        while let v = view {
+            if v is InlineVideoScrubBarMarking { return true }
+            view = v.superview
+        }
+        return false
+    }
+
     /// Resign first responder ONLY on the UITextView that currently
     /// holds a non-empty selection — leaving any other editable
     /// view in the hierarchy (search bar, future comment compose
@@ -406,6 +431,12 @@ struct ContentView: View {
                 if touchStartedNearSelectionHandle(at: value.startLocation) {
                     return
                 }
+                // Scrub strip drags route through the inline player's
+                // own UIKit pan — slipping past here would race the
+                // back-drag against the scrubber.
+                if touchStartedOnScrubBar(at: value.startLocation) {
+                    return
+                }
                 // Don't fight the bottom-bar swipe (board step) when the drag
                 // started inside the bar's hit area.
                 if startedInBottomBar(value) { return }
@@ -463,6 +494,10 @@ struct ContentView: View {
                 // doccomment for why this matters when `.onEnded` is
                 // skipped entirely).
                 if touchStartedNearSelectionHandle(at: value.startLocation) {
+                    resetDragState()
+                    return
+                }
+                if touchStartedOnScrubBar(at: value.startLocation) {
                     resetDragState()
                     return
                 }
