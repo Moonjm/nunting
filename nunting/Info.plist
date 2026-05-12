@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The project target has GENERATE_INFOPLIST_FILE = YES so most Info.plist
+  values come from INFOPLIST_KEY_* build settings (CFBundleDisplayName,
+  UILaunchScreen, etc.) and Xcode merges them with the keys declared here
+  at build time. This file exists solely to declare the supported
+  localizations — system UI strings (selection menu, share sheet, AVKit
+  controls) only render in Korean when the bundle advertises Korean
+  support, which can't be expressed via the per-key INFOPLIST_KEY_*
+  syntax. INFOPLIST_FILE = nunting/Info.plist in project.pbxproj points
+  the merger at this file; don't remove either side without checking the
+  other.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>en</string>
+		<string>ko</string>
+	</array>
+</dict>
+</plist>

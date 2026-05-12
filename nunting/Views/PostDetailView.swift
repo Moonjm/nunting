@@ -324,10 +324,18 @@ struct PostDetailView: View, Equatable {
                 ForEach(Array(detail.blocks.enumerated()), id: \.element.id) { _, block in
                     switch block.kind {
                     case .richText(let segments):
-                        Text(attributedString(from: segments))
-                            .font(.body)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        // SwiftUI `Text` + `.textSelection(.enabled)`
+                        // only allows whole-paragraph copy, not the
+                        // range selection iOS users expect. Route
+                        // through a UITextView wrapper so the system
+                        // magnifying glass + drag handles + share menu
+                        // all light up; link taps still flow through
+                        // the `openURL` environment override above.
+                        SelectableRichText(
+                            attributedString: attributedString(from: segments),
+                            font: .preferredFont(forTextStyle: .body)
+                        )
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     case .image(let url, let aspectRatio):
                         // Body images go through SDWebImage's
                         // `AnimatedImage` (libwebp for animated WebP /
@@ -613,10 +621,11 @@ private struct CommentRow: View {
                 }
             }
             if !comment.content.isEmpty {
-                Text(styledContent(comment.content))
-                    .font(.subheadline)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                SelectableRichText(
+                    attributedString: styledContent(comment.content),
+                    font: .preferredFont(forTextStyle: .subheadline)
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             if let videoURL = comment.videoURL {
                 HStack(spacing: 0) {

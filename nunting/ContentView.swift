@@ -131,7 +131,7 @@ struct ContentView: View {
                     // across the post-release spring so the inner scroll
                     // position can't drift while the overlay slides in/out.
                     isScrollingBlocked: scrollLocked || detail.animating,
-                    onDismiss: { detail.hide() }
+                    onDismiss: { dismissDetailOverlay() }
                 )
                 // `.equatable()` pairs with PostDetailView's custom `==` to
                 // short-circuit body re-evaluation when only the `onDismiss`
@@ -171,7 +171,6 @@ struct ContentView: View {
         .onPreferenceChange(ContainerWidthKey.self) { newWidth in
             detail.updateContainerWidth(newWidth)
         }
-        .coordinateSpace(name: "contentRoot")
         .onPreferenceChange(BottomAreaTopKey.self) { bottomAreaTopY = $0 }
         .simultaneousGesture(panGesture)
         .task {
@@ -243,9 +242,14 @@ struct ContentView: View {
             }
             .background(
                 GeometryReader { proxy in
+                    // `.global` so the value lines up with the
+                    // `.global` panGesture's `value.startLocation.y`
+                    // — both are now in window coordinates and the
+                    // existing `>= bottomAreaTopY` comparison stays
+                    // correct without converting at gesture time.
                     Color.clear.preference(
                         key: BottomAreaTopKey.self,
-                        value: proxy.frame(in: .named("contentRoot")).minY
+                        value: proxy.frame(in: .global).minY
                     )
                 }
             )
@@ -288,9 +292,120 @@ struct ContentView: View {
         -drawerWidth + drawerWidth * drawerProgress
     }
 
+    /// Walk the key window's view hierarchy to find the (at most one)
+    /// UITextView that currently has a non-empty selection, then
+    /// return `true` if `point` lies within an asymmetric box around
+    /// either of its selection-handle anchors. UITextView's own
+    /// handle hit-area is tight (~22pt), so a touch landing slightly
+    /// off the visible blue circle isn't recognized as a handle drag
+    /// and falls into back-swipe classification. Inflate the
+    /// effective hit zone — but as a wide-but-short box, not a
+    /// 44pt-radius circle:
+    ///   * Horizontal `±28pt`: generous slop for users aiming
+    ///     sideways of the handle.
+    ///   * Vertical `±16pt`: tight enough that handles on adjacent
+    ///     text lines don't bleed into each other across every
+    ///     Dynamic Type size. The smallest body line height (xSmall,
+    ///     ~18pt) puts the adjacent line's top 18pt from the anchor —
+    ///     just outside 16pt — so an above-line back-swipe still
+    ///     routes to back-drag, not to a phantom handle grab. (A
+    ///     circular 44pt radius reached up to 2 lines above/below at
+    ///     default line height, which produced the "3-line body,
+    ///     bottom-line selection, back-drag from line 1 freezes" bug.
+    ///     A tighter 15pt extent worked too but barely covers the
+    ///     handle dot's center; 16pt picks up a touch more handle
+    ///     slop while still excluding xSmall's adjacent line.)
+    ///
+    /// `point` is in key-window coordinates (panGesture uses
+    /// `coordinateSpace: .global`).
+    private func touchStartedNearSelectionHandle(at point: CGPoint) -> Bool {
+        guard let window = UIApplication.shared
+            .connectedScenes
+            .compactMap({ ($0 as? UIWindowScene)?.keyWindow })
+            .first
+        else { return false }
+        guard let tv = findTextViewWithActiveSelection(in: window) else { return false }
+        return tv.selectionHandleAnchorsInWindow().contains { anchor in
+            abs(point.x - anchor.x) <= 28 && abs(point.y - anchor.y) <= 16
+        }
+    }
+
+    /// Resign first responder ONLY on the UITextView that currently
+    /// holds a non-empty selection — leaving any other editable
+    /// view in the hierarchy (search bar, future comment compose
+    /// field) untouched. Used at detail-dismissal time so the iOS
+    /// edit menu (Copy / Look Up / Translate) doesn't strand on top
+    /// of the list after the overlay slides off-screen. The detail
+    /// view is kept mounted on dismiss (it's a `.offset()` slide-
+    /// out, not a SwiftUI removal), so without explicit teardown
+    /// the text view stays first responder forever and UIKit keeps
+    /// its menu visible.
+    ///
+    /// Scoped to foreground-active scenes only — background scenes
+    /// on iPad multi-window may legitimately hold their own
+    /// selections that an unrelated dismiss shouldn't clear.
+    private func resignSelectedTextResponder() {
+        for scene in UIApplication.shared.connectedScenes where scene.activationState == .foregroundActive {
+            guard let windowScene = scene as? UIWindowScene else { continue }
+            for window in windowScene.windows {
+                if let tv = findTextViewWithActiveSelection(in: window) {
+                    tv.resignFirstResponder()
+                }
+            }
+        }
+    }
+
+    /// Single dismiss chokepoint. Both the back-drag commit and the
+    /// header back button route through here so the selection /
+    /// edit-menu teardown can't be silently forgotten by a future
+    /// third dismiss trigger (deep link, keyboard shortcut, etc.).
+    /// `alongsideAnimation` is forwarded to `DetailOverlayController.hide(...)`
+    /// so the back-drag site can reset its `dragOffset` inside the
+    /// same spring.
+    private func dismissDetailOverlay(alongsideAnimation: (() -> Void)? = nil) {
+        resignSelectedTextResponder()
+        detail.hide(alongsideAnimation: alongsideAnimation)
+    }
+
+    /// Recurse the view tree and stop at the first UITextView with a
+    /// non-empty selection. Across the app at most one text view can
+    /// hold the system selection at any moment (selecting in one
+    /// clears the prior selection), so we don't have to enumerate the
+    /// entire tree — first match wins.
+    private func findTextViewWithActiveSelection(in view: UIView) -> UITextView? {
+        if let tv = view as? UITextView,
+           let range = tv.selectedTextRange,
+           !range.isEmpty {
+            return tv
+        }
+        for sub in view.subviews {
+            if let hit = findTextViewWithActiveSelection(in: sub) {
+                return hit
+            }
+        }
+        return nil
+    }
+
     private var panGesture: some Gesture {
-        DragGesture(minimumDistance: 6)
+        // `.global` so `value.startLocation` shares the same window-
+        // coordinate space as `bottomAreaTopY` (which `BottomAreaTopKey`
+        // publishes via `frame(in: .global).minY`). Without the match,
+        // the local-coordinate start point sits below the top safe-
+        // area inset and `startedInBottomBar`'s `>=` comparison was
+        // ~47-59pt off on iPhones with notch / Dynamic Island.
+        DragGesture(minimumDistance: 6, coordinateSpace: .global)
             .onChanged { value in
+                // If the touch started near a visible selection
+                // handle (see `touchStartedNearSelectionHandle` for
+                // the exact hit-box dimensions and rationale), the
+                // user is grabbing it — bail so UITextView's handle
+                // pan can run without our back-drag sliding the
+                // overlay out underneath it. `value.startLocation`
+                // is stable across ticks so the check is consistent
+                // for the whole drag.
+                if touchStartedNearSelectionHandle(at: value.startLocation) {
+                    return
+                }
                 // Don't fight the bottom-bar swipe (board step) when the drag
                 // started inside the bar's hit area.
                 if startedInBottomBar(value) { return }
@@ -347,6 +462,10 @@ struct ContentView: View {
                 // TTL deadline that lapses on its own (see the class
                 // doccomment for why this matters when `.onEnded` is
                 // skipped entirely).
+                if touchStartedNearSelectionHandle(at: value.startLocation) {
+                    resetDragState()
+                    return
+                }
                 if startedInBottomBar(value) {
                     resetDragState()
                     return
@@ -376,10 +495,18 @@ struct ContentView: View {
                     // past the distance / velocity thresholds, else
                     // snap back to fully visible.
                     let shouldDismiss = detail.shouldDismissSwipe(dx: traveled, velocityX: velocity)
-                    detail.beginAnimationLock()
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
-                        detail.offset = shouldDismiss ? containerW : 0
-                        dragOffset = 0
+                    if shouldDismiss {
+                        // Goes through `dismissDetailOverlay` so the
+                        // edit-menu teardown is shared with the
+                        // header back button — see the helper for
+                        // why both paths must converge here.
+                        dismissDetailOverlay(alongsideAnimation: { dragOffset = 0 })
+                    } else {
+                        detail.beginAnimationLock()
+                        withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
+                            detail.offset = 0
+                            dragOffset = 0
+                        }
                     }
                     return
                 }
@@ -505,6 +632,41 @@ final class TapSuppressionGate {
 
     func suppress(for duration: TimeInterval = 0.25) {
         suppressedUntil = Date().addingTimeInterval(duration)
+    }
+}
+
+private extension UITextView {
+    /// Window-coordinate positions of the two selection handles for
+    /// the current `selectedTextRange`. Uses `selectionRects(for:)`
+    /// (rather than `caretRect(for:)` of the range endpoints) so
+    /// selections ending on a soft line-wrap return the visual end
+    /// of the previous line rather than a zero-width rect at x=0 on
+    /// the next line — handles sit at the trailing glyph position,
+    /// not at the start of the next line. Returns `[]` when no
+    /// selection rects are available.
+    func selectionHandleAnchorsInWindow() -> [CGPoint] {
+        guard let range = selectedTextRange, !range.isEmpty else { return [] }
+        let rects = selectionRects(for: range)
+        guard !rects.isEmpty else { return [] }
+        // Start handle sits at the top-left of the rect that contains
+        // the selection start; end handle at the bottom-right of the
+        // rect that contains the selection end (assumes LTR layout —
+        // for RTL the visual-left/right relationship to start/end
+        // flips; the parsers in this app only emit Korean / Latin
+        // text so LTR is safe). `containsStart` / `containsEnd` flag
+        // those rects directly.
+        let startRect = rects.first(where: { $0.containsStart })?.rect
+            ?? rects.first?.rect
+        let endRect = rects.first(where: { $0.containsEnd })?.rect
+            ?? rects.last?.rect
+        var anchors: [CGPoint] = []
+        if let r = startRect {
+            anchors.append(convert(CGPoint(x: r.minX, y: r.minY), to: nil))
+        }
+        if let r = endRect {
+            anchors.append(convert(CGPoint(x: r.maxX, y: r.maxY), to: nil))
+        }
+        return anchors
     }
 }
 
