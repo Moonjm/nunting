@@ -560,7 +560,16 @@ final class InlineAutoplayUIView: UIView {
 /// play button) so the inline video keeps its "moving image" feel.
 /// Tap anywhere on the strip seeks to that position; pan drags the
 /// playhead live then commits on touch-up.
+/// `accessibilityIdentifier` stamped on every `VideoScrubBarView`.
+/// ContentView's back-drag matches against this when hit-testing the
+/// drag's start location, so a drag that begins inside the scrub
+/// strip never drives the detail-screen slide.
+enum InlineVideoScrubBarMarker {
+    static let identifier = "InlineVideoScrubBar"
+}
+
 private final class VideoScrubBarView: UIView {
+
     /// Strong-ish ref via `weak` so the view itself doesn't keep the
     /// AVPlayer alive past the `InlineAutoplayUIView`'s tear-down.
     /// Setter installs/removes the periodic time observer.
@@ -599,10 +608,22 @@ private final class VideoScrubBarView: UIView {
     /// seek). On touch-up we seek and clear the flag.
     private var isDragging = false
     private var dragProgress: Double = 0
+    /// Held as a property (not a local in `init`) so `didMoveToWindow`
+    /// can install a `require(toFail:)` dependency on the enclosing
+    /// scroll view's pan once the view chain is connected — keeping
+    /// quick taps as seek while routing scroll attempts to the
+    /// parent ScrollView.
+    private let tap = UITapGestureRecognizer()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear
+        // Marker so ContentView's global back-drag (a SwiftUI
+        // DragGesture that runs simultaneously with our UIKit pan)
+        // can hit-test its `startLocation` and skip drags that began
+        // inside the scrub strip. Without this, dragging the bar
+        // rightward would scrub AND slide the detail screen out.
+        accessibilityIdentifier = InlineVideoScrubBarMarker.identifier
         // Darken the resting bar so it's visible over both light
         // (snow / sky scenes) and dark (night / black-letterbox)
         // video backgrounds. The fill is brighter for contrast.
@@ -618,9 +639,12 @@ private final class VideoScrubBarView: UIView {
         layer.addSublayer(backgroundLayer)
         layer.addSublayer(fillLayer)
 
-        let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        let pan = DirectionalScrubPanGestureRecognizer(
+            target: self,
+            action: #selector(handlePan(_:))
+        )
         addGestureRecognizer(pan)
-        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        tap.addTarget(self, action: #selector(handleTap(_:)))
         addGestureRecognizer(tap)
     }
 
@@ -630,6 +654,27 @@ private final class VideoScrubBarView: UIView {
 
     deinit {
         removeTimeObserverFromPreviousPlayer(player)
+    }
+
+    /// Once the view is in a window the superview chain is settled, so
+    /// walk up to find the post detail's enclosing `UIScrollView` (the
+    /// UIKit object SwiftUI builds `ScrollView` on top of) and make the
+    /// seek tap wait for its pan recognizer to fail. The tap then only
+    /// fires when the touch ends without enough movement to trigger a
+    /// scroll — a deliberate tap on the strip — while a touch that the
+    /// scroll view's pan claims (vertical scroll attempt) marks this
+    /// tap as failed and skips the seek.
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        guard window != nil else { return }
+        var current: UIView? = superview
+        while let c = current {
+            if let sv = c as? UIScrollView {
+                tap.require(toFail: sv.panGestureRecognizer)
+                return
+            }
+            current = c.superview
+        }
     }
 
     override func layoutSubviews() {
@@ -692,9 +737,24 @@ private final class VideoScrubBarView: UIView {
         case .changed:
             dragProgress = progress
             updateFill()
-        case .ended, .cancelled, .failed:
-            isDragging = false
-            seekToProgress(progress)
+        case .ended:
+            // Only seek on a clean release. Gating on `isDragging`
+            // skips the case where the directional pan failed in
+            // `.possible` (vertical drag) and never went through
+            // `.began` — the action still fires once with the
+            // terminal state and would otherwise jump the playhead
+            // to wherever the scroll-attempt touch happened to land.
+            if isDragging {
+                isDragging = false
+                seekToProgress(progress)
+            }
+        case .cancelled, .failed:
+            // Abort: snap the fill back to the player's clock if we
+            // were mid-scrub; never seek to the touch position.
+            if isDragging {
+                isDragging = false
+                updateFill()
+            }
         default:
             break
         }
@@ -732,6 +792,73 @@ private final class VideoScrubBarView: UIView {
             previous.removeTimeObserver(token)
         }
         timeObserverToken = nil
+    }
+}
+
+/// Pan recognizer that arbitrates direction itself instead of trusting
+/// `UIPanGestureRecognizer`'s magnitude-based threshold. The plain
+/// recognizer transitions to `.began` once cumulative motion exceeds
+/// ~10pt regardless of direction, so a straight-down drag of (0, 10)
+/// inside the scrub strip locks in a horizontal scrub — `handlePan`
+/// reads only `location.x`, so the bar slides sideways while the post
+/// fails to scroll. Sampling translation post-super doesn't help: by
+/// the time `state == .possible` guards we'd run, super has already
+/// promoted to `.began` and the action fired.
+///
+/// Approach: in `.possible`, decide ourselves. Track the touch's
+/// start point in `touchesBegan` and on each `touchesMoved` compute
+/// the delta directly from `UITouch.location` (without depending on
+/// super's internal tracking, which we're about to gate). Then:
+///
+///   * `|dy| > 4` and `|dy| >= |dx|`  →  set state `.failed`. The
+///     enclosing scroll view's pan can then claim the touch and the
+///     page scrolls. Biasing the tie (`>=`) toward vertical keeps a
+///     finger held still then dragged straight down on the strip
+///     from ever falling into the scrub branch.
+///   * `|dx| > 10` and `|dx| > |dy|`  →  forward to super, which
+///     promotes the gesture to `.began` and lets `handlePan` start
+///     scrubbing.
+///   * Otherwise — ambiguous or below threshold. Skip the forward so
+///     super stays in `.possible` and the direction can resolve over
+///     subsequent touches.
+///
+/// Once we're out of `.possible` (recognized or failed), behaviour is
+/// the default `UIPanGestureRecognizer`'s.
+private final class DirectionalScrubPanGestureRecognizer: UIPanGestureRecognizer {
+    private var startLocation: CGPoint?
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        super.touchesBegan(touches, with: event)
+        if startLocation == nil, let touch = touches.first, let view {
+            startLocation = touch.location(in: view)
+        }
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+        guard state == .possible,
+              let touch = touches.first,
+              let view,
+              let start = startLocation
+        else {
+            super.touchesMoved(touches, with: event)
+            return
+        }
+        let current = touch.location(in: view)
+        let dx = current.x - start.x
+        let dy = current.y - start.y
+        if abs(dy) > 4, abs(dy) >= abs(dx) {
+            state = .failed
+            return
+        }
+        if abs(dx) > 10, abs(dx) > abs(dy) {
+            super.touchesMoved(touches, with: event)
+        }
+        // Ambiguous: don't forward, stay `.possible` for the next move.
+    }
+
+    override func reset() {
+        super.reset()
+        startLocation = nil
     }
 }
 
