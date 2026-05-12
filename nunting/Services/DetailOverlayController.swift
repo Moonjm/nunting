@@ -105,10 +105,21 @@ final class DetailOverlayController {
     /// `activePost` non-nil so a subsequent forward-swipe re-reveals
     /// the same instance. Cancels any in-flight `show` animation so
     /// hide can't be silently overridden by a stale show.
-    func hide() {
+    ///
+    /// `alongsideAnimation` runs inside the same `withAnimation`
+    /// block as the offset spring — lets the back-drag commit reset
+    /// its `dragOffset` interpolation alongside the dismiss without
+    /// duplicating the spring configuration at the call site. The
+    /// animation lock is asserted unconditionally so the inner
+    /// ScrollView's contentOffset can't drift mid-bounce regardless
+    /// of which dismiss path triggered (header back button, back-
+    /// drag commit, future programmatic dismissal).
+    func hide(alongsideAnimation: (() -> Void)? = nil) {
         showTask?.cancel()
+        beginAnimationLock()
         withAnimation(.spring(response: Self.springResponse, dampingFraction: Self.springDamping)) {
             offset = containerWidth
+            alongsideAnimation?()
         }
     }
 

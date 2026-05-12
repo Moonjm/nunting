@@ -131,14 +131,7 @@ struct ContentView: View {
                     // across the post-release spring so the inner scroll
                     // position can't drift while the overlay slides in/out.
                     isScrollingBlocked: scrollLocked || detail.animating,
-                    onDismiss: {
-                        // Same teardown the back-drag commit does —
-                        // overlay slide-off keeps UITextView mounted
-                        // and thus first-responder unless we clear
-                        // it here, leaving its edit menu floating.
-                        resignAnyActiveTextSelection()
-                        detail.hide()
-                    }
+                    onDismiss: { dismissDetailOverlay() }
                 )
                 // `.equatable()` pairs with PostDetailView's custom `==` to
                 // short-circuit body re-evaluation when only the `onDismiss`
@@ -310,16 +303,18 @@ struct ContentView: View {
     /// 44pt-radius circle:
     ///   * Horizontal `±28pt`: generous slop for users aiming
     ///     sideways of the handle.
-    ///   * Vertical `±15pt`: tight enough that handles on adjacent
-    ///     text lines don't bleed into each other. A 22pt-line-height
-    ///     post body (default Dynamic Type) puts the line above the
-    ///     selection's first/last line 22pt+ away from the anchor —
-    ///     outside the 15pt vertical extent — so a back-swipe started
-    ///     on a nearby line still routes to back-drag, not to a
-    ///     phantom handle grab on a different line. (A circular 44pt
-    ///     radius reached up to 2 lines above/below for the same
-    ///     line height, which is what produced the "3-line body,
-    ///     bottom-line selection, back-drag from line 1 freezes" bug.)
+    ///   * Vertical `±16pt`: tight enough that handles on adjacent
+    ///     text lines don't bleed into each other across every
+    ///     Dynamic Type size. The smallest body line height (xSmall,
+    ///     ~18pt) puts the adjacent line's top 18pt from the anchor —
+    ///     just outside 16pt — so an above-line back-swipe still
+    ///     routes to back-drag, not to a phantom handle grab. (A
+    ///     circular 44pt radius reached up to 2 lines above/below at
+    ///     default line height, which produced the "3-line body,
+    ///     bottom-line selection, back-drag from line 1 freezes" bug.
+    ///     A tighter 15pt extent worked too but barely covers the
+    ///     handle dot's center; 16pt picks up a touch more handle
+    ///     slop while still excluding xSmall's adjacent line.)
     ///
     /// `point` is in key-window coordinates (panGesture uses
     /// `coordinateSpace: .global`).
@@ -331,25 +326,45 @@ struct ContentView: View {
         else { return false }
         guard let tv = findTextViewWithActiveSelection(in: window) else { return false }
         return tv.selectionHandleAnchorsInWindow().contains { anchor in
-            abs(point.x - anchor.x) <= 28 && abs(point.y - anchor.y) <= 15
+            abs(point.x - anchor.x) <= 28 && abs(point.y - anchor.y) <= 16
         }
     }
 
-    /// Force-resign whatever's currently first responder across every
-    /// connected window. Used at detail-dismissal time so a UITextView
-    /// with an active selection (and its iOS edit menu — Copy / Look
-    /// Up / Translate) doesn't strand on top of the list after the
-    /// overlay slides off-screen. The detail view is kept mounted on
-    /// dismiss (it's a `.offset()` slide-out, not a SwiftUI removal),
-    /// so without explicit teardown the text view stays first
-    /// responder forever and UIKit keeps its menu visible.
-    private func resignAnyActiveTextSelection() {
-        for scene in UIApplication.shared.connectedScenes {
+    /// Resign first responder ONLY on the UITextView that currently
+    /// holds a non-empty selection — leaving any other editable
+    /// view in the hierarchy (search bar, future comment compose
+    /// field) untouched. Used at detail-dismissal time so the iOS
+    /// edit menu (Copy / Look Up / Translate) doesn't strand on top
+    /// of the list after the overlay slides off-screen. The detail
+    /// view is kept mounted on dismiss (it's a `.offset()` slide-
+    /// out, not a SwiftUI removal), so without explicit teardown
+    /// the text view stays first responder forever and UIKit keeps
+    /// its menu visible.
+    ///
+    /// Scoped to foreground-active scenes only — background scenes
+    /// on iPad multi-window may legitimately hold their own
+    /// selections that an unrelated dismiss shouldn't clear.
+    private func resignSelectedTextResponder() {
+        for scene in UIApplication.shared.connectedScenes where scene.activationState == .foregroundActive {
             guard let windowScene = scene as? UIWindowScene else { continue }
             for window in windowScene.windows {
-                window.endEditing(true)
+                if let tv = findTextViewWithActiveSelection(in: window) {
+                    tv.resignFirstResponder()
+                }
             }
         }
+    }
+
+    /// Single dismiss chokepoint. Both the back-drag commit and the
+    /// header back button route through here so the selection /
+    /// edit-menu teardown can't be silently forgotten by a future
+    /// third dismiss trigger (deep link, keyboard shortcut, etc.).
+    /// `alongsideAnimation` is forwarded to `DetailOverlayController.hide(...)`
+    /// so the back-drag site can reset its `dragOffset` inside the
+    /// same spring.
+    private func dismissDetailOverlay(alongsideAnimation: (() -> Void)? = nil) {
+        resignSelectedTextResponder()
+        detail.hide(alongsideAnimation: alongsideAnimation)
     }
 
     /// Recurse the view tree and stop at the first UITextView with a
@@ -380,12 +395,14 @@ struct ContentView: View {
         // ~47-59pt off on iPhones with notch / Dynamic Island.
         DragGesture(minimumDistance: 6, coordinateSpace: .global)
             .onChanged { value in
-                // If the touch started within 44pt of a visible
-                // selection handle, the user is grabbing it — bail so
-                // UITextView's handle pan can run without our back-
-                // drag sliding the overlay out underneath it.
-                // `value.startLocation` is stable across ticks so the
-                // check is consistent for the whole drag.
+                // If the touch started near a visible selection
+                // handle (see `touchStartedNearSelectionHandle` for
+                // the exact hit-box dimensions and rationale), the
+                // user is grabbing it — bail so UITextView's handle
+                // pan can run without our back-drag sliding the
+                // overlay out underneath it. `value.startLocation`
+                // is stable across ticks so the check is consistent
+                // for the whole drag.
                 if touchStartedNearSelectionHandle(at: value.startLocation) {
                     return
                 }
@@ -479,15 +496,17 @@ struct ContentView: View {
                     // snap back to fully visible.
                     let shouldDismiss = detail.shouldDismissSwipe(dx: traveled, velocityX: velocity)
                     if shouldDismiss {
-                        // Dismiss any UITextView selection + its edit
-                        // menu before the overlay slides away —
-                        // see `resignAnyActiveTextSelection()` for why.
-                        resignAnyActiveTextSelection()
-                    }
-                    detail.beginAnimationLock()
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
-                        detail.offset = shouldDismiss ? containerW : 0
-                        dragOffset = 0
+                        // Goes through `dismissDetailOverlay` so the
+                        // edit-menu teardown is shared with the
+                        // header back button — see the helper for
+                        // why both paths must converge here.
+                        dismissDetailOverlay(alongsideAnimation: { dragOffset = 0 })
+                    } else {
+                        detail.beginAnimationLock()
+                        withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
+                            detail.offset = 0
+                            dragOffset = 0
+                        }
                     }
                     return
                 }
@@ -631,8 +650,11 @@ private extension UITextView {
         guard !rects.isEmpty else { return [] }
         // Start handle sits at the top-left of the rect that contains
         // the selection start; end handle at the bottom-right of the
-        // rect that contains the selection end. `containsStart` /
-        // `containsEnd` flag those rects directly.
+        // rect that contains the selection end (assumes LTR layout —
+        // for RTL the visual-left/right relationship to start/end
+        // flips; the parsers in this app only emit Korean / Latin
+        // text so LTR is safe). `containsStart` / `containsEnd` flag
+        // those rects directly.
         let startRect = rects.first(where: { $0.containsStart })?.rect
             ?? rects.first?.rect
         let endRect = rects.first(where: { $0.containsEnd })?.rect
