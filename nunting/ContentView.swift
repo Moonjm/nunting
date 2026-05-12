@@ -131,7 +131,14 @@ struct ContentView: View {
                     // across the post-release spring so the inner scroll
                     // position can't drift while the overlay slides in/out.
                     isScrollingBlocked: scrollLocked || detail.animating,
-                    onDismiss: { detail.hide() }
+                    onDismiss: {
+                        // Same teardown the back-drag commit does —
+                        // overlay slide-off keeps UITextView mounted
+                        // and thus first-responder unless we clear
+                        // it here, leaving its edit menu floating.
+                        resignAnyActiveTextSelection()
+                        detail.hide()
+                    }
                 )
                 // `.equatable()` pairs with PostDetailView's custom `==` to
                 // short-circuit body re-evaluation when only the `onDismiss`
@@ -328,6 +335,23 @@ struct ContentView: View {
         }
     }
 
+    /// Force-resign whatever's currently first responder across every
+    /// connected window. Used at detail-dismissal time so a UITextView
+    /// with an active selection (and its iOS edit menu — Copy / Look
+    /// Up / Translate) doesn't strand on top of the list after the
+    /// overlay slides off-screen. The detail view is kept mounted on
+    /// dismiss (it's a `.offset()` slide-out, not a SwiftUI removal),
+    /// so without explicit teardown the text view stays first
+    /// responder forever and UIKit keeps its menu visible.
+    private func resignAnyActiveTextSelection() {
+        for scene in UIApplication.shared.connectedScenes {
+            guard let windowScene = scene as? UIWindowScene else { continue }
+            for window in windowScene.windows {
+                window.endEditing(true)
+            }
+        }
+    }
+
     /// Recurse the view tree and stop at the first UITextView with a
     /// non-empty selection. Across the app at most one text view can
     /// hold the system selection at any moment (selecting in one
@@ -454,6 +478,12 @@ struct ContentView: View {
                     // past the distance / velocity thresholds, else
                     // snap back to fully visible.
                     let shouldDismiss = detail.shouldDismissSwipe(dx: traveled, velocityX: velocity)
+                    if shouldDismiss {
+                        // Dismiss any UITextView selection + its edit
+                        // menu before the overlay slides away —
+                        // see `resignAnyActiveTextSelection()` for why.
+                        resignAnyActiveTextSelection()
+                    }
                     detail.beginAnimationLock()
                     withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
                         detail.offset = shouldDismiss ? containerW : 0
