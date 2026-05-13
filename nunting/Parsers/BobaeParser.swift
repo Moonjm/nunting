@@ -6,10 +6,10 @@ import NuntingCore
 /// aagag mirror redirects — bobaedream is not exposed as a directly-browsable
 /// site. Replies to comments load asynchronously on the source site so the
 /// initial HTML only exposes top-level comments; that's the full scope here.
-struct BobaeParser: BoardParser {
-    let site: Site = .bobae
+public struct BobaeParser: BoardParser {
+    public let site: Site = .bobae
 
-    nonisolated init() {}
+    public nonisolated init() {}
 
     /// Matches the two shapes bobaedream renders for comment timestamps:
     /// `HH:MM` for same-day comments and `YYYY.MM.DD HH:MM` for older ones.
@@ -27,12 +27,12 @@ struct BobaeParser: BoardParser {
     ]
     nonisolated private static let skipTags: Set<String> = ["script", "style", "noscript"]
 
-    nonisolated func parseList(html: String, board: Board) throws -> [Post] {
+    public nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         // Bobaedream is aagag-dispatch-only; list parsing is never invoked.
         []
     }
 
-    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
+    public nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         // Bobaedream signals deleted / invalid posts with a 200 response whose
         // body is literally a single `<script>alert('삭제된 글 입니다.');
         // history.back();</script>`. Detect that BEFORE parsing the DOM, so a
@@ -87,7 +87,7 @@ struct BobaeParser: BoardParser {
     }
 
     // Comments live in the same detail page — no separate fetch needed.
-    nonisolated func commentsURL(for post: Post) -> URL? { nil }
+    public nonisolated func commentsURL(for post: Post) -> URL? { nil }
 
     // MARK: - Field extraction
 
@@ -250,7 +250,7 @@ struct BobaeParser: BoardParser {
 
     // MARK: - Comments
 
-    nonisolated private func extractComments(in doc: Document) throws -> [NuntingCore.Comment] {
+    nonisolated private func extractComments(in doc: Document) throws -> [PostComment] {
         // Bobaedream's comment markup:
         //   <div class="reple_body"><ul class="list">
         //     <li class="best"> ... </li>      (top-voted, duplicated in normal list)
@@ -264,7 +264,7 @@ struct BobaeParser: BoardParser {
         // Best entries are a duplicated preview of top-voted items from the
         // main list; skip them so we don't render each one twice.
         let nodes = try doc.select(".reple_body > ul.list > li")
-        var results: [NuntingCore.Comment] = []
+        var results: [PostComment] = []
         for (idx, li) in nodes.enumerated() {
             // `.best` entries are a duplicated preview of top-voted comments
             // from the main list — skip them so we don't render each twice.
@@ -297,7 +297,7 @@ struct BobaeParser: BoardParser {
             guard !author.isEmpty || !content.isEmpty || stickerURL != nil
             else { continue }
 
-            results.append(NuntingCore.Comment(
+            results.append(PostComment(
                 id: "\(site.rawValue)-c-\(cmtID)",
                 author: author,
                 dateText: dateText,

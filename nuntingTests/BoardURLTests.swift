@@ -1,5 +1,6 @@
 import XCTest
 @testable import nunting
+import NuntingCore
 
 /// Black-box tests for `Board.url(filter:search:page:)` covering the
 /// site-specific paging conventions (Clien zero-based offsets, Clien

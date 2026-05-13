@@ -113,7 +113,7 @@ public struct PostDetail {
     public let fullDateText: String?
     public let viewCount: Int?
     public let source: PostSource?
-    public let comments: [Comment]
+    public let comments: [PostComment]
 
     public init(
         post: Post,
@@ -121,7 +121,7 @@ public struct PostDetail {
         fullDateText: String?,
         viewCount: Int?,
         source: PostSource?,
-        comments: [Comment]
+        comments: [PostComment]
     ) {
         self.post = post
         self.blocks = blocks

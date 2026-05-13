@@ -1,6 +1,6 @@
 import Foundation
 
-public struct Comment: Identifiable, Hashable {
+public struct PostComment: Identifiable, Hashable {
     public let id: String
     public let author: String
     public let dateText: String

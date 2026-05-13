@@ -1,5 +1,6 @@
 import XCTest
 @testable import nunting
+import NuntingCore
 
 /// State-machine + side-effect tests for `PostDetailLoader`.
 ///

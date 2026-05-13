@@ -2,10 +2,10 @@ import Foundation
 import SwiftSoup
 import NuntingCore
 
-struct AagagParser: BoardParser {
-    let site: Site = .aagag
+public struct AagagParser: BoardParser {
+    public let site: Site = .aagag
 
-    nonisolated init() {}
+    public nonisolated init() {}
 
     nonisolated private static let imageHost = "https://i.aagag.com"
     // YouTube IDs are exactly 11 chars from [A-Za-z0-9_-].
@@ -21,7 +21,7 @@ struct AagagParser: BoardParser {
     )
     nonisolated private static let numericEntityRegex = try! NSRegularExpression(pattern: #"&#(x?)([0-9a-fA-F]+);"#)
 
-    nonisolated func parseList(html: String, board: Board) throws -> [Post] {
+    public nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
         // Restrict to actual data tables (`table.aalist` minus the `.header` and minus
         // sidebar `div.aalist.layer` previews/sliders).
@@ -108,7 +108,7 @@ struct AagagParser: BoardParser {
         return results
     }
 
-    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
+    public nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
         let titleEl = try doc.select("h1.title").first()
         let cleaned = ParserText.cleanTitle(try titleEl?.text() ?? "")
@@ -277,16 +277,16 @@ struct AagagParser: BoardParser {
         return out
     }
 
-    nonisolated func commentsURL(for post: Post) -> URL? {
+    public nonisolated func commentsURL(for post: Post) -> URL? {
         guard issueIdx(from: post) != nil else { return nil }
         return URL(string: "https://aagag.com/api/cmt")
     }
 
-    nonisolated func fetchAllComments(
+    public nonisolated func fetchAllComments(
         for post: Post,
         detailHTML _: String?,
         fetcher: @escaping @Sendable (URL) async throws -> String
-    ) async throws -> [NuntingCore.Comment] {
+    ) async throws -> [PostComment] {
         // Aagag POSTs to /api/cmt with an `idx` parameter pulled from
         // the post URL — the detail body isn't needed, so `detailHTML`
         // is ignored here.
@@ -302,7 +302,7 @@ struct AagagParser: BoardParser {
         let response = try JSONDecoder().decode(AagagCommentResponse.self, from: data)
         guard response.mode == "success" else { return [] }
         return response.comment.map { raw in
-            NuntingCore.Comment(
+            PostComment(
                 id: "\(site.rawValue)-c-\(raw.w_idx)",
                 author: raw.w_nick,
                 dateText: raw.stime,

@@ -1,5 +1,6 @@
 import XCTest
 @testable import nunting
+import NuntingCore
 
 /// `BoardCatalogStore` revalidation tests.
 ///

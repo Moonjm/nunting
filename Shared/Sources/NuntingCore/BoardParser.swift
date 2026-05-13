@@ -6,7 +6,7 @@ public protocol BoardParser: Sendable {
     nonisolated func parseList(html: String, board: Board) throws -> [Post]
     nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail
     nonisolated func commentsURL(for post: Post) -> URL?
-    nonisolated func parseComments(html: String) throws -> [Comment]
+    nonisolated func parseComments(html: String) throws -> [PostComment]
     /// `detailHTML` is the body of `post.url` that the caller already
     /// fetched for `parseDetail`. Ppomppu/SLR/Ddanzi use it to skip a
     /// second `post.url` fetch they'd otherwise do just to pull AJAX
@@ -16,7 +16,7 @@ public protocol BoardParser: Sendable {
         for post: Post,
         detailHTML: String?,
         fetcher: @escaping @Sendable (URL) async throws -> String
-    ) async throws -> [Comment]
+    ) async throws -> [PostComment]
 }
 
 extension BoardParser {
@@ -28,13 +28,13 @@ extension BoardParser {
     public nonisolated static var blockMarker: String { "\u{0001}NL\u{0001}" }
 
     public nonisolated func commentsURL(for post: Post) -> URL? { nil }
-    public nonisolated func parseComments(html: String) throws -> [Comment] { [] }
+    public nonisolated func parseComments(html: String) throws -> [PostComment] { [] }
 
     public nonisolated func fetchAllComments(
         for post: Post,
         detailHTML: String?,
         fetcher: @escaping @Sendable (URL) async throws -> String
-    ) async throws -> [Comment] {
+    ) async throws -> [PostComment] {
         guard let url = commentsURL(for: post) else { return [] }
         let html = try await fetcher(url)
         return try parseComments(html: html)
@@ -71,7 +71,7 @@ extension BoardParser {
     }
 
     /// Replace every `<a href>` descendant with a plain TextNode holding the
-    /// markdown form `[label](<url>)`. Comment bodies across every site are
+    /// markdown form `[label](<url>)`. PostComment bodies across every site are
     /// rendered by flattening a SwiftSoup subtree with `.text()` / a manual
     /// walker, which drops the anchor's `href` — users see the label as
     /// unlinked prose. Converting anchors to markdown first lets
