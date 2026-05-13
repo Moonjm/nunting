@@ -4,20 +4,20 @@ import Foundation
 /// which rebuilds a `Board` via the designated initializer so the
 /// `normalizedSearchQueryName` / default-page-query migration always runs.
 /// Intentionally non-`Codable` to prevent bypassing that migration path.
-struct Board: Identifiable, Hashable {
-    let id: String
-    let site: Site
-    let name: String
-    let path: String
-    let filters: [BoardFilter]
+public struct Board: Identifiable, Hashable {
+    public let id: String
+    public let site: Site
+    public let name: String
+    public let path: String
+    public let filters: [BoardFilter]
     /// When non-nil, the board supports keyword search; the URL receives the
     /// site's search parameters merged into its query items.
-    let searchQueryName: String?
+    public let searchQueryName: String?
     /// Query parameter name used for paging. Defaults to the site's known
     /// board-list paging parameter.
-    let pageQueryName: String?
+    public let pageQueryName: String?
 
-    init(id: String, site: Site, name: String, path: String, filters: [BoardFilter] = [], searchQueryName: String? = nil, pageQueryName: String? = nil) {
+    public init(id: String, site: Site, name: String, path: String, filters: [BoardFilter] = [], searchQueryName: String? = nil, pageQueryName: String? = nil) {
         self.id = id
         self.site = site
         self.name = name
@@ -27,17 +27,17 @@ struct Board: Identifiable, Hashable {
         self.pageQueryName = pageQueryName ?? Self.defaultPageQueryName(for: site)
     }
 
-    nonisolated var url: URL { url(filter: nil, search: nil, page: nil) }
+    public nonisolated var url: URL { url(filter: nil, search: nil, page: nil) }
 
-    nonisolated func url(filter: BoardFilter?) -> URL {
+    public nonisolated func url(filter: BoardFilter?) -> URL {
         url(filter: filter, search: nil, page: nil)
     }
 
-    nonisolated func url(filter: BoardFilter?, search: String?) -> URL {
+    public nonisolated func url(filter: BoardFilter?, search: String?) -> URL {
         url(filter: filter, search: search, page: nil)
     }
 
-    nonisolated func url(filter: BoardFilter?, search: String?, page: Int?) -> URL {
+    public nonisolated func url(filter: BoardFilter?, search: String?, page: Int?) -> URL {
         let trimmedSearch = search?.trimmingCharacters(in: .whitespacesAndNewlines)
         let isSearching = trimmedSearch?.isEmpty == false
         let listPath = filter?.replacementPath ?? path
@@ -60,8 +60,8 @@ struct Board: Identifiable, Hashable {
         return comps.url ?? base
     }
 
-    var supportsSearch: Bool { searchQueryName != nil }
-    var supportsPaging: Bool { pageQueryName != nil }
+    public var supportsSearch: Bool { searchQueryName != nil }
+    public var supportsPaging: Bool { pageQueryName != nil }
 
     nonisolated private func searchItems(query: String?) -> [(String, String)] {
         guard let searchQueryName,
@@ -183,16 +183,16 @@ struct Board: Identifiable, Hashable {
 }
 
 extension Board {
-    static let clienNews = Board(id: "clien-news", site: .clien, name: "새로운 소식", path: "/service/board/news")
-    static let clienJirum = Board(id: "clien-jirum", site: .clien, name: "알뜰구매", path: "/service/board/jirum")
-    static let clienPark = Board(id: "clien-park", site: .clien, name: "모두의 공원", path: "/service/board/park")
+    public static let clienNews = Board(id: "clien-news", site: .clien, name: "새로운 소식", path: "/service/board/news")
+    public static let clienJirum = Board(id: "clien-jirum", site: .clien, name: "알뜰구매", path: "/service/board/jirum")
+    public static let clienPark = Board(id: "clien-park", site: .clien, name: "모두의 공원", path: "/service/board/park")
 
-    static let coolenjoyJirum = Board(id: "coolenjoy-jirum", site: .coolenjoy, name: "지름게시판", path: "/bbs/jirum")
-    static let coolenjoyFree = Board(id: "coolenjoy-free", site: .coolenjoy, name: "자유게시판", path: "/bbs/freeboard2")
-    static let coolenjoyReview = Board(id: "coolenjoy-review", site: .coolenjoy, name: "사용기/리뷰", path: "/bbs/review")
-    static let coolenjoyQna = Board(id: "coolenjoy-qna", site: .coolenjoy, name: "질문답변", path: "/bbs/qa")
+    public static let coolenjoyJirum = Board(id: "coolenjoy-jirum", site: .coolenjoy, name: "지름게시판", path: "/bbs/jirum")
+    public static let coolenjoyFree = Board(id: "coolenjoy-free", site: .coolenjoy, name: "자유게시판", path: "/bbs/freeboard2")
+    public static let coolenjoyReview = Board(id: "coolenjoy-review", site: .coolenjoy, name: "사용기/리뷰", path: "/bbs/review")
+    public static let coolenjoyQna = Board(id: "coolenjoy-qna", site: .coolenjoy, name: "질문답변", path: "/bbs/qa")
 
-    static let invenMaple = Board(
+    public static let invenMaple = Board(
         id: "inven-maple",
         site: .inven,
         name: "메이플 자유게시판",
@@ -204,10 +204,10 @@ extension Board {
         ]
     )
 
-    static let ppomppuMain = Board(id: "ppomppu-main", site: .ppomppu, name: "뽐뿌게시판", path: "/new/bbs_list.php?id=ppomppu")
-    static let ppomppuFree = Board(id: "ppomppu-free", site: .ppomppu, name: "자유게시판", path: "/new/bbs_list.php?id=freeboard")
+    public static let ppomppuMain = Board(id: "ppomppu-main", site: .ppomppu, name: "뽐뿌게시판", path: "/new/bbs_list.php?id=ppomppu")
+    public static let ppomppuFree = Board(id: "ppomppu-free", site: .ppomppu, name: "자유게시판", path: "/new/bbs_list.php?id=freeboard")
 
-    static let aagag = Board(
+    public static let aagag = Board(
         id: "aagag",
         site: .aagag,
         name: "모음",
@@ -233,7 +233,7 @@ extension Board {
         pageQueryName: "page"
     )
 
-    static let all: [Board] = [
+    public static let all: [Board] = [
         .clienNews, .clienJirum, .clienPark,
         .coolenjoyJirum, .coolenjoyFree, .coolenjoyReview, .coolenjoyQna,
         .invenMaple,
@@ -248,12 +248,12 @@ extension Board {
     /// transitions). The id is compared as a string literal rather than
     /// via `Board.invenMaple.id` so the static-property lookup doesn't
     /// drag MainActor isolation into this path under Swift 6 mode.
-    nonisolated var defaultListFilter: BoardFilter? {
+    public nonisolated var defaultListFilter: BoardFilter? {
         guard id == "inven-maple" else { return nil }
         return filters.first { $0.id == "chu" }
     }
 
-    static func boards(for site: Site) -> [Board] {
+    public static func boards(for site: Site) -> [Board] {
         all.filter { $0.site == site }
     }
 }

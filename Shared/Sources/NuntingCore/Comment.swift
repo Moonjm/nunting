@@ -1,21 +1,21 @@
 import Foundation
 
-struct Comment: Identifiable, Hashable {
-    let id: String
-    let author: String
-    let dateText: String
-    let content: String
-    let likeCount: Int
-    let isReply: Bool
-    let stickerURL: URL?
+public struct Comment: Identifiable, Hashable {
+    public let id: String
+    public let author: String
+    public let dateText: String
+    public let content: String
+    public let likeCount: Int
+    public let isReply: Bool
+    public let stickerURL: URL?
     /// Inline video attachment (e.g. humoruniv's click-to-play comment mp4s).
     /// When set, the comment renders an `InlineVideoPlayer` instead of a
     /// static sticker image.
-    let videoURL: URL?
-    let authIconURL: URL?
-    let levelIconURL: URL?
+    public let videoURL: URL?
+    public let authIconURL: URL?
+    public let levelIconURL: URL?
 
-    nonisolated init(
+    public nonisolated init(
         id: String,
         author: String,
         dateText: String,
@@ -39,4 +39,3 @@ struct Comment: Identifiable, Hashable {
         self.levelIconURL = levelIconURL
     }
 }
-
