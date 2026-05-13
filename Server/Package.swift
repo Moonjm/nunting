@@ -35,8 +35,16 @@ let package = Package(
                 .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
             ]
         ),
-        // NuntingServerTests testTarget는 Task 2에서 첫 테스트 파일이 생길 때
-        // 함께 선언한다. 빈 디렉터리 + testTarget 선언은 매 빌드마다 SPM warning
-        // 을 찍어 실제 경고를 가린다.
+        .testTarget(
+            name: "NuntingServerTests",
+            dependencies: [
+                "NuntingServer",
+                .product(name: "HummingbirdTesting", package: "hummingbird"),
+            ],
+            path: "Tests/NuntingServerTests",
+            swiftSettings: [
+                .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
+            ]
+        ),
     ]
 )
