@@ -25,13 +25,17 @@ final class StoreTests: XCTestCase {
 
     /// upsertUser가 멱등이고, created_at가 첫 INSERT 시각으로 고정됨을 검증.
     /// 멱등 깨지면 BearerMiddleware가 매 요청마다 row를 새로 만들어버린다.
+    ///
+    /// `created_at`이 Int64 초 단위라 sub-second sleep은 두 timestamp가 같은
+    /// 초로 떨어져 회귀(예: `ON CONFLICT DO UPDATE SET created_at = excluded...`)를
+    /// 가린다. 1.1초로 second boundary를 넘긴다.
     func testUpsertUserIsIdempotent() async throws {
         let store = try Store(path: ":memory:")
         defer { Task { await store.close() } }
         let uuid = "nnt_test-uuid"
         try await store.upsertUser(uuid: uuid)
         let createdAt1 = try await store.createdAt(uuid: uuid)
-        try await Task.sleep(for: .milliseconds(20))
+        try await Task.sleep(for: .milliseconds(1100))
         try await store.upsertUser(uuid: uuid)
         let createdAt2 = try await store.createdAt(uuid: uuid)
         XCTAssertEqual(createdAt1, createdAt2, "upsert가 created_at을 덮어쓰면 안 됨")
