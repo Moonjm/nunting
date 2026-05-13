@@ -1,7 +1,7 @@
 import Foundation
 import SwiftSoup
 
-protocol BoardParser: Sendable {
+public protocol BoardParser: Sendable {
     nonisolated var site: Site { get }
     nonisolated func parseList(html: String, board: Board) throws -> [Post]
     nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail
@@ -25,12 +25,12 @@ extension BoardParser {
     /// via `normalizeCommentWhitespace`. Value is a U+0001 control char on
     /// both sides of the literal "NL", which `.text()` treats as opaque
     /// payload rather than collapsible whitespace.
-    nonisolated static var blockMarker: String { "\u{0001}NL\u{0001}" }
+    public nonisolated static var blockMarker: String { "\u{0001}NL\u{0001}" }
 
-    nonisolated func commentsURL(for post: Post) -> URL? { nil }
-    nonisolated func parseComments(html: String) throws -> [Comment] { [] }
+    public nonisolated func commentsURL(for post: Post) -> URL? { nil }
+    public nonisolated func parseComments(html: String) throws -> [Comment] { [] }
 
-    nonisolated func fetchAllComments(
+    public nonisolated func fetchAllComments(
         for post: Post,
         detailHTML: String?,
         fetcher: @escaping @Sendable (URL) async throws -> String
@@ -42,7 +42,7 @@ extension BoardParser {
 
     /// Resolve an `<a href>` element to a `(url, label)` pair, or nil if the link is
     /// non-http(s). Whitespace-only labels fall back to the URL string.
-    nonisolated func anchor(from element: Element) throws -> (url: URL, label: String)? {
+    public nonisolated func anchor(from element: Element) throws -> (url: URL, label: String)? {
         let href = try element.attr("href")
         guard !href.isEmpty,
               let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL,
@@ -61,7 +61,7 @@ extension BoardParser {
     /// O(descendants × tags) tax per call. The walker visits each node at
     /// most once and exits the moment any tag matches, which matters for
     /// deeply-nested legacy editor output (`<table><tr><td><p>...</p>`).
-    nonisolated func hasAnyDescendant(of element: Element, taggedAnyOf tags: Set<String>) -> Bool {
+    public nonisolated func hasAnyDescendant(of element: Element, taggedAnyOf tags: Set<String>) -> Bool {
         for node in element.getChildNodes() {
             guard let child = node as? Element else { continue }
             if tags.contains(child.tagName().lowercased()) { return true }
@@ -80,7 +80,7 @@ extension BoardParser {
     /// the URL is the autolink form that survives query-string characters
     /// (`?`, `&`, `=`) without needing per-URL escaping. Mutates `element`
     /// in place — callers typically pass a `.copy()`.
-    nonisolated func convertAnchorsToMarkdown(in element: Element) {
+    public nonisolated func convertAnchorsToMarkdown(in element: Element) {
         guard let anchors = try? element.select("a[href]") else { return }
         for el in anchors where el.parent() != nil {
             // Anchors that wrap an `<img>` / `<video>` are a media link
@@ -120,7 +120,7 @@ extension BoardParser {
     /// unless we explicitly filter hidden ancestors. Only inspects the inline
     /// `style` attribute — class-based CSS rules would require a full
     /// stylesheet resolver and aren't what the real-world preload tricks use.
-    nonisolated func isHidden(_ element: Element) -> Bool {
+    public nonisolated func isHidden(_ element: Element) -> Bool {
         guard let style = try? element.attr("style"), !style.isEmpty else { return false }
         let lower = style.lowercased()
         // Fast path: most elements aren't hidden, so bail before paying for
@@ -137,7 +137,7 @@ extension BoardParser {
     /// — stamp first, read `.text()`, then call normalize on the result.
     /// Tag list matches the editor-block repertoire every board uses:
     /// `<br>`, `<p>`, `<div>`, `<li>`, `<blockquote>`, `<tr>`.
-    nonisolated func stampBlockBreaks(in element: Element) {
+    public nonisolated func stampBlockBreaks(in element: Element) {
         guard let blocks = try? element.select("br, p, div, li, blockquote, tr") else { return }
         for el in blocks where el.parent() != nil {
             _ = try? el.before(Self.blockMarker)
@@ -151,7 +151,7 @@ extension BoardParser {
     /// lines. Final trim drops leading/trailing blanks. Mirrors the logic
     /// previously duplicated across Aagag / Inven / Ppomppu comment
     /// cleaners.
-    nonisolated func normalizeCommentWhitespace(_ text: String) -> String {
+    public nonisolated func normalizeCommentWhitespace(_ text: String) -> String {
         var s = text.replacingOccurrences(of: Self.blockMarker, with: "\n")
         s = s.replacingOccurrences(of: #"[ \t]*\n[ \t]*"#, with: "\n", options: .regularExpression)
         s = s.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
@@ -164,7 +164,7 @@ extension BoardParser {
     /// HTTPS (every board we scrape runs on HTTPS today), then validates
     /// the final scheme so non-http(s) outputs (mailto:, data:, javascript:)
     /// never reach the image loader or video player.
-    nonisolated func resolveHTTPURL(_ raw: String) -> URL? {
+    public nonisolated func resolveHTTPURL(_ raw: String) -> URL? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         let normalized = trimmed.hasPrefix("//") ? "https:" + trimmed : trimmed
@@ -179,7 +179,7 @@ extension BoardParser {
     /// the inline tap-to-play frame shows the site's intended thumbnail
     /// rather than a plain black box. Identical enough across every
     /// video-supporting parser to live here.
-    nonisolated func videoPoster(from element: Element) throws -> URL? {
+    public nonisolated func videoPoster(from element: Element) throws -> URL? {
         resolveHTTPURL(try element.attr("poster"))
     }
 
@@ -188,7 +188,7 @@ extension BoardParser {
     /// `/embed/{11-char-id}` shape used by every iframe embed code the
     /// boards generate; returns nil for non-YouTube iframes so callers
     /// can fall through to the generic skip / recurse path.
-    nonisolated func youtubeEmbedID(from src: String) -> String? {
+    public nonisolated func youtubeEmbedID(from src: String) -> String? {
         let ns = src as NSString
         guard let match = Self.youtubeEmbedIDRegex.firstMatch(
             in: src,
@@ -200,7 +200,7 @@ extension BoardParser {
     /// Pre-compiled once, shared across every parser instance. Hoisted
     /// because `try! NSRegularExpression(...)` at call time showed up on
     /// long comment / body traversals otherwise.
-    nonisolated static var youtubeEmbedIDRegex: NSRegularExpression {
+    public nonisolated static var youtubeEmbedIDRegex: NSRegularExpression {
         BoardParserRegex.youtubeEmbedID
     }
 }
@@ -235,7 +235,7 @@ private enum BoardParserRegex {
 /// scope. `nonisolated` + `enum` (no instances) keeps the surface
 /// callable from any `nonisolated` parser code under Swift 6 strict
 /// concurrency.
-enum ParserText {
+public enum ParserText {
     /// Some boards (notably 82cook's enti.php list, and any aagag mirror
     /// downstream of it) truncate titles by encoded byte length, slicing in
     /// the middle of an HTML entity reference and producing trailing
@@ -250,7 +250,7 @@ enum ParserText {
     /// (`&#39;`, `&#x27;`) and digit-bearing named entities (`&sup2;`,
     /// `&frac34;`) are covered too — they show up rarely but `&#39;` for
     /// apostrophe is common in Korean board titles.
-    nonisolated static func cleanTitle(_ raw: String) -> String {
+    public nonisolated static func cleanTitle(_ raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.contains("&") else { return trimmed }
         let ns = trimmed as NSString
@@ -265,36 +265,36 @@ enum ParserText {
 
 /// Accumulates an `[InlineSegment]` for a single text block while a parser walks
 /// HTML nodes. Coalesces adjacent text characters into one `.text` segment.
-struct InlineAccumulator: Sendable {
+public struct InlineAccumulator: Sendable {
     private var segments: [InlineSegment] = []
     private var textBuffer: String = ""
 
-    nonisolated init() {}
+    public nonisolated init() {}
 
-    nonisolated mutating func appendText(_ s: String) {
+    public nonisolated mutating func appendText(_ s: String) {
         textBuffer.append(s)
     }
 
-    nonisolated mutating func appendLink(url: URL, label: String) {
+    public nonisolated mutating func appendLink(url: URL, label: String) {
         flushText()
         segments.append(.link(url: url, label: label))
     }
 
-    nonisolated mutating func flushText() {
+    public nonisolated mutating func flushText() {
         if !textBuffer.isEmpty {
             segments.append(.text(textBuffer))
             textBuffer = ""
         }
     }
 
-    nonisolated var isEmpty: Bool {
+    public nonisolated var isEmpty: Bool {
         segments.isEmpty && textBuffer.isEmpty
     }
 
     /// Drain into a trimmed segment list ready for `ContentBlock.richText`.
     /// Trims leading/trailing whitespace from the first and last text segments,
     /// collapses runs of 4+ newlines into 3 (= up to 2 blank lines).
-    nonisolated mutating func drain() -> [InlineSegment] {
+    public nonisolated mutating func drain() -> [InlineSegment] {
         flushText()
         let result = segments
         segments = []
@@ -357,13 +357,13 @@ struct InlineAccumulator: Sendable {
     }
 }
 
-enum ParserError: Error, LocalizedError {
+public enum ParserError: Error, LocalizedError {
     case missingField(String)
     case invalidHTML
     case structureChanged(String)
     case unsupportedSite(Site)
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .missingField(let field): "파싱 실패: \(field) 누락"
         case .invalidHTML: "HTML 파싱 실패"
