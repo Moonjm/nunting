@@ -58,4 +58,61 @@ final class StoreTests: XCTestCase {
         let t2 = try await store.pushToken(uuid: uuid)
         XCTAssertNil(t2)
     }
+
+    /// 정규화 계약을 pin. trim + lowercase.
+    /// 라우트 핸들러가 들어오는 키워드 입력 시 같은 normalizer를 거치고,
+    /// 폴러도 같은 normalizer를 거쳐서 매칭한다. 어긋나면 매칭 0건이 됨.
+    func testNormalizedKeywordTrimsAndLowercases() {
+        XCTAssertEqual(Store.normalizedKeyword("  Galaxy S25  "), "galaxy s25")
+        XCTAssertEqual(Store.normalizedKeyword("갤럭시"), "갤럭시")
+        XCTAssertEqual(Store.normalizedKeyword(" RTX5090\n"), "rtx5090")
+    }
+
+    func testAddAndListKeywordsForUser() async throws {
+        let store = try Store(path: ":memory:")
+        defer { Task { await store.close() } }
+        try await store.upsertUser(uuid: "nnt_a")
+        try await store.addKeyword(uuid: "nnt_a", keyword: "galaxy")
+        try await store.addKeyword(uuid: "nnt_a", keyword: "rtx5090")
+        let listed = try await store.listKeywords(uuid: "nnt_a")
+        XCTAssertEqual(Set(listed), ["galaxy", "rtx5090"])
+    }
+
+    /// (uuid, keyword) PK가 중복 INSERT를 거부하지 않고 멱등이 되는지.
+    /// 스펙: "중복은 멱등(이미 있어도 201)".
+    func testAddKeywordIsIdempotent() async throws {
+        let store = try Store(path: ":memory:")
+        defer { Task { await store.close() } }
+        try await store.upsertUser(uuid: "nnt_a")
+        try await store.addKeyword(uuid: "nnt_a", keyword: "갤럭시")
+        try await store.addKeyword(uuid: "nnt_a", keyword: "갤럭시")
+        let listed = try await store.listKeywords(uuid: "nnt_a")
+        XCTAssertEqual(listed, ["갤럭시"])
+    }
+
+    func testRemoveKeywordIsIdempotent() async throws {
+        let store = try Store(path: ":memory:")
+        defer { Task { await store.close() } }
+        try await store.upsertUser(uuid: "nnt_a")
+        try await store.addKeyword(uuid: "nnt_a", keyword: "galaxy")
+        try await store.removeKeyword(uuid: "nnt_a", keyword: "galaxy")
+        let emptyAfterFirst = try await store.listKeywords(uuid: "nnt_a")
+        XCTAssertTrue(emptyAfterFirst.isEmpty)
+        // 두 번 지워도 throw 없어야 함
+        try await store.removeKeyword(uuid: "nnt_a", keyword: "galaxy")
+    }
+
+    /// 키워드는 사용자 격리. 다른 user의 키워드가 섞이면 안 됨.
+    func testKeywordsScopedPerUser() async throws {
+        let store = try Store(path: ":memory:")
+        defer { Task { await store.close() } }
+        try await store.upsertUser(uuid: "nnt_a")
+        try await store.upsertUser(uuid: "nnt_b")
+        try await store.addKeyword(uuid: "nnt_a", keyword: "galaxy")
+        try await store.addKeyword(uuid: "nnt_b", keyword: "rtx")
+        let a = try await store.listKeywords(uuid: "nnt_a")
+        let b = try await store.listKeywords(uuid: "nnt_b")
+        XCTAssertEqual(a, ["galaxy"])
+        XCTAssertEqual(b, ["rtx"])
+    }
 }

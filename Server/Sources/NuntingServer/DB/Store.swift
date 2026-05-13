@@ -102,6 +102,60 @@ extension Store {
         }) ?? nil
     }
 
+    /// 라우트 핸들러 + 폴러가 매칭 전에 통과시켜야 하는 단일 정규화.
+    /// 한글은 lowercased가 사실상 no-op이지만 영문/숫자 키워드(m4, RTX5090)와
+    /// 일관 동작을 보장.
+    public static func normalizedKeyword(_ raw: String) -> String {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    /// 호출자 책임: keyword는 normalizedKeyword()를 이미 통과한 상태.
+    /// (라우트 layer에서 길이/빈 문자열 검증 후 normalize → 저장 호출)
+    public func addKeyword(uuid: String, keyword: String) throws {
+        let sql = """
+        INSERT INTO keyword_subs (uuid, keyword) VALUES (?, ?)
+        ON CONFLICT(uuid, keyword) DO NOTHING;
+        """
+        try execute(sql) { stmt in
+            sqlite3_bind_text(stmt, 1, uuid, -1, Self.TRANSIENT)
+            sqlite3_bind_text(stmt, 2, keyword, -1, Self.TRANSIENT)
+        }
+    }
+
+    public func removeKeyword(uuid: String, keyword: String) throws {
+        let sql = "DELETE FROM keyword_subs WHERE uuid = ? AND keyword = ?;"
+        try execute(sql) { stmt in
+            sqlite3_bind_text(stmt, 1, uuid, -1, Self.TRANSIENT)
+            sqlite3_bind_text(stmt, 2, keyword, -1, Self.TRANSIENT)
+        }
+    }
+
+    public func listKeywords(uuid: String) throws -> [String] {
+        guard let db else { throw StoreError.sqlite(rc: 0, message: "store closed") }
+        let sql = "SELECT keyword FROM keyword_subs WHERE uuid = ? ORDER BY keyword;"
+        var stmt: OpaquePointer?
+        let pRC = sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+        guard pRC == SQLITE_OK, let stmt else {
+            throw StoreError.sqlite(rc: pRC, message: String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, uuid, -1, Self.TRANSIENT)
+        var out: [String] = []
+        while true {
+            let rc = sqlite3_step(stmt)
+            switch rc {
+            case SQLITE_ROW:
+                if let cstr = sqlite3_column_text(stmt, 0) {
+                    out.append(String(cString: cstr))
+                }
+            case SQLITE_DONE:
+                return out
+            default:
+                throw StoreError.sqlite(rc: rc, message: String(cString: sqlite3_errmsg(db)))
+            }
+        }
+    }
+
     // MARK: - prepare/step helpers
 
     /// INSERT/UPDATE/DELETE 등 결과 row가 없는 statement용.
