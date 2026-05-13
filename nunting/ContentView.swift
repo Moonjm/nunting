@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import NuntingCore
 
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase

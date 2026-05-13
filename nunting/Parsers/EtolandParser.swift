@@ -1,5 +1,6 @@
 import Foundation
 import SwiftSoup
+import NuntingCore
 
 /// Parses etoland (이토랜드) detail pages. Reached exclusively via aagag mirror
 /// redirects — etoland's mobile detail URL pattern is
@@ -106,7 +107,7 @@ struct EtolandParser: BoardParser {
         for post: Post,
         detailHTML: String?,
         fetcher: @escaping @Sendable (URL) async throws -> String
-    ) async throws -> [Comment] {
+    ) async throws -> [NuntingCore.Comment] {
         // Match the wire envelope `"data":{"comments":[…]}` rather than the
         // bare `"comments":[` substring — the latter false-positives on
         // any user comment whose body literally contains `"comments":[`
@@ -125,7 +126,7 @@ struct EtolandParser: BoardParser {
               response.status == "ETOCD200000",
               let comments = response.data?.comments
         else { return [] }
-        var out: [Comment] = []
+        var out: [NuntingCore.Comment] = []
         for r in comments { Self.flatten(r, into: &out, isReply: false) }
         return out
     }
@@ -392,13 +393,13 @@ struct EtolandParser: BoardParser {
     /// of the JS string by bracket-walking the HTML bytes (tracking
     /// `\"` quote toggles and `\\` escapes), unescape JS string syntax
     /// to recover real JSON, then decode and flatten the nested
-    /// `childrenComments` into a flat `[Comment]` with reply markers.
-    nonisolated private static func extractComments(from html: String) -> [Comment] {
+    /// `childrenComments` into a flat `[NuntingCore.Comment]` with reply markers.
+    nonisolated private static func extractComments(from html: String) -> [NuntingCore.Comment] {
         guard let arrayJSON = extractCommentsArrayJS(from: html) else { return [] }
         let unescaped = unescapeJSString("[" + arrayJSON + "]")
         guard let data = unescaped.data(using: .utf8) else { return [] }
         guard let raw = try? JSONDecoder().decode([RawComment].self, from: data) else { return [] }
-        var out: [Comment] = []
+        var out: [NuntingCore.Comment] = []
         for r in raw { flatten(r, into: &out, isReply: false) }
         return out
     }
@@ -507,7 +508,7 @@ struct EtolandParser: BoardParser {
         return UInt32(hex, radix: 16)
     }
 
-    nonisolated private static func flatten(_ raw: RawComment, into out: inout [Comment], isReply: Bool) {
+    nonisolated private static func flatten(_ raw: RawComment, into out: inout [NuntingCore.Comment], isReply: Bool) {
         let author: String = {
             if let nick = raw.member?.nickname, !nick.isEmpty { return nick }
             if raw.isAnonymous == true { return "익명" }
@@ -578,7 +579,7 @@ struct EtolandParser: BoardParser {
             return trimmedContent
         }()
 
-        out.append(Comment(
+        out.append(NuntingCore.Comment(
             id: "etoland-c-\(raw.commentId)",
             author: author,
             dateText: dateText,

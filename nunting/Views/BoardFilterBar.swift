@@ -1,4 +1,5 @@
 import SwiftUI
+import NuntingCore
 
 struct BoardFilterBar: View {
     let board: Board

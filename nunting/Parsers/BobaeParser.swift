@@ -1,5 +1,6 @@
 import Foundation
 import SwiftSoup
+import NuntingCore
 
 /// Parses bobaedream (보배드림) mobile detail pages. Reached exclusively via
 /// aagag mirror redirects — bobaedream is not exposed as a directly-browsable
@@ -249,7 +250,7 @@ struct BobaeParser: BoardParser {
 
     // MARK: - Comments
 
-    nonisolated private func extractComments(in doc: Document) throws -> [Comment] {
+    nonisolated private func extractComments(in doc: Document) throws -> [NuntingCore.Comment] {
         // Bobaedream's comment markup:
         //   <div class="reple_body"><ul class="list">
         //     <li class="best"> ... </li>      (top-voted, duplicated in normal list)
@@ -263,7 +264,7 @@ struct BobaeParser: BoardParser {
         // Best entries are a duplicated preview of top-voted items from the
         // main list; skip them so we don't render each one twice.
         let nodes = try doc.select(".reple_body > ul.list > li")
-        var results: [Comment] = []
+        var results: [NuntingCore.Comment] = []
         for (idx, li) in nodes.enumerated() {
             // `.best` entries are a duplicated preview of top-voted comments
             // from the main list — skip them so we don't render each twice.
@@ -296,7 +297,7 @@ struct BobaeParser: BoardParser {
             guard !author.isEmpty || !content.isEmpty || stickerURL != nil
             else { continue }
 
-            results.append(Comment(
+            results.append(NuntingCore.Comment(
                 id: "\(site.rawValue)-c-\(cmtID)",
                 author: author,
                 dateText: dateText,

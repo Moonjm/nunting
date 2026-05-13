@@ -1,4 +1,5 @@
 import Foundation
+import NuntingCore
 
 /// Categorical bucket of boards inside a single site (e.g. ppomppu's
 /// "뽐뿌 / 커뮤니티 / 포럼"). When `name` is nil the boards are flat — the

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftSoup
+import NuntingCore
 
 struct ClienParser: BoardParser {
     let site: Site = .clien
@@ -400,9 +401,9 @@ struct ClienParser: BoardParser {
         return sorted.last?.url
     }
 
-    nonisolated private func parseComments(doc: Document) throws -> [Comment] {
+    nonisolated private func parseComments(doc: Document) throws -> [NuntingCore.Comment] {
         let rows = try doc.select("div.comment_row[data-role=comment-row]")
-        var results: [Comment] = []
+        var results: [NuntingCore.Comment] = []
 
         for row in rows {
             let sn = try row.attr("data-comment-sn").trimmingCharacters(in: .whitespaces)
@@ -468,7 +469,7 @@ struct ClienParser: BoardParser {
                 ? "\(site.rawValue)-c-\(results.count)"
                 : "\(site.rawValue)-c-\(sn)"
 
-            results.append(Comment(
+            results.append(NuntingCore.Comment(
                 id: commentID,
                 author: author,
                 dateText: dateText,

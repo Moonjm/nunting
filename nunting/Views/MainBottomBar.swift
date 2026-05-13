@@ -1,4 +1,5 @@
 import SwiftUI
+import NuntingCore
 
 struct MainBottomBar: View {
     let board: Board

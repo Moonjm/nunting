@@ -1,5 +1,6 @@
 import Foundation
 import SwiftSoup
+import NuntingCore
 
 /// Parses SLR Club (SLR클럽) mobile detail pages. Reached exclusively via
 /// aagag mirror redirects — SLR is not exposed as a directly-browsable site.
@@ -90,7 +91,7 @@ struct SLRParser: BoardParser {
         for post: Post,
         detailHTML: String?,
         fetcher: @escaping @Sendable (URL) async throws -> String
-    ) async throws -> [Comment] {
+    ) async throws -> [NuntingCore.Comment] {
         // 1) Pull the detail HTML so we can extract the AJAX params.
         //    The caller already fetched it for `parseDetail` — reuse
         //    that copy when it's threaded through so we don't
@@ -333,12 +334,12 @@ struct SLRParser: BoardParser {
         let del: Int?
     }
 
-    nonisolated private func decodeComments(data: Data) -> [Comment] {
+    nonisolated private func decodeComments(data: Data) -> [NuntingCore.Comment] {
         guard let payload = try? JSONDecoder().decode(SLRJSON.self, from: data),
               let entries = payload.c
         else { return [] }
 
-        var results: [Comment] = []
+        var results: [NuntingCore.Comment] = []
         for (idx, entry) in entries.enumerated() {
             if (entry.del ?? 0) != 0 { continue }
             let author = (entry.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -346,7 +347,7 @@ struct SLRParser: BoardParser {
             if author.isEmpty, rendered.text.isEmpty, rendered.sticker == nil { continue }
 
             let id = "slr-c-\(entry.pk ?? "idx\(idx)")"
-            results.append(Comment(
+            results.append(NuntingCore.Comment(
                 id: id,
                 author: author,
                 dateText: entry.dt ?? "",

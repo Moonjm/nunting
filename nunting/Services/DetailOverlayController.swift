@@ -1,4 +1,5 @@
 import SwiftUI
+import NuntingCore
 
 /// State + transitions for the keep-alive `PostDetailView` overlay.
 ///

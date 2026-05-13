@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import NuntingCore
 
 /// Tracks which posts the user has opened so the list view can dim them. Backed
 /// by `UserDefaults`; insertion-order queue + cap keeps storage bounded.

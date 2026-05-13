@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import NuntingCore
 
 struct PostDetailView: View, Equatable {
     let post: Post

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftSoup
+import NuntingCore
 
 /// Parses 딴지일보 (Ddanzi) mobile detail pages. Reached exclusively via
 /// aagag mirror redirects — Ddanzi is not exposed as a directly-browsable
@@ -92,7 +93,7 @@ struct DdanziParser: BoardParser {
         for post: Post,
         detailHTML: String?,
         fetcher: @escaping @Sendable (URL) async throws -> String
-    ) async throws -> [Comment] {
+    ) async throws -> [NuntingCore.Comment] {
         // 1) Detail HTML tells us mid + document_srl. URL-based parsing is
         //    brittle (some posts use the `/{srl}` shortcut without a mid),
         //    so read both from the rendered detail page. Caller threads
@@ -319,7 +320,7 @@ struct DdanziParser: BoardParser {
         let commentHtml: String?
     }
 
-    nonisolated private func decodeComments(data: Data) -> [Comment] {
+    nonisolated private func decodeComments(data: Data) -> [NuntingCore.Comment] {
         guard let payload = try? JSONDecoder().decode(CommentResponse.self, from: data),
               let fragment = payload.commentHtml,
               !fragment.isEmpty
@@ -330,7 +331,7 @@ struct DdanziParser: BoardParser {
             let body = doc.body() ?? doc
             let items = try body.select("li[id^=comment_]")
 
-            var results: [Comment] = []
+            var results: [NuntingCore.Comment] = []
             for li in items {
                 let cmtID = try li.attr("id")
                     .replacingOccurrences(of: "comment_", with: "")
@@ -351,7 +352,7 @@ struct DdanziParser: BoardParser {
 
                 if author.isEmpty, content.isEmpty, sticker == nil { continue }
 
-                results.append(Comment(
+                results.append(NuntingCore.Comment(
                     id: "ddanzi-c-\(cmtID)",
                     author: author,
                     dateText: dateText,

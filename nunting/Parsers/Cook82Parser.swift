@@ -1,5 +1,6 @@
 import Foundation
 import SwiftSoup
+import NuntingCore
 
 /// Parses 82cook (82쿡) desktop detail pages. Reached exclusively via aagag
 /// mirror redirects — 82cook is not exposed as a directly-browsable site.
@@ -252,9 +253,9 @@ struct Cook82Parser: BoardParser {
     /// carry class `me` to mark the post author, which we surface as a
     /// distinct author string only when parsing a reply; here it's just
     /// metadata we don't need.
-    nonisolated private func extractComments(in doc: Document) throws -> [Comment] {
+    nonisolated private func extractComments(in doc: Document) throws -> [NuntingCore.Comment] {
         let nodes = try doc.select("ul.reples > li.rp")
-        var results: [Comment] = []
+        var results: [NuntingCore.Comment] = []
         for (idx, li) in nodes.enumerated() {
             let rn = (try? li.attr("data-rn")) ?? ""
             let cmtID = rn.isEmpty ? "idx\(idx)" : rn
@@ -264,7 +265,7 @@ struct Cook82Parser: BoardParser {
             // placeholder so users see the gap instead of a row that
             // accidentally looks empty or misattributed.
             if li.hasClass("delReple") {
-                results.append(Comment(
+                results.append(NuntingCore.Comment(
                     id: "\(site.rawValue)-c-\(cmtID)",
                     author: "",
                     dateText: "",
@@ -285,7 +286,7 @@ struct Cook82Parser: BoardParser {
 
             if author.isEmpty, content.isEmpty { continue }
 
-            results.append(Comment(
+            results.append(NuntingCore.Comment(
                 id: "\(site.rawValue)-c-\(cmtID)",
                 author: author,
                 dateText: dateText,

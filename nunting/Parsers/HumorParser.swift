@@ -1,5 +1,6 @@
 import Foundation
 import SwiftSoup
+import NuntingCore
 
 /// Parses humoruniv (웃대) mobile detail pages. Reached exclusively via aagag
 /// mirror redirects — humoruniv is not exposed as a directly-browsable site.
@@ -314,9 +315,9 @@ struct HumorParser: BoardParser {
 
     // MARK: - Comments
 
-    nonisolated private func extractComments(in doc: Document) throws -> [Comment] {
+    nonisolated private func extractComments(in doc: Document) throws -> [NuntingCore.Comment] {
         let nodes = try doc.select("#comment li[id^=comment_li_]")
-        var results: [Comment] = []
+        var results: [NuntingCore.Comment] = []
         for li in nodes {
             let idAttr = try li.attr("id")
             let cmtID = idAttr.hasPrefix("comment_li_")
@@ -369,7 +370,7 @@ struct HumorParser: BoardParser {
             guard !author.isEmpty || !content.isEmpty || stickerURL != nil || videoURL != nil
             else { continue }
 
-            results.append(Comment(
+            results.append(NuntingCore.Comment(
                 id: "\(site.rawValue)-c-\(cmtID)",
                 author: author,
                 dateText: dateText,

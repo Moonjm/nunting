@@ -1,5 +1,6 @@
 import Foundation
 import SwiftSoup
+import NuntingCore
 
 struct AagagParser: BoardParser {
     let site: Site = .aagag
@@ -285,7 +286,7 @@ struct AagagParser: BoardParser {
         for post: Post,
         detailHTML _: String?,
         fetcher: @escaping @Sendable (URL) async throws -> String
-    ) async throws -> [Comment] {
+    ) async throws -> [NuntingCore.Comment] {
         // Aagag POSTs to /api/cmt with an `idx` parameter pulled from
         // the post URL — the detail body isn't needed, so `detailHTML`
         // is ignored here.
@@ -301,7 +302,7 @@ struct AagagParser: BoardParser {
         let response = try JSONDecoder().decode(AagagCommentResponse.self, from: data)
         guard response.mode == "success" else { return [] }
         return response.comment.map { raw in
-            Comment(
+            NuntingCore.Comment(
                 id: "\(site.rawValue)-c-\(raw.w_idx)",
                 author: raw.w_nick,
                 dateText: raw.stime,

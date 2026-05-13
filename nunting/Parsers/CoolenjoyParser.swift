@@ -1,5 +1,6 @@
 import Foundation
 import SwiftSoup
+import NuntingCore
 
 struct CoolenjoyParser: BoardParser {
     let site: Site = .coolenjoy
@@ -68,7 +69,7 @@ struct CoolenjoyParser: BoardParser {
         for post: Post,
         detailHTML _: String?,
         fetcher: @escaping @Sendable (URL) async throws -> String
-    ) async throws -> [Comment] {
+    ) async throws -> [NuntingCore.Comment] {
         // Coolenjoy fetches its own paginated comment endpoint —
         // detailHTML is unrelated and unused here.
         guard let baseURL = commentsURL(for: post) else { return [] }
@@ -81,9 +82,9 @@ struct CoolenjoyParser: BoardParser {
         if totalPages <= 1 { return firstPage }
 
         let pagesToFetch = Array(2...totalPages)
-        var pageMap: [Int: [Comment]] = [1: firstPage]
+        var pageMap: [Int: [NuntingCore.Comment]] = [1: firstPage]
 
-        try await withThrowingTaskGroup(of: (Int, [Comment]).self) { group in
+        try await withThrowingTaskGroup(of: (Int, [NuntingCore.Comment]).self) { group in
             for page in pagesToFetch {
                 let url = appendingPagingParams(to: baseURL, page: page)
                 group.addTask {
@@ -121,10 +122,10 @@ struct CoolenjoyParser: BoardParser {
         return maxPage
     }
 
-    nonisolated func parseComments(html: String) throws -> [Comment] {
+    nonisolated func parseComments(html: String) throws -> [NuntingCore.Comment] {
         let doc = try SwiftSoup.parse(html)
         let articles = try doc.select("article[id^=c_]")
-        var results: [Comment] = []
+        var results: [NuntingCore.Comment] = []
 
         for article in articles {
             let articleID = try article.attr("id")
@@ -143,7 +144,7 @@ struct CoolenjoyParser: BoardParser {
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? "0"
             let likeCount = Int(likeText) ?? 0
 
-            results.append(Comment(
+            results.append(NuntingCore.Comment(
                 id: "\(site.rawValue)-c-\(sn)",
                 author: author,
                 dateText: dateText,
