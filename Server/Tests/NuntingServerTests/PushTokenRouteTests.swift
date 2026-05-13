@@ -49,6 +49,30 @@ final class PushTokenRouteTests: XCTestCase {
         await store.close()
     }
 
+    /// 256자 초과 token은 400. APNs deviceToken은 64 hex (~200 bytes) 고정이라
+    /// 그 이상은 abuse로 간주, DB row 비대를 막는다.
+    func testPutPushTokenRejectsOversizedToken() async throws {
+        let store = try Store(path: ":memory:")
+        let app = buildApp(store: store)
+        let huge = String(repeating: "a", count: 257)
+        try await app.test(.router) { client in
+            try await client.execute(
+                uri: "/me/push-token",
+                method: .put,
+                headers: [
+                    .authorization: "Bearer nnt_alice",
+                    .contentType: "application/json",
+                ],
+                body: ByteBuffer(string: #"{"token":"\#(huge)"}"#)
+            ) { response in
+                XCTAssertEqual(response.status, .badRequest)
+            }
+        }
+        let stored = try await store.pushToken(uuid: "nnt_alice")
+        XCTAssertNil(stored, "거대 token은 저장되지 않아야 함")
+        await store.close()
+    }
+
     func testPutPushTokenRequiresAuth() async throws {
         let store = try Store(path: ":memory:")
         let app = buildApp(store: store)
