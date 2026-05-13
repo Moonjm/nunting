@@ -169,6 +169,56 @@ extension Store {
         }
     }
 
+    public struct UserSubscription: Sendable {
+        public let pushToken: String
+        public let keywords: Set<String>
+
+        public init(pushToken: String, keywords: Set<String>) {
+            self.pushToken = pushToken
+            self.keywords = keywords
+        }
+    }
+
+    public func usersWithKeywords() throws -> [String: UserSubscription] {
+        guard let db else { throw StoreError.sqlite(rc: 0, message: "store closed") }
+        // 한 번의 LEFT JOIN으로 (users.uuid, users.push_token, keyword_subs.keyword)
+        // 행을 받아 in-memory에서 group_by. push_token IS NOT NULL 필터.
+        let sql = """
+        SELECT u.uuid, u.push_token, ks.keyword
+        FROM users u
+        LEFT JOIN keyword_subs ks ON ks.uuid = u.uuid
+        WHERE u.push_token IS NOT NULL;
+        """
+        var stmt: OpaquePointer?
+        let pRC = sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+        guard pRC == SQLITE_OK, let stmt else {
+            throw StoreError.sqlite(rc: pRC, message: String(cString: sqlite3_errmsg(db)))
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        // group rows by uuid
+        var byUUID: [String: (pushToken: String, keywords: Set<String>)] = [:]
+        while true {
+            let rc = sqlite3_step(stmt)
+            switch rc {
+            case SQLITE_ROW:
+                guard let uuidPtr = sqlite3_column_text(stmt, 0),
+                      let tokPtr = sqlite3_column_text(stmt, 1) else { continue }
+                let uuid = String(cString: uuidPtr)
+                let token = String(cString: tokPtr)
+                var entry = byUUID[uuid] ?? (pushToken: token, keywords: [])
+                if let kwPtr = sqlite3_column_text(stmt, 2) {
+                    entry.keywords.insert(String(cString: kwPtr))
+                }
+                byUUID[uuid] = entry
+            case SQLITE_DONE:
+                return byUUID.mapValues { UserSubscription(pushToken: $0.pushToken, keywords: $0.keywords) }
+            default:
+                throw StoreError.sqlite(rc: rc, message: String(cString: sqlite3_errmsg(db)))
+            }
+        }
+    }
+
     // MARK: - prepare/step helpers
 
     /// INSERT/UPDATE/DELETE 등 결과 row가 없는 statement용.
