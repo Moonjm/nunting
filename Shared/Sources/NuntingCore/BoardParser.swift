@@ -1,6 +1,30 @@
 import Foundation
 import SwiftSoup
 
+// MARK: - Closure isolation contract
+//
+// `fetchAllComments`의 `fetcher` 파라미터는 `@escaping @Sendable (URL) async throws -> String`
+// 클로저다. Swift의 closure isolation 기본값이 컴파일 컨텍스트마다 달라서 protocol
+// witness binding이 미묘하게 깨질 수 있다:
+//
+//   • SwiftPM 패키지(기본 swift settings): default = `@concurrent`.
+//   • iOS Xcode 타겟(`SWIFT_APPROACHABLE_CONCURRENCY=YES`): default = `nonisolated(nonsending)`.
+//   • `NonisolatedNonsendingByDefault` upcoming feature 활성화 시: default = `nonisolated(nonsending)`.
+//
+// 두 컴파일 컨텍스트의 default가 다르면 conforming 타입의 `fetchAllComments` 구현이
+// 프로토콜의 witness 시그니처와 매치되지 않아 **빌드는 통과하지만** default extension
+// impl이 조용히 dispatch된다(=concrete override가 죽음). 명시적으로 실패하지 않으므로
+// 테스트가 없으면 발견하기 어렵다.
+//
+// 이 패키지는 `Package.swift`에서 `NonisolatedNonsendingByDefault` upcoming feature를
+// 켜서 iOS 타겟의 기본값과 정렬한다. **이 프로토콜에 conform하는 모든 다른 모듈**
+// (예: Plan 2 Linux 서버 타겟)도 동일하게 `SWIFT_APPROACHABLE_CONCURRENCY=YES` 또는
+// `NonisolatedNonsendingByDefault` upcoming feature를 활성화해야 한다. 그렇지 않으면
+// 해당 모듈의 concrete `fetchAllComments` override가 silently no-op이 된다.
+//
+// regression net: `nuntingTests/ParserDispatchTests.swift`가 cross-module conformance를
+// `any BoardParser` existential로 호출해 witness binding이 살아있는지 검증한다.
+
 public protocol BoardParser: Sendable {
     nonisolated var site: Site { get }
     nonisolated func parseList(html: String, board: Board) throws -> [Post]
