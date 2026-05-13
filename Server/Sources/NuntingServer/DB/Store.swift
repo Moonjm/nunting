@@ -29,8 +29,14 @@ public actor Store {
             throw StoreError.openFailed(path: path, rc: rc)
         }
         // FK 강제. keyword_subs.uuid → users.uuid ON DELETE CASCADE가
-        // 의미 있으려면 connection별로 켜야 한다.
-        sqlite3_exec(handle, "PRAGMA foreign_keys = ON;", nil, nil, nil)
+        // 의미 있으려면 connection별로 켜야 한다. rc를 체크해 silent disable을
+        // 막는다 — 꺼진 채로 부팅되면 후속 PR의 user delete가 orphan row를
+        // 남긴다.
+        let pragmaRC = sqlite3_exec(handle, "PRAGMA foreign_keys = ON;", nil, nil, nil)
+        guard pragmaRC == SQLITE_OK else {
+            sqlite3_close(handle)
+            throw StoreError.sqlite(rc: pragmaRC, message: "failed to enable foreign_keys PRAGMA")
+        }
         do {
             try Schema.apply(to: handle)
         } catch {
@@ -61,6 +67,13 @@ extension Store {
         to: sqlite3_destructor_type.self
     )
 
+    /// 이름이 "upsert"지만 실제 SQL은 `INSERT ... ON CONFLICT DO NOTHING`
+    /// (INSERT-or-nothing). 의도된 contract:
+    /// - 새 uuid면 row 생성 (created_at = 현재 epoch초, push_token = NULL)
+    /// - 기존 uuid면 **아무 컬럼도 건드리지 않음** — 특히 created_at이 첫 INSERT
+    ///   시각으로 고정돼야 한다(BearerMiddleware가 매 요청마다 호출하므로).
+    /// 향후 users 테이블에 컬럼이 추가돼도 이 메서드는 그 컬럼을 update하지
+    /// 않는다. 필요해지면 별도 메서드를 만들 것.
     public func upsertUser(uuid: String) throws {
         let sql = """
         INSERT INTO users (uuid, push_token, created_at)
