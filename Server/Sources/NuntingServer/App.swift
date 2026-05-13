@@ -13,6 +13,7 @@ public func buildApp(store: Store) -> some ApplicationProtocol {
     authed.get("/_echo") { _, context in
         try context.requireUUID()
     }
+    PushTokenRoutes(store: store).add(to: authed)
 
     return Application(
         router: router,
