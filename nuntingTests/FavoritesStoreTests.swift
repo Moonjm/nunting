@@ -1,5 +1,6 @@
 import XCTest
 @testable import nunting
+import NuntingCore
 
 /// Persistence + migration tests for `FavoritesStore`.
 ///

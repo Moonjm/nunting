@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import NuntingCore
 
 /// Holds the user's currently-selected board / filter / search query
 /// plus the navigation scope (which list the bottom-bar swipe-step

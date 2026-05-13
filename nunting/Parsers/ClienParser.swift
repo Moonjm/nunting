@@ -1,8 +1,9 @@
 import Foundation
 import SwiftSoup
+import NuntingCore
 
-struct ClienParser: BoardParser {
-    let site: Site = .clien
+public struct ClienParser: BoardParser {
+    public let site: Site = .clien
 
     /// HTML elements that mark a paragraph / block boundary in Clien post
     /// bodies. We emit a single `\n` after each — combined with the HTML
@@ -32,9 +33,9 @@ struct ClienParser: BoardParser {
     /// edited post advertises both 등록일 and 수정일 in the same block.
     nonisolated private static let postDatePattern = #"\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}(?::\d{2})?"#
 
-    nonisolated init() {}
+    public nonisolated init() {}
 
-    nonisolated func parseList(html: String, board: Board) throws -> [Post] {
+    public nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
         let rows = try doc.select("a.list_item.symph-row")
 
@@ -84,7 +85,7 @@ struct ClienParser: BoardParser {
         }
     }
 
-    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
+    public nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
         guard let article = try doc.select("div.post_article").first() else {
             throw ParserError.structureChanged("post_article 없음")
@@ -400,9 +401,9 @@ struct ClienParser: BoardParser {
         return sorted.last?.url
     }
 
-    nonisolated private func parseComments(doc: Document) throws -> [Comment] {
+    nonisolated private func parseComments(doc: Document) throws -> [PostComment] {
         let rows = try doc.select("div.comment_row[data-role=comment-row]")
-        var results: [Comment] = []
+        var results: [PostComment] = []
 
         for row in rows {
             let sn = try row.attr("data-comment-sn").trimmingCharacters(in: .whitespaces)
@@ -468,7 +469,7 @@ struct ClienParser: BoardParser {
                 ? "\(site.rawValue)-c-\(results.count)"
                 : "\(site.rawValue)-c-\(sn)"
 
-            results.append(Comment(
+            results.append(PostComment(
                 id: commentID,
                 author: author,
                 dateText: dateText,

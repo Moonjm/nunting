@@ -1,4 +1,5 @@
 import Foundation
+import NuntingCore
 
 /// Single-writer gate for `Networking.prewarmConnections`. Callers
 /// request `claimRun()`; the actor returns `true` only if enough time

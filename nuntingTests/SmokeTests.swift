@@ -1,5 +1,6 @@
 import XCTest
 @testable import nunting
+import NuntingCore
 
 /// Sanity check that the test bundle loads, links against the app target,
 /// and `@testable import nunting` resolves. Real assertion suites live in

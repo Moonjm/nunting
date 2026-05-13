@@ -1,4 +1,5 @@
 import SwiftUI
+import NuntingCore
 
 struct SideDrawer: View {
     let favorites: FavoritesStore

@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import NuntingCore
 
 /// Owns the network + parse + state-machine for `PostDetailView`.
 ///
@@ -139,7 +140,7 @@ final class PostDetailLoader {
                 async let parsedTask: PostDetail = Task.detached(priority: .userInitiated) {
                     try parser.parseDetail(html: parsedHTML, post: parsedPost)
                 }.value
-                async let commentsTask: [Comment]? = {
+                async let commentsTask: [PostComment]? = {
                     guard parser.commentsURL(for: resolved) != nil else { return nil }
                     return try? await parser.fetchAllComments(
                         for: resolved,

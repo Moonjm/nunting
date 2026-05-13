@@ -1,5 +1,6 @@
 import XCTest
 @testable import nunting
+import NuntingCore
 
 /// State + transition tests for `DetailOverlayController`.
 ///

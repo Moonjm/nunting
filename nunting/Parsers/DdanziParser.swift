@@ -1,5 +1,6 @@
 import Foundation
 import SwiftSoup
+import NuntingCore
 
 /// Parses 딴지일보 (Ddanzi) mobile detail pages. Reached exclusively via
 /// aagag mirror redirects — Ddanzi is not exposed as a directly-browsable
@@ -10,10 +11,10 @@ import SwiftSoup
 /// through an XE `exec_json` POST to the site root with
 /// `module=board&act=dispBoardContentCommentListHtml`. `fetchAllComments`
 /// posts that endpoint and parses the returned `commentHtml` fragment.
-struct DdanziParser: BoardParser {
-    let site: Site = .ddanzi
+public struct DdanziParser: BoardParser {
+    public let site: Site = .ddanzi
 
-    nonisolated init() {}
+    public nonisolated init() {}
 
     nonisolated private static let blockTags: Set<String> = [
         "p", "div", "li", "blockquote",
@@ -22,12 +23,12 @@ struct DdanziParser: BoardParser {
     ]
     nonisolated private static let skipTags: Set<String> = ["script", "style", "noscript"]
 
-    nonisolated func parseList(html: String, board: Board) throws -> [Post] {
+    public nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         // Ddanzi is aagag-dispatch-only; list parsing is never invoked.
         []
     }
 
-    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
+    public nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
 
         // Deleted posts replace the boardR wrapper with an error notice.
@@ -86,13 +87,13 @@ struct DdanziParser: BoardParser {
     /// `fetchAllComments`. We need the detail HTML anyway to read
     /// `_document_srl` and `current_mid`, so reusing the injected fetcher
     /// keeps the dispatch pipeline consistent with other parsers.
-    nonisolated func commentsURL(for post: Post) -> URL? { post.url }
+    public nonisolated func commentsURL(for post: Post) -> URL? { post.url }
 
-    nonisolated func fetchAllComments(
+    public nonisolated func fetchAllComments(
         for post: Post,
         detailHTML: String?,
         fetcher: @escaping @Sendable (URL) async throws -> String
-    ) async throws -> [Comment] {
+    ) async throws -> [PostComment] {
         // 1) Detail HTML tells us mid + document_srl. URL-based parsing is
         //    brittle (some posts use the `/{srl}` shortcut without a mid),
         //    so read both from the rendered detail page. Caller threads
@@ -319,7 +320,7 @@ struct DdanziParser: BoardParser {
         let commentHtml: String?
     }
 
-    nonisolated private func decodeComments(data: Data) -> [Comment] {
+    nonisolated private func decodeComments(data: Data) -> [PostComment] {
         guard let payload = try? JSONDecoder().decode(CommentResponse.self, from: data),
               let fragment = payload.commentHtml,
               !fragment.isEmpty
@@ -330,7 +331,7 @@ struct DdanziParser: BoardParser {
             let body = doc.body() ?? doc
             let items = try body.select("li[id^=comment_]")
 
-            var results: [Comment] = []
+            var results: [PostComment] = []
             for li in items {
                 let cmtID = try li.attr("id")
                     .replacingOccurrences(of: "comment_", with: "")
@@ -351,7 +352,7 @@ struct DdanziParser: BoardParser {
 
                 if author.isEmpty, content.isEmpty, sticker == nil { continue }
 
-                results.append(Comment(
+                results.append(PostComment(
                     id: "ddanzi-c-\(cmtID)",
                     author: author,
                     dateText: dateText,

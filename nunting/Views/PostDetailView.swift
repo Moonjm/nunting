@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import NuntingCore
 
 struct PostDetailView: View, Equatable {
     let post: Post
@@ -552,7 +553,7 @@ private struct SourceBanner: View {
 }
 
 private struct CommentsSection: View {
-    let comments: [Comment]
+    let comments: [PostComment]
     var tapGate: TapSuppressionGate? = nil
     let onImageTap: (URL) -> Void
     let onVideoDismissBegin: () -> Void
@@ -591,7 +592,7 @@ private struct CommentsSection: View {
 }
 
 private struct CommentRow: View {
-    let comment: Comment
+    let comment: PostComment
     var tapGate: TapSuppressionGate? = nil
     let onImageTap: (URL) -> Void
     let onVideoDismissBegin: () -> Void

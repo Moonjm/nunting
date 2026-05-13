@@ -1,5 +1,6 @@
 import Foundation
 import SwiftSoup
+import NuntingCore
 
 /// Parses 82cook (82쿡) desktop detail pages. Reached exclusively via aagag
 /// mirror redirects — 82cook is not exposed as a directly-browsable site.
@@ -8,10 +9,10 @@ import SwiftSoup
 /// body and the whole comment list (unlike SLR/Ddanzi which need a follow-up
 /// AJAX roundtrip). Comments are a flat list — the site has no reply-to-
 /// comment threading — so `isReply` is always `false`.
-struct Cook82Parser: BoardParser {
-    let site: Site = .cook82
+public struct Cook82Parser: BoardParser {
+    public let site: Site = .cook82
 
-    nonisolated init() {}
+    public nonisolated init() {}
 
     nonisolated private static let blockTags: Set<String> = [
         "p", "div", "li", "blockquote",
@@ -29,12 +30,12 @@ struct Cook82Parser: BoardParser {
         options: []
     )
 
-    nonisolated func parseList(html: String, board: Board) throws -> [Post] {
+    public nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         // 82cook is aagag-dispatch-only; list parsing is never invoked.
         []
     }
 
-    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
+    public nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
 
         // Deleted / moved posts replace the body wrapper with an error panel.
@@ -89,7 +90,7 @@ struct Cook82Parser: BoardParser {
     }
 
     // Comments live inline — no separate fetch needed.
-    nonisolated func commentsURL(for post: Post) -> URL? { nil }
+    public nonisolated func commentsURL(for post: Post) -> URL? { nil }
 
     // MARK: - Field extraction
 
@@ -252,9 +253,9 @@ struct Cook82Parser: BoardParser {
     /// carry class `me` to mark the post author, which we surface as a
     /// distinct author string only when parsing a reply; here it's just
     /// metadata we don't need.
-    nonisolated private func extractComments(in doc: Document) throws -> [Comment] {
+    nonisolated private func extractComments(in doc: Document) throws -> [PostComment] {
         let nodes = try doc.select("ul.reples > li.rp")
-        var results: [Comment] = []
+        var results: [PostComment] = []
         for (idx, li) in nodes.enumerated() {
             let rn = (try? li.attr("data-rn")) ?? ""
             let cmtID = rn.isEmpty ? "idx\(idx)" : rn
@@ -264,7 +265,7 @@ struct Cook82Parser: BoardParser {
             // placeholder so users see the gap instead of a row that
             // accidentally looks empty or misattributed.
             if li.hasClass("delReple") {
-                results.append(Comment(
+                results.append(PostComment(
                     id: "\(site.rawValue)-c-\(cmtID)",
                     author: "",
                     dateText: "",
@@ -285,7 +286,7 @@ struct Cook82Parser: BoardParser {
 
             if author.isEmpty, content.isEmpty { continue }
 
-            results.append(Comment(
+            results.append(PostComment(
                 id: "\(site.rawValue)-c-\(cmtID)",
                 author: author,
                 dateText: dateText,

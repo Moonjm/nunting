@@ -1,5 +1,6 @@
 import XCTest
 @testable import nunting
+import NuntingCore
 
 /// Fixture-based regression tests for parser `parseList` selectors.
 ///

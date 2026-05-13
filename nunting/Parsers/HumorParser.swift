@@ -1,12 +1,13 @@
 import Foundation
 import SwiftSoup
+import NuntingCore
 
 /// Parses humoruniv (웃대) mobile detail pages. Reached exclusively via aagag
 /// mirror redirects — humoruniv is not exposed as a directly-browsable site.
-struct HumorParser: BoardParser {
-    let site: Site = .humor
+public struct HumorParser: BoardParser {
+    public let site: Site = .humor
 
-    nonisolated init() {}
+    public nonisolated init() {}
 
     nonisolated private static let mp4ExpandRegex = try! NSRegularExpression(
         pattern: #"comment_mp4_expand\s*\(\s*'[^']*'\s*,\s*'([^']+)'"#,
@@ -34,12 +35,12 @@ struct HumorParser: BoardParser {
     ]
     nonisolated private static let skipTags: Set<String> = ["script", "style", "noscript"]
 
-    nonisolated func parseList(html: String, board: Board) throws -> [Post] {
+    public nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         // Humoruniv is aagag-dispatch-only; list parsing is never invoked.
         []
     }
 
-    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
+    public nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
 
         // 너굴맨(안심맨) 디코이 영역을 본문/댓글 양쪽에서 한 번에 정리.
@@ -114,7 +115,7 @@ struct HumorParser: BoardParser {
     }
 
     // Comments live in the same detail page — no separate fetch needed.
-    nonisolated func commentsURL(for post: Post) -> URL? { nil }
+    public nonisolated func commentsURL(for post: Post) -> URL? { nil }
 
     // MARK: - Field extraction
 
@@ -314,9 +315,9 @@ struct HumorParser: BoardParser {
 
     // MARK: - Comments
 
-    nonisolated private func extractComments(in doc: Document) throws -> [Comment] {
+    nonisolated private func extractComments(in doc: Document) throws -> [PostComment] {
         let nodes = try doc.select("#comment li[id^=comment_li_]")
-        var results: [Comment] = []
+        var results: [PostComment] = []
         for li in nodes {
             let idAttr = try li.attr("id")
             let cmtID = idAttr.hasPrefix("comment_li_")
@@ -369,7 +370,7 @@ struct HumorParser: BoardParser {
             guard !author.isEmpty || !content.isEmpty || stickerURL != nil || videoURL != nil
             else { continue }
 
-            results.append(Comment(
+            results.append(PostComment(
                 id: "\(site.rawValue)-c-\(cmtID)",
                 author: author,
                 dateText: dateText,

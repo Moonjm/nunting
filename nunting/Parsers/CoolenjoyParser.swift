@@ -1,10 +1,11 @@
 import Foundation
 import SwiftSoup
+import NuntingCore
 
-struct CoolenjoyParser: BoardParser {
-    let site: Site = .coolenjoy
+public struct CoolenjoyParser: BoardParser {
+    public let site: Site = .coolenjoy
 
-    nonisolated init() {}
+    public nonisolated init() {}
 
     /// HTML elements that mark a paragraph / block boundary in Coolenjoy
     /// post bodies. Trailing `\n` is appended after each such block so
@@ -22,7 +23,7 @@ struct CoolenjoyParser: BoardParser {
     /// recurse-vs-inline without doing a full `select("img")` walk.
     nonisolated private static let mediaTags: Set<String> = ["img"]
 
-    nonisolated func parseList(html: String, board: Board) throws -> [Post] {
+    public nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
         let rows = try doc.select("ul.na-table > li.d-md-table-row")
 
@@ -56,7 +57,7 @@ struct CoolenjoyParser: BoardParser {
         }
     }
 
-    nonisolated func commentsURL(for post: Post) -> URL? {
+    public nonisolated func commentsURL(for post: Post) -> URL? {
         let comps = post.url.pathComponents
         guard comps.count >= 4 else { return nil }
         let boardTable = comps[2]
@@ -64,11 +65,11 @@ struct CoolenjoyParser: BoardParser {
         return URL(string: "https://coolenjoy.net/nariya/bbs/comment_view.php?bo_table=\(boardTable)&wr_id=\(wrID)")
     }
 
-    nonisolated func fetchAllComments(
+    public nonisolated func fetchAllComments(
         for post: Post,
         detailHTML _: String?,
         fetcher: @escaping @Sendable (URL) async throws -> String
-    ) async throws -> [Comment] {
+    ) async throws -> [PostComment] {
         // Coolenjoy fetches its own paginated comment endpoint —
         // detailHTML is unrelated and unused here.
         guard let baseURL = commentsURL(for: post) else { return [] }
@@ -81,9 +82,9 @@ struct CoolenjoyParser: BoardParser {
         if totalPages <= 1 { return firstPage }
 
         let pagesToFetch = Array(2...totalPages)
-        var pageMap: [Int: [Comment]] = [1: firstPage]
+        var pageMap: [Int: [PostComment]] = [1: firstPage]
 
-        try await withThrowingTaskGroup(of: (Int, [Comment]).self) { group in
+        try await withThrowingTaskGroup(of: (Int, [PostComment]).self) { group in
             for page in pagesToFetch {
                 let url = appendingPagingParams(to: baseURL, page: page)
                 group.addTask {
@@ -121,10 +122,10 @@ struct CoolenjoyParser: BoardParser {
         return maxPage
     }
 
-    nonisolated func parseComments(html: String) throws -> [Comment] {
+    public nonisolated func parseComments(html: String) throws -> [PostComment] {
         let doc = try SwiftSoup.parse(html)
         let articles = try doc.select("article[id^=c_]")
-        var results: [Comment] = []
+        var results: [PostComment] = []
 
         for article in articles {
             let articleID = try article.attr("id")
@@ -143,7 +144,7 @@ struct CoolenjoyParser: BoardParser {
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? "0"
             let likeCount = Int(likeText) ?? 0
 
-            results.append(Comment(
+            results.append(PostComment(
                 id: "\(site.rawValue)-c-\(sn)",
                 author: author,
                 dateText: dateText,
@@ -155,7 +156,7 @@ struct CoolenjoyParser: BoardParser {
         return results
     }
 
-    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
+    public nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
         guard let article = try doc.select("article#bo_v").first() else {
             throw ParserError.structureChanged("article#bo_v 없음")

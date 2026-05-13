@@ -1,10 +1,11 @@
 import Foundation
 import SwiftSoup
+import NuntingCore
 
-struct InvenParser: BoardParser {
-    let site: Site = .inven
+public struct InvenParser: BoardParser {
+    public let site: Site = .inven
 
-    nonisolated init() {}
+    public nonisolated init() {}
 
     /// Matches decimal (`&#1234;`) and hexadecimal (`&#xAF;`) HTML numeric
     /// character references. Hoisted because `cleanCommentText` runs once per
@@ -15,7 +16,7 @@ struct InvenParser: BoardParser {
         options: [.caseInsensitive]
     )
 
-    nonisolated func parseList(html: String, board: Board) throws -> [Post] {
+    public nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
         let rows = try doc.select("section.mo-board-list li.list")
 
@@ -74,7 +75,7 @@ struct InvenParser: BoardParser {
         }
     }
 
-    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
+    public nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
         guard let section = try doc.select("section.mo-board-view").first() else {
             throw ParserError.structureChanged("mo-board-view 없음")
@@ -267,15 +268,15 @@ struct InvenParser: BoardParser {
         return resolveHTTPURL(raw)
     }
 
-    nonisolated func commentsURL(for post: Post) -> URL? {
+    public nonisolated func commentsURL(for post: Post) -> URL? {
         URL(string: "https://www.inven.co.kr/common/board/comment.json.php")
     }
 
-    nonisolated func fetchAllComments(
+    public nonisolated func fetchAllComments(
         for post: Post,
         detailHTML _: String?,
         fetcher: @escaping @Sendable (URL) async throws -> String
-    ) async throws -> [Comment] {
+    ) async throws -> [PostComment] {
         // Inven comments live at a separate JSON endpoint, unrelated
         // to the detail HTML — `detailHTML` is unused.
         let numericComponents = post.url.pathComponents.filter { $0.allSatisfy(\.isNumber) && !$0.isEmpty }
@@ -318,7 +319,7 @@ struct InvenParser: BoardParser {
         return convertToComments(blocks: blocks)
     }
 
-    nonisolated private func convertToComments(blocks: [InvenCommentBlock]) -> [Comment] {
+    nonisolated private func convertToComments(blocks: [InvenCommentBlock]) -> [PostComment] {
         // titlenum 0 = latest block; positive titlenums are older slices ordered ascending.
         let sortedBlocks = blocks.sorted { lhs, rhs in
             let l = lhs.attr.titlenum == 0 ? Int.max : lhs.attr.titlenum
@@ -326,14 +327,14 @@ struct InvenParser: BoardParser {
             return l < r
         }
 
-        var results: [Comment] = []
+        var results: [PostComment] = []
         for block in sortedBlocks {
             for raw in block.list {
                 let stickerURL = extractStickerURL(from: raw.comment)
                 let content = cleanCommentText(raw.comment)
                 guard !content.isEmpty || stickerURL != nil else { continue }
                 let isReply = raw.attr.cmtidx != raw.attr.cmtpidx
-                results.append(Comment(
+                results.append(PostComment(
                     id: "\(site.rawValue)-c-\(raw.attr.cmtidx)",
                     author: raw.name,
                     dateText: raw.date,

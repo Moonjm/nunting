@@ -1,10 +1,10 @@
 import Foundation
 import SwiftSoup
 
-struct PpomppuParser: BoardParser {
-    let site: Site = .ppomppu
+public struct PpomppuParser: BoardParser {
+    public let site: Site = .ppomppu
 
-    nonisolated init() {}
+    public nonisolated init() {}
 
     nonisolated private static let blockTags: Set<String> = [
         "p", "div", "li", "blockquote",
@@ -19,7 +19,7 @@ struct PpomppuParser: BoardParser {
     /// recurse-vs-inline without doing three separate `select()` walks.
     nonisolated private static let mediaTags: Set<String> = ["img", "video", "iframe"]
 
-    nonisolated func parseList(html: String, board: Board) throws -> [Post] {
+    public nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
         let boardID = ppomppuBoardID(from: board)
 
@@ -95,7 +95,7 @@ struct PpomppuParser: BoardParser {
         }
     }
 
-    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
+    public nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
         guard let view = try doc.select("div.bbs.view, div.bbs_view, div.view").first() else {
             throw ParserError.structureChanged("bbs.view 없음")
@@ -137,16 +137,16 @@ struct PpomppuParser: BoardParser {
         )
     }
 
-    nonisolated func commentsURL(for post: Post) -> URL? {
+    public nonisolated func commentsURL(for post: Post) -> URL? {
         // Comments are embedded in the detail page; pagination uses ?c_page=N on the same URL.
         post.url
     }
 
-    nonisolated func fetchAllComments(
+    public nonisolated func fetchAllComments(
         for post: Post,
         detailHTML: String?,
         fetcher: @escaping @Sendable (URL) async throws -> String
-    ) async throws -> [Comment] {
+    ) async throws -> [PostComment] {
         // Reuse the detail HTML the caller already fetched for
         // `parseDetail` — Ppomppu's first-page comments live inside the
         // detail DOM, so re-fetching `post.url` here only duplicates
@@ -162,8 +162,8 @@ struct PpomppuParser: BoardParser {
         let totalPages = try totalCommentPages(in: firstDoc)
         if totalPages <= 1 { return firstPage }
 
-        var pageMap: [Int: [Comment]] = [1: firstPage]
-        try await withThrowingTaskGroup(of: (Int, [Comment]).self) { group in
+        var pageMap: [Int: [PostComment]] = [1: firstPage]
+        try await withThrowingTaskGroup(of: (Int, [PostComment]).self) { group in
             for page in 2...totalPages {
                 guard let pageURL = appendingCommentPage(to: post.url, page: page) else { continue }
                 group.addTask {
@@ -179,14 +179,14 @@ struct PpomppuParser: BoardParser {
         return (1...totalPages).flatMap { pageMap[$0] ?? [] }
     }
 
-    nonisolated func parseComments(html: String) throws -> [Comment] {
+    public nonisolated func parseComments(html: String) throws -> [PostComment] {
         let doc = try SwiftSoup.parse(html)
         return try parseComments(in: doc)
     }
 
-    nonisolated private func parseComments(in doc: Document) throws -> [Comment] {
+    nonisolated private func parseComments(in doc: Document) throws -> [PostComment] {
         let nodes = try doc.select("div.cmAr div[class*=sect-cmt]")
-        var results: [Comment] = []
+        var results: [PostComment] = []
         for node in nodes {
             // Ignore nested wrappers if any: only take elements whose own class includes sect-cmt.
             let classAttr = (try? node.attr("class")) ?? ""
@@ -196,7 +196,7 @@ struct PpomppuParser: BoardParser {
             let depthAttr = try node.attr("data-depth")
             let isReply = (Int(depthAttr) ?? 0) > 0
 
-            // Comment ID lives on the preceding anchor, or inside ctx_{id}.
+            // PostComment ID lives on the preceding anchor, or inside ctx_{id}.
             // Fallback uses the result index so identity stays stable across re-parses
             // (avoids SwiftUI ForEach churn).
             let cmtID: String = try {
@@ -235,7 +235,7 @@ struct PpomppuParser: BoardParser {
 
             guard !content.isEmpty || stickerURL != nil || videoURL != nil else { continue }
 
-            results.append(Comment(
+            results.append(PostComment(
                 id: "\(site.rawValue)-c-\(cmtID)",
                 author: author,
                 dateText: dateText,
@@ -481,7 +481,7 @@ struct PpomppuParser: BoardParser {
     }
 
     nonisolated private func extractStickerURL(from element: Element) throws -> URL? {
-        // Comment images are lazy-loaded: src is "/images/lazyloading.jpg"
+        // PostComment images are lazy-loaded: src is "/images/lazyloading.jpg"
         // and the real URL lives in data-original. Walk all imgs to find one
         // with a content URL, then fall back to a GIF preview (data-org-src
         // on the <a class="btn_show_org">) for video-only comments.

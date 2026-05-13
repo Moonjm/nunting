@@ -1,4 +1,5 @@
 import Foundation
+import NuntingCore
 
 enum ParserFactory {
     nonisolated static func parser(for site: Site) throws -> BoardParser {

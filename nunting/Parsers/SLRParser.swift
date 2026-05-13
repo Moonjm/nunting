@@ -1,5 +1,6 @@
 import Foundation
 import SwiftSoup
+import NuntingCore
 
 /// Parses SLR Club (SLR클럽) mobile detail pages. Reached exclusively via
 /// aagag mirror redirects — SLR is not exposed as a directly-browsable site.
@@ -9,10 +10,10 @@ import SwiftSoup
 /// endpoint needs the `data-tos` token that only lives on the detail HTML,
 /// `fetchAllComments` re-requests the detail page via the injected fetcher
 /// (the URL cache usually serves it) to pull out the params, then POSTs.
-struct SLRParser: BoardParser {
-    let site: Site = .slr
+public struct SLRParser: BoardParser {
+    public let site: Site = .slr
 
-    nonisolated init() {}
+    public nonisolated init() {}
 
     nonisolated private static let blockTags: Set<String> = [
         "p", "div", "li", "blockquote",
@@ -21,12 +22,12 @@ struct SLRParser: BoardParser {
     ]
     nonisolated private static let skipTags: Set<String> = ["script", "style", "noscript"]
 
-    nonisolated func parseList(html: String, board: Board) throws -> [Post] {
+    public nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         // SLR is aagag-dispatch-only; list parsing is never invoked.
         []
     }
 
-    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
+    public nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
 
         // SLR replies "이동되었거나 삭제된 게시물입니다" on deleted posts —
@@ -84,13 +85,13 @@ struct SLRParser: BoardParser {
     /// just fetched for `parseDetail`, so URLCache typically serves it —
     /// avoids duplicating the ParserFactory plumbing for a POST-only
     /// endpoint.
-    nonisolated func commentsURL(for post: Post) -> URL? { post.url }
+    public nonisolated func commentsURL(for post: Post) -> URL? { post.url }
 
-    nonisolated func fetchAllComments(
+    public nonisolated func fetchAllComments(
         for post: Post,
         detailHTML: String?,
         fetcher: @escaping @Sendable (URL) async throws -> String
-    ) async throws -> [Comment] {
+    ) async throws -> [PostComment] {
         // 1) Pull the detail HTML so we can extract the AJAX params.
         //    The caller already fetched it for `parseDetail` — reuse
         //    that copy when it's threaded through so we don't
@@ -333,12 +334,12 @@ struct SLRParser: BoardParser {
         let del: Int?
     }
 
-    nonisolated private func decodeComments(data: Data) -> [Comment] {
+    nonisolated private func decodeComments(data: Data) -> [PostComment] {
         guard let payload = try? JSONDecoder().decode(SLRJSON.self, from: data),
               let entries = payload.c
         else { return [] }
 
-        var results: [Comment] = []
+        var results: [PostComment] = []
         for (idx, entry) in entries.enumerated() {
             if (entry.del ?? 0) != 0 { continue }
             let author = (entry.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -346,7 +347,7 @@ struct SLRParser: BoardParser {
             if author.isEmpty, rendered.text.isEmpty, rendered.sticker == nil { continue }
 
             let id = "slr-c-\(entry.pk ?? "idx\(idx)")"
-            results.append(Comment(
+            results.append(PostComment(
                 id: id,
                 author: author,
                 dateText: entry.dt ?? "",

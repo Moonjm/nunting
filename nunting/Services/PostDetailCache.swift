@@ -1,4 +1,5 @@
 import Foundation
+import NuntingCore
 
 /// Session-lifetime in-memory cache of fully-loaded detail pages. Re-entering
 /// a post — whether by tapping it again or via the right-edge forward-swipe
