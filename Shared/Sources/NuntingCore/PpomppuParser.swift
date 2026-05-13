@@ -1,10 +1,10 @@
 import Foundation
 import SwiftSoup
 
-struct PpomppuParser: BoardParser {
-    let site: Site = .ppomppu
+public struct PpomppuParser: BoardParser {
+    public let site: Site = .ppomppu
 
-    nonisolated init() {}
+    public nonisolated init() {}
 
     nonisolated private static let blockTags: Set<String> = [
         "p", "div", "li", "blockquote",
@@ -19,7 +19,7 @@ struct PpomppuParser: BoardParser {
     /// recurse-vs-inline without doing three separate `select()` walks.
     nonisolated private static let mediaTags: Set<String> = ["img", "video", "iframe"]
 
-    nonisolated func parseList(html: String, board: Board) throws -> [Post] {
+    public nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
         let boardID = ppomppuBoardID(from: board)
 
@@ -95,7 +95,7 @@ struct PpomppuParser: BoardParser {
         }
     }
 
-    nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
+    public nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
         guard let view = try doc.select("div.bbs.view, div.bbs_view, div.view").first() else {
             throw ParserError.structureChanged("bbs.view 없음")
@@ -137,12 +137,12 @@ struct PpomppuParser: BoardParser {
         )
     }
 
-    nonisolated func commentsURL(for post: Post) -> URL? {
+    public nonisolated func commentsURL(for post: Post) -> URL? {
         // Comments are embedded in the detail page; pagination uses ?c_page=N on the same URL.
         post.url
     }
 
-    nonisolated func fetchAllComments(
+    public nonisolated func fetchAllComments(
         for post: Post,
         detailHTML: String?,
         fetcher: @escaping @Sendable (URL) async throws -> String
@@ -179,7 +179,7 @@ struct PpomppuParser: BoardParser {
         return (1...totalPages).flatMap { pageMap[$0] ?? [] }
     }
 
-    nonisolated func parseComments(html: String) throws -> [Comment] {
+    public nonisolated func parseComments(html: String) throws -> [Comment] {
         let doc = try SwiftSoup.parse(html)
         return try parseComments(in: doc)
     }
