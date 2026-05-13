@@ -83,6 +83,55 @@ final class KeywordRoutesTests: XCTestCase {
         }
     }
 
+    /// 50자(maxKeywordLength) 경계는 통과해야 함.
+    /// `count <= 50` → `count < 50`으로 잘못 바꿔도 회귀로 잡힌다.
+    func testPostKeywordAtMaxLengthReturns201() async throws {
+        let (store, app) = try makeApp()
+        defer { Task { await store.close() } }
+        let maxKw = String(repeating: "a", count: 50)
+        try await app.test(.router) { client in
+            try await client.execute(
+                uri: "/me/keywords",
+                method: .post,
+                headers: [
+                    .authorization: "Bearer nnt_alice",
+                    .contentType: "application/json",
+                ],
+                body: ByteBuffer(string: #"{"keyword":"\#(maxKw)"}"#)
+            ) { response in
+                XCTAssertEqual(response.status, .created)
+            }
+        }
+    }
+
+    /// GET 응답이 Store의 `ORDER BY keyword`를 그대로 propagate해 알파벳 정렬됨.
+    /// listKeywords의 ORDER BY가 라우트 응답까지 보존되는지 end-to-end로 pin.
+    func testListReturnsAlphabeticallySortedKeywords() async throws {
+        let (store, app) = try makeApp()
+        defer { Task { await store.close() } }
+        try await app.test(.router) { client in
+            for kw in ["banana", "apple"] {
+                try await client.execute(
+                    uri: "/me/keywords",
+                    method: .post,
+                    headers: [
+                        .authorization: "Bearer nnt_alice",
+                        .contentType: "application/json",
+                    ],
+                    body: ByteBuffer(string: #"{"keyword":"\#(kw)"}"#)
+                ) { _ in }
+            }
+            try await client.execute(
+                uri: "/me/keywords",
+                method: .get,
+                headers: [.authorization: "Bearer nnt_alice"]
+            ) { response in
+                XCTAssertEqual(response.status, .ok)
+                XCTAssertEqual(String(buffer: response.body), #"["apple","banana"]"#)
+            }
+        }
+    }
+
     /// 같은 키워드 두 번 POST해도 201 + 한 row.
     func testPostDuplicateIsIdempotent() async throws {
         let (store, app) = try makeApp()
