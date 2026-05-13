@@ -14,6 +14,7 @@ public func buildApp(store: Store) -> some ApplicationProtocol {
         try context.requireUUID()
     }
     PushTokenRoutes(store: store).add(to: authed)
+    KeywordRoutes(store: store).add(to: authed)
 
     return Application(
         router: router,
