@@ -10,6 +10,8 @@ import AVFoundation
 
 @main
 struct nuntingApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+
     init() {
         // Configure audio session for inline video playback. Without this,
         // unmuting an autoplay video has no effect (default category mutes

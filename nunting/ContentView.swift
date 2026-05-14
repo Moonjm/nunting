@@ -17,7 +17,7 @@ struct ContentView: View {
     /// Owns the keep-alive PostDetailView's activePost / offset / animation
     /// lock. The pan gesture below still drives the interactive drag
     /// directly against this controller's `offset` / `offsetBase`.
-    @State private var detail = DetailOverlayController()
+    @State private var detail = DetailOverlayController.shared
 
     @State private var drawerOpen = false
     @State private var drawerSection: DrawerSection = .favorites
