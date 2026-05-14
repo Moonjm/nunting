@@ -26,7 +26,7 @@ public func buildApp(
     PushTokenRoutes(store: store).add(to: authed)
     KeywordRoutes(store: store).add(to: authed)
     if let apns {
-        TestPushRoutes(store: store, apns: apns).add(to: authed)
+        TestPushRoutes(store: store, apns: apns).mount(authed: authed, root: router)
     }
 
     return Application(
