@@ -39,10 +39,10 @@ enum AlertSubscriptionError: LocalizedError {
 // MARK: - Service
 
 final class AlertSubscriptionService {
-    /// 사이드로드 1인 도구라 hardcoded. 실 배포 전 본인 Cloudflare Tunnel
-    /// 호스트로 교체(예: `https://nunting.YOUR-DOMAIN`). 시뮬레이터 dev는
-    /// `http://127.0.0.1:8080` + Info.plist `NSAllowsLocalNetworking`.
-    static let defaultBaseURL = URL(string: "http://192.168.0.70:8080")!
+    /// 사이드로드 1인 도구라 hardcoded. PR E에서 Cloudflare Tunnel hostname이
+    /// 확정되면 그걸로 교체(예: `https://nunting.YOUR-DOMAIN`). 현재 시뮬레이터
+    /// + 같은 Mac에서 서버 실행 시 동작.
+    static let defaultBaseURL = URL(string: "http://127.0.0.1:8080")!
 
     static let shared = AlertSubscriptionService(
         baseURL: AlertSubscriptionService.defaultBaseURL,
