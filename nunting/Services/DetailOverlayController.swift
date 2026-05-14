@@ -17,6 +17,15 @@ import NuntingCore
 @Observable
 @MainActor
 final class DetailOverlayController {
+    /// Process-wide singleton so non-SwiftUI call sites (push-notification
+    /// deep links via `NotificationDelegate`) can route into the same
+    /// controller `ContentView` is already observing. SwiftUI `@State`
+    /// initialises lazily *per scene*, but `nunting` only has one
+    /// `WindowGroup` so the shared instance and the scene's controller
+    /// are identical — `ContentView` binds to `.shared` instead of
+    /// instantiating its own.
+    static let shared = DetailOverlayController()
+
     /// Most recently opened post. Stays non-nil after `hide()` so the
     /// next forward-swipe can restore the same view instantly.
     var activePost: Post?
@@ -100,6 +109,31 @@ final class DetailOverlayController {
                 self.offset = 0
             }
         }
+    }
+
+    /// 푸시 알림의 deep-link payload(`url` + `aps.alert.body`)로 detail overlay 진입.
+    /// URL host로 site 추정 + query items로 boardID/postNo 추출 → minimal Post 빌드.
+    /// PostDetailLoader가 cold path로 실제 본문 fetch.
+    func present(url: URL, title: String) {
+        guard let site = Site.detect(host: url.host) else { return }
+        let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        let queryItems = comps?.queryItems ?? []
+        let boardID = queryItems.first(where: { $0.name == "id" })?.value ?? ""
+        let postNo = queryItems.first(where: { $0.name == "no" })?.value ?? UUID().uuidString
+        let post = Post(
+            // boardID 비어있으면 site.rawValue로 fallback — 다른 사이트의 같은
+            // postNo끼리 cache key 충돌 방지(예: clien-12345 vs inven-12345).
+            id: "\(boardID.isEmpty ? site.rawValue : boardID)-\(postNo)",
+            site: site,
+            boardID: boardID,
+            title: title,
+            author: "",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: url
+        )
+        show(post)
     }
 
     /// Slide the overlay off-screen right. Intentionally leaves

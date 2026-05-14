@@ -33,8 +33,15 @@ if let raw = env["NUNTING_POLL_INTERVAL_SECONDS"], let s = Int(raw) {
 }
 let pollerService = PollerService(poller: poller, interval: interval)
 
-// 4) Application
-let app = buildApp(store: store, additionalServices: [pollerService])
+// 4) Application — bind host/port (LAN 노출은 NUNTING_BIND_HOST=0.0.0.0)
+let bindHost = env["NUNTING_BIND_HOST"] ?? "127.0.0.1"
+let bindPort = (env["NUNTING_BIND_PORT"].flatMap(Int.init)) ?? 8080
+let app = buildApp(
+    store: store,
+    additionalServices: [pollerService],
+    bindHost: bindHost,
+    bindPort: bindPort
+)
 
 do {
     try await app.runService()
@@ -66,6 +73,21 @@ func makeAPNsSender(env: [String: String]) throws -> any APNsSender {
     let config = APNsConfig(
         keyPath: keyPath, keyId: keyId, teamId: teamId, topic: topic, host: host
     )
+
+    // 진단용 로그: 사용자가 set한 값이 실제 서버에 어떻게 들어갔는지 확인.
+    // (.p8 본문은 노출 금지 — 첫 줄만 형식 검증용으로 표시)
+    let pemFirstLine = keyPEM.split(separator: "\n").first.map(String.init) ?? "(empty)"
+    FileHandle.standardError.write(Data("""
+        [main] APNs config:
+          APNS_KEY_PATH=\(keyPath)
+          APNS_KEY_ID=\(keyId) (len=\(keyId.count))
+          APNS_TEAM_ID=\(teamId) (len=\(teamId.count))
+          APNS_TOPIC=\(topic)
+          APNS_HOST=\(host)
+          .p8 first line: \(pemFirstLine)
+
+        """.utf8))
+
     return APNsClient(config: config, keyPEM: keyPEM) { url, headers, body in
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -73,6 +95,22 @@ func makeAPNsSender(env: [String: String]) throws -> any APNsSender {
         req.httpBody = body
         let (respBody, resp) = try await URLSession.shared.data(for: req)
         let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+
+        // 진단용 로그: 403/410 같은 비정상 응답 시 요청 형태 + 응답 본문 출력.
+        // 200은 silent (정상 흐름 방해 안 함).
+        if status != 200 {
+            let bodyStr = String(data: respBody, encoding: .utf8) ?? "(non-utf8)"
+            let authHeader = headers["authorization"] ?? "(missing)"
+            let jwt = authHeader.hasPrefix("bearer ") ? String(authHeader.dropFirst("bearer ".count)) : authHeader
+            FileHandle.standardError.write(Data("""
+                [APNs send fail] status=\(status)
+                  url=\(url.absoluteString)
+                  apns-topic=\(headers["apns-topic"] ?? "(missing)")
+                  jwt=\(jwt.prefix(40))...\(jwt.suffix(20))
+                  body=\(bodyStr)
+
+                """.utf8))
+        }
         return (status, respBody)
     }
 }
