@@ -121,7 +121,9 @@ final class DetailOverlayController {
         let boardID = queryItems.first(where: { $0.name == "id" })?.value ?? ""
         let postNo = queryItems.first(where: { $0.name == "no" })?.value ?? UUID().uuidString
         let post = Post(
-            id: "\(boardID.isEmpty ? "deeplink" : boardID)-\(postNo)",
+            // boardID 비어있으면 site.rawValue로 fallback — 다른 사이트의 같은
+            // postNo끼리 cache key 충돌 방지(예: clien-12345 vs inven-12345).
+            id: "\(boardID.isEmpty ? site.rawValue : boardID)-\(postNo)",
             site: site,
             boardID: boardID,
             title: title,
