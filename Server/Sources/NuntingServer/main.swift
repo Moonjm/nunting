@@ -11,13 +11,11 @@ let store = try Store(path: dbPath)
 // 2) APNs (선택). dev에선 env 없으면 stub-print 모드로 폴백 — 폴러는 그래도 돈다.
 let apns: any APNsSender = try makeAPNsSender(env: env)
 
-// 3) Poller
-let board = Board(
-    id: "ppomppu",
-    site: .ppomppu,
-    name: "뽐뿌게시판",
-    path: "/zboard/zboard.php?id=ppomppu"
-)
+// 3) Poller — 뽐뿌 모바일 리스트(`m.ppomppu.co.kr/new/bbs_list.php?id=ppomppu`).
+//   `Board.ppomppuMain` 카논 path를 그대로 쓴다(iOS 앱과 동일 경로) — 데스크탑
+//   `/zboard/zboard.php`는 다른 DOM이라 `PpomppuParser`가 0건 반환하고
+//   sentinel/매칭이 영영 안 잡힌다(Task 8 스모크에서 발견).
+let board = Board.ppomppuMain
 let poller = PpomppuPoller(
     board: board,
     store: store,

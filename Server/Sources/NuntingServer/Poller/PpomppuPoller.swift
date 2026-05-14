@@ -99,7 +99,14 @@ public actor PpomppuPoller {
     }
 
     private func fetchAndParse(page: Int) async throws -> [Post] {
-        var components = URLComponents(string: "https://www.ppomppu.co.kr\(board.path)")!
+        // `board.site.baseURL`(`https://m.ppomppu.co.kr`)에 `board.path`(`/new/bbs_list.php?id=ppomppu`)
+        // 를 붙여 모바일 리스트 페이지를 fetch. 데스크탑(`www.ppomppu.co.kr/zboard/zboard.php`)
+        // 은 DOM 구조가 달라 `PpomppuParser.parseList`가 0건을 반환한다(Task 8 스모크에서 발견).
+        var components = URLComponents(url: board.site.baseURL, resolvingAgainstBaseURL: false)!
+        if let pathComps = URLComponents(string: board.path) {
+            components.path = pathComps.path
+            components.queryItems = pathComps.queryItems
+        }
         var queryItems = components.queryItems ?? []
         queryItems.append(URLQueryItem(name: "page", value: "\(page)"))
         components.queryItems = queryItems
