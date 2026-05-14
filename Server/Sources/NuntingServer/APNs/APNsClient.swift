@@ -48,7 +48,12 @@ public actor APNsClient: APNsSender {
 
     public func send(deviceToken: String, payload: APNsPayload) async throws -> APNsResult {
         let body = try JSONEncoder().encode(payload)
-        let url = URL(string: "https://\(config.host)/3/device/\(deviceToken)")!
+        // PushTokenRoute는 256자 sanity cap만 두고 형식 검증은 안 한다(1인 도구 신뢰
+        // 모델). path-unsafe 문자가 들어오면 URL 빌드가 실패할 수 있으므로 force unwrap
+        // 대신 guard로 즉시 .fail로 변환.
+        guard let url = URL(string: "https://\(config.host)/3/device/\(deviceToken)") else {
+            return .fail(status: 0, body: "invalid device token format")
+        }
 
         var lastResult: APNsResult = .retryExhausted
         for attempt in 0..<3 {
