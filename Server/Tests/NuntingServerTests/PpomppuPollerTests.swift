@@ -4,14 +4,15 @@ import NuntingCore
 @testable import NuntingServer
 
 final class PpomppuPollerTests: XCTestCase {
-    /// `NuntingCore.Board`가 의도적으로 non-Sendable이라 static let에 그대로
-    /// 두면 Swift 6 strict concurrency가 막는다. immutable 값을 단일
-    /// 클래스 스코프에서만 읽으므로 `nonisolated(unsafe)`로 명시.
+    /// `Board.ppomppuMain`과 동일 canonical path. 데스크탑 path
+    /// (`/zboard/zboard.php`)는 모바일 파서가 silent하게 0건 반환(Task 8 스모크가
+    /// 잡은 prod 버그)이라 테스트도 같은 mobile path를 쓴다.
+    /// `Board`가 의도적으로 non-Sendable이라 `nonisolated(unsafe)`로 명시.
     nonisolated(unsafe) private static let board = Board(
         id: "ppomppu",
         site: .ppomppu,
         name: "뽐뿌게시판",
-        path: "/zboard/zboard.php?id=ppomppu"
+        path: "/new/bbs_list.php?id=ppomppu"
     )
 
     /// page=1 fixture에 글 2건. 첫 tick은 sentinel만 잡고 push 발송 안 함.

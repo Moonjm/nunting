@@ -87,7 +87,11 @@ public actor PpomppuPoller {
             do {
                 let result = try await apns.send(deviceToken: sub.pushToken, payload: payload)
                 if case .unregistered = result {
-                    try? await store.setPushToken(uuid: m.uuid, token: nil)
+                    do {
+                        try await store.setPushToken(uuid: m.uuid, token: nil)
+                    } catch {
+                        print("[PpomppuPoller] setPushToken NULL fail for uuid=\(m.uuid): \(error)")
+                    }
                 }
             } catch {
                 print("[PpomppuPoller] APNs send error for uuid=\(m.uuid): \(error)")
@@ -99,18 +103,10 @@ public actor PpomppuPoller {
     }
 
     private func fetchAndParse(page: Int) async throws -> [Post] {
-        // `board.site.baseURL`(`https://m.ppomppu.co.kr`)에 `board.path`(`/new/bbs_list.php?id=ppomppu`)
-        // 를 붙여 모바일 리스트 페이지를 fetch. 데스크탑(`www.ppomppu.co.kr/zboard/zboard.php`)
-        // 은 DOM 구조가 달라 `PpomppuParser.parseList`가 0건을 반환한다(Task 8 스모크에서 발견).
-        var components = URLComponents(url: board.site.baseURL, resolvingAgainstBaseURL: false)!
-        if let pathComps = URLComponents(string: board.path) {
-            components.path = pathComps.path
-            components.queryItems = pathComps.queryItems
-        }
-        var queryItems = components.queryItems ?? []
-        queryItems.append(URLQueryItem(name: "page", value: "\(page)"))
-        components.queryItems = queryItems
-        let url = components.url!
+        // `Board.url(page:)`이 사이트별 page param 이름(ppomppu=page, clien=po, inven=p,
+        // ...)과 zero-based 같은 quirk를 흡수한다. 또 mobile baseURL + canonical path를
+        // 한 곳에서 보장 — Task 8 스모크에서 발견한 데스크탑 경로 버그 같은 클래스 차단.
+        let url = board.url(filter: nil, search: nil, page: page)
         let html = try await fetcher(url, board.site.encoding)
         return try PpomppuParser().parseList(html: html, board: board)
     }
