@@ -98,19 +98,6 @@ final class AlertSubscriptionService {
         _ = try await delete("/me/keywords/\(encoded)")
     }
 
-    /// 서버의 `POST /me/test-push` 호출 — 폴러 매칭과 무관하게 본인 디바이스로
-    /// 즉시 푸시 한 발 발사. e2e 검증용. 응답은 APNs 결과 문자열 (`"ok"` /
-    /// `"unregistered"` / `"fail(...)"`).
-    func triggerTestPush() async throws -> String {
-        let (data, _) = try await post("/me/test-push", jsonBody: Data())
-        struct TestPushResponse: Decodable { let result: String }
-        do {
-            return try JSONDecoder().decode(TestPushResponse.self, from: data).result
-        } catch {
-            throw AlertSubscriptionError.decodeFailed(String(data: data, encoding: .utf8) ?? "")
-        }
-    }
-
     // MARK: - HTTP helpers
 
     private func get(_ path: String) async throws -> (Data, HTTPURLResponse) {

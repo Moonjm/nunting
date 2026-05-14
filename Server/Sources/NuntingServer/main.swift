@@ -38,7 +38,6 @@ let bindHost = env["NUNTING_BIND_HOST"] ?? "127.0.0.1"
 let bindPort = (env["NUNTING_BIND_PORT"].flatMap(Int.init)) ?? 8080
 let app = buildApp(
     store: store,
-    apns: apns,
     additionalServices: [pollerService],
     bindHost: bindHost,
     bindPort: bindPort

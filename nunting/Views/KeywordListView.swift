@@ -52,13 +52,6 @@ struct KeywordListView: View {
                     .onDelete(perform: deleteKeywords)
                 }
             }
-            Section("디버그") {
-                Button {
-                    Task { await runTestPush() }
-                } label: {
-                    Label("테스트 알림 보내기", systemImage: "paperplane")
-                }
-            }
         }
         .navigationTitle("알림 키워드")
         .task { await loadAll() }
@@ -145,18 +138,6 @@ struct KeywordListView: View {
             try await AlertSubscriptionService.shared.removeKeyword(kw)
         } catch {
             errorMessage = "삭제 실패(\(kw)): \(error.localizedDescription)"
-        }
-    }
-
-    /// "테스트 알림 보내기" 버튼 — 서버가 본인 push_token으로 즉시 푸시 발사.
-    /// 응답 결과를 errorMessage 자리에 잠시 표시(success도 안내 목적).
-    private func runTestPush() async {
-        errorMessage = nil
-        do {
-            let result = try await AlertSubscriptionService.shared.triggerTestPush()
-            errorMessage = "테스트 푸시 결과: \(result)"
-        } catch {
-            errorMessage = "테스트 푸시 실패: \(error.localizedDescription)"
         }
     }
 }

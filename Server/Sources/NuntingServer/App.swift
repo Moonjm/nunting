@@ -9,7 +9,6 @@ import ServiceLifecycle
 /// `NUNTING_BIND_HOST` env로 override.
 public func buildApp(
     store: Store,
-    apns: (any APNsSender)? = nil,
     additionalServices: [any Service] = [],
     bindHost: String = "127.0.0.1",
     bindPort: Int = 8080
@@ -25,9 +24,6 @@ public func buildApp(
     }
     PushTokenRoutes(store: store).add(to: authed)
     KeywordRoutes(store: store).add(to: authed)
-    if let apns {
-        TestPushRoutes(store: store, apns: apns).mount(authed: authed, root: router)
-    }
 
     return Application(
         router: router,
