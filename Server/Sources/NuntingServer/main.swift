@@ -33,8 +33,15 @@ if let raw = env["NUNTING_POLL_INTERVAL_SECONDS"], let s = Int(raw) {
 }
 let pollerService = PollerService(poller: poller, interval: interval)
 
-// 4) Application
-let app = buildApp(store: store, additionalServices: [pollerService])
+// 4) Application — bind host/port (LAN 노출은 NUNTING_BIND_HOST=0.0.0.0)
+let bindHost = env["NUNTING_BIND_HOST"] ?? "127.0.0.1"
+let bindPort = (env["NUNTING_BIND_PORT"].flatMap(Int.init)) ?? 8080
+let app = buildApp(
+    store: store,
+    additionalServices: [pollerService],
+    bindHost: bindHost,
+    bindPort: bindPort
+)
 
 do {
     try await app.runService()
