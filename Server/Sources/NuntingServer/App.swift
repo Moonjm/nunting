@@ -1,9 +1,12 @@
 import Hummingbird
+import ServiceLifecycle
 
-/// 테스트는 `:memory:` Store를, main.swift는 디스크 Store를 주입한다.
-/// 라우트는 후속 task에서 채워진다. 지금은 /health(인증 없이)와 /me/_echo
-/// (인증 통과 후 uuid echo) 두 개만 둔다.
-public func buildApp(store: Store) -> some ApplicationProtocol {
+/// 테스트는 `:memory:` Store + 빈 services를 주입한다.
+/// main.swift는 디스크 Store + PollerService를 주입.
+public func buildApp(
+    store: Store,
+    additionalServices: [any Service] = []
+) -> some ApplicationProtocol {
     let router = Router(context: UserRequestContext.self)
 
     router.get("/health") { _, _ in "ok" }
@@ -18,6 +21,7 @@ public func buildApp(store: Store) -> some ApplicationProtocol {
 
     return Application(
         router: router,
-        configuration: .init(address: .hostname("127.0.0.1", port: 8080))
+        configuration: .init(address: .hostname("127.0.0.1", port: 8080)),
+        services: additionalServices
     )
 }

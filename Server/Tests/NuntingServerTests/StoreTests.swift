@@ -115,4 +115,48 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(a, ["galaxy"])
         XCTAssertEqual(b, ["rtx"])
     }
+
+    /// `users.push_token IS NOT NULL`인 사용자의 (uuid, push_token, Set<keyword>) 스냅샷.
+    /// 폴러가 매 tick마다 한 번 호출한다. push_token NULL인 사용자는 제외 — 발송 대상 아님.
+    func testUsersWithKeywordsExcludesUsersWithoutPushToken() async throws {
+        let store = try Store(path: ":memory:")
+        defer { Task { await store.close() } }
+        try await store.upsertUser(uuid: "nnt_with-token")
+        try await store.setPushToken(uuid: "nnt_with-token", token: "tok-1")
+        try await store.addKeyword(uuid: "nnt_with-token", keyword: "갤럭시")
+        try await store.upsertUser(uuid: "nnt_no-token")
+        try await store.addKeyword(uuid: "nnt_no-token", keyword: "맥북")
+
+        let snapshot = try await store.usersWithKeywords()
+        XCTAssertEqual(snapshot.count, 1)
+        XCTAssertEqual(snapshot["nnt_with-token"]?.pushToken, "tok-1")
+        XCTAssertEqual(snapshot["nnt_with-token"]?.keywords, ["갤럭시"])
+        XCTAssertNil(snapshot["nnt_no-token"], "push_token NULL인 사용자는 제외")
+    }
+
+    /// 키워드 0개인 사용자는 스냅샷에 포함되되 빈 Set으로.
+    /// 단, 폴러는 빈 Set이면 매칭 0건이라 사실상 무시 — 단지 invariant pin.
+    func testUsersWithKeywordsReturnsEmptyKeywordSetIfNoneSubscribed() async throws {
+        let store = try Store(path: ":memory:")
+        defer { Task { await store.close() } }
+        try await store.upsertUser(uuid: "nnt_a")
+        try await store.setPushToken(uuid: "nnt_a", token: "tok")
+        let snapshot = try await store.usersWithKeywords()
+        XCTAssertEqual(snapshot["nnt_a"]?.keywords, [])
+    }
+
+    /// 여러 사용자가 같은 키워드를 구독하면 양쪽 스냅샷에 등장.
+    func testUsersWithKeywordsHandlesMultipleSubscribers() async throws {
+        let store = try Store(path: ":memory:")
+        defer { Task { await store.close() } }
+        for uuid in ["nnt_a", "nnt_b"] {
+            try await store.upsertUser(uuid: uuid)
+            try await store.setPushToken(uuid: uuid, token: "tok-\(uuid)")
+            try await store.addKeyword(uuid: uuid, keyword: "공통키워드")
+        }
+        let snapshot = try await store.usersWithKeywords()
+        XCTAssertEqual(snapshot.count, 2)
+        XCTAssertEqual(snapshot["nnt_a"]?.keywords, ["공통키워드"])
+        XCTAssertEqual(snapshot["nnt_b"]?.keywords, ["공통키워드"])
+    }
 }
