@@ -121,23 +121,32 @@ struct KeywordListView: View {
         let toDelete = offsets.map { keywords[$0] }
         keywords.remove(atOffsets: offsets)
         Task {
+            var anyFailed = false
             for kw in toDelete {
                 do {
                     try await AlertSubscriptionService.shared.removeKeyword(kw)
                 } catch {
                     errorMessage = "삭제 실패(\(kw)): \(error.localizedDescription)"
+                    anyFailed = true
                 }
+            }
+            // 실패한 항목이 optimistic remove로 사라진 채 보이지 않게, 서버 상태로
+            // resync. 성공 case는 no-op(서버도 이미 삭제 반영).
+            if anyFailed {
+                await loadAll()
             }
         }
     }
 
     /// 명시 삭제 버튼(빨간 minus.circle) 탭 시 — 단일 키워드 즉시 optimistic 제거.
+    /// 서버 fail 시 loadAll로 resync해 사라진 항목 복원.
     private func removeSingle(_ kw: String) async {
         keywords.removeAll { $0 == kw }
         do {
             try await AlertSubscriptionService.shared.removeKeyword(kw)
         } catch {
             errorMessage = "삭제 실패(\(kw)): \(error.localizedDescription)"
+            await loadAll()
         }
     }
 }
