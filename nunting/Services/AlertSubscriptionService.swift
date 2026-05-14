@@ -19,9 +19,21 @@ protocol UUIDStore {
 
 // MARK: - Errors
 
-enum AlertSubscriptionError: Error {
+enum AlertSubscriptionError: LocalizedError {
     case http(status: Int, body: String)
     case decodeFailed(String)
+
+    /// KeywordListView가 `error.localizedDescription`을 그대로 사용자에게 보여주므로
+    /// case enum 이름 대신 의미 있는 문자열을 제공.
+    var errorDescription: String? {
+        switch self {
+        case .http(let status, let body):
+            let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? "서버 오류 (HTTP \(status))" : "서버 오류 (HTTP \(status)): \(trimmed)"
+        case .decodeFailed(let raw):
+            return "응답 디코드 실패: \(raw)"
+        }
+    }
 }
 
 // MARK: - Service
