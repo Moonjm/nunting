@@ -42,7 +42,7 @@ final class AlertSubscriptionService {
     /// 사이드로드 1인 도구라 hardcoded. 실 배포 전 본인 Cloudflare Tunnel
     /// 호스트로 교체(예: `https://nunting.YOUR-DOMAIN`). 시뮬레이터 dev는
     /// `http://127.0.0.1:8080` + Info.plist `NSAllowsLocalNetworking`.
-    static let defaultBaseURL = URL(string: "http://127.0.0.1:8080")!
+    static let defaultBaseURL = URL(string: "http://192.168.0.70:8080")!
 
     static let shared = AlertSubscriptionService(
         baseURL: AlertSubscriptionService.defaultBaseURL,
@@ -96,6 +96,19 @@ final class AlertSubscriptionService {
     func removeKeyword(_ keyword: String) async throws {
         let encoded = keyword.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? keyword
         _ = try await delete("/me/keywords/\(encoded)")
+    }
+
+    /// 서버의 `POST /me/test-push` 호출 — 폴러 매칭과 무관하게 본인 디바이스로
+    /// 즉시 푸시 한 발 발사. e2e 검증용. 응답은 APNs 결과 문자열 (`"ok"` /
+    /// `"unregistered"` / `"fail(...)"`).
+    func triggerTestPush() async throws -> String {
+        let (data, _) = try await post("/me/test-push", jsonBody: Data())
+        struct TestPushResponse: Decodable { let result: String }
+        do {
+            return try JSONDecoder().decode(TestPushResponse.self, from: data).result
+        } catch {
+            throw AlertSubscriptionError.decodeFailed(String(data: data, encoding: .utf8) ?? "")
+        }
     }
 
     // MARK: - HTTP helpers
