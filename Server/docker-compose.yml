@@ -26,9 +26,3 @@ services:
       NUNTING_BIND_HOST: "0.0.0.0"
       NUNTING_BIND_PORT: "8080"
       NUNTING_DB_PATH: "/var/lib/nunting/state.db"
-    # SD 카드 보호 — 기본 json-file 드라이버는 무제한 누적. 5×10MB = 50MB 상한.
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "5"

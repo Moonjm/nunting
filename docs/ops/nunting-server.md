@@ -88,7 +88,7 @@ docker compose logs --tail 200  # 최근 200줄
 docker logs nunting-server      # container_name 으로
 ```
 
-compose 파일이 json-file 5×10MB rotation 설정 — 총 50MB 상한 자동 순환.
+기본 json-file 드라이버 사용 (rotation 없음). SSD 기준으로 무제한 누적도 실용상 문제 없지만, 신경 쓰이면 `docker-compose.yml` 의 service 아래에 `logging: { driver: json-file, options: { max-size: 10m, max-file: 5 } }` 추가하면 50MB 상한 자동 순환.
 
 주요 JSON 로그 키:
 - `msg=http_serving` — 기동 직후, addr/db_path/poll_sec 확인.
