@@ -56,3 +56,6 @@ Server/secrets/*
 # Go 빌드 산물 (local `go build` 시 생성될 수 있음)
 Server/server
 Server/coverage.out
+# 배포 설정 + tar 산물
+Server/.deploy.env
+Server/nunting-server.tar

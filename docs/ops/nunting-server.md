@@ -51,6 +51,26 @@ docker compose logs -f
 
 ## 3. 업데이트
 
+두 가지 방식 — 본인 환경에 맞춰 선택:
+
+**A) Mac 에서 빌드 → Pi 로 이미지 푸시 (권장, 빠름)**
+
+Mac 쪽 setup (한 번만):
+```bash
+cd nunting/Server
+cp .deploy.env.example .deploy.env
+nano .deploy.env  # REMOTE_USER / REMOTE_HOST / REMOTE_BASE_DIR 채우기
+```
+
+이후 매 배포:
+```bash
+cd nunting/Server
+./deploy.sh
+```
+
+내부 동작: linux/arm64 이미지 빌드(Mac buildx) → tar 저장 → scp + docker-compose.yml 전송 → ssh 로 `docker load` + `docker compose up -d --force-recreate` + image prune. **30초~2분** 끝.
+
+**B) Pi 에서 직접 git pull + rebuild (Mac 없이 SSH 만으로 끝낼 때)**
 ```bash
 cd ~/nunting
 git pull
