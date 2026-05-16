@@ -59,11 +59,15 @@ func main() {
 	}
 	apnsClient.SetTokenClearer(store)
 
-	// 4) HTTP server
+	// 4) HTTP server — slow-write DoS 와 connection leak 방지용 타임아웃.
+	// 외부 노출 (Cloudflare proxy) 전제 하에 보수적 값.
 	srv := &http.Server{
 		Addr:              bindHost + ":" + bindPort,
 		Handler:           api.NewRouter(store),
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	// 5) Poller goroutine
