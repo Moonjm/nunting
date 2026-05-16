@@ -178,3 +178,13 @@ func (s *Store) ClearPushTokenByValue(ctx context.Context, token string) error {
 		`UPDATE users SET push_token = NULL WHERE push_token = ?`, token)
 	return err
 }
+
+// UserExists 테스트용 헬퍼. UpsertUser 가 실제로 row 를 만들었는지 검증.
+func (s *Store) UserExists(ctx context.Context, uuid string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE uuid = ?`, uuid).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
