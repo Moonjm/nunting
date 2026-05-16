@@ -46,3 +46,13 @@ fastlane/test_output
 
 # 로컬 노트
 README.md
+
+# Server runtime artifacts (Docker deploy)
+Server/.env
+Server/data/*
+!Server/data/.gitkeep
+Server/secrets/*
+!Server/secrets/.gitkeep
+# Go 빌드 산물 (local `go build` 시 생성될 수 있음)
+Server/server
+Server/coverage.out
