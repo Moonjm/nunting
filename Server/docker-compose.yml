@@ -1,0 +1,34 @@
+# `Server/` 디렉토리 안에서 `docker compose up -d --build` 한 줄로 시작.
+# Go 는 외부 의존(상위 Shared/) 가 없으므로 build context 는 . (현재 디렉토리).
+#
+# 첫 부팅 전 `cp .env.example .env` — env_file 미존재 시 `up` 가 에러로 멈춤.
+
+services:
+  nunting:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nunting-server:local
+    container_name: nunting-server
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      # 호스트 포트만 .env 로 가변. 컨테이너 내부 포트는 Dockerfile EXPOSE 와 동일.
+      - "${NUNTING_HOST_PORT:-8080}:8080"
+    volumes:
+      # SQLite 파일 보존 — docker compose down/up 사이에 데이터 유지.
+      - ./data:/var/lib/nunting
+      # APNs .p8 read-only mount. .env 의 APNS_KEY_PATH 는 컨테이너 내부 경로
+      # (/run/secrets/AuthKey_XXX.p8) 를 가리켜야 한다.
+      - ./secrets:/run/secrets:ro
+    environment:
+      # 컨테이너 안에서는 항상 0.0.0.0 으로 bind — 호스트 포트 매핑 동작 보장.
+      NUNTING_BIND_HOST: "0.0.0.0"
+      NUNTING_BIND_PORT: "8080"
+      NUNTING_DB_PATH: "/var/lib/nunting/state.db"
+    # SD 카드 보호 — 기본 json-file 드라이버는 무제한 누적. 5×10MB = 50MB 상한.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

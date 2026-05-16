@@ -1,0 +1,15 @@
+.git
+.gitignore
+**/.DS_Store
+
+# 컨테이너 밖에서 mount 로 주입
+data/
+secrets/
+.env
+
+# 테스트 산물 + IDE
+**/*_test.go
+internal/poll/testdata/
+**/coverage.out
+.vscode/
+.idea/
