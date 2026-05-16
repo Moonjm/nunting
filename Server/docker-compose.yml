@@ -4,11 +4,8 @@
 # 첫 부팅 전 `cp .env.example .env` — env_file 미존재 시 `up` 가 에러로 멈춤.
 
 services:
-  nunting:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: nunting-server:local
+  nunting-server:
+    image: nunting-server:latest
     container_name: nunting-server
     restart: unless-stopped
     env_file: .env
