@@ -17,7 +17,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *db.Store) {
 	if err != nil {
 		t.Fatalf("db: %v", err)
 	}
-	return httptest.NewServer(NewRouter(store, nil)), store
+	return httptest.NewServer(NewRouter(store)), store
 }
 
 func do(t *testing.T, method, url, token, body string) (int, string) {

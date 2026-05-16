@@ -59,11 +59,10 @@ func main() {
 	}
 	apnsClient.SetTokenClearer(store)
 
-	// 4) HTTP server — apnsClient 를 /test-push 디버그 라우트의 TestPusher 로 주입.
-	// 임시 — PR 머지 전 라우트와 함께 제거 예정.
+	// 4) HTTP server
 	srv := &http.Server{
 		Addr:              bindHost + ":" + bindPort,
-		Handler:           api.NewRouter(store, apnsClient),
+		Handler:           api.NewRouter(store),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

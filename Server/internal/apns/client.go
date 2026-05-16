@@ -126,19 +126,3 @@ func safePrefix(s string) string {
 	}
 	return s[:8] + "..."
 }
-
-// SendTest 디버그용 — 합성 페이로드로 즉시 한 발. real 모드면 실제 APNs 응답
-// (200/403/410 등) 을 그대로 반환해 진단 가능. stub 모드면 nil.
-// 임시 /test-push 라우트에서만 사용 — PR 머지 전 함께 제거 예정.
-func (c *Client) SendTest(ctx context.Context, deviceToken string) error {
-	testPost := poll.Post{
-		ID:     "ppomppu-test",
-		PostNo: "test",
-		Title:  "Go 서버 push-test 동작 확인",
-		URL:    "https://m.ppomppu.co.kr/new/bbs_view.php?id=ppomppu&no=999999",
-	}
-	return c.Send(ctx, deviceToken, "테스트", testPost)
-}
-
-// IsStub real 클라이언트가 없는 모드인지 — /test-push 가 즉시 fail 안내할 때 사용.
-func (c *Client) IsStub() bool { return c.real == nil }
