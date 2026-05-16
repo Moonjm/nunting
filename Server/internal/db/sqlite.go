@@ -142,6 +142,10 @@ func (s *Store) RemoveKeyword(ctx context.Context, uuid, keyword string) error {
 // 그 user 에게 push_token 이 있으면 (uuid, token, keyword) 를 반환.
 // case-insensitive 매칭을 위해 LOWER() 비교. 매칭은 SQL 단에서 처리해
 // 메모리 폭증을 막는다(사용자 수 < 10 가정이지만 키워드 수 제한 없음).
+//
+// 한 user 가 같은 글에 두 개 이상 키워드로 매칭되어도 **한 번만 push**:
+// 첫 매칭(ORDER BY keyword 알파벳 첫 번째) 만 반환. iOS 사용자 입장에서
+// "삼성 갤럭시 핫딜" 글에 '삼성' + '갤럭시' 둘 다 구독해도 알림은 1건.
 func (s *Store) MatchedUsersForTitle(ctx context.Context, title string) ([]Match, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT u.uuid, u.push_token, k.keyword

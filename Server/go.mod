@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/PuerkitoBio/goquery v1.12.0
 	github.com/go-chi/chi/v5 v5.2.5
+	github.com/sideshow/apns2 v0.25.0
 	golang.org/x/net v0.54.0
 	modernc.org/sqlite v1.50.1
 )
@@ -17,7 +18,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/sideshow/apns2 v0.25.0 // indirect
 	golang.org/x/sys v0.44.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	modernc.org/libc v1.72.3 // indirect
