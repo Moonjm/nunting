@@ -192,3 +192,16 @@ func (s *Store) UserExists(ctx context.Context, uuid string) (bool, error) {
 	}
 	return n > 0, nil
 }
+
+// AnyUserWithToken 디버그용 — push_token 이 있는 첫 user 의 (uuid, token).
+// 1인 도구 가정에서 단 한 사용자만 있는 경우 그 사용자가 반환됨.
+// 토큰 있는 user 가 없으면 ("", "", nil).
+func (s *Store) AnyUserWithToken(ctx context.Context) (string, string, error) {
+	var uuid, token string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT uuid, push_token FROM users WHERE push_token IS NOT NULL LIMIT 1`).Scan(&uuid, &token)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", nil
+	}
+	return uuid, token, err
+}

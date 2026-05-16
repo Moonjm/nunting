@@ -11,7 +11,8 @@ import (
 )
 
 type handlers struct {
-	store *db.Store
+	store      *db.Store
+	testPusher TestPusher // nil 이면 /test-push 미등록
 }
 
 func (h *handlers) health(w http.ResponseWriter, r *http.Request) {
@@ -98,4 +99,64 @@ func (h *handlers) removeKeyword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// GET /test-push — 디버그 전용 임시 라우트. push_token 있는 첫 user 한 명에게
+// 합성 페이로드로 푸시 한 발. real APNs 응답(403/410 등) 그대로 surface.
+// PR 머지 전 함께 revert 예정.
+func (h *handlers) testPush(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if h.testPusher == nil {
+		http.Error(w, `{"error":"test pusher unavailable"}`, http.StatusServiceUnavailable)
+		return
+	}
+	if h.testPusher.IsStub() {
+		// APNS_* env 누락 → real mode 아님. push 안 옴.
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"result":"stub_mode — APNS_* env 누락. real mode 로 띄워야 push 가 실제로 감"}`))
+		return
+	}
+
+	uuid, token, err := h.store.AnyUserWithToken(r.Context())
+	if err != nil {
+		b, _ := json.Marshal(map[string]string{"error": "db: " + err.Error()})
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write(b)
+		return
+	}
+	if token == "" {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"error":"no user with push_token — register on iPhone first (앱에서 키워드 한 번 추가하면 토큰 등록)"}`))
+		return
+	}
+
+	if err := h.testPusher.SendTest(r.Context(), token); err != nil {
+		// APNs 403/410 등 — 그대로 보여줌
+		resp := map[string]string{
+			"result":       "fail",
+			"target_uuid":  uuid,
+			"token_prefix": token[:min(8, len(token))] + "...",
+			"error":        err.Error(),
+		}
+		b, _ := json.Marshal(resp)
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write(b)
+		return
+	}
+
+	resp := map[string]string{
+		"result":       "sent",
+		"target_uuid":  uuid,
+		"token_prefix": token[:min(8, len(token))] + "...",
+	}
+	b, _ := json.Marshal(resp)
+	w.Write(b)
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
