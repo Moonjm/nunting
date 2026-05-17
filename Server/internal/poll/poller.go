@@ -88,7 +88,9 @@ walk:
 	}
 
 	if len(newPosts) == 0 {
-		slog.Info("poller_tick_no_new")
+		// 신규 글 없어도 현재 sentinel 은 로그에 남김 — 운영자가 "지금 마지막
+		// 으로 본 글이 뭐지" 즉시 확인 가능.
+		slog.Info("poller_tick_no_new", "sentinel", p.sentinel)
 		return nil
 	}
 

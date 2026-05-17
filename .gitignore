@@ -59,3 +59,6 @@ Server/coverage.out
 # 배포 설정 + tar 산물
 Server/.deploy.env
 Server/nunting-server.tar
+# 로그 파일 (Docker volume 으로 호스트에 떨어지는 nunting-*.log)
+Server/logs/*
+!Server/logs/.gitkeep

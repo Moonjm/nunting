@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -22,12 +23,11 @@ import (
 	"github.com/Moonjm/nunting/server/internal/apns"
 	"github.com/Moonjm/nunting/server/internal/api"
 	"github.com/Moonjm/nunting/server/internal/db"
+	"github.com/Moonjm/nunting/server/internal/logfile"
 	"github.com/Moonjm/nunting/server/internal/poll"
 )
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
-
 	// 1) env
 	dbPath := envOr("NUNTING_DB_PATH", "/var/lib/nunting/state.db")
 	bindHost := envOr("NUNTING_BIND_HOST", "127.0.0.1")
@@ -35,6 +35,31 @@ func main() {
 	pollIntervalSec, _ := strconv.Atoi(envOr("NUNTING_POLL_INTERVAL_SECONDS", "180"))
 	if pollIntervalSec <= 0 {
 		pollIntervalSec = 180
+	}
+	logDir := os.Getenv("NUNTING_LOG_DIR")
+	retainDays := 30
+	if v := os.Getenv("NUNTING_LOG_RETENTION_DAYS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			retainDays = n
+		}
+	}
+
+	// log handler — stdout 항상. NUNTING_LOG_DIR 있으면 dir 안에 날짜별 파일
+	// 생성 + N 일 이전 자동 삭제. 호스트 bind mount 면 컨테이너 lifecycle 과 독립.
+	var logWriter io.Writer = os.Stdout
+	if logDir != "" {
+		rot, err := logfile.NewDailyRotator(logDir, retainDays)
+		if err != nil {
+			slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+			slog.Warn("log_dir_open_failed", "dir", logDir, "err", err)
+		} else {
+			logWriter = io.MultiWriter(os.Stdout, rot)
+			defer rot.Close()
+		}
+	}
+	slog.SetDefault(slog.New(slog.NewJSONHandler(logWriter, nil)))
+	if logDir != "" {
+		slog.Info("log_dir_enabled", "dir", logDir, "retain_days", retainDays)
 	}
 
 	// 2) DB
