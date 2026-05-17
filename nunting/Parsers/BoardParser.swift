@@ -4,26 +4,19 @@ import SwiftSoup
 // MARK: - Closure isolation contract
 //
 // `fetchAllComments`의 `fetcher` 파라미터는 `@escaping @Sendable (URL) async throws -> String`
-// 클로저다. Swift의 closure isolation 기본값이 컴파일 컨텍스트마다 달라서 protocol
-// witness binding이 미묘하게 깨질 수 있다:
+// 클로저다. Swift closure isolation default 가 컴파일 컨텍스트마다 달라서 protocol
+// witness binding 이 silently 깨질 수 있는 트랩이 있다 — default 가 다르면 conforming
+// 타입의 `fetchAllComments` override 가 witness signature 와 매치 안 돼서 **빌드는
+// 통과하지만** default extension impl 이 dispatch 된다(=concrete override 가 죽음).
 //
-//   • SwiftPM 패키지(기본 swift settings): default = `@concurrent`.
-//   • iOS Xcode 타겟(`SWIFT_APPROACHABLE_CONCURRENCY=YES`): default = `nonisolated(nonsending)`.
-//   • `NonisolatedNonsendingByDefault` upcoming feature 활성화 시: default = `nonisolated(nonsending)`.
+// 현재는 iOS 앱 타겟 하나만 conform 하고, `SWIFT_APPROACHABLE_CONCURRENCY=YES` 가
+// default 를 `nonisolated(nonsending)` 으로 맞춰 두므로 트랩이 활성화될 조건은 없다.
+// 이 contract 는 향후 별도 모듈/패키지에서 `BoardParser` 에 conform 할 일이 다시
+// 생길 때(예: 서버 타겟이 Swift 로 회귀 etc.) 같은 closure-default 정렬을 강제하기
+// 위한 문서다.
 //
-// 두 컴파일 컨텍스트의 default가 다르면 conforming 타입의 `fetchAllComments` 구현이
-// 프로토콜의 witness 시그니처와 매치되지 않아 **빌드는 통과하지만** default extension
-// impl이 조용히 dispatch된다(=concrete override가 죽음). 명시적으로 실패하지 않으므로
-// 테스트가 없으면 발견하기 어렵다.
-//
-// 이 패키지는 `Package.swift`에서 `NonisolatedNonsendingByDefault` upcoming feature를
-// 켜서 iOS 타겟의 기본값과 정렬한다. **이 프로토콜에 conform하는 모든 다른 모듈**
-// (예: Plan 2 Linux 서버 타겟)도 동일하게 `SWIFT_APPROACHABLE_CONCURRENCY=YES` 또는
-// `NonisolatedNonsendingByDefault` upcoming feature를 활성화해야 한다. 그렇지 않으면
-// 해당 모듈의 concrete `fetchAllComments` override가 silently no-op이 된다.
-//
-// regression net: `nuntingTests/ParserDispatchTests.swift`가 cross-module conformance를
-// `any BoardParser` existential로 호출해 witness binding이 살아있는지 검증한다.
+// regression net: `nuntingTests/ParserDispatchTests.swift` 가 `any BoardParser`
+// existential 로 fetchAllComments 를 호출해 witness binding 이 살아있는지 검증.
 
 public protocol BoardParser: Sendable {
     nonisolated var site: Site { get }
