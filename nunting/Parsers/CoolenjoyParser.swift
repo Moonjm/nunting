@@ -1,7 +1,5 @@
 import Foundation
 import SwiftSoup
-import NuntingCore
-
 public struct CoolenjoyParser: BoardParser {
     public let site: Site = .coolenjoy
 

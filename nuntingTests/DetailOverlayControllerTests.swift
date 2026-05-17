@@ -1,7 +1,5 @@
 import XCTest
 @testable import nunting
-import NuntingCore
-
 /// State + transition tests for `DetailOverlayController`.
 ///
 /// `show(_:)`'s "different post" branch defers an animation to the next

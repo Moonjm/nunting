@@ -1,19 +1,17 @@
 import XCTest
 @testable import nunting
-import NuntingCore
-
-/// Regression net for the cross-module protocol witness binding trap documented at
-/// `Shared/Sources/NuntingCore/BoardParser.swift` top.
+/// Regression net for the protocol-witness-binding trap documented at
+/// `nunting/Parsers/BoardParser.swift` 상단의 "Closure isolation contract" 절.
 ///
-/// 핵심: `let parser: any BoardParser = EtolandParser()`처럼 existential을 통해 호출하면
-/// Swift는 PWT(protocol witness table)를 거쳐 dispatch한다. concrete `parser.fetchAllComments(...)`
-/// 호출은 static dispatch라 witness binding이 깨져도 우연히 통과하므로, 이 트랩의 진짜
-/// regression net은 existential을 통한 동적 dispatch뿐이다.
+/// 핵심: `let parser: any BoardParser = EtolandParser()` 처럼 existential 을 통해
+/// 호출하면 Swift 는 PWT(protocol witness table) 를 거쳐 dispatch 한다. concrete
+/// `parser.fetchAllComments(...)` 호출은 static dispatch 라 witness binding 이 깨져도
+/// 우연히 통과하므로, 이 트랩의 진짜 regression net 은 existential 동적 dispatch 뿐.
 ///
-/// 이 테스트가 fail하면: 누군가 `Shared/Package.swift`에서
-/// `.enableUpcomingFeature("NonisolatedNonsendingByDefault")`를 제거했거나
-/// iOS 타겟의 `SWIFT_APPROACHABLE_CONCURRENCY` 설정이 변경됐을 가능성이 높다.
-/// BoardParser.swift 상단의 "Closure isolation contract" 절을 참고.
+/// 현재 conformer 는 모두 같은 iOS 앱 모듈 안이라 트랩이 활성화될 조건은 없지만,
+/// 이 테스트는 (a) iOS 타겟의 `SWIFT_APPROACHABLE_CONCURRENCY` 가 꺼지거나
+/// (b) BoardParser 가 다시 별도 모듈/패키지로 분리될 때 closure default mismatch 를
+/// 빌드 후 dispatch 단계에서 잡아낸다.
 final class ParserDispatchTests: XCTestCase {
     /// EtolandParser의 inline-skip 경로가 existential 호출에서도 살아있는지 확인.
     /// witness binding이 깨지면 default extension impl이 dispatch되어 fetcher가

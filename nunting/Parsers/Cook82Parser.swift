@@ -1,7 +1,5 @@
 import Foundation
 import SwiftSoup
-import NuntingCore
-
 /// Parses 82cook (82쿡) desktop detail pages. Reached exclusively via aagag
 /// mirror redirects — 82cook is not exposed as a directly-browsable site.
 ///

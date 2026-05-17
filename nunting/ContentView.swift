@@ -1,7 +1,5 @@
 import SwiftUI
 import UIKit
-import NuntingCore
-
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var favorites: FavoritesStore

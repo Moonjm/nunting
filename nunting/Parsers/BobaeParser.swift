@@ -1,7 +1,5 @@
 import Foundation
 import SwiftSoup
-import NuntingCore
-
 /// Parses bobaedream (보배드림) mobile detail pages. Reached exclusively via
 /// aagag mirror redirects — bobaedream is not exposed as a directly-browsable
 /// site. Replies to comments load asynchronously on the source site so the

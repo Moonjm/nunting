@@ -1,6 +1,4 @@
 import SwiftUI
-import NuntingCore
-
 struct SearchSheet: View {
     let board: Board
     let initialQuery: String

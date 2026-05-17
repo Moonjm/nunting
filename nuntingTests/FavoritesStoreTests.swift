@@ -1,7 +1,5 @@
 import XCTest
 @testable import nunting
-import NuntingCore
-
 /// Persistence + migration tests for `FavoritesStore`.
 ///
 /// Each test uses an isolated `UserDefaults(suiteName:)` so cases don't

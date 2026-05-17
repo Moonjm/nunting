@@ -1,6 +1,4 @@
 import SwiftUI
-import NuntingCore
-
 struct MainBottomBar: View {
     let board: Board
     let onBoardDoubleTap: () -> Void

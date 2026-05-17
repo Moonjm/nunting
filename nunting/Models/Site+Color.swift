@@ -1,6 +1,4 @@
 import SwiftUI
-import NuntingCore
-
 extension Site {
     var accentColor: Color {
         switch self {

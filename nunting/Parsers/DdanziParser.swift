@@ -1,7 +1,5 @@
 import Foundation
 import SwiftSoup
-import NuntingCore
-
 /// Parses 딴지일보 (Ddanzi) mobile detail pages. Reached exclusively via
 /// aagag mirror redirects — Ddanzi is not exposed as a directly-browsable
 /// site.

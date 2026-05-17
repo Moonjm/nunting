@@ -1,6 +1,7 @@
 package logfile
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -86,6 +87,22 @@ func TestCleanup_RemovesFilesOlderThanRetention(t *testing.T) {
 		if exists != shouldExist {
 			t.Errorf("%s: expected exists=%v, got %v (err=%v)", name, shouldExist, exists, err)
 		}
+	}
+}
+
+func TestWrite_AfterCloseReturnsErrClosed(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 5, 17, 10, 0, 0, 0, time.UTC)
+	r, err := newWithClock(dir, 30, func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	n, err := r.Write([]byte("x"))
+	if n != 0 || !errors.Is(err, os.ErrClosed) {
+		t.Errorf("Write after Close: got (n=%d, err=%v), want (0, os.ErrClosed)", n, err)
 	}
 }
 
