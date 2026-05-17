@@ -1,7 +1,5 @@
 import Foundation
 import SwiftSoup
-import NuntingCore
-
 /// Parses humoruniv (웃대) mobile detail pages. Reached exclusively via aagag
 /// mirror redirects — humoruniv is not exposed as a directly-browsable site.
 public struct HumorParser: BoardParser {

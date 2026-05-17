@@ -1,5 +1,5 @@
 import XCTest
-@testable import NuntingCore
+@testable import nunting
 
 final class PpomppuParserSmokeTests: XCTestCase {
     private static let board = Board(

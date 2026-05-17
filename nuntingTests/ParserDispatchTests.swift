@@ -1,7 +1,5 @@
 import XCTest
 @testable import nunting
-import NuntingCore
-
 /// Regression net for the cross-module protocol witness binding trap documented at
 /// `Shared/Sources/NuntingCore/BoardParser.swift` top.
 ///

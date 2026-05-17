@@ -1,7 +1,5 @@
 import XCTest
 @testable import nunting
-import NuntingCore
-
 /// Fixture-based regression tests for parser `parseDetail` body
 /// extraction. Same rationale as `ParserListTests` — pin the smallest
 /// legal DOM against the parser's expected output so selector drift

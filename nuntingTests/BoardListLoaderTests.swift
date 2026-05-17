@@ -1,7 +1,5 @@
 import XCTest
 @testable import nunting
-import NuntingCore
-
 /// State-machine + side-effect tests for `BoardListLoader`.
 ///
 /// Stub fetcher returns canned HTML; the production parser still runs

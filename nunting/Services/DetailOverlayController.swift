@@ -1,6 +1,4 @@
 import SwiftUI
-import NuntingCore
-
 /// State + transitions for the keep-alive `PostDetailView` overlay.
 ///
 /// The overlay is permanent-mounted in `ContentView`'s ZStack — once a

@@ -1,7 +1,5 @@
 import Foundation
 import Observation
-import NuntingCore
-
 /// Snapshot of a board persisted into UserDefaults so favorites survive even
 /// when the dynamic catalog hasn't been fetched yet (or the upstream site
 /// removed the board). Catalog re-fetches refresh the snapshots in place via

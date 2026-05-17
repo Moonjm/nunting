@@ -1,7 +1,5 @@
 import Foundation
 import SwiftSoup
-import NuntingCore
-
 /// Parses SLR Club (SLR클럽) mobile detail pages. Reached exclusively via
 /// aagag mirror redirects — SLR is not exposed as a directly-browsable site.
 ///

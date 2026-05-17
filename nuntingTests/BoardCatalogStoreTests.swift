@@ -1,7 +1,5 @@
 import XCTest
 @testable import nunting
-import NuntingCore
-
 /// `BoardCatalogStore` revalidation tests.
 ///
 /// We don't fake the catalog parser — the production

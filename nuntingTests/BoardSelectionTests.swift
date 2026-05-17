@@ -1,7 +1,5 @@
 import XCTest
 @testable import nunting
-import NuntingCore
-
 /// State-transition tests for `BoardSelection`. The state machine itself
 /// is tiny but the *invariants* (atomic batches that change exactly once
 /// per user action, scope-pool wrap-around, default-filter application)

@@ -1,7 +1,5 @@
 import Foundation
 import Observation
-import NuntingCore
-
 /// Caches the per-site board catalog (grouped). Drawer reads from here and
 /// triggers `loadIfNeeded(_:)` when the user opens a site that hasn't been
 /// fetched yet. Falls back to a single ungrouped bootstrap from

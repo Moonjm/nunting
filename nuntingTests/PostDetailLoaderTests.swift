@@ -1,7 +1,5 @@
 import XCTest
 @testable import nunting
-import NuntingCore
-
 /// State-machine + side-effect tests for `PostDetailLoader`.
 ///
 /// Mirrors `BoardListLoaderTests`: stub fetcher / resolver via the

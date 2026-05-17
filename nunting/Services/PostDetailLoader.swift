@@ -1,7 +1,5 @@
 import Foundation
 import Observation
-import NuntingCore
-
 /// Owns the network + parse + state-machine for `PostDetailView`.
 ///
 /// Pulled out of the view so:

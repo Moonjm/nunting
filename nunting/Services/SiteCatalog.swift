@@ -1,7 +1,5 @@
 import Foundation
 import SwiftSoup
-import NuntingCore
-
 /// Per-site fetcher that returns the full board list. Each implementation
 /// knows the catalog URL on its own site and how to parse the menu HTML.
 /// Sendable so we can run the heavy SwiftSoup parse off the main actor.

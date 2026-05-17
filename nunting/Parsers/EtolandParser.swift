@@ -1,7 +1,5 @@
 import Foundation
 import SwiftSoup
-import NuntingCore
-
 /// Parses etoland (이토랜드) detail pages. Reached exclusively via aagag mirror
 /// redirects — etoland's mobile detail URL pattern is
 /// `etoland.co.kr/b/{board}/view/{slug-or-id}-{post_id}`.
