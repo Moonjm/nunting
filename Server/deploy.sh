@@ -2,18 +2,20 @@
 # Mac → 라즈베리파이 배포 (Mac 쪽 실행).
 #   1) linux/arm64 이미지 빌드 (Mac buildx cross-compile)
 #   2) docker save → tar
-#   3) scp tar + remote-deploy.sh → 원격 디렉토리
-#   4) ssh 로 원격 deploy.sh 실행 (load + compose up)
+#   3) scp tar → 원격 디렉토리
+#   4) ssh 로 원격 REMOTE_BASE_DIR/deploy.sh 실행 (load + compose up)
 #   5) 로컬 tar 정리
 #
-# 사전 조건 (Pi 에 한 번만 수동 셋업):
+# 사전 조건 (Pi 에 한 번만 수동 셋업 — 이 deploy.sh 가 전송하지 않음):
 #   - Docker Engine + compose plugin 설치.
-#   - REMOTE_BASE_DIR 에 docker-compose.yml 배치 (compose 변경 시 수동 scp).
-#   - REMOTE_BASE_DIR/.env 작성 (APNS_KEY_ID, TEAM_ID, TOPIC 등 본인 값).
-#   - REMOTE_BASE_DIR/secrets/AuthKey_*.p8 scp (이미지에 박지 않고 mount 로만).
+#   - REMOTE_BASE_DIR/docker-compose.yml — repo 의 Server/docker-compose.yml 참조.
+#   - REMOTE_BASE_DIR/.env — APNS_KEY_ID/TEAM_ID/TOPIC 등 본인 값.
+#   - REMOTE_BASE_DIR/secrets/AuthKey_*.p8 — 이미지에 박지 않고 mount 로만.
+#   - REMOTE_BASE_DIR/deploy.sh — repo 의 Server/remote-deploy.sh 참조.
 #   - Mac 에 Docker Desktop + buildx (docker buildx --version 확인).
 #   - ssh key 로그인 (passwordless 권장).
 #
+# 위 5개 파일이 Pi 에 모두 있는 상태에서만 동작. 셋업 후엔 `./deploy.sh` 한 줄.
 # 사용법: `cd Server && ./deploy.sh`
 
 set -euo pipefail
@@ -53,23 +55,16 @@ docker save -o "${LOCAL_TAR}" "${IMAGE_NAME}:${IMAGE_TAG}"
 ls -lh "${LOCAL_TAR}"
 
 echo ""
-echo "=== 3. 원격 디렉토리 준비 ==="
-ssh "${REMOTE_USER}@${REMOTE_HOST}" "mkdir -p ${REMOTE_BASE_DIR}"
-
-echo ""
-echo "=== 4. tar + remote deploy 스크립트 전송 ==="
-# compose/.env/.p8 은 Pi 에 이미 있는 전제 — 매 배포 전송 안 함.
-# compose 변경 시 별도 `scp docker-compose.yml ...` 로 수동 갱신.
+echo "=== 3. tar 전송 ==="
+# compose/.env/.p8/deploy.sh 등 다른 파일은 Pi 에 이미 있는 전제 — 변경 시 수동 scp.
 scp "${LOCAL_TAR}" "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_BASE_DIR}/${IMAGE_FILE}"
-# remote-deploy.sh 를 원격에선 deploy.sh 로 명명 — "해당 경로의 deploy.sh 실행" 패턴.
-scp "${SCRIPT_DIR}/remote-deploy.sh" "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_BASE_DIR}/deploy.sh"
 
 echo ""
-echo "=== 5. 로컬 tar 정리 ==="
+echo "=== 4. 로컬 tar 정리 ==="
 rm -f "${LOCAL_TAR}"
 
 echo ""
-echo "=== 6. 원격 deploy.sh 실행 ==="
+echo "=== 5. 원격 deploy.sh 실행 ==="
 ssh "${REMOTE_USER}@${REMOTE_HOST}" "cd ${REMOTE_BASE_DIR} && bash deploy.sh"
 
 echo ""
