@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 # 라즈베리파이 쪽 실행 — Mac 의 deploy.sh 가 scp 한 tar 를 받아 load + compose up.
 #
-# 이 파일은 repo 의 reference. Pi 에는 한 번 수동 scp 해서 `deploy.sh` 로
-# 명명해두면 됨 (Mac 의 deploy.sh 가 매번 안 보냄):
-#   scp Server/remote-deploy.sh pi@pi.local:/home/pi/docker/nunting/deploy.sh
+# 이 파일은 repo 의 reference. Pi 의 배포 디렉토리에 한 번 수동 scp 해서
+# `deploy.sh` 로 명명해두면 됨 (Mac 의 deploy.sh 가 매번 안 보냄).
 #
 # 가정: 같은 디렉토리에 nunting-server.tar + docker-compose.yml + .env + secrets/ 가 있다.
 #
-# 사용법 (수동): ssh 후 `cd /home/pi/docker/nunting && bash deploy.sh`
-#               보통은 Mac 의 deploy.sh 가 자동 호출.
+# 사용법: Mac 의 deploy.sh 가 자동 호출. 수동 시엔 ssh 후 해당 디렉토리에서
+#         `bash deploy.sh`.
 
 set -euo pipefail
 

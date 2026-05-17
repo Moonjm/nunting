@@ -26,8 +26,7 @@
 git clone <repo-url> nunting
 cd nunting/Server
 
-# APNs .p8 파일을 라즈베리파이로 복사
-# (Mac 에서) scp AuthKey_XXXXXXXXXX.p8 pi@pi.local:~/nunting/Server/secrets/
+# APNs .p8 파일을 라즈베리파이의 secrets/ 디렉토리로 복사 (호스트/경로는 본인 환경).
 # 주의: Ubuntu Server 사용 시 Pi 에서 `sudo apt install avahi-daemon` 필요(mDNS).
 # Raspberry Pi OS 는 기본 포함.
 
