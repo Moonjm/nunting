@@ -42,7 +42,7 @@ final class AlertSubscriptionService {
     /// 사이드로드 1인 도구라 hardcoded. PR E에서 Cloudflare Tunnel hostname이
     /// 확정되면 그걸로 교체(예: `https://nunting.YOUR-DOMAIN`). 현재 시뮬레이터
     /// + 같은 Mac에서 서버 실행 시 동작.
-    static let defaultBaseURL = URL(string: "http://127.0.0.1:8080")!
+    static let defaultBaseURL = URL(string: "https://nnt.eunji.shop")!
 
     static let shared = AlertSubscriptionService(
         baseURL: AlertSubscriptionService.defaultBaseURL,
