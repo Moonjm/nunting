@@ -48,13 +48,17 @@ func newWithClock(dir string, retainDays int, now func() time.Time) (*DailyRotat
 	return r, nil
 }
 
-// Write today 가 변했으면 회전 후 append.
+// Write today 가 변했으면 회전 후 append. Close 이후 호출되면 os.ErrClosed.
 func (r *DailyRotator) Write(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	today := r.now().Format(dateFmt)
+	if r.cur == nil {
+		return 0, os.ErrClosed
+	}
+	now := r.now()
+	today := now.Format(dateFmt)
 	if today != r.curDate {
-		if err := r.rotateLocked(r.now()); err != nil {
+		if err := r.rotateLocked(now); err != nil {
 			return 0, err
 		}
 	}
@@ -72,22 +76,25 @@ func (r *DailyRotator) Close() error {
 	return err
 }
 
-// rotateLocked 호출자가 mu 잡고 있다는 전제. 현재 파일 닫고 새 파일 열고
-// 오래된 파일 청소.
+// rotateLocked 호출자가 mu 잡고 있다는 전제. 새 파일을 먼저 열고 성공 시에만
+// 기존 파일을 닫는다 — open 실패 시 dead-state(nil cur)로 떨어지지 않게.
+// cleanup 은 별도 goroutine — disk I/O 가 lock 잡힌 write 들을 막지 않도록.
 func (r *DailyRotator) rotateLocked(now time.Time) error {
-	if r.cur != nil {
-		_ = r.cur.Close()
-	}
 	date := now.Format(dateFmt)
 	path := filepath.Join(r.dir, filePrefix+date+fileSuffix)
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return fmt.Errorf("open log file: %w", err)
 	}
+	if r.cur != nil {
+		_ = r.cur.Close()
+	}
 	r.cur = f
 	r.curDate = date
-	// cleanup 실패는 무시 (logging 자체는 살려야 함).
-	_ = cleanupOldFiles(r.dir, r.retainDays, now)
+	// cleanup 실패는 무시 (logging 자체는 살려야 함). goroutine 으로 분리.
+	go func(dir string, retain int, t time.Time) {
+		_ = cleanupOldFiles(dir, retain, t)
+	}(r.dir, r.retainDays, now)
 	return nil
 }
 
