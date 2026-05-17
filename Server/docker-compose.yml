@@ -4,11 +4,8 @@
 # 첫 부팅 전 `cp .env.example .env` — env_file 미존재 시 `up` 가 에러로 멈춤.
 
 services:
-  nunting:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: nunting-server:local
+  nunting-server:
+    image: nunting-server:latest
     container_name: nunting-server
     restart: unless-stopped
     env_file: .env
@@ -21,14 +18,10 @@ services:
       # APNs .p8 read-only mount. .env 의 APNS_KEY_PATH 는 컨테이너 내부 경로
       # (/run/secrets/AuthKey_XXX.p8) 를 가리켜야 한다.
       - ./secrets:/run/secrets:ro
+      # 로그 파일 영속 — .env 의 NUNTING_LOG_DIR 가 /var/log/nunting/ 안 경로 가리키면 호스트 ./logs/ 에 append.
+      - ./logs:/var/log/nunting
     environment:
       # 컨테이너 안에서는 항상 0.0.0.0 으로 bind — 호스트 포트 매핑 동작 보장.
       NUNTING_BIND_HOST: "0.0.0.0"
       NUNTING_BIND_PORT: "8080"
       NUNTING_DB_PATH: "/var/lib/nunting/state.db"
-    # SD 카드 보호 — 기본 json-file 드라이버는 무제한 누적. 5×10MB = 50MB 상한.
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "5"

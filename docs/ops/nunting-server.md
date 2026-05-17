@@ -26,8 +26,7 @@
 git clone <repo-url> nunting
 cd nunting/Server
 
-# APNs .p8 파일을 라즈베리파이로 복사
-# (Mac 에서) scp AuthKey_XXXXXXXXXX.p8 pi@pi.local:~/nunting/Server/secrets/
+# APNs .p8 파일을 라즈베리파이의 secrets/ 디렉토리로 복사 (호스트/경로는 본인 환경).
 # 주의: Ubuntu Server 사용 시 Pi 에서 `sudo apt install avahi-daemon` 필요(mDNS).
 # Raspberry Pi OS 는 기본 포함.
 
@@ -51,6 +50,26 @@ docker compose logs -f
 
 ## 3. 업데이트
 
+두 가지 방식 — 본인 환경에 맞춰 선택:
+
+**A) Mac 에서 빌드 → Pi 로 이미지 푸시 (권장, 빠름)**
+
+Mac 쪽 setup (한 번만):
+```bash
+cd nunting/Server
+cp .deploy.env.example .deploy.env
+nano .deploy.env  # REMOTE_USER / REMOTE_HOST / REMOTE_BASE_DIR 채우기
+```
+
+이후 매 배포:
+```bash
+cd nunting/Server
+./deploy.sh
+```
+
+내부 동작: linux/arm64 이미지 빌드(Mac buildx) → tar 저장 → tar 만 scp → ssh 로 원격 deploy.sh 실행 (docker load + compose up -d --force-recreate + image prune). compose/.env/.p8 는 Pi 에 1회 셋업 후 변경 시 수동 갱신. **30초~2분** 끝.
+
+**B) Pi 에서 직접 git pull + rebuild (Mac 없이 SSH 만으로 끝낼 때)**
 ```bash
 cd ~/nunting
 git pull
@@ -68,7 +87,7 @@ docker compose logs --tail 200  # 최근 200줄
 docker logs nunting-server      # container_name 으로
 ```
 
-compose 파일이 json-file 5×10MB rotation 설정 — 총 50MB 상한 자동 순환.
+기본 json-file 드라이버 사용 (rotation 없음). SSD 기준으로 무제한 누적도 실용상 문제 없지만, 신경 쓰이면 `docker-compose.yml` 의 service 아래에 `logging: { driver: json-file, options: { max-size: 10m, max-file: 5 } }` 추가하면 50MB 상한 자동 순환.
 
 주요 JSON 로그 키:
 - `msg=http_serving` — 기동 직후, addr/db_path/poll_sec 확인.
