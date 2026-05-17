@@ -40,6 +40,9 @@ IMAGE_TAG="latest"
 IMAGE_FILE="${IMAGE_NAME}.tar"
 LOCAL_TAR="${SCRIPT_DIR}/${IMAGE_FILE}"
 
+# 어디서 실패해도 (build/scp/ssh) 로컬 tar 정리 — 대용량 산물 누적 방지.
+trap 'rm -f "${LOCAL_TAR}"' EXIT
+
 echo ""
 echo "=== 1. Docker 이미지 빌드 (linux/arm64) ==="
 # --load 로 buildx 결과를 로컬 daemon 에 적재 (save 가능하게).
@@ -60,12 +63,11 @@ echo "=== 3. tar 전송 ==="
 scp "${LOCAL_TAR}" "${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_BASE_DIR}/${IMAGE_FILE}"
 
 echo ""
-echo "=== 4. 로컬 tar 정리 ==="
-rm -f "${LOCAL_TAR}"
-
-echo ""
-echo "=== 5. 원격 deploy.sh 실행 ==="
-ssh "${REMOTE_USER}@${REMOTE_HOST}" "cd ${REMOTE_BASE_DIR} && bash deploy.sh"
+echo "=== 4. 원격 deploy.sh 실행 ==="
+# REMOTE_BASE_DIR 을 single-quote 로 감싸 원격 shell 의 word-splitting 방지
+# (경로에 공백 들어가도 cd 가 정상 동작).
+ssh "${REMOTE_USER}@${REMOTE_HOST}" "cd '${REMOTE_BASE_DIR}' && bash deploy.sh"
+# 로컬 tar 는 위의 trap 이 정리 (EXIT 시).
 
 echo ""
 echo "=== 배포 완료 ==="

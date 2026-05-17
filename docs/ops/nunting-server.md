@@ -67,7 +67,7 @@ cd nunting/Server
 ./deploy.sh
 ```
 
-내부 동작: linux/arm64 이미지 빌드(Mac buildx) → tar 저장 → scp + docker-compose.yml 전송 → ssh 로 `docker load` + `docker compose up -d --force-recreate` + image prune. **30초~2분** 끝.
+내부 동작: linux/arm64 이미지 빌드(Mac buildx) → tar 저장 → tar 만 scp → ssh 로 원격 deploy.sh 실행 (docker load + compose up -d --force-recreate + image prune). compose/.env/.p8 는 Pi 에 1회 셋업 후 변경 시 수동 갱신. **30초~2분** 끝.
 
 **B) Pi 에서 직접 git pull + rebuild (Mac 없이 SSH 만으로 끝낼 때)**
 ```bash

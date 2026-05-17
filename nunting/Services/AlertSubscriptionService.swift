@@ -39,9 +39,8 @@ enum AlertSubscriptionError: LocalizedError {
 // MARK: - Service
 
 final class AlertSubscriptionService {
-    /// 사이드로드 1인 도구라 hardcoded. PR E에서 Cloudflare Tunnel hostname이
-    /// 확정되면 그걸로 교체(예: `https://nunting.YOUR-DOMAIN`). 현재 시뮬레이터
-    /// + 같은 Mac에서 서버 실행 시 동작.
+    /// 사이드로드 1인 도구라 hardcoded. Cloudflare Tunnel 로 외부 노출 중.
+    /// 변경 시 앱 재빌드 + 재설치 (Keychain UUID 는 유지되므로 서버 측 user 동일성 유지).
     static let defaultBaseURL = URL(string: "https://nnt.eunji.shop")!
 
     static let shared = AlertSubscriptionService(

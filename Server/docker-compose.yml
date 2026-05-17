@@ -18,7 +18,7 @@ services:
       # APNs .p8 read-only mount. .env 의 APNS_KEY_PATH 는 컨테이너 내부 경로
       # (/run/secrets/AuthKey_XXX.p8) 를 가리켜야 한다.
       - ./secrets:/run/secrets:ro
-      # 로그 파일 영속 — .env 의 NUNTING_LOG_FILE 가 /var/log/nunting/ 안 경로 가리키면 호스트 ./logs/ 에 append.
+      # 로그 파일 영속 — .env 의 NUNTING_LOG_DIR 가 /var/log/nunting/ 안 경로 가리키면 호스트 ./logs/ 에 append.
       - ./logs:/var/log/nunting
     environment:
       # 컨테이너 안에서는 항상 0.0.0.0 으로 bind — 호스트 포트 매핑 동작 보장.
