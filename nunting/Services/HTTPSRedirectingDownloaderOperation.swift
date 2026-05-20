@@ -15,6 +15,15 @@ import SDWebImage
 /// fast at the TLS handshake — same end-user outcome as the ATS block
 /// (placeholder + retry button) with clearer logs.
 final class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOperation {
+    // Explicit @objc selector pinning — Swift auto-bridges
+    // `urlSession(_:task:...)` to ObjC selector `urlSession:task:...`
+    // (소문자 u), but SDWebImage's downloader dispatches the redirect
+    // callback via the literal `URLSession:task:...` (대문자 URL) selector.
+    // Without the explicit `@objc(...)` Swift's override registers our
+    // method under the lowercase selector, the base class's uppercase
+    // selector gets shadowed/removed, and the runtime fires
+    // "unrecognized selector sent to instance" on first redirect.
+    @objc(URLSession:task:willPerformHTTPRedirection:newRequest:completionHandler:)
     override func urlSession(
         _ session: URLSession,
         task: URLSessionTask,
