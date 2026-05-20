@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/Moonjm/nunting/server/internal/db"
@@ -119,4 +120,29 @@ func (h *handlers) removeKeyword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// normalizeKeyword: raw 입력을 정규화된 CSV 키워드로 변환.
+//
+//	"삼다수, 500ML" → "500ml,삼다수"
+//
+// 규칙: split by "," → 토큰별 trim + ToLower → 빈 토큰 drop → dedup
+// → 알파벳 정렬 → join with "," (no space).
+//
+// "500ml, 삼다수" 와 "삼다수, 500ml" 가 같은 키로 저장되게 정렬한다.
+// 빈 결과(empty/whitespace/콤마만)는 ""를 반환 — caller 가 400 처리.
+func normalizeKeyword(raw string) string {
+	parts := strings.Split(raw, ",")
+	seen := map[string]bool{}
+	tokens := make([]string, 0, len(parts))
+	for _, p := range parts {
+		t := strings.ToLower(strings.TrimSpace(p))
+		if t == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		tokens = append(tokens, t)
+	}
+	sort.Strings(tokens)
+	return strings.Join(tokens, ",")
 }

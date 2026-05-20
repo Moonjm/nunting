@@ -125,3 +125,37 @@ func TestKeywordEmptyRejected(t *testing.T) {
 		t.Errorf("whitespace-only: want 400, got %d", code)
 	}
 }
+
+func TestNormalizeKeyword(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		// single token (회귀 가드)
+		{"갤럭시", "갤럭시"},
+		{"  갤럭시  ", "갤럭시"},
+		{"iPhone", "iphone"},
+		{"IPHONE", "iphone"},
+
+		// AND tokens — 정렬 + 소문자 + 공백 제거
+		{"삼다수, 500ml", "500ml,삼다수"},
+		{"500ml, 삼다수", "500ml,삼다수"},
+		{"500ML,  삼다수", "500ml,삼다수"},
+
+		// dedup (동일 토큰 반복)
+		{"삼다수,삼다수, 500ml", "500ml,삼다수"},
+		{"삼다수, 삼다수", "삼다수"},
+
+		// empty 토큰 drop
+		{",,500ml,,", "500ml"},
+		{" , , ", ""},
+		{"", ""},
+		{"   ", ""},
+	}
+	for _, c := range cases {
+		got := normalizeKeyword(c.in)
+		if got != c.want {
+			t.Errorf("normalizeKeyword(%q): want %q, got %q", c.in, c.want, got)
+		}
+	}
+}
