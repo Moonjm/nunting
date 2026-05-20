@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -138,22 +139,22 @@ func (s *Store) RemoveKeyword(ctx context.Context, uuid, keyword string) error {
 	return err
 }
 
-// MatchedUsersForTitle 글 제목에 user 의 키워드가 substring 으로 박혀 있고
-// 그 user 에게 push_token 이 있으면 (uuid, token, keyword) 를 반환.
-// case-insensitive 매칭을 위해 LOWER() 비교. 매칭은 SQL 단에서 처리해
-// 메모리 폭증을 막는다(사용자 수 < 10 가정이지만 키워드 수 제한 없음).
+// MatchedUsersForTitle 글 제목에 user 의 키워드(CSV AND 토큰)가 모두 substring
+// 으로 포함되어 있고 그 user 에게 push_token 이 있으면 (uuid, token, keyword) 반환.
+// AND 매칭: keyword 가 "500ml,삼다수" 이면 두 토큰이 **모두** title 에 있어야 매칭.
+// case-insensitive: title 을 1회 ToLower. keyword 토큰은 이미 lowercase 저장.
 //
 // 한 user 가 같은 글에 두 개 이상 키워드로 매칭되어도 **한 번만 push**:
 // 첫 매칭(ORDER BY keyword 알파벳 첫 번째) 만 반환. iOS 사용자 입장에서
 // "삼성 갤럭시 핫딜" 글에 '삼성' + '갤럭시' 둘 다 구독해도 알림은 1건.
 func (s *Store) MatchedUsersForTitle(ctx context.Context, title string) ([]Match, error) {
+	lowerTitle := strings.ToLower(title)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT u.uuid, u.push_token, k.keyword
 		FROM keyword_subs k
 		JOIN users u ON u.uuid = k.uuid
 		WHERE u.push_token IS NOT NULL
-		  AND INSTR(LOWER(?), LOWER(k.keyword)) > 0
-		ORDER BY u.uuid, k.keyword`, title)
+		ORDER BY u.uuid, k.keyword`)
 	if err != nil {
 		return nil, err
 	}
@@ -169,10 +170,34 @@ func (s *Store) MatchedUsersForTitle(ctx context.Context, title string) ([]Match
 		if seen[m.UUID] {
 			continue
 		}
+		if !titleContainsAllTokens(lowerTitle, m.Keyword) {
+			continue
+		}
 		seen[m.UUID] = true
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// titleContainsAllTokens: lowerTitle 에 keyword(정규화된 CSV)의 모든 토큰이
+// substring 으로 들어있는지. 토큰 0개면 false (방어선 — 정규화에서 막혔지만
+// DB가 corrupt 한 경우 폭격 방지).
+//
+// keyword 는 이미 lowercase 로 저장되므로 토큰 자체는 ToLower 불필요.
+func titleContainsAllTokens(lowerTitle, keyword string) bool {
+	tokens := strings.Split(keyword, ",")
+	hadAny := false
+	for _, t := range tokens {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		hadAny = true
+		if !strings.Contains(lowerTitle, t) {
+			return false
+		}
+	}
+	return hadAny
 }
 
 // ClearPushTokenByValue APNs 410 self-heal — 토큰 값으로 user 찾아 NULL.
