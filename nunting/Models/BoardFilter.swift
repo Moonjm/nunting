@@ -10,7 +10,7 @@ public struct BoardFilter: Identifiable, Hashable, Codable {
     /// the resulting URL — both modes can coexist.
     public let replacementPath: String?
 
-    public init(id: String, name: String, queryItems: [String: String] = [:], replacementPath: String? = nil) {
+    public nonisolated init(id: String, name: String, queryItems: [String: String] = [:], replacementPath: String? = nil) {
         self.id = id
         self.name = name
         self.queryItems = queryItems
