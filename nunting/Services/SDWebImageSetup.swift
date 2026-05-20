@@ -24,6 +24,13 @@ enum SDWebImageSetup {
         // SDWebImage docs recommend.
         SDImageCodersManager.shared.addCoder(SDImageWebPCoder.shared)
 
+        // Redirect http→https on the URLSession redirect callback. ATS
+        // blocks `https → 302 → http` chains and Korean board image
+        // CDNs hit that constantly (fmkorea getfile proxy → ext.fmkorea
+        // → plaync.co.kr 처럼) — without this, those images silently
+        // 404 to the retry placeholder.
+        SDWebImageDownloader.shared.config.operationClass = HTTPSRedirectingDownloaderOperation.self
+
         let cache = SDImageCache.shared
         // 200MB memory cap matches the prior `ImageCache` budget. NSCache-
         // backed under the hood so jetsam-time eviction is automatic.

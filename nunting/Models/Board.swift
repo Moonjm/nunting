@@ -17,7 +17,7 @@ public struct Board: Identifiable, Hashable {
     /// board-list paging parameter.
     public let pageQueryName: String?
 
-    public init(id: String, site: Site, name: String, path: String, filters: [BoardFilter] = [], searchQueryName: String? = nil, pageQueryName: String? = nil) {
+    public nonisolated init(id: String, site: Site, name: String, path: String, filters: [BoardFilter] = [], searchQueryName: String? = nil, pageQueryName: String? = nil) {
         self.id = id
         self.site = site
         self.name = name

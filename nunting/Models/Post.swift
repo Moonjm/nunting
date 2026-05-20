@@ -101,7 +101,7 @@ public struct PostSource: Hashable {
     public let name: String
     public let url: URL
 
-    public init(name: String, url: URL) {
+    public nonisolated init(name: String, url: URL) {
         self.name = name
         self.url = url
     }
@@ -115,7 +115,7 @@ public struct PostDetail {
     public let source: PostSource?
     public let comments: [PostComment]
 
-    public init(
+    public nonisolated init(
         post: Post,
         blocks: [ContentBlock],
         fullDateText: String?,

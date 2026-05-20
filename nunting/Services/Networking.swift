@@ -93,20 +93,16 @@ struct Networking {
             newRequest request: URLRequest,
             completionHandler: @escaping (URLRequest?) -> Void
         ) {
-            guard let url = request.url,
-                  url.scheme?.lowercased() == "http",
-                  var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
-            else {
-                completionHandler(request)
-                return
-            }
-            comps.scheme = "https"
-            guard let upgraded = comps.url else {
+            // Share the URL transform with `URL.atsSafe` so this and the
+            // SDWebImage-side `HTTPSRedirectingDownloaderOperation` stay
+            // converged — any future change (host blocklist, scheme rules)
+            // lands in one place.
+            guard let url = request.url, url.scheme?.lowercased() == "http" else {
                 completionHandler(request)
                 return
             }
             var upgradedRequest = request
-            upgradedRequest.url = upgraded
+            upgradedRequest.url = url.atsSafe
             completionHandler(upgradedRequest)
         }
     }
