@@ -452,11 +452,21 @@ public struct PpomppuParser: BoardParser {
     }
 
     nonisolated private func dealAnchor(from view: Element) throws -> (url: URL, label: String)? {
-        // Mobile: <div class="link-box"> inside <h4>.
-        // Desktop: <li class="topTitle-link partner"> inside <ul class="topTitle-mainbox">.
-        let el = try view.select("div.link-box a[href], li.topTitle-link a[href]").first()
-        guard let el else { return nil }
-        return try anchor(from: el)
+        // Affiliate-enabled posts wrap the header link:
+        //   Mobile:  <div class="link-box"> inside <h4>
+        //   Desktop: <li class="topTitle-link partner"> inside <ul class="topTitle-mainbox">
+        // Non-affiliate posts drop the wrapper and ship the header link as bare
+        // "링크 : <a class='noeffect' href='https://s.ppomppu.co.kr?...'>" text
+        // inside <h4>. Without the fallback the deal block silently disappears
+        // for any non-affiliate external link.
+        // Sample non-affiliate post: m.ppomppu.co.kr/new/bbs_view.php?id=ppomppu&no=705778
+        if let el = try view.select("div.link-box a[href], li.topTitle-link a[href]").first() {
+            return try anchor(from: el)
+        }
+        if let el = try view.select("h4 a.noeffect[href*=s.ppomppu.co.kr]").first() {
+            return try anchor(from: el)
+        }
+        return nil
     }
 
 
