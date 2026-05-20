@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/Moonjm/nunting/server/internal/db"
@@ -112,6 +113,20 @@ func TestKeywordsCRUD(t *testing.T) {
 	code, body = do(t, "GET", srv.URL+"/me/keywords", "nnt_x", "")
 	if code != 200 || body != "[]" {
 		t.Errorf("after-delete: got %d %q", code, body)
+	}
+}
+
+func TestKeywordRawTooLongRejected(t *testing.T) {
+	srv, store := newTestServer(t)
+	defer srv.Close()
+	defer store.Close()
+
+	// 콤마 폭탄 — normalizeKeyword 가 Split 으로 메모리 폭발하기 전에 차단되어야.
+	huge := strings.Repeat("a,", 1000) // 2000 chars, > maxRawKeywordLength=500
+	body := `{"keyword":"` + huge + `"}`
+	code, _ := do(t, "POST", srv.URL+"/me/keywords", "nnt_x", body)
+	if code != 400 {
+		t.Errorf("raw too long: want 400, got %d", code)
 	}
 }
 
