@@ -86,7 +86,7 @@ func (h *handlers) addKeyword(w http.ResponseWriter, r *http.Request) {
 	// trim + lowercase 정규화 — Swift Store.normalizedKeyword 동일.
 	// 한글은 ToLower 가 no-op 이지만 영문/숫자 키워드(iPhone vs iphone) 가
 	// 같은 항목으로 저장/조회/삭제되게 보장 (SQLite PK 가 case-sensitive).
-	normalized := strings.ToLower(strings.TrimSpace(body.Keyword))
+	normalized := normalizeKeyword(body.Keyword)
 	if normalized == "" {
 		http.Error(w, "keyword empty", http.StatusBadRequest)
 		return
@@ -114,7 +114,7 @@ func (h *handlers) removeKeyword(w http.ResponseWriter, r *http.Request) {
 	}
 	// add 와 동일하게 정규화 — 그렇지 않으면 "iPhone" 으로 등록된 row 를
 	// "iphone" 으로 삭제 요청 시 못 찾음 (혹은 그 반대).
-	keyword := strings.ToLower(strings.TrimSpace(decoded))
+	keyword := normalizeKeyword(decoded)
 	if err := h.store.RemoveKeyword(r.Context(), UUIDFrom(r.Context()), keyword); err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
