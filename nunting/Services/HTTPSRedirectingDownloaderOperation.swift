@@ -14,31 +14,32 @@ import SDWebImage
 /// If the target really doesn't support HTTPS, the upgraded request fails
 /// fast at the TLS handshake — same end-user outcome as the ATS block
 /// (placeholder + retry button) with clearer logs.
-final class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOperation {
-    // Explicit @objc selector pinning — Swift auto-bridges
-    // `urlSession(_:task:...)` to ObjC selector `urlSession:task:...`
-    // (소문자 u), but SDWebImage's downloader dispatches the redirect
-    // callback via the literal `URLSession:task:...` (대문자 URL) selector.
-    // Without the explicit `@objc(...)` Swift's override registers our
-    // method under the lowercase selector, the base class's uppercase
-    // selector gets shadowed/removed, and the runtime fires
-    // "unrecognized selector sent to instance" on first redirect.
+class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOperation {
+    // Combination required for the ObjC runtime to actually install this
+    // selector into the dispatch table when overriding an ObjC-implemented-
+    // but-only-protocol-declared method (NSURLSessionTaskDelegate optional):
+    //
+    //   • `@objc(URLSession:...)` — pins the exact uppercase selector
+    //     (Swift auto-bridge would otherwise lowercase it).
+    //   • `dynamic` — forces ObjC runtime dispatch instead of Swift vtable,
+    //     so SDWebImageDownloader's respondsToSelector / objc_msgSend chain
+    //     can actually find this method.
+    //   • no `final` on the class — Swift treats `final` as a hint to use
+    //     static dispatch, which can leave the @objc entry unregistered.
+    //
+    // We don't call `super` — SDWebImage's base impl is in a .m file (not
+    // visible via the public header) and Swift's `super` may dispatch to
+    // a non-existent vtable slot. Effect-wise the base just forwards
+    // `completionHandler(request)` anyway.
     @objc(URLSession:task:willPerformHTTPRedirection:newRequest:completionHandler:)
-    override func urlSession(
+    dynamic override func urlSession(
         _ session: URLSession,
         task: URLSessionTask,
         willPerformHTTPRedirection response: HTTPURLResponse,
         newRequest request: URLRequest,
         completionHandler: @escaping (URLRequest?) -> Void
     ) {
-        let rewritten = Self.upgradeHTTPToHTTPS(request)
-        super.urlSession(
-            session,
-            task: task,
-            willPerformHTTPRedirection: response,
-            newRequest: rewritten,
-            completionHandler: completionHandler
-        )
+        completionHandler(Self.upgradeHTTPToHTTPS(request))
     }
 
     /// Returns the request with `http://` upgraded to `https://`; any other

@@ -1,7 +1,41 @@
 import XCTest
+import ObjectiveC.runtime
 @testable import nunting
 
 final class HTTPSRedirectingDownloaderOperationTests: XCTestCase {
+    /// Runtime regression net: SDWebImageDownloader dispatches the redirect
+    /// callback via the literal ObjC selector
+    /// `URLSession:task:willPerformHTTPRedirection:newRequest:completionHandler:`
+    /// (uppercase URL). Swift's auto-bridging on overrides of optional
+    /// protocol methods can silently lowercase the selector when the parent
+    /// class's actual impl lives in a .m file — and the runtime then fires
+    /// "unrecognized selector sent to instance" on first redirect. This test
+    /// confirms our subclass installs the method under the exact uppercase
+    /// selector by inspecting the class's own method list.
+    func testRegistersRedirectSelectorOnOwnClass() {
+        let cls: AnyClass = HTTPSRedirectingDownloaderOperation.self
+        var count: UInt32 = 0
+        guard let methodList = class_copyMethodList(cls, &count) else {
+            XCTFail("class_copyMethodList returned nil — no methods on subclass")
+            return
+        }
+        defer { free(methodList) }
+
+        let target = "URLSession:task:willPerformHTTPRedirection:newRequest:completionHandler:"
+        var registeredSelectors: [String] = []
+        var found = false
+        for i in 0..<Int(count) {
+            let name = NSStringFromSelector(method_getName(methodList[i]))
+            registeredSelectors.append(name)
+            if name == target { found = true }
+        }
+        XCTAssertTrue(
+            found,
+            "Subclass must register `\(target)` under exact uppercase selector. " +
+                "Currently registered: \(registeredSelectors)"
+        )
+    }
+
     func testUpgradesHTTPToHTTPS() {
         let url = URL(string: "http://ext.fmkorea.com/getfile.php?code=abc&file=x%2Fy")!
         let out = HTTPSRedirectingDownloaderOperation.upgradeHTTPToHTTPS(URLRequest(url: url))
