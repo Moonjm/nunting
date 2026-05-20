@@ -58,6 +58,26 @@ final class HTTPSRedirectingDownloaderOperationTests: XCTestCase {
         XCTAssertEqual(out.url?.absoluteString, "data:image/gif;base64,R0lGOD")
     }
 
+    func testUpgradePreservesPortAndFragment() {
+        let url = URL(string: "http://host.example.com:8080/path?q=1#frag")!
+        let out = HTTPSRedirectingDownloaderOperation.upgradeHTTPToHTTPS(URLRequest(url: url))
+        XCTAssertEqual(
+            out.url?.absoluteString,
+            "https://host.example.com:8080/path?q=1#frag",
+            "port + query + fragment must survive scheme swap"
+        )
+    }
+
+    func testUpgradeHandlesMixedCaseScheme() {
+        let url = URL(string: "HTTP://host.example.com/x")!
+        let out = HTTPSRedirectingDownloaderOperation.upgradeHTTPToHTTPS(URLRequest(url: url))
+        XCTAssertEqual(
+            out.url?.scheme?.lowercased(),
+            "https",
+            "scheme comparison is case-insensitive — mixed-case http should still upgrade"
+        )
+    }
+
     func testPreservesHeadersAndMethod() {
         var req = URLRequest(url: URL(string: "http://imgfiles.plaync.co.kr/file/x")!)
         req.httpMethod = "GET"

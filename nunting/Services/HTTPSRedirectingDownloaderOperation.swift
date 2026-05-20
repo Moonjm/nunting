@@ -16,8 +16,10 @@ import SDWebImage
 /// (placeholder + retry button) with clearer logs.
 class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOperation {
     // Combination required for the ObjC runtime to actually install this
-    // selector into the dispatch table when overriding an ObjC-implemented-
-    // but-only-protocol-declared method (NSURLSessionTaskDelegate optional):
+    // selector into the dispatch table when overriding an optional
+    // protocol method (NSURLSessionTaskDelegate, declared on
+    // SDWebImageDownloaderOperation via its `<SDWebImageDownloaderOperation>`
+    // protocol conformance — see SDWebImageDownloaderOperation.h):
     //
     //   • `@objc(URLSession:...)` — pins the exact uppercase selector
     //     (Swift auto-bridge would otherwise lowercase it).
@@ -27,10 +29,14 @@ class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOperation {
     //   • no `final` on the class — Swift treats `final` as a hint to use
     //     static dispatch, which can leave the @objc entry unregistered.
     //
-    // We don't call `super` — SDWebImage's base impl is in a .m file (not
-    // visible via the public header) and Swift's `super` may dispatch to
-    // a non-existent vtable slot. Effect-wise the base just forwards
-    // `completionHandler(request)` anyway.
+    // No `super` call. The parent class `SDWebImageDownloaderOperation`
+    // never implements `willPerformHTTPRedirection` (the conformance is
+    // protocol-only). The fallback "follow redirect as-is" lives instead
+    // on the session delegate side in `SDWebImageDownloader.m`:
+    // when the operation doesn't respond to this selector, the downloader
+    // just invokes `completionHandler(request)` itself. Calling `super`
+    // from here would hit NSObject and crash; we replicate that fallback
+    // inline by invoking `completionHandler(rewritten)` directly.
     @objc(URLSession:task:willPerformHTTPRedirection:newRequest:completionHandler:)
     dynamic override func urlSession(
         _ session: URLSession,
@@ -44,17 +50,16 @@ class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOperation {
 
     /// Returns the request with `http://` upgraded to `https://`; any other
     /// scheme passes through unchanged. Headers/body/method are preserved.
+    /// Delegates the URL transform itself to `URL.atsSafe` so source-URL
+    /// upgrades (Networking.swift) and redirect-URL upgrades share one
+    /// rule — if we ever need a host blocklist for genuinely-http-only
+    /// origins, it lives in one place.
     /// Static so tests can exercise the rewrite without spinning up an
     /// SDWebImage downloader.
     static func upgradeHTTPToHTTPS(_ request: URLRequest) -> URLRequest {
-        guard let url = request.url,
-              url.scheme?.lowercased() == "http",
-              var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
-        else { return request }
-        comps.scheme = "https"
-        guard let upgraded = comps.url else { return request }
+        guard let url = request.url, url.scheme?.lowercased() == "http" else { return request }
         var newReq = request
-        newReq.url = upgraded
+        newReq.url = url.atsSafe
         return newReq
     }
 }
