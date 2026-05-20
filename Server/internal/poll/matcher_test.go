@@ -14,6 +14,13 @@ func TestMatchTitle_CaseInsensitive(t *testing.T) {
 		{"Apple iPhone 16 Pro", "IPHONE", true},
 		{"무관한 제목", "갤럭시", false},
 		{"  공백 갤럭시  ", " 갤럭시 ", true},
+		// --- AND multi-token cases ---
+		{"삼다수 500ml 24개입", "500ml,삼다수", true},
+		{"삼다수 500ml 24개입", "삼다수,500ml", true}, // 순서 무관
+		{"삼다수 2L", "500ml,삼다수", false},          // 한 토큰만 — miss
+		{"500ml 콜라", "500ml,삼다수", false},        // 다른 한 토큰만 — miss
+		{"삼다수 500ML 24개입", "500ml,삼다수", true}, // case-insensitive (title 쪽 대문자)
+		{"무관한 제목", "500ml,삼다수", false},
 	}
 	for _, c := range cases {
 		got := MatchTitle(c.title, c.keyword)

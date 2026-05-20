@@ -17,9 +17,9 @@ struct KeywordListView: View {
                     permissionBanner
                 }
             }
-            Section("새 키워드") {
+            Section {
                 HStack {
-                    TextField("예: 갤럭시", text: $newKeyword)
+                    TextField("예: 삼다수, 500ml", text: $newKeyword)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled(true)
                         .submitLabel(.done)
@@ -27,6 +27,10 @@ struct KeywordListView: View {
                     Button("추가") { Task { await submitNewKeyword() } }
                         .disabled(newKeyword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
+            } header: {
+                Text("새 키워드")
+            } footer: {
+                Text("콤마로 구분하면 모두 포함된 글만 알림 (예: 삼다수, 500ml)")
             }
             if let errorMessage {
                 Section { Text(errorMessage).foregroundStyle(.red).font(.footnote) }

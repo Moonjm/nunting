@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/Moonjm/nunting/server/internal/db"
@@ -30,6 +31,11 @@ const maxPushTokenLength = 256
 
 // 키워드 길이 sanity bound. Swift KeywordRoutes.maxKeywordLength 와 동일.
 const maxKeywordLength = 50
+
+// 정규화 *전* raw 입력 캡. normalizeKeyword 가 strings.Split 으로 콤마 단위
+// 분리하므로, 콤마 폭탄(예: 10MB ",,,,...") 이 들어오면 메모리 폭발.
+// 최종 normalized 는 50자 캡이지만 그 전에 막아야 의미가 있다.
+const maxRawKeywordLength = 500
 
 // PUT /me/push-token { "token": "<hex>" } | { "token": null }
 func (h *handlers) putPushToken(w http.ResponseWriter, r *http.Request) {
@@ -82,10 +88,13 @@ func (h *handlers) addKeyword(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
-	// trim + lowercase 정규화 — Swift Store.normalizedKeyword 동일.
-	// 한글은 ToLower 가 no-op 이지만 영문/숫자 키워드(iPhone vs iphone) 가
-	// 같은 항목으로 저장/조회/삭제되게 보장 (SQLite PK 가 case-sensitive).
-	normalized := strings.ToLower(strings.TrimSpace(body.Keyword))
+	// raw 입력 길이 캡 — normalizeKeyword 의 strings.Split DoS 방어.
+	if len(body.Keyword) > maxRawKeywordLength {
+		http.Error(w, "keyword too long", http.StatusBadRequest)
+		return
+	}
+	// normalizeKeyword: split → trim+lower → dedup → sort → join. 상세는 함수 doc 참조.
+	normalized := normalizeKeyword(body.Keyword)
 	if normalized == "" {
 		http.Error(w, "keyword empty", http.StatusBadRequest)
 		return
@@ -111,12 +120,41 @@ func (h *handlers) removeKeyword(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid keyword path", http.StatusBadRequest)
 		return
 	}
-	// add 와 동일하게 정규화 — 그렇지 않으면 "iPhone" 으로 등록된 row 를
-	// "iphone" 으로 삭제 요청 시 못 찾음 (혹은 그 반대).
-	keyword := strings.ToLower(strings.TrimSpace(decoded))
+	// add 와 동일 normalize — "iPhone" 으로 등록된 row 를 "iphone" 으로
+	// 삭제 요청 시에도, 콤마 다른 순서로 등록된 AND 키워드도 같은 키로 변환.
+	if len(decoded) > maxRawKeywordLength {
+		http.Error(w, "keyword too long", http.StatusBadRequest)
+		return
+	}
+	keyword := normalizeKeyword(decoded)
 	if err := h.store.RemoveKeyword(r.Context(), UUIDFrom(r.Context()), keyword); err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// normalizeKeyword: raw 입력을 정규화된 CSV 키워드로 변환.
+//
+//	"삼다수, 500ML" → "500ml,삼다수"
+//
+// 규칙: split by "," → 토큰별 trim + ToLower → 빈 토큰 drop → dedup
+// → 알파벳 정렬 → join with "," (no space).
+//
+// "500ml, 삼다수" 와 "삼다수, 500ml" 가 같은 키로 저장되게 정렬한다.
+// 빈 결과(empty/whitespace/콤마만)는 ""를 반환 — caller 가 400 처리.
+func normalizeKeyword(raw string) string {
+	parts := strings.Split(raw, ",")
+	seen := map[string]bool{}
+	tokens := make([]string, 0, len(parts))
+	for _, p := range parts {
+		t := strings.ToLower(strings.TrimSpace(p))
+		if t == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		tokens = append(tokens, t)
+	}
+	sort.Strings(tokens)
+	return strings.Join(tokens, ",")
 }

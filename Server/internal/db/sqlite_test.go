@@ -115,6 +115,46 @@ func TestKeywordCRUD(t *testing.T) {
 	}
 }
 
+func TestMatchedUsersForTitle_ANDTokens(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	// nnt_a 는 AND 키워드 "500ml,삼다수" (정규화된 CSV 형태로 직접 저장)
+	store.UpsertUser(ctx, "nnt_a")
+	store.SetPushToken(ctx, "nnt_a", "tok_a")
+	store.AddKeyword(ctx, "nnt_a", "500ml,삼다수")
+
+	// nnt_b 는 단일 키워드 "콜라" — AND user 와 동시 동작 확인용
+	store.UpsertUser(ctx, "nnt_b")
+	store.SetPushToken(ctx, "nnt_b", "tok_b")
+	store.AddKeyword(ctx, "nnt_b", "콜라")
+
+	// 1) 두 토큰 모두 포함 + case-insensitive (title 에 대문자 500ML) → nnt_a 매칭
+	matches, err := store.MatchedUsersForTitle(ctx, "삼다수 500ML 24개입")
+	if err != nil {
+		t.Fatalf("query hit: %v", err)
+	}
+	if len(matches) != 1 || matches[0].UUID != "nnt_a" || matches[0].Keyword != "500ml,삼다수" {
+		t.Errorf("AND hit: want [nnt_a/500ml,삼다수], got %+v", matches)
+	}
+
+	// 2) 한 토큰만 포함 → no match
+	matches, _ = store.MatchedUsersForTitle(ctx, "삼다수 2L 6개입")
+	if len(matches) != 0 {
+		t.Errorf("AND miss (only 1 token): want empty, got %+v", matches)
+	}
+
+	// 3) 다른 user 의 단일 키워드 매칭은 여전히 동작
+	matches, _ = store.MatchedUsersForTitle(ctx, "코카콜라 1+1 행사")
+	if len(matches) != 1 || matches[0].UUID != "nnt_b" {
+		t.Errorf("single-token regression: want [nnt_b], got %+v", matches)
+	}
+}
+
 func TestMatchedUsersForTitle(t *testing.T) {
 	store, err := Open(":memory:")
 	if err != nil {
