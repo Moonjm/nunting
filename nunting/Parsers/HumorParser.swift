@@ -289,11 +289,26 @@ public struct HumorParser: BoardParser {
     }
 
     nonisolated private func realImageURL(from el: Element) throws -> URL? {
-        var src = try el.attr("src")
-        if src.isEmpty { src = try el.attr("data-src") }
-        guard !src.isEmpty else { return nil }
-        if Self.skipImageMarkers.contains(where: src.contains) { return nil }
-        return resolveHTTPURL(src)
+        // humoruniv 본문 이미지는 `down-webp.humoruniv.com` 압축본을 `src` 에 두고
+        // 원본 JPG 를 `img_file_url` 속성에 백업으로 박아둔다. 페이지는 WebP 가
+        // 404 일 때 인라인 `OnError` 핸들러로 `img_file_url` 로 갈아끼우는데,
+        // 우리 파서는 그 JS 를 안 돌리니 src 가 사라진 WebP 면 그대로 "다시 시도"
+        // 플레이스홀더가 뜬다 (관측 사례: pds#1410992 의 본문 이미지가 WebP 404
+        // 로 통째로 비어 보이는 증상). 댓글 측 extractCommentSticker 가 이미
+        // 같은 이유로 img_file_url 을 1순위로 쓰는 것과 정책을 맞춰 본문도 원본
+        // JPG 가 있으면 그쪽을 먼저 시도한다.
+        let candidates: [String] = [
+            try el.attr("img_file_url"),
+            try el.attr("src"),
+            try el.attr("data-src"),
+        ]
+        for raw in candidates {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            if Self.skipImageMarkers.contains(where: trimmed.contains) { continue }
+            if let url = resolveHTTPURL(trimmed) { return url }
+        }
+        return nil
     }
 
     nonisolated private func parseMp4Click(_ onclick: String) throws -> URL? {
