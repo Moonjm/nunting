@@ -276,4 +276,48 @@ final class ParserListTests: XCTestCase {
         XCTAssertEqual(posts.count, 1)
         XCTAssertEqual(posts[0].title, "최근 주위에 \"힘들다…")
     }
+
+    // MARK: - Aagag bot-check detector
+    //
+    // Pin the heuristic against three samples: a representative challenge
+    // body (positive), a short non-challenge response (negative — most
+    // important, this is what the retry-false-positive bug would have
+    // looked like with the prior OR'd `captcha` substring branch), and
+    // a normal list-page-sized body (negative). The detector is
+    // intentionally narrow — when the real challenge page is captured
+    // in the wild, replace these fixtures with the real markup.
+
+    func testAagagBotCheckDetectorFlagsKoreanChallengeStub() {
+        let challenge = """
+        <html><body>
+        <h2>자동등록방지</h2>
+        <p>아래 문자를 입력하세요</p>
+        <form><input name="cap" /></form>
+        </body></html>
+        """
+        XCTAssertTrue(AagagParser.looksLikeBotCheck(html: challenge))
+    }
+
+    func testAagagBotCheckDetectorDoesNotFlagShortBodyWithoutKoreanPhrase() {
+        // The pre-tightened heuristic would have triggered on this body
+        // because of the literal "captcha" substring. The AND-on-Korean
+        // requirement now rejects it — protecting the post-recovery
+        // retry path from throwing `.captchaChallenge` on a short normal
+        // response that happens to mention the word.
+        let benign = """
+        <html><body>
+        <p>This page references captcha tooling but isn't a challenge.</p>
+        </body></html>
+        """
+        XCTAssertFalse(AagagParser.looksLikeBotCheck(html: benign))
+    }
+
+    func testAagagBotCheckDetectorDoesNotFlagNormalSizedBody() {
+        // Even if the Korean phrase appears, a normal-sized page is not
+        // the challenge interstitial (real Aagag list / detail pages
+        // are tens of KB). Size gate prevents a forum post that quotes
+        // the phrase from masquerading as a challenge.
+        let body = String(repeating: "x", count: 10_000) + "자동등록방지"
+        XCTAssertFalse(AagagParser.looksLikeBotCheck(html: body))
+    }
 }

@@ -16,6 +16,12 @@ struct ContentView: View {
     /// lock. The pan gesture below still drives the interactive drag
     /// directly against this controller's `offset` / `offsetBase`.
     @State private var detail = DetailOverlayController.shared
+    /// Bot-check sheet presenter. Driven by `Networking.fetchHTML` calling
+    /// `BotCheckCoordinator.shared.challenge(url:)` when a site returns a
+    /// CAPTCHA interstitial; the sheet hosts a WKWebView so the user can
+    /// solve it interactively and the cookies it issues flow back into
+    /// `HTTPCookieStorage.shared` for the retry.
+    @State private var botCheck = BotCheckCoordinator.shared
 
     @State private var drawerOpen = false
     @State private var drawerSection: DrawerSection = .favorites
@@ -172,6 +178,30 @@ struct ContentView: View {
         }
         .onPreferenceChange(BottomAreaTopKey.self) { bottomAreaTopY = $0 }
         .simultaneousGesture(panGesture)
+        // Bot-check interactive recovery. `pending` is `private(set)` on
+        // the coordinator (only its `resolve()` clears it), so we drive
+        // the sheet through a custom binding that funnels SwiftUI's
+        // dismiss-to-nil writes back through `resolve()`. That keeps
+        // the awaiting `Networking.fetchHTML` task wake-up centralized
+        // in one place even when the sheet dismisses via the system
+        // (drag-down) rather than the toolbar Close button.
+        .sheet(item: Binding(
+            get: { botCheck.pending },
+            set: { newValue in
+                if newValue == nil { botCheck.resolve() }
+            }
+        )) { challenge in
+            BotCheckSheet(
+                url: challenge.url,
+                // Re-use the same per-host detector the networking layer
+                // used to trigger the sheet — the WebView's `didFinish`
+                // body sniff runs it against the live page to decide
+                // when the challenge has been solved.
+                detector: BotCheckRegistry.detector(for: challenge.url)
+            ) {
+                botCheck.resolve()
+            }
+        }
         .task {
             // One-shot on first view appearance per app launch — open
             // TLS + HTTP/2 connections to every supported host so the

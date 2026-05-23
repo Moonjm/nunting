@@ -41,12 +41,37 @@ extension URL {
 enum NetworkError: Error, LocalizedError {
     case badResponse(Int)
     case decodingFailed
+    /// Site served a CAPTCHA / bot-check interstitial twice in a row
+    /// (once on the original fetch, once after the user-driven recovery
+    /// via `BotCheckCoordinator`). Surfaced as a normal error so the
+    /// loader's existing catch path renders a message instead of
+    /// looping the sheet.
+    case captchaChallenge(URL)
 
     var errorDescription: String? {
         switch self {
         case .badResponse(let code): "HTTP \(code)"
         case .decodingFailed: "응답 디코딩 실패"
+        case .captchaChallenge: "자동등록방지 통과 실패 — 다시 시도해 주세요"
         }
+    }
+}
+
+/// Per-host detector lookup. When `fetchHTML` lands a successful response,
+/// it checks whether the URL host has a registered detector and, if so,
+/// runs it against the decoded body. A `true` return triggers the
+/// `BotCheckCoordinator` interactive flow.
+///
+/// Detectors are intentionally narrow heuristics — false negatives just
+/// let the body flow through to the parser (which will likely fail in
+/// its own way), false positives cost a wasted retry trip.
+enum BotCheckRegistry {
+    nonisolated static func detector(for url: URL) -> (@Sendable (String) -> Bool)? {
+        guard let host = url.host?.lowercased() else { return nil }
+        if host.hasSuffix("aagag.com") {
+            return AagagParser.looksLikeBotCheck(html:)
+        }
+        return nil
     }
 }
 
@@ -158,6 +183,70 @@ struct Networking {
         userAgent: String? = nil,
         handlesCookies: Bool = true,
         session: URLSession = Networking.session
+    ) async throws -> String {
+        let html = try await fetchHTMLOnce(
+            url: url,
+            encoding: encoding,
+            userAgent: userAgent,
+            handlesCookies: handlesCookies,
+            session: session
+        )
+        return try await applyBotCheckGuard(url: url, body: html) {
+            try await fetchHTMLOnce(
+                url: url,
+                encoding: encoding,
+                userAgent: userAgent,
+                handlesCookies: handlesCookies,
+                session: session
+            )
+        }
+    }
+
+    /// Runs the per-host bot-check detector against `body`. If it
+    /// matches, suspends on `BotCheckCoordinator` (which presents the
+    /// SwiftUI sheet) and invokes `retry` once after the user resolves
+    /// it; the retry response is checked again and either returned or
+    /// surfaced as `NetworkError.captchaChallenge` to break the loop.
+    ///
+    /// Shared between `fetchHTML` (normal HTTP path) and
+    /// `PostDetailLoader`'s prefetched-body path (where
+    /// `resolveFinalURL`'s GET captured the response body and the
+    /// caller would otherwise hand it straight to a parser, bypassing
+    /// the detector). Aagag mirror items always go through the
+    /// prefetched path, so this dual-call site coverage is required
+    /// to actually catch the most likely real-world challenge entry
+    /// point.
+    static func applyBotCheckGuard(
+        url: URL,
+        body: String,
+        retry: () async throws -> String
+    ) async throws -> String {
+        guard let detector = BotCheckRegistry.detector(for: url), detector(body) else {
+            return body
+        }
+        #if DEBUG
+        // First-occurrence body capture so we can tighten the per-host
+        // detector to an exact marker. Truncate to keep log noise bounded.
+        let preview = body.prefix(1500)
+        print("[Networking] bot-check detected for \(url.absoluteString); body preview:\n\(preview)")
+        #endif
+        await BotCheckCoordinator.shared.challenge(url: url)
+        let retried = try await retry()
+        if detector(retried) {
+            // Still blocked after the user-driven recovery — surface as
+            // an error rather than looping the sheet. The loader's catch
+            // path will render the localized message.
+            throw NetworkError.captchaChallenge(url)
+        }
+        return retried
+    }
+
+    private static func fetchHTMLOnce(
+        url: URL,
+        encoding: String.Encoding,
+        userAgent: String?,
+        handlesCookies: Bool,
+        session: URLSession
     ) async throws -> String {
         var request = URLRequest(url: url)
         request.httpShouldHandleCookies = handlesCookies

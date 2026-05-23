@@ -116,7 +116,22 @@ final class PostDetailLoader {
                 let parser = try ParserFactory.parser(for: resolved.site)
                 let html: String
                 if let prefetched {
-                    html = Networking.decodeHTML(data: prefetched, encoding: resolved.site.encoding)
+                    // The prefetched body came from `resolveFinalURL`'s
+                    // GET — that path never goes through `fetchHTML`,
+                    // so we have to run the bot-check guard here too.
+                    // Aagag mirror items are the principal entry point
+                    // for this branch, and Aagag is also the only site
+                    // currently registered with a CAPTCHA detector — so
+                    // a stale-cookie user hitting an Aagag mirror with
+                    // an interstitial response would otherwise feed
+                    // that interstitial straight to `AagagParser`.
+                    let decoded = Networking.decodeHTML(data: prefetched, encoding: resolved.site.encoding)
+                    let resolvedURL = resolved.url
+                    let resolvedEncoding = resolved.site.encoding
+                    let captureFetcher = self.fetcher
+                    html = try await Networking.applyBotCheckGuard(url: resolvedURL, body: decoded) {
+                        try await captureFetcher(resolvedURL, resolvedEncoding)
+                    }
                 } else {
                     html = try await fetcher(resolved.url, resolved.site.encoding)
                 }

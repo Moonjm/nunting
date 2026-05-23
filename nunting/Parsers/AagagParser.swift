@@ -19,6 +19,41 @@ public struct AagagParser: BoardParser {
     )
     nonisolated private static let numericEntityRegex = try! NSRegularExpression(pattern: #"&#(x?)([0-9a-fA-F]+);"#)
 
+    /// Heuristic: does this body look like Aagag's CAPTCHA / bot-check
+    /// interstitial rather than a real list/detail page? Used by
+    /// `BotCheckRegistry` → `Networking.fetchHTML` to trigger the
+    /// `BotCheckCoordinator` flow, AND re-run on the post-recovery
+    /// retry body to decide whether to surface `.captchaChallenge`.
+    ///
+    /// Requires BOTH signals simultaneously to flag (AND, not OR):
+    ///   1. Body is much shorter than a real Aagag page (real list /
+    ///      detail pages are consistently tens of KB; the challenge
+    ///      page is a tiny stub).
+    ///   2. Body contains a Korean bot-check phrase. Aagag is a Korean
+    ///      site, so the challenge page is in Korean; matching English
+    ///      "captcha" as a bare substring used to false-positive on
+    ///      forum posts that quote the word.
+    ///
+    /// We intentionally don't fingerprint a specific URL path or
+    /// CSS-selector — Aagag's exact challenge page markup hasn't been
+    /// captured yet. When the detector first fires in the wild (the
+    /// `Networking` caller prints the body preview in DEBUG), tighten
+    /// to an exact selector here and drop the heuristic.
+    ///
+    /// The AND requirement is critical for the retry false-positive
+    /// path: if `Networking.fetchHTML` re-fetches after the user solves
+    /// the challenge and the retry response is short for ANY reason
+    /// (transient 200 with empty body, server hiccup), an OR'd detector
+    /// would throw `.captchaChallenge` and break a fetch the user
+    /// actually fixed. AND'ing on a Korean phrase means a generic
+    /// short body can't trigger the failure throw.
+    public nonisolated static func looksLikeBotCheck(html: String) -> Bool {
+        guard html.count < 5_000 else { return false }
+        return html.contains("자동등록방지")
+            || html.contains("문자를 입력")
+            || html.contains("로봇이 아닙니다")
+    }
+
     public nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
         // Restrict to actual data tables (`table.aalist` minus the `.header` and minus
