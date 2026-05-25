@@ -167,6 +167,80 @@ func (c *countingFetcher) FetchAndParse(ctx context.Context, page int) ([]Post, 
 	return c.inner.FetchAndParse(ctx, page)
 }
 
+func TestPoller_DedupesSamePostNoAcrossPagesInSameTick(t *testing.T) {
+	// 페이지 fetch 사이에 새 글이 들어와서 page 1 끝의 글이 page 2
+	// top 으로 밀려 다시 보이는 케이스 — tick 내 dedupe 가 없으면
+	// 같은 글에 push 가 두 번 발송된다. 코드 리뷰 회귀 가드.
+	store, _ := db.Open(":memory:")
+	defer store.Close()
+	store.UpsertUser(context.Background(), "nnt_a")
+	store.SetPushToken(context.Background(), "nnt_a", "tok_a")
+	store.AddKeyword(context.Background(), "nnt_a", "갤럭시")
+
+	dup := Post{ID: "ppomppu-1005", Title: "갤럭시 새 글", PostNo: "1005", URL: "u1005"}
+	fetcher := &stubFetcher{pages: map[int][]Post{
+		1: {
+			{ID: "ppomppu-1010", Title: "갤럭시 신상", PostNo: "1010", URL: "u1010"},
+			dup,
+		},
+		// page 2 top 에 1005 가 다시 등장 (페이지 경계 밀림 시뮬).
+		// 그 다음 글은 baseline(=1000) 보다 옛 글이라 walk 가
+		// 정상적으로 break — 깔끔한 종료 보장.
+		2: {dup, {ID: "ppomppu-990", Title: "옛 글", PostNo: "990", URL: "u990"}},
+	}}
+	apns := &recordedAPNs{}
+	p := New(store, fetcher, apns)
+	p.lastPostNo = 1000
+
+	if err := p.Tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	// 1010 한 번 + 1005 한 번 — 1005 가 두 번 잡혀선 안 됨.
+	if len(apns.calls) != 2 {
+		t.Errorf("want 2 pushes (1010, 1005 once each), got %d: %+v", len(apns.calls), apns.calls)
+	}
+	seen := map[string]int{}
+	for _, c := range apns.calls {
+		seen[c.PostID]++
+	}
+	if seen["ppomppu-1005"] != 1 {
+		t.Errorf("ppomppu-1005 push count: want 1, got %d", seen["ppomppu-1005"])
+	}
+	if seen["ppomppu-1010"] != 1 {
+		t.Errorf("ppomppu-1010 push count: want 1, got %d", seen["ppomppu-1010"])
+	}
+}
+
+func TestPoller_FirstTickWithAllUnparseablePostNoLeavesBaselineZero(t *testing.T) {
+	// 첫 tick 에서 page 1 의 모든 글이 PostNo 파싱 실패면 lastPostNo
+	// 가 0 인 채로 종료된다 — 다음 tick 도 다시 첫 tick 분기로 폴백.
+	// 안전한 동작이지만 운영상 원인을 알 수 있도록 warning 이 떠야
+	// 함 (parser 회귀나 사이트 포맷 변경 신호).
+	store, _ := db.Open(":memory:")
+	defer store.Close()
+
+	fetcher := &stubFetcher{pages: map[int][]Post{
+		1: {{ID: "ppomppu-x", Title: "t", PostNo: "non-numeric", URL: "u"}},
+	}}
+	apns := &recordedAPNs{}
+	p := New(store, fetcher, apns)
+
+	if err := p.Tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if p.lastPostNo != 0 {
+		t.Errorf("lastPostNo: want 0 (no parseable post), got %d", p.lastPostNo)
+	}
+	// 추가 tick — 여전히 첫 tick 분기로 들어가야 함 (silent loop).
+	if err := p.Tick(context.Background()); err != nil {
+		t.Fatalf("second tick: %v", err)
+	}
+	if len(apns.calls) != 0 {
+		t.Errorf("no parseable post = no push, got %+v", apns.calls)
+	}
+}
+
 func TestPoller_SkipsUnparseablePostNoWithoutBreakingWalk(t *testing.T) {
 	// PostNo 가 int 변환 실패하는 글이 page 안에 끼어 있어도 — 그 글
 	// 만 skip 하고 walk 자체는 계속. 파싱 회귀가 push 누락 으로 번지지

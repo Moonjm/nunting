@@ -78,14 +78,25 @@ func (p *Poller) Tick(ctx context.Context) error {
 			if n, ok := postNoInt(post); ok {
 				p.lastPostNo = n
 				slog.Info("poller_first_tick", "last_post_no", n)
-				break
+				return nil
 			}
 		}
+		// page 1 의 어떤 글도 PostNo 를 못 파싱 — parser 회귀나
+		// 사이트 포맷 변경 신호. baseline 이 0 인 채로 끝나서
+		// 다음 tick 도 다시 이 분기에 들어오므로, silent 가 아니라
+		// 운영자에게 보이는 warning 으로 남긴다.
+		slog.Warn("poller_first_tick_no_parseable_post", "page1_count", len(posts))
 		return nil
 	}
 
-	// 이후 tick — postNo numeric cutoff walk.
+	// 이후 tick — postNo numeric cutoff walk + tick 내 dedupe.
+	//
+	// dedupe 가 왜 필요한가: page fetch 사이에 새 글이 들어오면
+	// page 1 끝의 글이 page 2 top 으로 밀려 같은 PostNo 가 두 번
+	// 보일 수 있다. 그대로 newPosts 에 누적하면 동일 글에 push 가
+	// 두 번 발송되므로, postNo 를 키로 한 tick-local 집합으로 막는다.
 	var newPosts []Post
+	seen := make(map[int]struct{})
 	maxSeen := p.lastPostNo
 walk:
 	for page := 1; page <= p.maxPages; page++ {
@@ -106,6 +117,10 @@ walk:
 				// 그 이후는 모두 옛 글이므로 walk 중단.
 				break walk
 			}
+			if _, dup := seen[n]; dup {
+				continue
+			}
+			seen[n] = struct{}{}
 			newPosts = append(newPosts, post)
 			if n > maxSeen {
 				maxSeen = n

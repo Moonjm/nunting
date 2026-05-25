@@ -16,7 +16,10 @@ import (
 // Post 폴러가 다루는 최소 글 정보. iOS Post 와 의도적으로 다른 모델
 // (서버는 매칭/푸시만 필요).
 type Post struct {
-	ID     string // "ppomppu-<postNo>" — sentinel 비교용
+	// "ppomppu-<postNo>" — 로그/APNs 식별자 용. 옛 글 cutoff 자체는
+	// PostNo numeric 비교 (poller.Tick) 가 담당하므로 ID 는 비교
+	// 키로 쓰이지 않는다.
+	ID     string
 	PostNo string
 	Title  string
 	URL    string // 외부 노출용 deep-link
