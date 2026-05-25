@@ -2,6 +2,7 @@ package poll
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -50,8 +51,8 @@ func TestPoller_FirstTickStoresSentinelOnly(t *testing.T) {
 	if len(apns.calls) != 0 {
 		t.Errorf("first tick must not send: got %+v", apns.calls)
 	}
-	if p.sentinel != "ppomppu-2" {
-		t.Errorf("sentinel: want ppomppu-2, got %q", p.sentinel)
+	if p.lastPostNo != 2 {
+		t.Errorf("lastPostNo: want 2, got %d", p.lastPostNo)
 	}
 }
 
@@ -82,8 +83,216 @@ func TestPoller_SecondTickSendsNewPosts(t *testing.T) {
 		t.Errorf("want 1 call for ppomppu-4, got %+v", apns.calls)
 	}
 
-	if p.sentinel != "ppomppu-4" {
-		t.Errorf("sentinel: want ppomppu-4, got %q", p.sentinel)
+	if p.lastPostNo != 4 {
+		t.Errorf("lastPostNo: want 4, got %d", p.lastPostNo)
+	}
+}
+
+func TestPoller_SkipsPostsOlderThanSentinel(t *testing.T) {
+	// 회귀 방지: 이전 구현은 sentinel 을 ID 문자열로만 들고 동등 비교만
+	// 했기 때문에 sentinel post 가 maxPages 안에서 사라지면 (글 흐름이
+	// 빨라 11+ 페이지로 밀려난 경우) walk 가 break 못 해서 newPosts 에
+	// 옛 글까지 누적, 키워드 매치 시 옛 글에 푸시가 발송됐다. 사용자
+	// 보고: ppomppu no=706467 같은 옛 글에서 알람.
+	//
+	// 수정 후 정책 — postNo numeric cutoff: 가지고 있는 lastPostNo
+	// 보다 큰 글만 push 대상. 같은 페이지에 옛/새 글이 섞여도 옛 글
+	// 은 skip.
+	store, _ := db.Open(":memory:")
+	defer store.Close()
+	store.UpsertUser(context.Background(), "nnt_a")
+	store.SetPushToken(context.Background(), "nnt_a", "tok_a")
+	store.AddKeyword(context.Background(), "nnt_a", "갤럭시")
+
+	fetcher := &stubFetcher{pages: map[int][]Post{
+		1: {
+			{ID: "ppomppu-1010", Title: "갤럭시 신상", PostNo: "1010", URL: "u1010"},
+			{ID: "ppomppu-998", Title: "갤럭시 옛글", PostNo: "998", URL: "u998"},
+		},
+	}}
+	apns := &recordedAPNs{}
+	p := New(store, fetcher, apns)
+	p.lastPostNo = 1000
+
+	if err := p.Tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	if len(apns.calls) != 1 || apns.calls[0].PostID != "ppomppu-1010" {
+		t.Errorf("want exactly 1 push for ppomppu-1010, got %+v", apns.calls)
+	}
+	if p.lastPostNo != 1010 {
+		t.Errorf("lastPostNo: want 1010, got %d", p.lastPostNo)
+	}
+}
+
+func TestPoller_BreaksWalkOnceOlderPostSeen(t *testing.T) {
+	// page 1 의 모든 글이 sentinel 보다 옛 글이면 walk 가 page 2 이상
+	// 으로 더 깊이 들어가지 않아야 함 — newest-first 정렬 가정.
+	store, _ := db.Open(":memory:")
+	defer store.Close()
+	store.UpsertUser(context.Background(), "nnt_a")
+	store.SetPushToken(context.Background(), "nnt_a", "tok_a")
+	store.AddKeyword(context.Background(), "nnt_a", "갤럭시")
+
+	calls := 0
+	fetcher := &stubFetcher{pages: map[int][]Post{
+		1: {{ID: "ppomppu-990", Title: "갤럭시", PostNo: "990", URL: "u"}},
+		2: {{ID: "ppomppu-980", Title: "갤럭시", PostNo: "980", URL: "u"}},
+	}}
+	wrapped := &countingFetcher{inner: fetcher, count: &calls}
+	apns := &recordedAPNs{}
+	p := New(store, wrapped, apns)
+	p.lastPostNo = 1000
+
+	if err := p.Tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	if len(apns.calls) != 0 {
+		t.Errorf("want no pushes for all-old page, got %+v", apns.calls)
+	}
+	if calls != 1 {
+		t.Errorf("want exactly 1 fetch (break after page 1), got %d", calls)
+	}
+}
+
+type countingFetcher struct {
+	inner Fetcher
+	count *int
+}
+
+func (c *countingFetcher) FetchAndParse(ctx context.Context, page int) ([]Post, error) {
+	*c.count++
+	return c.inner.FetchAndParse(ctx, page)
+}
+
+func TestPoller_DedupesSamePostNoAcrossPagesInSameTick(t *testing.T) {
+	// 페이지 fetch 사이에 새 글이 들어와서 page 1 끝의 글이 page 2
+	// top 으로 밀려 다시 보이는 케이스 — tick 내 dedupe 가 없으면
+	// 같은 글에 push 가 두 번 발송된다. 코드 리뷰 회귀 가드.
+	store, _ := db.Open(":memory:")
+	defer store.Close()
+	store.UpsertUser(context.Background(), "nnt_a")
+	store.SetPushToken(context.Background(), "nnt_a", "tok_a")
+	store.AddKeyword(context.Background(), "nnt_a", "갤럭시")
+
+	dup := Post{ID: "ppomppu-1005", Title: "갤럭시 새 글", PostNo: "1005", URL: "u1005"}
+	fetcher := &stubFetcher{pages: map[int][]Post{
+		1: {
+			{ID: "ppomppu-1010", Title: "갤럭시 신상", PostNo: "1010", URL: "u1010"},
+			dup,
+		},
+		// page 2 top 에 1005 가 다시 등장 (페이지 경계 밀림 시뮬).
+		// 그 다음 글은 baseline(=1000) 보다 옛 글이라 walk 가
+		// 정상적으로 break — 깔끔한 종료 보장.
+		2: {dup, {ID: "ppomppu-990", Title: "옛 글", PostNo: "990", URL: "u990"}},
+	}}
+	apns := &recordedAPNs{}
+	p := New(store, fetcher, apns)
+	p.lastPostNo = 1000
+
+	if err := p.Tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	// 1010 한 번 + 1005 한 번 — 1005 가 두 번 잡혀선 안 됨.
+	if len(apns.calls) != 2 {
+		t.Errorf("want 2 pushes (1010, 1005 once each), got %d: %+v", len(apns.calls), apns.calls)
+	}
+	seen := map[string]int{}
+	for _, c := range apns.calls {
+		seen[c.PostID]++
+	}
+	if seen["ppomppu-1005"] != 1 {
+		t.Errorf("ppomppu-1005 push count: want 1, got %d", seen["ppomppu-1005"])
+	}
+	if seen["ppomppu-1010"] != 1 {
+		t.Errorf("ppomppu-1010 push count: want 1, got %d", seen["ppomppu-1010"])
+	}
+}
+
+func TestPoller_FirstTickPicksPageMaxNotJustFirst(t *testing.T) {
+	// page 1 에 공지 핀이 끼거나 일시적인 정렬 흔들림으로 첫 행이
+	// 최대 PostNo 가 아닐 수 있다. 첫 행만 보고 baseline 을 잡으면
+	// 그 위에 있는 더 큰 ID 들이 다음 tick 에서 '새 글' 로 발송될
+	// 위험이 있어, page 1 의 max 를 baseline 으로 사용한다.
+	store, _ := db.Open(":memory:")
+	defer store.Close()
+
+	fetcher := &stubFetcher{pages: map[int][]Post{
+		1: {
+			{ID: "ppomppu-50", Title: "공지 (옛 ID)", PostNo: "50", URL: "u50"},
+			{ID: "ppomppu-1010", Title: "최신 글", PostNo: "1010", URL: "u1010"},
+			{ID: "ppomppu-1005", Title: "그 다음", PostNo: "1005", URL: "u1005"},
+		},
+	}}
+	apns := &recordedAPNs{}
+	p := New(store, fetcher, apns)
+
+	if err := p.Tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if p.lastPostNo != 1010 {
+		t.Errorf("lastPostNo: want 1010 (max of page 1), got %d", p.lastPostNo)
+	}
+}
+
+func TestPoller_FirstTickWithAllUnparseablePostNoLeavesBaselineZero(t *testing.T) {
+	// 첫 tick 에서 page 1 의 모든 글이 PostNo 파싱 실패면 lastPostNo
+	// 가 0 인 채로 종료된다 — 다음 tick 도 다시 첫 tick 분기로 폴백.
+	// 안전한 동작이지만 운영상 원인을 알 수 있도록 warning 이 떠야
+	// 함 (parser 회귀나 사이트 포맷 변경 신호).
+	store, _ := db.Open(":memory:")
+	defer store.Close()
+
+	fetcher := &stubFetcher{pages: map[int][]Post{
+		1: {{ID: "ppomppu-x", Title: "t", PostNo: "non-numeric", URL: "u"}},
+	}}
+	apns := &recordedAPNs{}
+	p := New(store, fetcher, apns)
+
+	if err := p.Tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if p.lastPostNo != 0 {
+		t.Errorf("lastPostNo: want 0 (no parseable post), got %d", p.lastPostNo)
+	}
+	// 추가 tick — 여전히 첫 tick 분기로 들어가야 함 (silent loop).
+	if err := p.Tick(context.Background()); err != nil {
+		t.Fatalf("second tick: %v", err)
+	}
+	if len(apns.calls) != 0 {
+		t.Errorf("no parseable post = no push, got %+v", apns.calls)
+	}
+}
+
+func TestPoller_SkipsUnparseablePostNoWithoutBreakingWalk(t *testing.T) {
+	// PostNo 가 int 변환 실패하는 글이 page 안에 끼어 있어도 — 그 글
+	// 만 skip 하고 walk 자체는 계속. 파싱 회귀가 push 누락 으로 번지지
+	// 않게 보호.
+	store, _ := db.Open(":memory:")
+	defer store.Close()
+	store.UpsertUser(context.Background(), "nnt_a")
+	store.SetPushToken(context.Background(), "nnt_a", "tok_a")
+	store.AddKeyword(context.Background(), "nnt_a", "갤럭시")
+
+	fetcher := &stubFetcher{pages: map[int][]Post{
+		1: {
+			{ID: "ppomppu-1010", Title: "갤럭시 정상", PostNo: "1010", URL: "u1010"},
+			{ID: "ppomppu-XYZ", Title: "갤럭시 깨진id", PostNo: "XYZ", URL: "ux"},
+		},
+	}}
+	apns := &recordedAPNs{}
+	p := New(store, fetcher, apns)
+	p.lastPostNo = 1000
+
+	if err := p.Tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	if len(apns.calls) != 1 || apns.calls[0].PostID != "ppomppu-1010" {
+		t.Errorf("want only ppomppu-1010, got %+v", apns.calls)
 	}
 }
 
@@ -91,13 +300,23 @@ func TestPoller_SentinelWalk_StopsAtMaxPages(t *testing.T) {
 	store, _ := db.Open(":memory:")
 	defer store.Close()
 
+	// 매 페이지에 유일한 PostNo 를 가진 글을 둬서 cutoff 비교는 통과
+	// 시키고 walk 가 maxPages cap 에 의해서만 멈추는지 검증. PostNo 는
+	// page 가 깊어질수록 작아지지만 (newest-first 정렬 시뮬) 모두 baseline(=1)
+	// 보다는 크다 — 그래서 break 안 되고 maxPages 까지 walk.
 	fetcher := &stubFetcher{pages: map[int][]Post{}}
 	for i := 1; i <= 20; i++ {
-		fetcher.pages[i] = []Post{{ID: "x", Title: "t", PostNo: "x", URL: "u"}}
+		no := 100000 - i
+		fetcher.pages[i] = []Post{{
+			ID:     fmt.Sprintf("ppomppu-%d", no),
+			Title:  "t",
+			PostNo: fmt.Sprintf("%d", no),
+			URL:    "u",
+		}}
 	}
 	apns := &recordedAPNs{}
 	p := New(store, fetcher, apns)
-	p.sentinel = "ppomppu-NEVER"
+	p.lastPostNo = 1
 	start := time.Now()
 	if err := p.Tick(context.Background()); err != nil {
 		t.Fatalf("tick: %v", err)
