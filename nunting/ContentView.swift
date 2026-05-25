@@ -191,14 +191,7 @@ struct ContentView: View {
                 if newValue == nil { botCheck.resolve() }
             }
         )) { challenge in
-            BotCheckSheet(
-                url: challenge.url,
-                // Re-use the same per-host detector the networking layer
-                // used to trigger the sheet — the WebView's `didFinish`
-                // body sniff runs it against the live page to decide
-                // when the challenge has been solved.
-                detector: BotCheckRegistry.detector(for: challenge.url)
-            ) {
+            BotCheckSheet(url: challenge.url) {
                 botCheck.resolve()
             }
         }

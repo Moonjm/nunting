@@ -14,7 +14,13 @@ import SDWebImage
 /// If the target really doesn't support HTTPS, the upgraded request fails
 /// fast at the TLS handshake — same end-user outcome as the ATS block
 /// (placeholder + retry button) with clearer logs.
-class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOperation {
+// `@unchecked Sendable` restates the conformance the ObjC parent
+// (`SDWebImageDownloaderOperation`) already declares — Swift 6 requires
+// subclasses to repeat inherited unchecked conformances even when
+// nothing new is added. The downloader runs on its own NSOperationQueue
+// and never mutates shared state from this subclass, so the unchecked
+// promise stays accurate.
+class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOperation, @unchecked Sendable {
     // Combination required for the ObjC runtime to actually install this
     // selector into the dispatch table when overriding an optional
     // protocol method (NSURLSessionTaskDelegate, declared on
