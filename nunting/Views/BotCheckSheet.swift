@@ -22,13 +22,21 @@ import WebKit
 ///    the detector check resolves on the first finish instead.
 struct BotCheckSheet: View {
     let url: URL
-    let detector: (@Sendable (String) -> Bool)?
     let onResolve: () -> Void
 
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
+        // Re-derive the detector here instead of storing it as a struct
+        // property. SwiftUI Views are MainActor-isolated under Swift 6,
+        // and a stored `(@Sendable (String) -> Bool)?` field would get
+        // captured as a non-Sendable region when forwarded into the
+        // child `BotCheckWebView` (which takes a @Sendable closure).
+        // The registry lookup is a constant-time host-suffix branch, so
+        // calling it inside body costs nothing and keeps the caller
+        // (ContentView) free of the detector wiring too.
+        let detector = BotCheckRegistry.detector(for: url)
+        return NavigationStack {
             VStack(spacing: 0) {
                 Text("이 사이트가 자동등록방지를 요구합니다. 문자를 입력한 뒤 페이지가 넘어가면 자동으로 닫힙니다.")
                     .font(.footnote)
