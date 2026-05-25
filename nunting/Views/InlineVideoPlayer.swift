@@ -516,9 +516,18 @@ final class InlineAutoplayUIView: UIView {
             object: item,
             queue: .main
         ) { [weak self] _ in
-            guard let self, let player = self.player else { return }
-            player.seek(to: .zero)
-            if self.wantsPlay { player.play() }
+            // `queue: .main` guarantees this block runs on the main
+            // queue, so `assumeIsolated` is a static promotion from the
+            // observer's `@Sendable` signature into MainActor context —
+            // no actual hop and no runtime check beyond the assertion.
+            // Lets the closure touch `player` / `wantsPlay` directly
+            // under Swift 6 strict concurrency without an extra Task
+            // hop that would defer the loop seek to the next runloop.
+            MainActor.assumeIsolated {
+                guard let self, let player = self.player else { return }
+                player.seek(to: .zero)
+                if self.wantsPlay { player.play() }
+            }
         }
 
         self.player = p
