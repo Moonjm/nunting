@@ -39,7 +39,7 @@ func (h *HTTPFetcher) FetchAndParse(ctx context.Context, page int) ([]Post, erro
 // Poller numeric-cutoff walk + APNs 디스패치. 메모리에 lastPostNo
 // (=마지막으로 본 newest post no, ppomppu 의 ?no= 쿼리값) 만 유지.
 // 컨테이너 재시작 시 0 으로 리셋되어 첫 tick 은 알림 skip — page=1
-// top 의 PostNo 를 baseline 으로 잡고 종료.
+// 의 최대 PostNo 를 baseline 으로 잡고 종료.
 //
 // 이전 구현은 sentinel 을 ID 문자열로 들고 walk 에서 ID 동등 비교
 // 만 했는데, sentinel post 가 maxPages 안에서 사라지면 (글 흐름이
@@ -48,6 +48,12 @@ func (h *HTTPFetcher) FetchAndParse(ctx context.Context, page int) ([]Post, erro
 // PostNo 가 단조증가 numeric 이라는 사실을 이용해 cutoff 를
 // numeric 비교로 바꾸면 sentinel post 가 list 에 없어도 정확히
 // baseline 보다 큰 글만 push 대상이 된다.
+//
+// 동시성: `lastPostNo` 는 mutex 로 보호하지 않는다. `Tick` 는 외부
+// 노출되어 있지만 본 코드베이스의 유일한 호출자는 `Run` 의 단일
+// goroutine (초기 tick + ticker 루프 모두 같은 루프) 이고, 다른
+// 진입점은 없다. 향후 admin 핸들러 등에서 동시 호출이 생기면 그
+// 시점에 sync.Mutex 또는 atomic 도입.
 type Poller struct {
 	store      *db.Store
 	fetcher    Fetcher
@@ -74,12 +80,21 @@ func (p *Poller) Tick(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		// baseline 으로 page 1 의 최대 PostNo 를 선택한다. first valid
+		// 만 잡으면 정렬 흔들림이나 공지 핀(보통 더 옛 ID)이 page 1 의
+		// 첫 행에 있을 때 그 위에 있는 더 큰 ID 글들이 다음 tick 에서
+		// '새 글' 로 잡혀 옛 글 push 폭격이 cold-start 직후에 다시
+		// 재현된다.
+		max := 0
 		for _, post := range posts {
-			if n, ok := postNoInt(post); ok {
-				p.lastPostNo = n
-				slog.Info("poller_first_tick", "last_post_no", n)
-				return nil
+			if n, ok := postNoInt(post); ok && n > max {
+				max = n
 			}
+		}
+		if max > 0 {
+			p.lastPostNo = max
+			slog.Info("poller_first_tick", "last_post_no", max)
+			return nil
 		}
 		// page 1 의 어떤 글도 PostNo 를 못 파싱 — parser 회귀나
 		// 사이트 포맷 변경 신호. baseline 이 0 인 채로 끝나서

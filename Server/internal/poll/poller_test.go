@@ -212,6 +212,32 @@ func TestPoller_DedupesSamePostNoAcrossPagesInSameTick(t *testing.T) {
 	}
 }
 
+func TestPoller_FirstTickPicksPageMaxNotJustFirst(t *testing.T) {
+	// page 1 에 공지 핀이 끼거나 일시적인 정렬 흔들림으로 첫 행이
+	// 최대 PostNo 가 아닐 수 있다. 첫 행만 보고 baseline 을 잡으면
+	// 그 위에 있는 더 큰 ID 들이 다음 tick 에서 '새 글' 로 발송될
+	// 위험이 있어, page 1 의 max 를 baseline 으로 사용한다.
+	store, _ := db.Open(":memory:")
+	defer store.Close()
+
+	fetcher := &stubFetcher{pages: map[int][]Post{
+		1: {
+			{ID: "ppomppu-50", Title: "공지 (옛 ID)", PostNo: "50", URL: "u50"},
+			{ID: "ppomppu-1010", Title: "최신 글", PostNo: "1010", URL: "u1010"},
+			{ID: "ppomppu-1005", Title: "그 다음", PostNo: "1005", URL: "u1005"},
+		},
+	}}
+	apns := &recordedAPNs{}
+	p := New(store, fetcher, apns)
+
+	if err := p.Tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if p.lastPostNo != 1010 {
+		t.Errorf("lastPostNo: want 1010 (max of page 1), got %d", p.lastPostNo)
+	}
+}
+
 func TestPoller_FirstTickWithAllUnparseablePostNoLeavesBaselineZero(t *testing.T) {
 	// 첫 tick 에서 page 1 의 모든 글이 PostNo 파싱 실패면 lastPostNo
 	// 가 0 인 채로 종료된다 — 다음 tick 도 다시 첫 tick 분기로 폴백.
