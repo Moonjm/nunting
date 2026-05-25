@@ -71,17 +71,29 @@ public enum Site: String, CaseIterable, Identifiable, Codable {
     /// redirects so we can dispatch to the source site's parser.
     public nonisolated static func detect(host: String?) -> Site? {
         guard let host = host?.lowercased() else { return nil }
-        if host.hasSuffix("clien.net") { return .clien }
-        if host.hasSuffix("coolenjoy.net") { return .coolenjoy }
-        if host.hasSuffix("inven.co.kr") { return .inven }
-        if host.hasSuffix("ppomppu.co.kr") { return .ppomppu }
-        if host.hasSuffix("aagag.com") { return .aagag }
-        if host.hasSuffix("humoruniv.com") { return .humor }
-        if host.hasSuffix("bobaedream.co.kr") { return .bobae }
-        if host.hasSuffix("slrclub.com") { return .slr }
-        if host.hasSuffix("ddanzi.com") { return .ddanzi }
-        if host.hasSuffix("82cook.com") { return .cook82 }
-        if host.hasSuffix("etoland.co.kr") { return .etoland }
+        if Site.host(host, matches: "clien.net") { return .clien }
+        if Site.host(host, matches: "coolenjoy.net") { return .coolenjoy }
+        if Site.host(host, matches: "inven.co.kr") { return .inven }
+        if Site.host(host, matches: "ppomppu.co.kr") { return .ppomppu }
+        if Site.host(host, matches: "aagag.com") { return .aagag }
+        if Site.host(host, matches: "humoruniv.com") { return .humor }
+        if Site.host(host, matches: "bobaedream.co.kr") { return .bobae }
+        if Site.host(host, matches: "slrclub.com") { return .slr }
+        if Site.host(host, matches: "ddanzi.com") { return .ddanzi }
+        if Site.host(host, matches: "82cook.com") { return .cook82 }
+        if Site.host(host, matches: "etoland.co.kr") { return .etoland }
         return nil
+    }
+
+    /// True when `host` is exactly `domain` or a strict subdomain (`*.domain`).
+    /// A plain `hasSuffix(domain)` would accept `not-{domain}` or
+    /// `{domain}.evil.com`-style impostors that share the suffix but belong
+    /// to a different registered owner — this helper anchors the match on
+    /// either equality or a leading `.` boundary. Case-insensitive on both
+    /// sides; callers can pass a raw URL host without lowering it first.
+    public nonisolated static func host(_ host: String?, matches domain: String) -> Bool {
+        guard let host = host?.lowercased() else { return false }
+        let domain = domain.lowercased()
+        return host == domain || host.hasSuffix("." + domain)
     }
 }

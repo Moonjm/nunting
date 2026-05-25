@@ -320,4 +320,186 @@ final class ParserListTests: XCTestCase {
         let body = String(repeating: "x", count: 10_000) + "자동등록방지"
         XCTAssertFalse(AagagParser.looksLikeBotCheck(html: body))
     }
+
+    func testAagagBotCheckDetectorFlagsRealWorldInterstitial() {
+        // Captured from a real Aagag bot-check page on 2026-05-25
+        // (screenshot via Safari). The page is bilingual — Korean
+        // body + an English "judged as a bot" line — and uses none
+        // of the keywords the pre-2026-05 detector matched on. Detector
+        // must recognise at least one of the actual markers or the
+        // sheet never fires and the user sees raw "HTTP 303".
+        let interstitial = """
+        <html><body>
+        <p>봇으로 판단되었습니다.</p>
+        <p>judged as a bot.</p>
+        <p>계속 이용하시려면 Captcha인증을 통과해야 합니다.</p>
+        <form><img src="cap.png"><input name="cap"><button>submit</button></form>
+        </body></html>
+        """
+        XCTAssertTrue(AagagParser.looksLikeBotCheck(html: interstitial))
+    }
+
+    // MARK: - Bot-check status-code surface
+
+    func testBotCheckRegistryFlags303ForAagagHost() {
+        let url = URL(string: "https://aagag.com/mirror/re?ss=humor_123")!
+        XCTAssertTrue(BotCheckRegistry.statusIndicatesChallenge(for: url, status: 303))
+    }
+
+    func testBotCheckRegistryDoesNotFlagSuccessOrNotFoundForAagag() {
+        let url = URL(string: "https://aagag.com/mirror/re?ss=humor_123")!
+        XCTAssertFalse(BotCheckRegistry.statusIndicatesChallenge(for: url, status: 200))
+        XCTAssertFalse(BotCheckRegistry.statusIndicatesChallenge(for: url, status: 404))
+        XCTAssertFalse(BotCheckRegistry.statusIndicatesChallenge(for: url, status: 500))
+    }
+
+    func testBotCheckRegistryIgnoresUnrelatedHostsAt303() {
+        // 303 from any other site is a normal redirect signal we don't
+        // want to mistake for a challenge. Bot-check surface stays
+        // host-scoped to keep noise off other parsers.
+        let url = URL(string: "https://www.clien.net/service/board/park")!
+        XCTAssertFalse(BotCheckRegistry.statusIndicatesChallenge(for: url, status: 303))
+    }
+
+    func testBotCheckRegistryRejectsImpostorHostnameAt303() {
+        // `not-aagag.com` ends with `aagag.com` but is a different
+        // registered domain. A pre-fix `hasSuffix("aagag.com")` would
+        // misroute its 303 into the captcha sheet.
+        let url = URL(string: "https://not-aagag.com/foo")!
+        XCTAssertFalse(BotCheckRegistry.statusIndicatesChallenge(for: url, status: 303))
+    }
+
+    // MARK: - Host-matching helper
+
+    func testSiteHostMatchesExactAndSubdomain() {
+        XCTAssertTrue(Site.host("aagag.com", matches: "aagag.com"))
+        XCTAssertTrue(Site.host("www.aagag.com", matches: "aagag.com"))
+        XCTAssertTrue(Site.host("a.b.aagag.com", matches: "aagag.com"))
+    }
+
+    func testSiteHostRejectsSuffixImpostors() {
+        // The whole point of the helper: refuse hosts whose suffix
+        // *happens* to be the domain but live under a different
+        // registered owner.
+        XCTAssertFalse(Site.host("not-aagag.com", matches: "aagag.com"))
+        XCTAssertFalse(Site.host("evilaagag.com", matches: "aagag.com"))
+    }
+
+    func testSiteHostIsCaseInsensitive() {
+        XCTAssertTrue(Site.host("AAGAG.COM", matches: "aagag.com"))
+        XCTAssertTrue(Site.host("Www.Aagag.Com", matches: "aagag.com"))
+    }
+
+    func testSiteHostRejectsNil() {
+        XCTAssertFalse(Site.host(nil, matches: "aagag.com"))
+    }
+
+    // MARK: - Bot-check status-surface catch path
+    //
+    // Drives `recoverFromBotCheckStatus` in isolation so the
+    // catch-and-recover contract is verified without a real URLSession
+    // or a real `BotCheckCoordinator` sheet. The challenger is the
+    // side-effecting seam — in production it presents the SwiftUI
+    // captcha sheet; here we record the URLs it received.
+
+    private actor ChallengerSpy {
+        private(set) var urls: [URL] = []
+        func record(_ url: URL) { urls.append(url) }
+    }
+
+    func testRecoverFromBotCheckStatusReturnsRetryBodyAndInvokesChallenger() async throws {
+        let url = URL(string: "https://aagag.com/mirror/re?ss=humor_1")!
+        let spy = ChallengerSpy()
+
+        let body = try await Networking.recoverFromBotCheckStatus(
+            url: url,
+            error: NetworkError.badResponse(303),
+            retry: { "<html>real body content well past 5KB " + String(repeating: "x", count: 6000) + "</html>" },
+            detector: AagagParser.looksLikeBotCheck(html:),
+            challenger: { await spy.record($0) }
+        )
+
+        XCTAssertTrue(body.contains("real body content"))
+        let recorded = await spy.urls
+        XCTAssertEqual(recorded, [url])
+    }
+
+    func testRecoverFromBotCheckStatusConvertsRetry303IntoCaptchaChallenge() async {
+        let url = URL(string: "https://aagag.com/mirror/re?ss=humor_1")!
+
+        do {
+            _ = try await Networking.recoverFromBotCheckStatus(
+                url: url,
+                error: NetworkError.badResponse(303),
+                retry: { throw NetworkError.badResponse(303) },
+                detector: AagagParser.looksLikeBotCheck(html:),
+                challenger: { _ in }
+            )
+            XCTFail("expected captchaChallenge throw")
+        } catch let NetworkError.captchaChallenge(failedURL) {
+            XCTAssertEqual(failedURL, url)
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+
+    func testRecoverFromBotCheckStatusConvertsRetryDetectorPositiveIntoCaptchaChallenge() async {
+        let url = URL(string: "https://aagag.com/mirror/re?ss=humor_1")!
+
+        do {
+            _ = try await Networking.recoverFromBotCheckStatus(
+                url: url,
+                error: NetworkError.badResponse(303),
+                retry: { "<html><p>봇으로 판단되었습니다</p></html>" },
+                detector: AagagParser.looksLikeBotCheck(html:),
+                challenger: { _ in }
+            )
+            XCTFail("expected captchaChallenge throw")
+        } catch let NetworkError.captchaChallenge(failedURL) {
+            XCTAssertEqual(failedURL, url)
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+
+    func testRecoverFromBotCheckStatusPassesThroughNonChallengeError() async {
+        let url = URL(string: "https://aagag.com/x")!
+
+        do {
+            _ = try await Networking.recoverFromBotCheckStatus(
+                url: url,
+                error: NetworkError.badResponse(500),
+                retry: { XCTFail("retry must not run for non-challenge error"); return "" },
+                detector: AagagParser.looksLikeBotCheck(html:),
+                challenger: { _ in XCTFail("challenger must not run for non-challenge error") }
+            )
+            XCTFail("expected re-throw")
+        } catch NetworkError.badResponse(let code) where code == 500 {
+            // expected: passes the error through untouched
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+
+    func testRecoverFromBotCheckStatusPassesThroughNon303BadResponse() async {
+        // Even on the bot-check-registered host, only the registered
+        // status codes route to the challenge surface. A 500 must
+        // bubble up like any other server error.
+        let url = URL(string: "https://aagag.com/mirror/re?ss=humor_1")!
+
+        do {
+            _ = try await Networking.recoverFromBotCheckStatus(
+                url: url,
+                error: NetworkError.badResponse(404),
+                retry: { "" },
+                detector: AagagParser.looksLikeBotCheck(html:),
+                challenger: { _ in XCTFail("challenger must not run for non-challenge status") }
+            )
+            XCTFail("expected re-throw")
+        } catch NetworkError.badResponse(let code) where code == 404 {
+            // expected
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
 }

@@ -67,11 +67,28 @@ enum NetworkError: Error, LocalizedError {
 /// its own way), false positives cost a wasted retry trip.
 enum BotCheckRegistry {
     nonisolated static func detector(for url: URL) -> (@Sendable (String) -> Bool)? {
-        guard let host = url.host?.lowercased() else { return nil }
-        if host.hasSuffix("aagag.com") {
+        if Site.host(url.host, matches: "aagag.com") {
             return AagagParser.looksLikeBotCheck(html:)
         }
         return nil
+    }
+
+    /// Host-scoped status-code signal for the bot-check surface. Aagag
+    /// returns 303 redirects (often self-loops) to a captcha gate when
+    /// it has judged the client as a bot; URLSession's auto-follow then
+    /// gives up and `fetchHTMLOnce` throws `NetworkError.badResponse(303)`
+    /// before the body-based detector ever runs. This predicate lets the
+    /// outer `fetchHTML` catch path treat that specific error as a
+    /// challenge signal and trigger the same coordinator flow, instead
+    /// of surfacing a bare "HTTP 303" to the user.
+    ///
+    /// Stays host-scoped so a 303 from a normal redirecting site can't
+    /// hijack into the captcha sheet path.
+    nonisolated static func statusIndicatesChallenge(for url: URL, status: Int) -> Bool {
+        if Site.host(url.host, matches: "aagag.com") {
+            return status == 303
+        }
+        return false
     }
 }
 
@@ -184,14 +201,7 @@ struct Networking {
         handlesCookies: Bool = true,
         session: URLSession = Networking.session
     ) async throws -> String {
-        let html = try await fetchHTMLOnce(
-            url: url,
-            encoding: encoding,
-            userAgent: userAgent,
-            handlesCookies: handlesCookies,
-            session: session
-        )
-        return try await applyBotCheckGuard(url: url, body: html) {
+        let retry: @Sendable () async throws -> String = {
             try await fetchHTMLOnce(
                 url: url,
                 encoding: encoding,
@@ -199,6 +209,78 @@ struct Networking {
                 handlesCookies: handlesCookies,
                 session: session
             )
+        }
+        do {
+            let html = try await fetchHTMLOnce(
+                url: url,
+                encoding: encoding,
+                userAgent: userAgent,
+                handlesCookies: handlesCookies,
+                session: session
+            )
+            return try await applyBotCheckGuard(url: url, body: html, retry: retry)
+        } catch {
+            return try await recoverFromBotCheckStatus(
+                url: url,
+                error: error,
+                retry: retry,
+                detector: BotCheckRegistry.detector(for: url),
+                challenger: { challengeURL in
+                    await BotCheckCoordinator.shared.challenge(url: challengeURL)
+                }
+            )
+        }
+    }
+
+    /// Catch-and-recover seam for the status-surface bot-check path.
+    /// Extracted from `fetchHTML` so the contract (challenger fires for
+    /// the registered status only, post-recovery retry collapses both
+    /// status- and body-side re-detection into `.captchaChallenge`) can
+    /// be driven by tests without standing up a real URLSession or the
+    /// `BotCheckCoordinator` sheet.
+    ///
+    /// `challenger` is the side-effect — production wires it to
+    /// `BotCheckCoordinator.shared.challenge(url:)`; tests inject a spy
+    /// that records the URL it was invited to challenge. `detector`
+    /// stays optional because callers may have no host-specific
+    /// detector registered (in which case the post-retry body check is
+    /// skipped and only a re-thrown status loops back to
+    /// `.captchaChallenge`).
+    ///
+    /// Errors that don't match the host's challenge-status predicate
+    /// are re-thrown untouched — this seam is invisible to the rest of
+    /// the error surface (404 / 500 / URLError / cancellation all
+    /// bubble straight up).
+    static func recoverFromBotCheckStatus(
+        url: URL,
+        error: Error,
+        retry: @Sendable () async throws -> String,
+        detector: ((String) -> Bool)?,
+        challenger: @Sendable (URL) async -> Void
+    ) async throws -> String {
+        guard case NetworkError.badResponse(let code) = error,
+              BotCheckRegistry.statusIndicatesChallenge(for: url, status: code)
+        else { throw error }
+
+        #if DEBUG
+        print("[Networking] bot-check status \(code) for \(url.absoluteString); presenting challenge sheet")
+        #endif
+        await challenger(url)
+        do {
+            let retried = try await retry()
+            if detector?(retried) == true {
+                throw NetworkError.captchaChallenge(url)
+            }
+            return retried
+        } catch let NetworkError.badResponse(retryCode)
+                    where BotCheckRegistry.statusIndicatesChallenge(for: url, status: retryCode) {
+            // Sheet completed but the host is still answering 303 —
+            // either cookie bridging failed or the user dismissed the
+            // captcha. Collapse into the same `.captchaChallenge` that
+            // a still-blocked retry body produces so the loader's catch
+            // path renders the unified message and the sheet doesn't
+            // loop.
+            throw NetworkError.captchaChallenge(url)
         }
     }
 
@@ -398,6 +480,19 @@ struct Networking {
             }
             do {
                 let (data, response) = try await session.data(for: attemptRequest)
+                // Bot-check status surface: when the host answers with a
+                // challenge-indicating status (e.g. Aagag's 303 self-loop)
+                // we bail out of the resolver entirely. Returning the
+                // 303-page body as `prefetchedBody` would feed an
+                // interstitial into the downstream parser AND skip
+                // `fetchHTML`'s catch path that routes the same condition
+                // through `BotCheckCoordinator`. Falling through to nil
+                // lets `PostDetailLoader` request the URL via `fetchHTML`,
+                // which owns the challenge surface.
+                if let http = response as? HTTPURLResponse,
+                   BotCheckRegistry.statusIndicatesChallenge(for: url, status: http.statusCode) {
+                    return nil
+                }
                 guard let final = response.url else { return nil }
                 return (final, captureBody ? data : nil)
             } catch {

@@ -29,27 +29,30 @@ public struct AagagParser: BoardParser {
     ///   1. Body is much shorter than a real Aagag page (real list /
     ///      detail pages are consistently tens of KB; the challenge
     ///      page is a tiny stub).
-    ///   2. Body contains a Korean bot-check phrase. Aagag is a Korean
-    ///      site, so the challenge page is in Korean; matching English
-    ///      "captcha" as a bare substring used to false-positive on
-    ///      forum posts that quote the word.
+    ///   2. Body contains one of the interstitial markers below. Real
+    ///      challenge page (captured 2026-05-25) is bilingual — Korean
+    ///      body + English "judged as a bot" line — and historical
+    ///      Aagag captcha pages used a different keyword set. Match
+    ///      either family; the size gate keeps generic forum quotes
+    ///      from masquerading as a challenge.
     ///
-    /// We intentionally don't fingerprint a specific URL path or
-    /// CSS-selector — Aagag's exact challenge page markup hasn't been
-    /// captured yet. When the detector first fires in the wild (the
-    /// `Networking` caller prints the body preview in DEBUG), tighten
-    /// to an exact selector here and drop the heuristic.
-    ///
-    /// The AND requirement is critical for the retry false-positive
-    /// path: if `Networking.fetchHTML` re-fetches after the user solves
-    /// the challenge and the retry response is short for ANY reason
-    /// (transient 200 with empty body, server hiccup), an OR'd detector
-    /// would throw `.captchaChallenge` and break a fetch the user
-    /// actually fixed. AND'ing on a Korean phrase means a generic
-    /// short body can't trigger the failure throw.
+    /// The AND-on-marker requirement is critical for the retry
+    /// false-positive path: if `Networking.fetchHTML` re-fetches after
+    /// the user solves the challenge and the retry response is short
+    /// for ANY reason (transient 200 with empty body, server hiccup),
+    /// an OR-on-size-alone detector would throw `.captchaChallenge`
+    /// and break a fetch the user actually fixed. Requiring a marker
+    /// substring means a generic short body can't trigger the failure
+    /// throw.
     public nonisolated static func looksLikeBotCheck(html: String) -> Bool {
         guard html.count < 5_000 else { return false }
-        return html.contains("자동등록방지")
+        // 2026-05-25 markers (current production interstitial)
+        return html.contains("봇으로 판단")
+            || html.contains("Captcha인증")
+            || html.contains("judged as a bot")
+            // Historical markers — kept in case the page reverts or
+            // a regional variant uses the older copy.
+            || html.contains("자동등록방지")
             || html.contains("문자를 입력")
             || html.contains("로봇이 아닙니다")
     }

@@ -224,8 +224,7 @@ final class PostDetailLoader {
         // endpoint, and still rejects issue detail URLs (which use
         // /issue/?idx=…).
         guard post.site == .aagag,
-              let host = post.url.host?.lowercased(),
-              host.hasSuffix("aagag.com"),
+              Site.host(post.url.host, matches: "aagag.com"),
               post.url.path.hasPrefix("/mirror/re"),
               URLComponents(url: post.url, resolvingAgainstBaseURL: false)?
                   .queryItems?
