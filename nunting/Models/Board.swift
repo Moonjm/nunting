@@ -78,7 +78,7 @@ public struct Board: Identifiable, Hashable {
         return [(name, "\(value)")]
     }
 
-    private static func defaultPageQueryName(for site: Site) -> String? {
+    nonisolated private static func defaultPageQueryName(for site: Site) -> String? {
         switch site {
         case .clien:
             "po"
@@ -92,7 +92,7 @@ public struct Board: Identifiable, Hashable {
         }
     }
 
-    private static func defaultSearchQueryName(for site: Site) -> String? {
+    nonisolated private static func defaultSearchQueryName(for site: Site) -> String? {
         switch site {
         case .clien:
             "q"
@@ -109,7 +109,7 @@ public struct Board: Identifiable, Hashable {
         }
     }
 
-    private static func normalizedSearchQueryName(for site: Site, provided: String?) -> String? {
+    nonisolated private static func normalizedSearchQueryName(for site: Site, provided: String?) -> String? {
         switch site {
         case .clien, .coolenjoy, .inven:
             // Older favorite snapshots can persist stale names such as
