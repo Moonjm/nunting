@@ -6,19 +6,6 @@ public struct PpomppuParser: BoardParser {
 
     public nonisolated init() {}
 
-    nonisolated private static let blockTags: Set<String> = [
-        "p", "div", "li", "blockquote",
-        "h1", "h2", "h3", "h4", "h5", "h6",
-        "section", "article", "tr",
-    ]
-
-    nonisolated private static let skipTags: Set<String> = ["script", "style", "noscript"]
-
-    /// Tags the block-walker promotes to a media block. Paired with
-    /// `hasAnyDescendant(of:taggedAnyOf:)` so wrapper elements decide
-    /// recurse-vs-inline without doing three separate `select()` walks.
-    nonisolated private static let mediaTags: Set<String> = ["img", "video", "iframe"]
-
     public nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
         let boardID = ppomppuBoardID(from: board)
@@ -110,7 +97,13 @@ public struct PpomppuParser: BoardParser {
         if let dealAnchor {
             blocks.append(.dealLink(dealAnchor.url, label: dealAnchor.label))
         }
-        try collectBlocks(from: content, skipping: dealAnchor?.url, into: &blocks)
+        let skipURL = dealAnchor?.url
+        var rules = WalkerRules.standard(for: self)
+        rules.resolveImageURL  = imageURL(from:)
+        rules.imageBlock       = imageOrVideoBlock(for:)
+        rules.shouldEmitAnchor = { url in url != skipURL }
+        let body = try ParserBlockWalker(parser: self, rules: rules).walk(content)
+        blocks.append(contentsOf: body)
 
         let header = try view.select("h4").first()
         let fullDateText = try header?.select("span.hi").first()?.text()
@@ -268,145 +261,6 @@ public struct PpomppuParser: BoardParser {
         return comps.url
     }
 
-    nonisolated private func collectBlocks(from element: Element, skipping skipURL: URL?, into blocks: inout [ContentBlock]) throws {
-        if isHidden(element) { return }
-        var inline = InlineAccumulator()
-
-        func flush() {
-            let segs = inline.drain()
-            if !segs.isEmpty {
-                blocks.append(.richText(segs))
-            }
-        }
-
-        let tag = element.tagName().lowercased()
-        if tag == "img" {
-            if let url = try imageURL(from: element) {
-                blocks.append(imageOrVideoBlock(for: url))
-            }
-            return
-        }
-        if tag == "video" {
-            if let url = try videoURL(from: element) {
-                blocks.append(.video(url, posterURL: try videoPoster(from: element)))
-            }
-            return
-        }
-        if tag == "a" {
-            // Pure anchor: no nested media → emit a single inline link (or
-            // fallback text) and return. When the anchor wraps `<img>` /
-            // `<video>` / `<iframe>` (forums often wrap inline GIFs in a
-            // clickable link), fall through to the main child-walking loop
-            // below so the nested media becomes a proper block AND sibling
-            // TextNodes still contribute text via the existing TextNode
-            // branch.
-            if !hasAnyDescendant(of: element, taggedAnyOf: Self.mediaTags) {
-                if let resolved = try anchor(from: element) {
-                    if resolved.url != skipURL {
-                        inline.appendLink(url: resolved.url, label: resolved.label)
-                        flush()
-                    }
-                } else {
-                    inline.appendText(try element.text())
-                    flush()
-                }
-                return
-            }
-        }
-        if Self.skipTags.contains(tag) { return }
-
-        for node in element.getChildNodes() {
-            if let el = node as? Element {
-                if isHidden(el) { continue }
-                let childTag = el.tagName().lowercased()
-                switch childTag {
-                case "img":
-                    flush()
-                    if let url = try imageURL(from: el) {
-                        blocks.append(imageOrVideoBlock(for: url))
-                    }
-                case "video":
-                    flush()
-                    if let url = try videoURL(from: el) {
-                        blocks.append(.video(url, posterURL: try videoPoster(from: el)))
-                    }
-                case "iframe":
-                    // YouTube embeds arrive as <iframe src=".../embed/{id}">.
-                    // Promote to an inline `.embed(.youtube, id:)` block so
-                    // the detail view renders the real thumbnail + tap-to-open
-                    // affordance instead of the iframe being silently dropped.
-                    if let id = youtubeEmbedID(from: (try? el.attr("src")) ?? "") {
-                        flush()
-                        blocks.append(.embed(.youtube, id: id))
-                    }
-                case "br":
-                    inline.appendText("\n")
-                case "a":
-                    // Anchor wrapping media falls through to the same
-                    // recurse-as-block path the default case uses, so an
-                    // inline GIF wrapped in a clickable link still renders
-                    // as a media block instead of a bare link label.
-                    if hasAnyDescendant(of: el, taggedAnyOf: Self.mediaTags) {
-                        flush()
-                        try collectBlocks(from: el, skipping: skipURL, into: &blocks)
-                    } else if let resolved = try anchor(from: el) {
-                        if resolved.url != skipURL {
-                            inline.appendLink(url: resolved.url, label: resolved.label)
-                        }
-                    } else {
-                        inline.appendText(try el.text())
-                    }
-                default:
-                    if Self.skipTags.contains(childTag) { continue }
-                    let isBlock = Self.blockTags.contains(childTag)
-                    if hasAnyDescendant(of: el, taggedAnyOf: Self.mediaTags) {
-                        flush()
-                        try collectBlocks(from: el, skipping: skipURL, into: &blocks)
-                    } else {
-                        try collectInlines(from: el, skipping: skipURL, into: &inline)
-                    }
-                    if isBlock {
-                        inline.appendText("\n")
-                    }
-                }
-            } else if let textNode = node as? TextNode {
-                inline.appendText(textNode.text())
-            }
-        }
-        flush()
-    }
-
-    nonisolated private func collectInlines(from element: Element, skipping skipURL: URL?, into inline: inout InlineAccumulator) throws {
-        if isHidden(element) { return }
-        for node in element.getChildNodes() {
-            if let el = node as? Element {
-                if isHidden(el) { continue }
-                let childTag = el.tagName().lowercased()
-                switch childTag {
-                case "br":
-                    inline.appendText("\n")
-                case "a":
-                    if let resolved = try anchor(from: el) {
-                        if resolved.url != skipURL {
-                            inline.appendLink(url: resolved.url, label: resolved.label)
-                        }
-                    } else {
-                        inline.appendText(try el.text())
-                    }
-                case let t where Self.skipTags.contains(t):
-                    continue
-                default:
-                    try collectInlines(from: el, skipping: skipURL, into: &inline)
-                    if Self.blockTags.contains(childTag) {
-                        inline.appendText("\n")
-                    }
-                }
-            } else if let textNode = node as? TextNode {
-                inline.appendText(textNode.text())
-            }
-        }
-    }
-
     /// Ppomppu wraps user-uploaded video files in `<img src="...mov">` /
     /// `<img src="...mp4">` tags and relies on a desktop-only JS shim to
     /// swap the element to a `<video>` player at runtime. The mobile site
@@ -469,26 +323,6 @@ public struct PpomppuParser: BoardParser {
         return nil
     }
 
-
-    nonisolated private func videoURL(from element: Element) throws -> URL? {
-        // Ppomppu ships bodies with the standard <video><source src="..."></video>
-        // shape (the mp4 URL lives on the child <source>). Fall back to
-        // data-src / src on <video> itself for compatibility with older posts.
-        let dataSrc = try element.attr("data-src")
-        let direct = try element.attr("src")
-        var raw = !dataSrc.isEmpty ? dataSrc : direct
-        if raw.isEmpty, let source = try element.select("source").first() {
-            let sData = try source.attr("data-src")
-            let sSrc = try source.attr("src")
-            raw = !sData.isEmpty ? sData : sSrc
-        }
-        // Drop media fragments like "#t=0.05" so URL() doesn't attach them
-        // to AVPlayer asset URLs.
-        if let hash = raw.firstIndex(of: "#") {
-            raw = String(raw[raw.startIndex..<hash])
-        }
-        return resolveHTTPURL(raw)
-    }
 
     nonisolated private func extractStickerURL(from element: Element) throws -> URL? {
         // PostComment images are lazy-loaded: src is "/images/lazyloading.jpg"

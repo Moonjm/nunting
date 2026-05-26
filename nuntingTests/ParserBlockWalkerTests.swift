@@ -1,0 +1,203 @@
+import XCTest
+import SwiftSoup
+@testable import nunting
+
+final class ParserBlockWalkerTests: XCTestCase {
+
+    /// Minimal `BoardParser` host the walker can delegate baseURL-aware
+    /// helpers to. Uses `.ppomppu` arbitrarily — only `site.baseURL`
+    /// matters for the helpers the walker calls.
+    private struct StubParser: BoardParser {
+        let site: Site = .ppomppu
+        func parseList(html: String, board: Board) throws -> [Post] { [] }
+        func parseDetail(html: String, post: Post) throws -> PostDetail {
+            PostDetail(post: post, blocks: [], fullDateText: nil, viewCount: nil, source: nil, comments: [])
+        }
+    }
+
+    private func walk(_ html: String, customize: (inout WalkerRules) -> Void = { _ in }) throws -> [ContentBlock] {
+        let doc = try SwiftSoup.parse("<div id=root>\(html)</div>")
+        let root = try doc.select("#root").first()!
+        let parser = StubParser()
+        var rules = WalkerRules.standard(for: parser)
+        customize(&rules)
+        return try ParserBlockWalker(parser: parser, rules: rules).walk(root)
+    }
+
+    private func texts(in blocks: [ContentBlock]) -> [String] {
+        blocks.flatMap { block -> [String] in
+            if case .richText(let segs) = block.kind {
+                return segs.compactMap { seg in
+                    if case .text(let s) = seg { return s }
+                    return nil
+                }
+            }
+            return []
+        }
+    }
+
+    func testPlainTextProducesSingleRichTextBlock() throws {
+        let blocks = try walk("안녕 본문")
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(texts(in: blocks).joined(), "안녕 본문")
+    }
+
+    func testBrAppendsNewlineInsideRichText() throws {
+        let blocks = try walk("첫줄<br>둘째줄")
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(texts(in: blocks).joined(), "첫줄\n둘째줄")
+    }
+
+    func testImageFlushesInlineAndAppendsImageBlock() throws {
+        let blocks = try walk("앞 텍스트<img src='https://e.com/a.png'>뒷 텍스트")
+        // 기대: richText("앞 텍스트") → image → richText("뒷 텍스트")
+        XCTAssertEqual(blocks.count, 3)
+        guard case .richText(let head) = blocks[0].kind,
+              case .image(let url, _) = blocks[1].kind,
+              case .richText(let tail) = blocks[2].kind
+        else { return XCTFail("순서: richText → image → richText 기대") }
+        XCTAssertEqual(head.first.map { seg -> String in
+            if case .text(let s) = seg { s } else { "" }
+        }, "앞 텍스트")
+        XCTAssertEqual(url.absoluteString, "https://e.com/a.png")
+        XCTAssertEqual(tail.first.map { seg -> String in
+            if case .text(let s) = seg { s } else { "" }
+        }, "뒷 텍스트")
+    }
+
+    func testVideoPromotedToVideoBlock() throws {
+        let blocks = try walk("<video src='https://e.com/v.mp4'></video>")
+        XCTAssertEqual(blocks.count, 1)
+        guard case .video(let url, _) = blocks[0].kind
+        else { return XCTFail("video 블록 기대") }
+        XCTAssertEqual(url.absoluteString, "https://e.com/v.mp4")
+    }
+
+    func testYouTubeIframePromotedToEmbedBlock() throws {
+        let blocks = try walk("<iframe src='https://www.youtube.com/embed/abcdefghijk'></iframe>")
+        XCTAssertEqual(blocks.count, 1)
+        guard case .embed(provider: .youtube, id: let id) = blocks[0].kind
+        else { return XCTFail("embed(.youtube) 블록 기대") }
+        XCTAssertEqual(id, "abcdefghijk")
+    }
+
+    func testNonYouTubeIframeIsDropped() throws {
+        let blocks = try walk("<iframe src='https://vimeo.com/123'></iframe>")
+        XCTAssertEqual(blocks.count, 0)
+    }
+
+    func testPlainAnchorEmitsInlineLink() throws {
+        let blocks = try walk("<a href='https://e.com/x'>라벨</a>")
+        XCTAssertEqual(blocks.count, 1)
+        guard case .richText(let segs) = blocks[0].kind, segs.count == 1,
+              case .link(let url, let label) = segs[0]
+        else { return XCTFail("단일 inline 링크 기대") }
+        XCTAssertEqual(url.absoluteString, "https://e.com/x")
+        XCTAssertEqual(label, "라벨")
+    }
+
+    func testAnchorWrappingImageEmitsImageNotLink() throws {
+        let blocks = try walk("<a href='https://e.com/x'><img src='https://e.com/a.png'></a>")
+        XCTAssertEqual(blocks.count, 1)
+        guard case .image(let url, _) = blocks[0].kind
+        else { return XCTFail("이미지 블록 기대 (앵커 라벨 무시)") }
+        XCTAssertEqual(url.absoluteString, "https://e.com/a.png")
+    }
+
+    func testShouldEmitAnchorFalseDropsLinkButKeepsTextFlow() throws {
+        let blocks = try walk("앞<a href='https://e.com/skip'>무시</a>뒤") { rules in
+            rules.shouldEmitAnchor = { url in url.absoluteString != "https://e.com/skip" }
+        }
+        // 기대: 앵커 누락, "앞" + "뒤" 만 텍스트로 흐름, .link segment 0
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(texts(in: blocks).joined(), "앞뒤")
+        let linkSegments = blocks.flatMap { block -> [InlineSegment] in
+            if case .richText(let segs) = block.kind {
+                return segs.filter { if case .link = $0 { true } else { false } }
+            }
+            return []
+        }
+        XCTAssertEqual(linkSegments.count, 0, ".link segment 가 누락되어야 함")
+    }
+
+    func testHiddenSubtreeProducesNoMediaBlocks() throws {
+        let blocks = try walk("<div style='display:none'><img src='https://e.com/a.png'></div>본문")
+        // 기대: hidden div 안 이미지 누락, "본문" 만 살아남음
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(texts(in: blocks).joined(), "본문")
+    }
+
+    func testScriptTagContentIsSkipped() throws {
+        let blocks = try walk("앞<script>var x = 1;</script>뒤")
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(texts(in: blocks).joined(), "앞뒤")
+    }
+
+    func testCustomImageBlockCanRouteToVideo() throws {
+        // Simulate Ppomppu's "video bytes shipped inside <img>" quirk:
+        // when the image URL ends in `.mov`, route to a `.video` block.
+        let blocks = try walk("<img src='https://e.com/clip.mov'>") { rules in
+            rules.imageBlock = { url in
+                if url.pathExtension.lowercased() == "mov" {
+                    return .video(url, posterURL: nil)
+                }
+                return .image(url)
+            }
+        }
+        XCTAssertEqual(blocks.count, 1)
+        guard case .video(let url, _) = blocks[0].kind
+        else { return XCTFail("video 블록 기대 (custom imageBlock)") }
+        XCTAssertEqual(url.absoluteString, "https://e.com/clip.mov")
+    }
+
+    func testNilResolveImageURLDropsImageBlock() throws {
+        let blocks = try walk("앞<img src='https://e.com/a.png'>뒤") { rules in
+            rules.resolveImageURL = { _ in nil }
+        }
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(texts(in: blocks).joined(), "앞뒤")
+    }
+
+    func testBlockTagStampsNewlineBetweenSiblings() throws {
+        let blocks = try walk("<p>첫 단락</p><p>둘째 단락</p>")
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(texts(in: blocks).joined(), "첫 단락\n둘째 단락")
+    }
+
+    func testAnchorWrappingImageInsideContainerWithSiblingText() throws {
+        // 가장 흔한 board 본문 모양: `<div>앞 <a><img></a> 뒤</div>`.
+        // anchor-wraps-media 가지 + 앞뒤 형제 텍스트 흐름이 모두 깨지지
+        // 않는지 핀.
+        let blocks = try walk("<div>앞 <a href='https://e.com/x'><img src='https://e.com/a.png'></a> 뒤</div>")
+        // 기대: richText("앞 ") → image → richText(" 뒤")
+        XCTAssertEqual(blocks.count, 3, "richText / image / richText 순서 3 블록")
+        guard blocks.count == 3 else { return }
+        if case .richText(let head) = blocks[0].kind,
+           case .text(let s0) = head.first {
+            XCTAssertTrue(s0.contains("앞"), "첫 블록은 '앞' 포함 (image 직전 플러시)")
+        } else {
+            XCTFail("첫 블록은 richText('앞 ') 기대")
+        }
+        if case .image(let url, _) = blocks[1].kind {
+            XCTAssertEqual(url.absoluteString, "https://e.com/a.png")
+        } else {
+            XCTFail("두 번째 블록은 image (anchor 라벨 무시)")
+        }
+        if case .richText(let tail) = blocks[2].kind,
+           case .text(let s1) = tail.first {
+            XCTAssertTrue(s1.contains("뒤"), "마지막 블록은 '뒤' 포함")
+        } else {
+            XCTFail("마지막 블록은 richText(' 뒤') 기대")
+        }
+    }
+
+    func testStandardResolveVideoURLStripsMediaFragmentAndUsesDataSrc() throws {
+        // standard(for:) 의 새 기본값 핀:
+        // 1) `<video data-src=...>` 우선 (lazy-load), 2) `#t=…` strip.
+        let blocks = try walk("<video data-src='https://e.com/v.mp4#t=0.05' src='https://e.com/poster.jpg'></video>")
+        XCTAssertEqual(blocks.count, 1)
+        guard case .video(let url, _) = blocks[0].kind
+        else { return XCTFail("video 블록 기대") }
+        XCTAssertEqual(url.absoluteString, "https://e.com/v.mp4", "data-src 우선 + #t= strip")
+    }
+}
