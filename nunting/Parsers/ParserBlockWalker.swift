@@ -156,6 +156,23 @@ public struct ParserBlockWalker: Sendable {
                 blocks.append(.embed(.youtube, id: id))
             }
             return
+        case "a":
+            // Anchors wrapping `<img>` / `<video>` / `<iframe>` are media link
+            // wrappers — recurse so the nested media becomes a real block, and
+            // skip the anchor's own label (the media is the payload).
+            if parser.hasAnyDescendant(of: el, taggedAnyOf: rules.mediaTags) {
+                flushInline(into: &blocks, inline: &inline)
+                try walkNode(el, blocks: &blocks, inline: &inline)
+                return
+            }
+            if let resolved = try parser.anchor(from: el) {
+                if rules.shouldEmitAnchor(resolved.url) {
+                    inline.appendLink(url: resolved.url, label: resolved.label)
+                }
+            } else {
+                inline.appendText(try el.text())
+            }
+            return
         default:
             break
         }

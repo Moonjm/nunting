@@ -85,4 +85,31 @@ final class ParserBlockWalkerTests: XCTestCase {
         let blocks = try walk("<iframe src='https://vimeo.com/123'></iframe>")
         XCTAssertEqual(blocks.count, 0)
     }
+
+    func testPlainAnchorEmitsInlineLink() throws {
+        let blocks = try walk("<a href='https://e.com/x'>라벨</a>")
+        XCTAssertEqual(blocks.count, 1)
+        guard case .richText(let segs) = blocks[0].kind, segs.count == 1,
+              case .link(let url, let label) = segs[0]
+        else { return XCTFail("단일 inline 링크 기대") }
+        XCTAssertEqual(url.absoluteString, "https://e.com/x")
+        XCTAssertEqual(label, "라벨")
+    }
+
+    func testAnchorWrappingImageEmitsImageNotLink() throws {
+        let blocks = try walk("<a href='https://e.com/x'><img src='https://e.com/a.png'></a>")
+        XCTAssertEqual(blocks.count, 1)
+        guard case .image(let url, _) = blocks[0].kind
+        else { return XCTFail("이미지 블록 기대 (앵커 라벨 무시)") }
+        XCTAssertEqual(url.absoluteString, "https://e.com/a.png")
+    }
+
+    func testShouldEmitAnchorFalseDropsLinkButKeepsTextFlow() throws {
+        let blocks = try walk("앞<a href='https://e.com/skip'>무시</a>뒤") { rules in
+            rules.shouldEmitAnchor = { url in url.absoluteString != "https://e.com/skip" }
+        }
+        // 기대: 앵커 누락, "앞" + "뒤" 만 텍스트로 흐름
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(texts(in: blocks).joined(), "앞뒤")
+    }
 }
