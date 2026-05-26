@@ -119,4 +119,48 @@ final class ParserBlockWalkerTests: XCTestCase {
         }
         XCTAssertEqual(linkSegments.count, 0, ".link segment 가 누락되어야 함")
     }
+
+    func testHiddenSubtreeProducesNoMediaBlocks() throws {
+        let blocks = try walk("<div style='display:none'><img src='https://e.com/a.png'></div>본문")
+        // 기대: hidden div 안 이미지 누락, "본문" 만 살아남음
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(texts(in: blocks).joined(), "본문")
+    }
+
+    func testScriptTagContentIsSkipped() throws {
+        let blocks = try walk("앞<script>var x = 1;</script>뒤")
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(texts(in: blocks).joined(), "앞뒤")
+    }
+
+    func testCustomImageBlockCanRouteToVideo() throws {
+        // Simulate Ppomppu's "video bytes shipped inside <img>" quirk:
+        // when the image URL ends in `.mov`, route to a `.video` block.
+        let blocks = try walk("<img src='https://e.com/clip.mov'>") { rules in
+            rules.imageBlock = { url in
+                if url.pathExtension.lowercased() == "mov" {
+                    return .video(url, posterURL: nil)
+                }
+                return .image(url)
+            }
+        }
+        XCTAssertEqual(blocks.count, 1)
+        guard case .video(let url, _) = blocks[0].kind
+        else { return XCTFail("video 블록 기대 (custom imageBlock)") }
+        XCTAssertEqual(url.absoluteString, "https://e.com/clip.mov")
+    }
+
+    func testNilResolveImageURLDropsImageBlock() throws {
+        let blocks = try walk("앞<img src='https://e.com/a.png'>뒤") { rules in
+            rules.resolveImageURL = { _ in nil }
+        }
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(texts(in: blocks).joined(), "앞뒤")
+    }
+
+    func testBlockTagStampsNewlineBetweenSiblings() throws {
+        let blocks = try walk("<p>첫 단락</p><p>둘째 단락</p>")
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(texts(in: blocks).joined(), "첫 단락\n둘째 단락")
+    }
 }
