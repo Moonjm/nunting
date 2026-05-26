@@ -108,8 +108,15 @@ final class ParserBlockWalkerTests: XCTestCase {
         let blocks = try walk("앞<a href='https://e.com/skip'>무시</a>뒤") { rules in
             rules.shouldEmitAnchor = { url in url.absoluteString != "https://e.com/skip" }
         }
-        // 기대: 앵커 누락, "앞" + "뒤" 만 텍스트로 흐름
+        // 기대: 앵커 누락, "앞" + "뒤" 만 텍스트로 흐름, .link segment 0
         XCTAssertEqual(blocks.count, 1)
         XCTAssertEqual(texts(in: blocks).joined(), "앞뒤")
+        let linkSegments = blocks.flatMap { block -> [InlineSegment] in
+            if case .richText(let segs) = block.kind {
+                return segs.filter { if case .link = $0 { true } else { false } }
+            }
+            return []
+        }
+        XCTAssertEqual(linkSegments.count, 0, ".link segment 가 누락되어야 함")
     }
 }
