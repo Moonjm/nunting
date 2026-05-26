@@ -137,6 +137,25 @@ public struct ParserBlockWalker: Sendable {
         case "br":
             inline.appendText("\n")
             return
+        case "img":
+            if let url = try rules.resolveImageURL(el) {
+                flushInline(into: &blocks, inline: &inline)
+                blocks.append(rules.imageBlock(url))
+            }
+            return
+        case "video":
+            if let url = try rules.resolveVideoURL(el) {
+                flushInline(into: &blocks, inline: &inline)
+                blocks.append(.video(url, posterURL: try parser.videoPoster(from: el)))
+            }
+            return
+        case "iframe":
+            let src = (try? el.attr("src")) ?? ""
+            if let id = parser.youtubeEmbedID(from: src) {
+                flushInline(into: &blocks, inline: &inline)
+                blocks.append(.embed(.youtube, id: id))
+            }
+            return
         default:
             break
         }

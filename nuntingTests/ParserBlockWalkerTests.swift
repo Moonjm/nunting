@@ -47,4 +47,42 @@ final class ParserBlockWalkerTests: XCTestCase {
         XCTAssertEqual(blocks.count, 1)
         XCTAssertEqual(texts(in: blocks).joined(), "첫줄\n둘째줄")
     }
+
+    func testImageFlushesInlineAndAppendsImageBlock() throws {
+        let blocks = try walk("앞 텍스트<img src='https://e.com/a.png'>뒷 텍스트")
+        // 기대: richText("앞 텍스트") → image → richText("뒷 텍스트")
+        XCTAssertEqual(blocks.count, 3)
+        guard case .richText(let head) = blocks[0].kind,
+              case .image(let url, _) = blocks[1].kind,
+              case .richText(let tail) = blocks[2].kind
+        else { return XCTFail("순서: richText → image → richText 기대") }
+        XCTAssertEqual(head.first.map { seg -> String in
+            if case .text(let s) = seg { s } else { "" }
+        }, "앞 텍스트")
+        XCTAssertEqual(url.absoluteString, "https://e.com/a.png")
+        XCTAssertEqual(tail.first.map { seg -> String in
+            if case .text(let s) = seg { s } else { "" }
+        }, "뒷 텍스트")
+    }
+
+    func testVideoPromotedToVideoBlock() throws {
+        let blocks = try walk("<video src='https://e.com/v.mp4'></video>")
+        XCTAssertEqual(blocks.count, 1)
+        guard case .video(let url, _) = blocks[0].kind
+        else { return XCTFail("video 블록 기대") }
+        XCTAssertEqual(url.absoluteString, "https://e.com/v.mp4")
+    }
+
+    func testYouTubeIframePromotedToEmbedBlock() throws {
+        let blocks = try walk("<iframe src='https://www.youtube.com/embed/abcdefghijk'></iframe>")
+        XCTAssertEqual(blocks.count, 1)
+        guard case .embed(provider: .youtube, id: let id) = blocks[0].kind
+        else { return XCTFail("embed(.youtube) 블록 기대") }
+        XCTAssertEqual(id, "abcdefghijk")
+    }
+
+    func testNonYouTubeIframeIsDropped() throws {
+        let blocks = try walk("<iframe src='https://vimeo.com/123'></iframe>")
+        XCTAssertEqual(blocks.count, 0)
+    }
 }
