@@ -138,24 +138,11 @@ public struct BobaeParser: BoardParser {
         ]
         guard let wrap = candidates.compactMap({ $0 }).first else { return [] }
 
-        var rules = WalkerRules.standard(for: self)
-        // resolveImageURL — standard(for:) 기본값이 src→data-src→data-original 을 parser.resolveHTTPURL 로 검증해주므로 기존 realImageURL 과 동일 → override 불필요
-        rules.resolveVideoURL = videoURL(from:)        // `#t=...` media fragment strip 들어간 로컬 헬퍼 유지
+        // resolveImageURL / resolveVideoURL — 둘 다 standard(for:) 기본값이
+        // Bobae 의 옛 로컬 헬퍼(realImageURL / videoURL) 와 동일한 동작
+        // (data-src 폴백 + `#t=` fragment strip) 을 제공하므로 override 불필요.
+        let rules = WalkerRules.standard(for: self)
         return try ParserBlockWalker(parser: self, rules: rules).walk(wrap)
-    }
-
-    nonisolated private func videoURL(from el: Element) throws -> URL? {
-        var raw = try el.attr("src")
-        if raw.isEmpty, let source = try el.select("source").first() {
-            raw = try source.attr("src")
-        }
-        // Strip media fragments like `#t=0.05` that the source site uses as
-        // a poster hint — AVURLAsset treats them as seek targets and breaks
-        // the initial frame render.
-        if let hash = raw.firstIndex(of: "#") {
-            raw = String(raw[..<hash])
-        }
-        return resolveHTTPURL(raw)
     }
 
     // MARK: - Comments

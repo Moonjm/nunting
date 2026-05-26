@@ -190,4 +190,14 @@ final class ParserBlockWalkerTests: XCTestCase {
             XCTFail("마지막 블록은 richText(' 뒤') 기대")
         }
     }
+
+    func testStandardResolveVideoURLStripsMediaFragmentAndUsesDataSrc() throws {
+        // standard(for:) 의 새 기본값 핀:
+        // 1) `<video data-src=...>` 우선 (lazy-load), 2) `#t=…` strip.
+        let blocks = try walk("<video data-src='https://e.com/v.mp4#t=0.05' src='https://e.com/poster.jpg'></video>")
+        XCTAssertEqual(blocks.count, 1)
+        guard case .video(let url, _) = blocks[0].kind
+        else { return XCTFail("video 블록 기대") }
+        XCTAssertEqual(url.absoluteString, "https://e.com/v.mp4", "data-src 우선 + #t= strip")
+    }
 }

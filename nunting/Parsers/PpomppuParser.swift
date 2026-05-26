@@ -100,7 +100,6 @@ public struct PpomppuParser: BoardParser {
         let skipURL = dealAnchor?.url
         var rules = WalkerRules.standard(for: self)
         rules.resolveImageURL  = imageURL(from:)
-        rules.resolveVideoURL  = videoURL(from:)
         rules.imageBlock       = imageOrVideoBlock(for:)
         rules.shouldEmitAnchor = { url in url != skipURL }
         let body = try ParserBlockWalker(parser: self, rules: rules).walk(content)
@@ -324,26 +323,6 @@ public struct PpomppuParser: BoardParser {
         return nil
     }
 
-
-    nonisolated private func videoURL(from element: Element) throws -> URL? {
-        // Ppomppu ships bodies with the standard <video><source src="..."></video>
-        // shape (the mp4 URL lives on the child <source>). Fall back to
-        // data-src / src on <video> itself for compatibility with older posts.
-        let dataSrc = try element.attr("data-src")
-        let direct = try element.attr("src")
-        var raw = !dataSrc.isEmpty ? dataSrc : direct
-        if raw.isEmpty, let source = try element.select("source").first() {
-            let sData = try source.attr("data-src")
-            let sSrc = try source.attr("src")
-            raw = !sData.isEmpty ? sData : sSrc
-        }
-        // Drop media fragments like "#t=0.05" so URL() doesn't attach them
-        // to AVPlayer asset URLs.
-        if let hash = raw.firstIndex(of: "#") {
-            raw = String(raw[raw.startIndex..<hash])
-        }
-        return resolveHTTPURL(raw)
-    }
 
     nonisolated private func extractStickerURL(from element: Element) throws -> URL? {
         // PostComment images are lazy-loaded: src is "/images/lazyloading.jpg"

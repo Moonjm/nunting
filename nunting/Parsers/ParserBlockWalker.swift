@@ -16,9 +16,10 @@ public struct WalkerRules: Sendable {
     public var resolveImageURL: @Sendable (Element) throws -> URL?
 
     /// Resolve a `<video>` element to its real source URL. `WalkerRules.standard(for:)`
-    /// tries `src` then the first `<source>` child, delegating to
-    /// `parser.resolveHTTPURL`. Does not strip media fragments (`#t=...`) —
-    /// sites that need that override.
+    /// tries `data-src` then `src` on the `<video>` element and its first
+    /// `<source>` child, delegating each candidate to `parser.resolveHTTPURL`.
+    /// Also strips `#t=…` media fragments — AVPlayer treats them as seek
+    /// targets and breaks the initial-frame render.
     public var resolveVideoURL: @Sendable (Element) throws -> URL?
 
     /// How to materialise the resolved image URL into a `ContentBlock`.
@@ -75,9 +76,18 @@ extension WalkerRules {
                 return nil
             },
             resolveVideoURL: { el in
-                var raw = try el.attr("src")
+                // 사이트별로 lazy-load 를 위해 data-src 를 우선 채우는 케이스가
+                // 흔해서 data-src → src 순으로 시도. `<source>` 자식도 동일.
+                var raw = try el.attr("data-src")
+                if raw.isEmpty { raw = try el.attr("src") }
                 if raw.isEmpty, let source = try el.select("source").first() {
-                    raw = try source.attr("src")
+                    let sData = try source.attr("data-src")
+                    raw = !sData.isEmpty ? sData : (try source.attr("src"))
+                }
+                // `#t=0.05` 같은 media fragment 는 AVPlayer 가 seek target 으로
+                // 해석해 첫 프레임 렌더를 깨므로 플랫폼 공통으로 strip.
+                if let hash = raw.firstIndex(of: "#") {
+                    raw = String(raw[..<hash])
                 }
                 return parser.resolveHTTPURL(raw)
             },
@@ -162,7 +172,9 @@ public struct ParserBlockWalker: Sendable {
             }
             return
         case "iframe":
-            let src = (try? el.attr("src")) ?? ""
+            // SwiftSoup `attr(_:)` 는 missing 시 throw 가 아니라 ""를 반환.
+            // `walkChild` 자체가 throws 이므로 `try?` 로 감쌀 필요 없음.
+            let src = try el.attr("src")
             if let id = parser.youtubeEmbedID(from: src) {
                 flushInline(into: &blocks, inline: &inline)
                 blocks.append(.embed(.youtube, id: id))
