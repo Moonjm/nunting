@@ -163,4 +163,31 @@ final class ParserBlockWalkerTests: XCTestCase {
         XCTAssertEqual(blocks.count, 1)
         XCTAssertEqual(texts(in: blocks).joined(), "첫 단락\n둘째 단락")
     }
+
+    func testAnchorWrappingImageInsideContainerWithSiblingText() throws {
+        // 가장 흔한 board 본문 모양: `<div>앞 <a><img></a> 뒤</div>`.
+        // anchor-wraps-media 가지 + 앞뒤 형제 텍스트 흐름이 모두 깨지지
+        // 않는지 핀.
+        let blocks = try walk("<div>앞 <a href='https://e.com/x'><img src='https://e.com/a.png'></a> 뒤</div>")
+        // 기대: richText("앞 ") → image → richText(" 뒤")
+        XCTAssertEqual(blocks.count, 3, "richText / image / richText 순서 3 블록")
+        guard blocks.count == 3 else { return }
+        if case .richText(let head) = blocks[0].kind,
+           case .text(let s0) = head.first {
+            XCTAssertTrue(s0.contains("앞"), "첫 블록은 '앞' 포함 (image 직전 플러시)")
+        } else {
+            XCTFail("첫 블록은 richText('앞 ') 기대")
+        }
+        if case .image(let url, _) = blocks[1].kind {
+            XCTAssertEqual(url.absoluteString, "https://e.com/a.png")
+        } else {
+            XCTFail("두 번째 블록은 image (anchor 라벨 무시)")
+        }
+        if case .richText(let tail) = blocks[2].kind,
+           case .text(let s1) = tail.first {
+            XCTAssertTrue(s1.contains("뒤"), "마지막 블록은 '뒤' 포함")
+        } else {
+            XCTFail("마지막 블록은 richText(' 뒤') 기대")
+        }
+    }
 }

@@ -100,6 +100,18 @@ public struct ParserBlockWalker: Sendable {
         self.rules = rules
     }
 
+    /// Walks the subtree rooted at `root`, emitting blocks in source order.
+    ///
+    /// **Inline accumulator semantics:** a single `InlineAccumulator` is
+    /// threaded through the entire walk and only flushed when media /
+    /// embed blocks are encountered (or at the very end). This intentionally
+    /// merges consecutive `<div>` / `<p>` blocks into a single `.richText`
+    /// run instead of producing one block per source-level container — the
+    /// downstream renderer treats consecutive richText blocks the same way,
+    /// so the merge is semantically equivalent but produces fewer (and
+    /// therefore cheaper) blocks. Sites that need per-container blocks
+    /// would have to add their own block-splitting hook; the pilot
+    /// parsers do not.
     public nonisolated func walk(_ root: Element) throws -> [ContentBlock] {
         var blocks: [ContentBlock] = []
         var inline = InlineAccumulator()
@@ -170,6 +182,14 @@ public struct ParserBlockWalker: Sendable {
                     inline.appendLink(url: resolved.url, label: resolved.label)
                 }
             } else {
+                // Intentional: when `anchor(from:)` returns nil (non-http(s)
+                // scheme — mailto:, javascript:void(0), empty href, bare
+                // `#anchor`), preserve the visible label as plain text so
+                // user-typed prose around a broken / decorative link
+                // doesn't silently vanish. Matches pre-refactor Bobae /
+                // Ppomppu convention. SwiftSoup's `.text()` flattens nested
+                // structure, which is acceptable here because the only
+                // payload a non-link anchor carries is its label.
                 inline.appendText(try el.text())
             }
             return
