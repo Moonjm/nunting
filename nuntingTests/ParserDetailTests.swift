@@ -898,4 +898,96 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertTrue(prose.contains("위 본문"))
         XCTAssertTrue(prose.contains("아래 본문"))
     }
+
+    // MARK: - Bobae
+
+    func testBobaeBodyExtractsTextImageAndYouTube() throws {
+        // Minimal `.article-body` shape: text intro, inline image,
+        // YouTube embed, closing text. Pins the walker output so the
+        // upcoming `ParserBlockWalker` migration must produce the same
+        // blocks in the same order.
+        let html = """
+        <html><body>
+        <article class="article">
+          <h3 class="subject">테스트 제목</h3>
+          <div class="util2"><div class="info"><span>닉네임</span></div></div>
+          <div class="util"><time datetime="2026-05-20">10:00</time></div>
+          <div class="article-body">
+            <p>위 본문</p>
+            <p><img src="https://e.com/bobae-a.png"></p>
+            <p><iframe src="https://www.youtube.com/embed/abcdefghijk"></iframe></p>
+            <p>아래 본문</p>
+          </div>
+        </article>
+        </body></html>
+        """
+        let parser = BobaeParser()
+        let post = Post(
+            id: "bobae-1",
+            site: .bobae,
+            boardID: "freeb",
+            title: "테스트",
+            author: "닉네임",
+            date: nil,
+            dateText: "방금",
+            commentCount: 0,
+            url: URL(string: "https://m.bobaedream.co.kr/board/bbs_view/freeb/1")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+        let kinds = detail.blocks.map { $0.kind }
+
+        // 기대 시퀀스: richText("위 본문") → image → embed(.youtube) → richText("아래 본문")
+        XCTAssertEqual(kinds.count, 4, "블록 4개 (텍스트, 이미지, 유튜브, 텍스트)")
+
+        guard kinds.count == 4 else { return }
+        if case .richText(let segs0) = kinds[0],
+           case .text(let s0) = segs0.first {
+            XCTAssertTrue(s0.contains("위 본문"), "첫 블록은 '위 본문' 포함")
+        } else {
+            XCTFail("첫 블록은 richText 이어야 함")
+        }
+        if case .image(let url, _) = kinds[1] {
+            XCTAssertEqual(url.absoluteString, "https://e.com/bobae-a.png")
+        } else {
+            XCTFail("두 번째 블록은 image 이어야 함")
+        }
+        if case .embed(.youtube, let id) = kinds[2] {
+            XCTAssertEqual(id, "abcdefghijk")
+        } else {
+            XCTFail("세 번째 블록은 embed(.youtube)")
+        }
+        if case .richText(let segs3) = kinds[3],
+           case .text(let s3) = segs3.first {
+            XCTAssertTrue(s3.contains("아래 본문"), "마지막 블록은 '아래 본문' 포함")
+        } else {
+            XCTFail("마지막 블록은 richText 이어야 함")
+        }
+    }
+
+    func testBobaeBodyDropsHiddenSubtree() throws {
+        let html = """
+        <html><body><article class="article">
+          <div class="article-body">
+            <div style="display:none"><img src="https://e.com/hidden.png"></div>
+            <p>보이는 본문</p>
+          </div>
+        </article></body></html>
+        """
+        let parser = BobaeParser()
+        let post = Post(
+            id: "bobae-2", site: .bobae, boardID: "freeb",
+            title: "t", author: "a", date: nil, dateText: "방금",
+            commentCount: 0,
+            url: URL(string: "https://m.bobaedream.co.kr/board/bbs_view/freeb/2")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        let hasHidden = detail.blocks.contains { block in
+            if case .image(let url, _) = block.kind {
+                return url.absoluteString.contains("hidden")
+            }
+            return false
+        }
+        XCTAssertFalse(hasHidden, "display:none 안 이미지 누락")
+    }
 }
