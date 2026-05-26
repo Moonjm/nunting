@@ -114,11 +114,38 @@ public struct ParserBlockWalker: Sendable {
     }
 
     private nonisolated func walkNode(_ element: Element, blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
-        // Body of the walker is filled in by later tasks; for scaffolding
-        // we accept any input and emit nothing — the file just needs to
-        // build cleanly so later tasks can iterate test-first.
-        _ = element
-        _ = blocks
-        _ = inline
+        if parser.isHidden(element) { return }
+        let tag = element.tagName().lowercased()
+        if rules.skipTags.contains(tag) { return }
+
+        for node in element.getChildNodes() {
+            if let child = node as? Element {
+                try walkChild(child, blocks: &blocks, inline: &inline)
+            } else if let textNode = node as? TextNode {
+                let raw = textNode.text()
+                if !raw.isEmpty { inline.appendText(raw) }
+            }
+        }
+    }
+
+    private nonisolated func walkChild(_ el: Element, blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
+        if parser.isHidden(el) { return }
+        let tag = el.tagName().lowercased()
+        if rules.skipTags.contains(tag) { return }
+
+        switch tag {
+        case "br":
+            inline.appendText("\n")
+            return
+        default:
+            break
+        }
+
+        // Default: recurse and (if the child is a block-level tag) stamp a
+        // newline at the end so subsequent siblings sit on a new line.
+        try walkNode(el, blocks: &blocks, inline: &inline)
+        if rules.blockTags.contains(tag) {
+            inline.appendText("\n")
+        }
     }
 }
