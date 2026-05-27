@@ -168,10 +168,22 @@ public struct SLRParser: BoardParser {
 
     nonisolated private func extractBlocks(in doc: Document) throws -> [ContentBlock] {
         guard let wrap = try doc.select("#userct").first() else { return [] }
-        let rules = WalkerRules.standard(for: self)
+        var rules = WalkerRules.standard(for: self)
+        rules.mediaTags = ["img", "video"]
+        rules.resolveVideoURL = slrVideoURL(from:)
         return try ParserBlockWalker(parser: self, rules: rules).walk(wrap)
     }
 
+    nonisolated private func slrVideoURL(from el: Element) throws -> URL? {
+        var raw = try el.attr("src")
+        if raw.isEmpty, let source = try el.select("source").first() {
+            raw = try source.attr("src")
+        }
+        if let hash = raw.firstIndex(of: "#") {
+            raw = String(raw[..<hash])
+        }
+        return resolveHTTPURL(raw)
+    }
 
     // MARK: - Comment AJAX params
 

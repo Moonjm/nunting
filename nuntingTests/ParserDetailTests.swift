@@ -1337,37 +1337,35 @@ final class ParserDetailTests: XCTestCase {
         )
         let detail = try parser.parseDetail(html: html, post: post)
 
-        let images = detail.blocks.compactMap { block -> URL? in
-            if case .image(let url, _) = block.kind { return url }
-            return nil
+        XCTAssertEqual(detail.blocks.count, 5)
+        guard case .richText(let head) = detail.blocks[0].kind,
+              case .image(let imageURL, _) = detail.blocks[1].kind,
+              case .video(let videoURL, _) = detail.blocks[2].kind,
+              case .embed(.youtube, let embedID) = detail.blocks[3].kind,
+              case .richText(let tail) = detail.blocks[4].kind
+        else {
+            return XCTFail("expected richText, image, video, embed, richText; got \(detail.blocks.map(\.kind))")
         }
-        XCTAssertEqual(images.map(\.absoluteString), ["https://image.slrclub.com/body.jpg"])
 
-        let videos = detail.blocks.compactMap { block -> URL? in
-            if case .video(let url, _) = block.kind { return url }
+        XCTAssertEqual(head.count, 2)
+        if case .text(let text) = head[0] {
+            XCTAssertTrue(text.contains("위 본문"))
+        } else {
+            XCTFail("head[0] should be text")
+        }
+        if case .link(let url, let label) = head[1] {
+            XCTAssertEqual(url.absoluteString, "https://example.com/ref")
+            XCTAssertEqual(label, "참고")
+        } else {
+            XCTFail("head[1] should be link")
+        }
+        XCTAssertEqual(imageURL.absoluteString, "https://image.slrclub.com/body.jpg")
+        XCTAssertEqual(videoURL.absoluteString, "https://video.slrclub.com/clip.mp4", "<source src> + #t= strip")
+        XCTAssertEqual(embedID, "abcdefghijk")
+        XCTAssertEqual(tail.compactMap { segment -> String? in
+            if case .text(let text) = segment { return text }
             return nil
-        }
-        XCTAssertEqual(videos.map(\.absoluteString), ["https://video.slrclub.com/clip.mp4"],
-                       "<source src> + #t= strip")
-
-        let embeds = detail.blocks.compactMap { block -> String? in
-            if case .embed(.youtube, let id) = block.kind { return id }
-            return nil
-        }
-        XCTAssertEqual(embeds, ["abcdefghijk"])
-
-        let links = detail.blocks.flatMap { block -> [(URL, String)] in
-            if case .richText(let segs) = block.kind {
-                return segs.compactMap { seg in
-                    if case .link(let url, let label) = seg { return (url, label) }
-                    return nil
-                }
-            }
-            return []
-        }
-        XCTAssertEqual(links.count, 1)
-        XCTAssertEqual(links.first?.0.absoluteString, "https://example.com/ref")
-        XCTAssertEqual(links.first?.1, "참고")
+        }.joined().trimmingCharacters(in: .whitespacesAndNewlines), "아래 본문")
     }
 
     func testSLRBodyDropsHiddenSubtreeAndScriptTags() throws {
@@ -1404,6 +1402,58 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertTrue(prose.contains("앞"))
         XCTAssertTrue(prose.contains("뒤"))
         XCTAssertFalse(prose.contains("var x = 1"), "<script> 안 본문 누락")
+    }
+
+    func testSLRBodyKeepsLegacyVideoPrecedenceAndAnchorMediaRules() throws {
+        let html = """
+        <html><body>
+        <div class="subject">제목</div>
+        <div id="userct">
+          <video data-src="https://video.slrclub.com/lazy.mp4" src="https://video.slrclub.com/canonical.mp4"></video>
+          <a href="https://example.com/full"><img src="https://image.slrclub.com/wrapped.jpg"></a>
+          <a href="https://example.com/embed"><iframe src="https://www.youtube.com/embed/zzzzzzzzzzz"></iframe>iframe 링크</a>
+        </div>
+        </body></html>
+        """
+        let parser = SLRParser()
+        let post = Post(
+            id: "slr-3", site: .slr, boardID: "free",
+            title: "x", author: "y", date: nil, dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://m.slrclub.com/m_view.php?id=free&no=3")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+
+        let videos = detail.blocks.compactMap { block -> URL? in
+            if case .video(let url, _) = block.kind { return url }
+            return nil
+        }
+        XCTAssertEqual(videos.map(\.absoluteString), ["https://video.slrclub.com/canonical.mp4"])
+
+        let images = detail.blocks.compactMap { block -> URL? in
+            if case .image(let url, _) = block.kind { return url }
+            return nil
+        }
+        XCTAssertEqual(images.map(\.absoluteString), ["https://image.slrclub.com/wrapped.jpg"])
+
+        let embeds = detail.blocks.compactMap { block -> String? in
+            if case .embed(.youtube, let id) = block.kind { return id }
+            return nil
+        }
+        XCTAssertTrue(embeds.isEmpty, "SLR legacy mediaTags only unwrap img/video inside anchors")
+
+        let links = detail.blocks.flatMap { block -> [(URL, String)] in
+            if case .richText(let segs) = block.kind {
+                return segs.compactMap { segment in
+                    if case .link(let url, let label) = segment { return (url, label) }
+                    return nil
+                }
+            }
+            return []
+        }
+        XCTAssertEqual(links.count, 1)
+        XCTAssertEqual(links.first?.0.absoluteString, "https://example.com/embed")
+        XCTAssertEqual(links.first?.1, "iframe 링크")
     }
 
     // MARK: - Bobae
