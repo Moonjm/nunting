@@ -1152,6 +1152,113 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertEqual(links.first?.1, "참고 링크")
     }
 
+    // MARK: - Humor
+
+    func testHumorBodyImageFileURLPriorityAndSkipMarkers() throws {
+        // Humor `<img img_file_url=원본 src=WebP>` 우선순위 + skipImageMarkers
+        // (icon-, loading_bar2.gif 등) 가 차단되는지 핀.
+        let html = """
+        <html><body>
+        <div id="read_subject_div"><h2><a>제목</a></h2></div>
+        <div id="wrap_copy">
+          <div class="body_editor">
+            <p>위 본문</p>
+            <img img_file_url="https://image.humoruniv.com/orig.jpg" src="https://down-webp.humoruniv.com/compressed.webp">
+            <img src="https://example.com/images/ic_chrome.png">
+            <img src="https://example.com/images/loading_bar2.gif">
+            <p>아래 본문</p>
+          </div>
+        </div>
+        </body></html>
+        """
+        let parser = HumorParser()
+        let post = Post(
+            id: "humor-1", site: .humor, boardID: "pds",
+            title: "x", author: "y", date: nil, dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://m.humoruniv.com/board/humor/read.html?table=pds&number=1")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        let images = detail.blocks.compactMap { block -> URL? in
+            if case .image(let url, _) = block.kind { return url }
+            return nil
+        }
+        XCTAssertEqual(images.map(\.absoluteString), ["https://image.humoruniv.com/orig.jpg"],
+                       "img_file_url 우선 + skipImageMarkers 차단")
+    }
+
+    func testHumorBodyOnclickMp4PromotesToVideoBlock() throws {
+        // Humor 비디오는 `<div onclick="comment_mp4_expand('id', 'url.mp4')">`
+        // 형태로 옴 — onclick handler 파싱이 표준 dispatch 전에 동작해야 함.
+        let html = """
+        <html><body>
+        <div id="read_subject_div"><h2><a>제목</a></h2></div>
+        <div id="wrap_copy">
+          <div class="body_editor">
+            <p>비디오 위</p>
+            <div onclick="comment_mp4_expand('clip123', 'https://video.humoruniv.com/clip.mp4')">
+              <img src="https://image.humoruniv.com/thumb.jpg">
+            </div>
+            <p>비디오 아래</p>
+          </div>
+        </div>
+        </body></html>
+        """
+        let parser = HumorParser()
+        let post = Post(
+            id: "humor-2", site: .humor, boardID: "pds",
+            title: "x", author: "y", date: nil, dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://m.humoruniv.com/board/humor/read.html?table=pds&number=2")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        let videos = detail.blocks.compactMap { block -> URL? in
+            if case .video(let url, _) = block.kind { return url }
+            return nil
+        }
+        XCTAssertEqual(videos.map(\.absoluteString), ["https://video.humoruniv.com/clip.mp4"])
+        // 썸네일 img 는 onclick wrapper 가 claim 했으므로 image 블록 0
+        let images = detail.blocks.compactMap { block -> URL? in
+            if case .image(let url, _) = block.kind { return url }
+            return nil
+        }
+        XCTAssertTrue(images.isEmpty, "onclick wrapper 가 claim 한 자식 썸네일은 image 블록 안 만들어야")
+    }
+
+    func testHumorBodyYouTubeIframeAndHiddenSubtree() throws {
+        let html = """
+        <html><body>
+        <div id="read_subject_div"><h2><a>제목</a></h2></div>
+        <div id="wrap_copy">
+          <div class="body_editor">
+            <p>위 본문</p>
+            <iframe src="https://www.youtube.com/embed/abcdefghijk"></iframe>
+            <div style="display:none"><img src="https://image.humoruniv.com/hidden.jpg"></div>
+            <p>아래 본문</p>
+          </div>
+        </div>
+        </body></html>
+        """
+        let parser = HumorParser()
+        let post = Post(
+            id: "humor-3", site: .humor, boardID: "pds",
+            title: "x", author: "y", date: nil, dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://m.humoruniv.com/board/humor/read.html?table=pds&number=3")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        let embeds = detail.blocks.compactMap { block -> String? in
+            if case .embed(.youtube, let id) = block.kind { return id }
+            return nil
+        }
+        XCTAssertEqual(embeds, ["abcdefghijk"])
+        let hasHidden = detail.blocks.contains { block in
+            if case .image(let url, _) = block.kind { return url.absoluteString.contains("hidden") }
+            return false
+        }
+        XCTAssertFalse(hasHidden, "display:none 안 이미지 누락")
+    }
+
     // MARK: - Bobae
 
     func testBobaeBodyExtractsTextImageAndYouTube() throws {
