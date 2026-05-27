@@ -152,8 +152,7 @@ public struct CoolenjoyParser: BoardParser {
         // Coolenjoy 옛 파서는 <a> 안쪽 media-wrap 판정에 ["img"] 만 사용했고
         // <video>/<iframe> 케이스가 없어 본문에 표시 안 함. legacy parity 유지.
         rules.mediaTags = ["img"]
-        rules.skipTags.insert("video")
-        rules.skipTags.insert("iframe")
+        rules.skipTags.formUnion(["video", "iframe"])
         let blocks = try ParserBlockWalker(parser: self, rules: rules).walk(contentEl)
 
         let fullDateText = try article.select("time").first()?.text()
