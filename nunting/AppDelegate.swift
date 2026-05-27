@@ -20,7 +20,19 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             }
         }
 
+        // Memory pressure response. iOS sends `didReceiveMemoryWarning` via
+        // both the delegate method below AND the matching notification —
+        // route both through `MemoryPressureResponder.shared.respond()`
+        // (idempotent flush). The responder owns the SDImageCache /
+        // URLCache flush so the wiring stays testable.
+        MemoryPressureResponder.shared.installDefaultHandlers()
+        MemoryPressureResponder.shared.start()
+
         return true
+    }
+
+    func applicationDidReceiveMemoryWarning(_ application: UIApplication) {
+        MemoryPressureResponder.shared.respond()
     }
 
     /// APNs 등록 성공 — deviceToken을 hex로 변환해 서버에 PUT.
