@@ -24,28 +24,16 @@ final class ParserBlockWalkerTests: XCTestCase {
         return try ParserBlockWalker(parser: parser, rules: rules).walk(root)
     }
 
-    private func texts(in blocks: [ContentBlock]) -> [String] {
-        blocks.flatMap { block -> [String] in
-            if case .richText(let segs) = block.kind {
-                return segs.compactMap { seg in
-                    if case .text(let s) = seg { return s }
-                    return nil
-                }
-            }
-            return []
-        }
-    }
-
     func testPlainTextProducesSingleRichTextBlock() throws {
         let blocks = try walk("안녕 본문")
         XCTAssertEqual(blocks.count, 1)
-        XCTAssertEqual(texts(in: blocks).joined(), "안녕 본문")
+        XCTAssertEqual(blocks.plainText, "안녕 본문")
     }
 
     func testBrAppendsNewlineInsideRichText() throws {
         let blocks = try walk("첫줄<br>둘째줄")
         XCTAssertEqual(blocks.count, 1)
-        XCTAssertEqual(texts(in: blocks).joined(), "첫줄\n둘째줄")
+        XCTAssertEqual(blocks.plainText, "첫줄\n둘째줄")
     }
 
     func testImageFlushesInlineAndAppendsImageBlock() throws {
@@ -110,27 +98,21 @@ final class ParserBlockWalkerTests: XCTestCase {
         }
         // 기대: 앵커 누락, "앞" + "뒤" 만 텍스트로 흐름, .link segment 0
         XCTAssertEqual(blocks.count, 1)
-        XCTAssertEqual(texts(in: blocks).joined(), "앞뒤")
-        let linkSegments = blocks.flatMap { block -> [InlineSegment] in
-            if case .richText(let segs) = block.kind {
-                return segs.filter { if case .link = $0 { true } else { false } }
-            }
-            return []
-        }
-        XCTAssertEqual(linkSegments.count, 0, ".link segment 가 누락되어야 함")
+        XCTAssertEqual(blocks.plainText, "앞뒤")
+        XCTAssertEqual(blocks.links.count, 0, ".link segment 가 누락되어야 함")
     }
 
     func testHiddenSubtreeProducesNoMediaBlocks() throws {
         let blocks = try walk("<div style='display:none'><img src='https://e.com/a.png'></div>본문")
         // 기대: hidden div 안 이미지 누락, "본문" 만 살아남음
         XCTAssertEqual(blocks.count, 1)
-        XCTAssertEqual(texts(in: blocks).joined(), "본문")
+        XCTAssertEqual(blocks.plainText, "본문")
     }
 
     func testScriptTagContentIsSkipped() throws {
         let blocks = try walk("앞<script>var x = 1;</script>뒤")
         XCTAssertEqual(blocks.count, 1)
-        XCTAssertEqual(texts(in: blocks).joined(), "앞뒤")
+        XCTAssertEqual(blocks.plainText, "앞뒤")
     }
 
     func testCustomImageBlockCanRouteToVideo() throws {
@@ -155,13 +137,13 @@ final class ParserBlockWalkerTests: XCTestCase {
             rules.resolveImageURL = { _ in nil }
         }
         XCTAssertEqual(blocks.count, 1)
-        XCTAssertEqual(texts(in: blocks).joined(), "앞뒤")
+        XCTAssertEqual(blocks.plainText, "앞뒤")
     }
 
     func testBlockTagStampsNewlineBetweenSiblings() throws {
         let blocks = try walk("<p>첫 단락</p><p>둘째 단락</p>")
         XCTAssertEqual(blocks.count, 1)
-        XCTAssertEqual(texts(in: blocks).joined(), "첫 단락\n둘째 단락")
+        XCTAssertEqual(blocks.plainText, "첫 단락\n둘째 단락")
     }
 
     func testAnchorWrappingImageInsideContainerWithSiblingText() throws {
@@ -228,8 +210,7 @@ final class ParserBlockWalkerTests: XCTestCase {
             XCTAssertTrue(s.contains("뒤"))
         } else { XCTFail("마지막 블록은 richText") }
         // overlay 텍스트가 어디에도 안 새어야 함
-        let allText = texts(in: blocks).joined()
-        XCTAssertFalse(allText.contains("overlay"), "custom 핸들러가 claim 한 자식 텍스트는 누락")
+        XCTAssertFalse(blocks.plainText.contains("overlay"), "custom 핸들러가 claim 한 자식 텍스트는 누락")
     }
 
     func testCustomElementHandlerReturningEmptyArrayDropsSubtree() throws {
@@ -244,7 +225,7 @@ final class ParserBlockWalkerTests: XCTestCase {
             }
         }
         XCTAssertEqual(blocks.count, 1)
-        XCTAssertEqual(texts(in: blocks).joined(), "앞뒤")
+        XCTAssertEqual(blocks.plainText, "앞뒤")
     }
 
     func testCustomElementHandlerReturningNilFallsThroughToStandardDispatch() throws {
