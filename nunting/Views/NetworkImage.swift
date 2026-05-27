@@ -136,6 +136,20 @@ struct NetworkImage: View {
                 .onFailure { _ in
                     failed = true
                 }
+                // Cap decoded-frame memory for animated WebP/GIF (Korean
+                // board 짤방 are typically 100-300 frames; SDAnimatedImageView's
+                // default `maxBufferSize = 0` means "decode all frames upfront"
+                // which can balloon to 60-100 MB per long animation and was a
+                // main contributor to jetsam kills during detail loading).
+                // 16 MB caps a single animation at ~80 RGBA frames @ retina
+                // 800×500 — enough to keep the visible loop smooth, while
+                // forcing re-decode on long animations rather than holding
+                // every frame in RAM forever.
+                .maxBufferSize(UInt(16 * 1024 * 1024))
+                // Mark the decoded frame buffer as `NSCache`-purgeable so
+                // a memory pressure event evicts frames eagerly instead
+                // of waiting for the cap.
+                .purgeable(true)
                 .resizable()
                 .scaledToFit()
             } else {
