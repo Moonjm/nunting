@@ -92,7 +92,7 @@ extension BoardParser {
     /// rendered by flattening a SwiftSoup subtree with `.text()` / a manual
     /// walker, which drops the anchor's `href` — users see the label as
     /// unlinked prose. Converting anchors to markdown first lets
-    /// `PostDetailView.styledContent`'s `AttributedString(markdown:)` pass
+    /// `PostDetailCommentRow.styledContent`'s `AttributedString(markdown:)` pass
     /// turn them back into tappable `.link` spans. The `<>` wrapping around
     /// the URL is the autolink form that survives query-string characters
     /// (`?`, `&`, `=`) without needing per-URL escaping. Mutates `element`
