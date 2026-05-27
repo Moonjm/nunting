@@ -178,7 +178,15 @@ struct NetworkImage: View {
         .applyAspect(effectiveAspect)
         .frame(maxWidth: clampsToNaturalWidth ? (measuredNaturalPointWidth ?? .infinity) : .infinity)
         .gateOnVisibility(enabled: visibilityGated) { visible in
-            if visible { hasBeenVisible = true }
+            // visibility callback 자체는 SwiftUI 의 view-update 사이클
+            // 안에서 fire 될 수 있음. 검사(`!hasBeenVisible`)+쓰기 둘 다
+            // async block 안으로 묶어서 (a) view-update 중 @State 읽기
+            // 표면 0, (b) 빠른 두 번 fire 시 redundant write 차단.
+            guard visible else { return }
+            DispatchQueue.main.async {
+                guard !hasBeenVisible else { return }
+                hasBeenVisible = true
+            }
         }
         #if DEBUG
         .task(id: url) {
