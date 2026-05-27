@@ -59,7 +59,7 @@ extension Networking {
         url: URL,
         error: Error,
         retry: @Sendable () async throws -> String,
-        detector: ((String) -> Bool)?,
+        detector: (@Sendable (String) -> Bool)?,
         challenger: @Sendable (URL) async -> Void
     ) async throws -> String {
         guard case NetworkError.badResponse(let code) = error,
@@ -105,7 +105,7 @@ extension Networking {
     static func applyBotCheckGuard(
         url: URL,
         body: String,
-        retry: () async throws -> String
+        retry: @Sendable () async throws -> String
     ) async throws -> String {
         guard let detector = BotCheckRegistry.detector(for: url), detector(body) else {
             return body

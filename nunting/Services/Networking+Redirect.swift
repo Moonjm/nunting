@@ -25,7 +25,7 @@ extension Networking {
     /// not be loaded because the App Transport Security policy requires the
     /// use of a secure connection." All boards we scrape serve HTTPS on the
     /// same host, so a blind upgrade is safe and avoids an ATS exception.
-    final class RedirectHTTPSUpgrader: NSObject, URLSessionTaskDelegate {
+    final class RedirectHTTPSUpgrader: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
         // `session.data(for:)` (the async API) invokes this task-level
         // delegate method on the session's delegate when the session was
         // constructed with one — documented behaviour since iOS 15. Do not
