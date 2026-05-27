@@ -1657,6 +1657,91 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertFalse(nonText, "Coolenjoy 는 video/iframe 본문 블록 생성 안 함 (legacy parity)")
     }
 
+    // MARK: - Cook82
+
+    func testCook82BodyExtractsTextImageVideoYouTubeAndAnchor() throws {
+        let html = """
+        <html><body>
+        <div id="articleBody">
+          <p>위 본문 <a href="https://example.com/ref">참고</a></p>
+          <p><img src="https://image.82cook.com/body.jpg"></p>
+          <p><video><source src="https://video.82cook.com/clip.mp4#t=0.05"></video></p>
+          <p><iframe src="https://www.youtube.com/embed/abcdefghijk"></iframe></p>
+          <p>아래 본문</p>
+        </div>
+        </body></html>
+        """
+        let parser = Cook82Parser()
+        let post = Post(
+            id: "cook82-1", site: .cook82, boardID: "free",
+            title: "x", author: "y", date: nil, dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://www.82cook.com/entiz/read.php?bn=15&num=1")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+
+        let images = detail.blocks.compactMap { block -> URL? in
+            if case .image(let url, _) = block.kind { return url } else { return nil }
+        }
+        XCTAssertEqual(images.map(\.absoluteString), ["https://image.82cook.com/body.jpg"])
+
+        let videos = detail.blocks.compactMap { block -> URL? in
+            if case .video(let url, _) = block.kind { return url } else { return nil }
+        }
+        XCTAssertEqual(videos.map(\.absoluteString), ["https://video.82cook.com/clip.mp4"])
+
+        let embeds = detail.blocks.compactMap { block -> String? in
+            if case .embed(.youtube, let id) = block.kind { return id } else { return nil }
+        }
+        XCTAssertEqual(embeds, ["abcdefghijk"])
+
+        let links = detail.blocks.flatMap { block -> [(URL, String)] in
+            if case .richText(let segs) = block.kind {
+                return segs.compactMap { seg in
+                    if case .link(let url, let label) = seg { return (url, label) } else { return nil }
+                }
+            }
+            return []
+        }
+        XCTAssertEqual(links.count, 1)
+        XCTAssertEqual(links.first?.0.absoluteString, "https://example.com/ref")
+        XCTAssertEqual(links.first?.1, "참고")
+    }
+
+    func testCook82BodyDropsHiddenSubtreeAndScriptTags() throws {
+        let html = """
+        <html><body>
+        <div id="articleBody">
+          <p>앞</p>
+          <div style="display:none"><img src="https://image.82cook.com/hidden.jpg"></div>
+          <script>var x = 1;</script>
+          <p>뒤</p>
+        </div>
+        </body></html>
+        """
+        let parser = Cook82Parser()
+        let post = Post(
+            id: "cook82-2", site: .cook82, boardID: "free",
+            title: "x", author: "y", date: nil, dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://www.82cook.com/entiz/read.php?bn=15&num=2")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        let images = detail.blocks.compactMap { block -> URL? in
+            if case .image(let url, _) = block.kind { return url } else { return nil }
+        }
+        XCTAssertTrue(images.isEmpty)
+        let prose = detail.blocks.compactMap { block -> String? in
+            if case .richText(let segs) = block.kind {
+                return segs.compactMap { if case .text(let s) = $0 { return s } else { return nil } }.joined()
+            }
+            return nil
+        }.joined()
+        XCTAssertTrue(prose.contains("앞"))
+        XCTAssertTrue(prose.contains("뒤"))
+        XCTAssertFalse(prose.contains("var x = 1"))
+    }
+
     // MARK: - Bobae
 
     func testBobaeBodyExtractsTextImageAndYouTube() throws {

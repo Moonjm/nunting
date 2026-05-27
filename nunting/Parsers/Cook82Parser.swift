@@ -12,13 +12,6 @@ public struct Cook82Parser: BoardParser {
 
     public nonisolated init() {}
 
-    nonisolated private static let blockTags: Set<String> = [
-        "p", "div", "li", "blockquote",
-        "h1", "h2", "h3", "h4", "h5", "h6",
-        "section", "article", "tr",
-    ]
-    nonisolated private static let skipTags: Set<String> = ["script", "style", "noscript"]
-
     /// Matches 82cook's comment timestamp shape (`'26.4.19 3:12 PM` or a bare
     /// `HH:MM` in very recent posts). Used to pick the correct `<em>` inside
     /// `.repleFunc` so a future admin/level badge `<em>` inserted before the
@@ -134,101 +127,8 @@ public struct Cook82Parser: BoardParser {
 
     nonisolated private func extractBlocks(in doc: Document) throws -> [ContentBlock] {
         guard let wrap = try doc.select("#articleBody").first() else { return [] }
-        var blocks: [ContentBlock] = []
-        var inline = InlineAccumulator()
-        try collectBlocks(from: wrap, into: &blocks, inline: &inline)
-        flushInline(into: &blocks, inline: &inline)
-        return blocks
-    }
-
-    nonisolated private func flushInline(into blocks: inout [ContentBlock], inline: inout InlineAccumulator) {
-        let segments = inline.drain()
-        if !segments.isEmpty {
-            blocks.append(.richText(segments))
-        }
-    }
-
-    nonisolated private func collectBlocks(from element: Element, into blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
-        for node in element.getChildNodes() {
-            if let child = node as? Element {
-                try handleElement(child, blocks: &blocks, inline: &inline)
-            } else if let text = node as? TextNode {
-                let raw = text.text()
-                if !raw.isEmpty { inline.appendText(raw) }
-            }
-        }
-    }
-
-    nonisolated private func handleElement(_ el: Element, blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
-        let tag = el.tagName().lowercased()
-        if Self.skipTags.contains(tag) { return }
-        if isHidden(el) { return }
-
-        switch tag {
-        case "img":
-            if let url = try realImageURL(from: el) {
-                flushInline(into: &blocks, inline: &inline)
-                blocks.append(.image(url))
-            }
-            return
-        case "video":
-            if let url = try videoURL(from: el) {
-                flushInline(into: &blocks, inline: &inline)
-                blocks.append(.video(url, posterURL: try videoPoster(from: el)))
-            }
-            return
-        case "iframe":
-            let src = try el.attr("src")
-            if let id = youtubeEmbedID(from: src) {
-                flushInline(into: &blocks, inline: &inline)
-                blocks.append(.embed(.youtube, id: id))
-            }
-            return
-        case "a":
-            // Anchors wrapping `<img>` / `<video>` (forums often wrap inline
-            // GIFs in a clickable link) would otherwise be consumed here as
-            // a bare link label, hiding the media. Recurse into the children
-            // first so the nested image becomes a proper block; only treat
-            // the anchor as a link/text segment when there's no media inside.
-            if try el.select("img, video").first() != nil {
-                try collectBlocks(from: el, into: &blocks, inline: &inline)
-                return
-            }
-            if let resolved = try anchor(from: el) {
-                inline.appendLink(url: resolved.url, label: resolved.label)
-            } else {
-                inline.appendText(try el.text())
-            }
-            return
-        case "br":
-            inline.appendText("\n")
-            return
-        default:
-            break
-        }
-
-        try collectBlocks(from: el, into: &blocks, inline: &inline)
-        if Self.blockTags.contains(tag) {
-            inline.appendText("\n")
-        }
-    }
-
-    nonisolated private func realImageURL(from el: Element) throws -> URL? {
-        var src = try el.attr("src")
-        if src.isEmpty { src = try el.attr("data-src") }
-        if src.isEmpty { src = try el.attr("data-original") }
-        return resolveHTTPURL(src)
-    }
-
-    nonisolated private func videoURL(from el: Element) throws -> URL? {
-        var raw = try el.attr("src")
-        if raw.isEmpty, let source = try el.select("source").first() {
-            raw = try source.attr("src")
-        }
-        if let hash = raw.firstIndex(of: "#") {
-            raw = String(raw[..<hash])
-        }
-        return resolveHTTPURL(raw)
+        let rules = WalkerRules.standard(for: self)
+        return try ParserBlockWalker(parser: self, rules: rules).walk(wrap)
     }
 
     // MARK: - Comments
