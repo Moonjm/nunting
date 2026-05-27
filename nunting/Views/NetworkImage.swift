@@ -112,30 +112,66 @@ struct NetworkImage: View {
                     placeholder
                 }
                 .onSuccess { image, _, _ in
-                    if measuredAspect == nil, image.size.height > 0 {
-                        measuredAspect = image.size.width / image.size.height
-                    }
-                    if measuredNaturalPointWidth == nil {
-                        // SDWebImage decodes UIImages at the device
-                        // scale (typically 3 on retina iPhones), so
-                        // `image.size.width` is the *point* width =
-                        // pixel width / scale. Multiplying back by
-                        // `image.scale` recovers the source's pixel
-                        // count, which matches the legacy
-                        // `CachedAsyncImage` convention of decoding at
-                        // scale 1 (where points and pixels were the
-                        // same number). Without this conversion the
-                        // `clampsToNaturalWidth` cap shrinks every body
-                        // image to one-third of its intended frame on
-                        // retina — observed regression: aagag's tall
-                        // ~800px wide images rendering at ~133pt on a
-                        // 390pt column.
-                        measuredNaturalPointWidth = image.size.width * image.scale
+                    // SDWebImage fires `.onSuccess` synchronously on
+                    // memory-cache hit, which can land during a SwiftUI
+                    // body evaluation — direct `@State` mutation then
+                    // trips "Modifying state during view update".
+                    // `DispatchQueue.main.async` defers to the next
+                    // runloop tick, guaranteed outside the in-flight
+                    // render (more bulletproof than Task { @MainActor }
+                    // which the Swift cooperative executor MAY schedule
+                    // within the same runloop iteration).
+                    //
+                    // SDWebImage decodes UIImages at the device scale
+                    // (typically 3 on retina iPhones), so
+                    // `image.size.width` is the *point* width =
+                    // pixel width / scale. Multiplying back by
+                    // `image.scale` recovers the source's pixel count,
+                    // which matches the legacy `CachedAsyncImage`
+                    // convention of decoding at scale 1 (where points
+                    // and pixels were the same number). Without this
+                    // conversion the `clampsToNaturalWidth` cap shrinks
+                    // every body image to one-third of its intended
+                    // frame on retina — observed regression: aagag's
+                    // tall ~800px wide images rendering at ~133pt on a
+                    // 390pt column.
+                    let aspect: CGFloat? = (image.size.height > 0)
+                        ? image.size.width / image.size.height : nil
+                    let naturalPointWidth = image.size.width * image.scale
+                    DispatchQueue.main.async {
+                        if measuredAspect == nil, let aspect {
+                            measuredAspect = aspect
+                        }
+                        if measuredNaturalPointWidth == nil {
+                            measuredNaturalPointWidth = naturalPointWidth
+                        }
                     }
                 }
                 .onFailure { _ in
-                    failed = true
+                    DispatchQueue.main.async {
+                        failed = true
+                    }
                 }
+                // Cap decoded-frame memory for animated WebP/GIF (Korean
+                // board 짤방 are typically 100-300 frames; SDAnimatedImageView's
+                // default `maxBufferSize = 0` means "decode all frames upfront"
+                // which can balloon to 60-100 MB per long animation and was a
+                // main contributor to jetsam kills during detail loading).
+                // 16 MB caps a single animation at ~80 RGBA frames @ retina
+                // 800×500 — enough to keep the visible loop smooth, while
+                // forcing re-decode on long animations rather than holding
+                // every frame in RAM forever.
+                .maxBufferSize(16 * 1024 * 1024)
+                // SDWebImageSwiftUI 의 `.purgeable(true)` 는 NSCache 의
+                // purgeable 플래그가 아니라 SDAnimatedImageView 의
+                // `clearBufferWhenStopped` 로 매핑됨 (AnimatedImage.swift:693).
+                // 의미: 애니메이션이 *멈출 때* 디코드된 프레임 버퍼 해제.
+                // LazyVStack 스크롤 재활용으로 off-screen 됐을 때
+                // visibility 변화 → 정지 → 버퍼 해제 경로가 발화 — 본문
+                // 짤방이 화면 밖에 오랫동안 남아있는 메모리 잔존을 줄임.
+                // memory-warning 와는 무관 (그건 SDImageCache 가 자체
+                // 처리).
+                .purgeable(true)
                 .resizable()
                 .scaledToFit()
             } else {
@@ -148,7 +184,15 @@ struct NetworkImage: View {
         .applyAspect(effectiveAspect)
         .frame(maxWidth: clampsToNaturalWidth ? (measuredNaturalPointWidth ?? .infinity) : .infinity)
         .gateOnVisibility(enabled: visibilityGated) { visible in
-            if visible { hasBeenVisible = true }
+            // visibility callback 자체는 SwiftUI 의 view-update 사이클
+            // 안에서 fire 될 수 있음. 검사(`!hasBeenVisible`)+쓰기 둘 다
+            // async block 안으로 묶어서 (a) view-update 중 @State 읽기
+            // 표면 0, (b) 빠른 두 번 fire 시 redundant write 차단.
+            guard visible else { return }
+            DispatchQueue.main.async {
+                guard !hasBeenVisible else { return }
+                hasBeenVisible = true
+            }
         }
         #if DEBUG
         .task(id: url) {

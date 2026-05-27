@@ -15,80 +15,85 @@ func htmlAttributeEscaped(_ s: String) -> String {
         .replacingOccurrences(of: "'", with: "&#39;")
 }
 
+/// Container UIView that holds an optional WKWebView child. Lets the
+/// `WebmInlineWebView` representable lease/release the heavy WKWebView
+/// without churning the SwiftUI-managed root UIView identity — when
+/// `WebMPlayerPool` denies a lease, the container stays mounted but
+/// holds no web view (poster shows through the transparent background).
+final class WebmContainerView: UIView {
+    var webView: WKWebView?
+
+    func attach(_ webView: WKWebView) {
+        self.webView = webView
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(webView)
+        NSLayoutConstraint.activate([
+            webView.topAnchor.constraint(equalTo: topAnchor),
+            webView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            webView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ])
+    }
+
+    func detach() {
+        guard let webView else { return }
+        // Same teardown sequence as the prior dismantleUIView path —
+        // explicit handler removal + stopLoading + blank load is what
+        // gets WebKit to release the decoder + `<video>` element before
+        // the WKWebView itself deallocates.
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "aspectReady")
+        webView.stopLoading()
+        webView.loadHTMLString("", baseURL: nil)
+        webView.removeFromSuperview()
+        self.webView = nil
+    }
+}
+
 /// Inline WebM player. AVFoundation can't decode the WebM container
 /// (even when the inner codec is VP9, which AVPlayer otherwise
 /// supports inside MP4), so we hand the URL to WebKit instead — iOS
 /// Safari/WKWebView decode VP8/VP9-in-WebM since 14.1. Mirrors the
 /// AVPlayer-based `InlineAutoplayVideoView` API so the SwiftUI parent
 /// can branch on container without touching the surrounding chrome.
+///
+/// Pooled through `WebMPlayerPool` (cap 2). On cap, late views render
+/// poster-only via SwiftUI's parent overlay and wait for a slot — when
+/// some other webm releases (dismantle) the pool promotes this view via
+/// `tryRecreateWebView()` and a WKWebView is attached at that point.
 struct WebmInlineWebView: UIViewRepresentable {
     let url: URL
     let isPlaying: Bool
     let onAspectKnown: (CGFloat) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onAspectKnown: onAspectKnown)
+        Coordinator(url: url, onAspectKnown: onAspectKnown)
     }
 
-    func makeUIView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
-        // Required so the `<video>` plays in place instead of
-        // auto-presenting the system fullscreen player.
-        config.allowsInlineMediaPlayback = true
-        // Empty set = no user-gesture gate. Combined with the `muted`
-        // attribute on the `<video>` element, this lets autoplay kick
-        // off the moment the page loads — same gating Safari applies
-        // to muted HTML5 video.
-        config.mediaTypesRequiringUserActionForPlayback = []
-        let userContent = WKUserContentController()
-        userContent.add(context.coordinator, name: "aspectReady")
-        config.userContentController = userContent
-
-        let webView = WKWebView(frame: .zero, configuration: config)
-        webView.scrollView.isScrollEnabled = false
-        webView.scrollView.bounces = false
-        webView.isOpaque = false
-        webView.backgroundColor = .clear
-        webView.scrollView.backgroundColor = .clear
-        webView.navigationDelegate = context.coordinator
-        // Touches must fall through to the SwiftUI `.onTapGesture`
-        // overlay above so a tap routes to fullscreen — exactly the
-        // way the AVPlayer path reserves the bottom strip for the
-        // scrub bar but the rest for fullscreen. The webm path has no
-        // scrub bar, so the entire frame is fullscreen-tap surface and
-        // the WKWebView only needs to render frames.
-        webView.isUserInteractionEnabled = false
-
-        // Match the AVPlayer path's `atsSafe` upgrade — a parser-emitted
-        // `http://` URL would otherwise be blocked by ATS and surface as
-        // a silent black frame inside the WKWebView with no diagnostic.
-        // Apply to both the `<video src>` and the document's `baseURL`
-        // so any same-origin subresources resolve over https too.
-        let safe = url.atsSafe
-        webView.loadHTMLString(Self.htmlForInline(url: safe), baseURL: safe)
-        return webView
+    func makeUIView(context: Context) -> WebmContainerView {
+        let container = WebmContainerView()
+        context.coordinator.container = container
+        // Try to acquire a pool slot on initial mount. If denied, the
+        // container stays empty; the pool will call back via
+        // `tryRecreateWebView()` when a slot frees.
+        if WebMPlayerPool.shared.acquire(context.coordinator) {
+            context.coordinator.attachWebView()
+        }
+        return container
     }
 
-    func updateUIView(_ webView: WKWebView, context: Context) {
+    func updateUIView(_ container: WebmContainerView, context: Context) {
         context.coordinator.onAspectKnown = onAspectKnown
         context.coordinator.desiredPlaying = isPlaying
-        context.coordinator.applyPlaybackState(to: webView)
+        // If we hold a lease, propagate playback state. If not, nothing
+        // to do — the container has no webview to drive.
+        if let webView = container.webView {
+            context.coordinator.applyPlaybackState(to: webView)
+        }
     }
 
-    static func dismantleUIView(_ webView: WKWebView, coordinator: Coordinator) {
-        // WKUserContentController retains its message handlers strongly,
-        // so without an explicit removal the coordinator (and any
-        // closures it captures) outlives the SwiftUI dismantle and the
-        // WebKit content process keeps a reference until the webview
-        // itself is collected. Explicit removal lets ARC unwind on
-        // the same tick the SwiftUI view goes away.
-        webView.configuration.userContentController.removeScriptMessageHandler(forName: "aspectReady")
-        webView.stopLoading()
-        // Force WebKit to release its decoder reservation eagerly —
-        // navigating to a blank page tears down the `<video>` element
-        // before the WKWebView itself deallocates, matching the
-        // `replaceCurrentItem(with: nil)` pattern on the AVPlayer side.
-        webView.loadHTMLString("", baseURL: nil)
+    static func dismantleUIView(_ container: WebmContainerView, coordinator: Coordinator) {
+        WebMPlayerPool.shared.release(coordinator)
+        container.detach()
     }
 
     private static func htmlForInline(url: URL) -> String {
@@ -133,9 +138,12 @@ struct WebmInlineWebView: UIViewRepresentable {
         """
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+    @MainActor
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler, WebMPlayerPool.Leaseholder {
+        let url: URL
         var onAspectKnown: (CGFloat) -> Void
         var desiredPlaying = false
+        weak var container: WebmContainerView?
         /// Tracks whether the initial `loadHTMLString` finished. Until
         /// then any `evaluateJavaScript` is racing the page's parse
         /// and the `document.querySelector('video')` would silently
@@ -143,8 +151,73 @@ struct WebmInlineWebView: UIViewRepresentable {
         /// transition after load applies cleanly.
         private var hasLoaded = false
 
-        init(onAspectKnown: @escaping (CGFloat) -> Void) {
+        init(url: URL, onAspectKnown: @escaping (CGFloat) -> Void) {
+            self.url = url
             self.onAspectKnown = onAspectKnown
+        }
+
+        /// Build + load the WKWebView into the container. Called from
+        /// `makeUIView` (initial mount lease granted) and from
+        /// `tryRecreateWebView` (deferred grant after another lease
+        /// released).
+        func attachWebView() {
+            guard let container, container.webView == nil else { return }
+            let config = WKWebViewConfiguration()
+            // Required so the `<video>` plays in place instead of
+            // auto-presenting the system fullscreen player.
+            config.allowsInlineMediaPlayback = true
+            // Empty set = no user-gesture gate. Combined with the `muted`
+            // attribute on the `<video>` element, this lets autoplay kick
+            // off the moment the page loads — same gating Safari applies
+            // to muted HTML5 video.
+            config.mediaTypesRequiringUserActionForPlayback = []
+            let userContent = WKUserContentController()
+            userContent.add(self, name: "aspectReady")
+            config.userContentController = userContent
+
+            let webView = WKWebView(frame: .zero, configuration: config)
+            webView.scrollView.isScrollEnabled = false
+            webView.scrollView.bounces = false
+            webView.isOpaque = false
+            webView.backgroundColor = .clear
+            webView.scrollView.backgroundColor = .clear
+            webView.navigationDelegate = self
+            // Touches must fall through to the SwiftUI `.onTapGesture`
+            // overlay above so a tap routes to fullscreen — exactly the
+            // way the AVPlayer path reserves the bottom strip for the
+            // scrub bar but the rest for fullscreen. The webm path has no
+            // scrub bar, so the entire frame is fullscreen-tap surface and
+            // the WKWebView only needs to render frames.
+            webView.isUserInteractionEnabled = false
+
+            // Match the AVPlayer path's `atsSafe` upgrade — a parser-emitted
+            // `http://` URL would otherwise be blocked by ATS and surface as
+            // a silent black frame inside the WKWebView with no diagnostic.
+            // Apply to both the `<video src>` and the document's `baseURL`
+            // so any same-origin subresources resolve over https too.
+            let safe = url.atsSafe
+            webView.loadHTMLString(WebmInlineWebView.htmlForInline(url: safe), baseURL: safe)
+            container.attach(webView)
+            // Reset `hasLoaded` — a recreated WebView starts fresh, and
+            // any previously-cached playback intent will re-apply on
+            // didFinish below.
+            hasLoaded = false
+        }
+
+        /// `WebMPlayerPool.Leaseholder` — pool promoted us from waiter.
+        /// Pool contract: this method MUST call back into `acquire(...)`
+        /// so the speculative `waiters.removeFirst()` settles. Calling
+        /// acquire unconditionally (rather than guarding on container
+        /// state first) satisfies the contract; the `container?.webView
+        /// == nil` guard is moved to the *attach* step so a stale
+        /// promotion (container already has a webview for some other
+        /// reason) doesn't drain the waiter queue without filling the
+        /// slot.
+        func tryRecreateWebView() {
+            guard WebMPlayerPool.shared.acquire(self) else { return }
+            if container?.webView == nil {
+                attachWebView()
+            }
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
