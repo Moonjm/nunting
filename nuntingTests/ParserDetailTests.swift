@@ -1259,6 +1259,56 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertFalse(hasHidden, "display:none 안 이미지 누락")
     }
 
+    func testHumorBodyPreservesInlineLinksAndBlockOrder() throws {
+        let html = """
+        <html><body>
+        <div id="read_subject_div"><h2><a>제목</a></h2></div>
+        <div id="wrap_copy">
+          <div class="body_editor">
+            <p>시작 <a href="https://example.com/ref">참고 링크</a></p>
+            <img src="https://image.humoruniv.com/body.jpg">
+            <p>끝 본문</p>
+          </div>
+        </div>
+        </body></html>
+        """
+        let parser = HumorParser()
+        let post = Post(
+            id: "humor-4", site: .humor, boardID: "pds",
+            title: "x", author: "y", date: nil, dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://m.humoruniv.com/board/humor/read.html?table=pds&number=4")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+
+        XCTAssertEqual(detail.blocks.count, 3)
+        guard case .richText(let head) = detail.blocks[0].kind,
+              case .image(let imageURL, _) = detail.blocks[1].kind,
+              case .richText(let tail) = detail.blocks[2].kind
+        else {
+            return XCTFail("expected richText, image, richText; got \(detail.blocks.map(\.kind))")
+        }
+
+        XCTAssertEqual(head.count, 2)
+        if case .text(let text) = head[0] {
+            XCTAssertTrue(text.contains("시작"))
+        } else {
+            XCTFail("head[0] should be text")
+        }
+        if case .link(let url, let label) = head[1] {
+            XCTAssertEqual(url.absoluteString, "https://example.com/ref")
+            XCTAssertEqual(label, "참고 링크")
+        } else {
+            XCTFail("head[1] should be link")
+        }
+        XCTAssertEqual(imageURL.absoluteString, "https://image.humoruniv.com/body.jpg")
+        XCTAssertEqual(tail.compactMap { segment -> String? in
+            if case .text(let text) = segment { return text }
+            return nil
+        }.joined().trimmingCharacters(in: .whitespacesAndNewlines), "끝 본문")
+    }
+
     // MARK: - Bobae
 
     func testBobaeBodyExtractsTextImageAndYouTube() throws {
