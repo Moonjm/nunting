@@ -124,6 +124,11 @@ final class GestureCoordinator {
     /// the local-coordinate start point sits below the top safe-
     /// area inset and `startedInBottomBar`'s `>=` comparison was
     /// ~47-59pt off on iPhones with notch / Dynamic Island.
+    ///
+    /// MUST stay computed — SwiftUI re-evaluates ContentView's body on
+    /// every observed-state change and re-diffs gestures by structural
+    /// identity. Memoising this onto a stored property would let stale
+    /// closures linger across re-diffs and break the back-drag tracking.
     var panGesture: some Gesture {
         DragGesture(minimumDistance: 6, coordinateSpace: .global)
             .onChanged { [self] value in onPanChanged(value) }
@@ -302,8 +307,10 @@ final class GestureCoordinator {
     /// third dismiss trigger (deep link, keyboard shortcut, etc.).
     /// `alongsideAnimation` is forwarded to `DetailOverlayController.hide(...)`
     /// so the back-drag site can reset its `dragOffset` inside the
-    /// same spring.
-    func dismissDetailOverlay(alongsideAnimation: (() -> Void)? = nil) {
+    /// same spring. Closure typed `@MainActor` so the caller can safely
+    /// mutate main-actor isolated state (e.g. `dragOffset`) without
+    /// relying on `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` to infer it.
+    func dismissDetailOverlay(alongsideAnimation: (@MainActor () -> Void)? = nil) {
         resignSelectedTextResponder()
         detail.hide(alongsideAnimation: alongsideAnimation)
     }
@@ -463,6 +470,13 @@ private enum DragDirection {
 /// future taps. The 250ms TTL covers the longest plausible gap between
 /// the last `onChanged` tick and the SwiftUI tap closure firing on the
 /// same touch-up — so nothing has to schedule an explicit unblock.
+///
+/// `@MainActor` is explicit (rather than relying on
+/// `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`) so the gate's contract
+/// — only-touched-on-main-actor — survives an isolation-default flip and
+/// is locally inspectable for the external readers in `PostDetailView` /
+/// `PostDetailComments` / `InlineVideoPlayer`.
+@MainActor
 final class TapSuppressionGate {
     var suppressedUntil: Date = .distantPast
     var suppressed: Bool { Date() < suppressedUntil }
