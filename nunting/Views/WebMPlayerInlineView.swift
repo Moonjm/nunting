@@ -214,24 +214,19 @@ struct WebmInlineWebView: UIViewRepresentable {
             }
         }
 
-        nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            Task { @MainActor in
-                hasLoaded = true
-                applyPlaybackState(to: webView)
-            }
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            hasLoaded = true
+            applyPlaybackState(to: webView)
         }
 
-        nonisolated func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             guard message.name == "aspectReady",
                   let body = message.body as? [String: Any],
                   let w = (body["width"] as? NSNumber)?.doubleValue,
                   let h = (body["height"] as? NSNumber)?.doubleValue,
                   h > 0
             else { return }
-            let aspect = CGFloat(w / h)
-            Task { @MainActor in
-                onAspectKnown(aspect)
-            }
+            onAspectKnown(CGFloat(w / h))
         }
 
         func applyPlaybackState(to webView: WKWebView) {
