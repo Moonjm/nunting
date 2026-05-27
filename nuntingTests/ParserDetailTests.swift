@@ -1456,6 +1456,337 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertEqual(links.first?.1, "iframe 링크")
     }
 
+    // MARK: - Ddanzi
+
+    func testDdanziBodyExtractsTextImageVideoYouTubeAndAnchor() throws {
+        let html = """
+        <html><body>
+        <div class="boardR">
+          <div class="read_content">
+            <div class="xe_content">
+              <p>위 본문 <a href="https://example.com/ref">참고</a></p>
+              <p><img src="https://image.ddanzi.com/body.jpg"></p>
+              <p><video><source src="https://video.ddanzi.com/clip.mp4#t=0.05"></video></p>
+              <p><iframe src="https://www.youtube.com/embed/abcdefghijk"></iframe></p>
+              <p>아래 본문</p>
+            </div>
+          </div>
+        </div>
+        </body></html>
+        """
+        let parser = DdanziParser()
+        let post = Post(
+            id: "ddanzi-1", site: .ddanzi, boardID: "free",
+            title: "x", author: "y", date: nil, dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://www.ddanzi.com/free/1")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+
+        let images = detail.blocks.compactMap { block -> URL? in
+            if case .image(let url, _) = block.kind { return url } else { return nil }
+        }
+        XCTAssertEqual(images.map(\.absoluteString), ["https://image.ddanzi.com/body.jpg"])
+
+        let videos = detail.blocks.compactMap { block -> URL? in
+            if case .video(let url, _) = block.kind { return url } else { return nil }
+        }
+        XCTAssertEqual(videos.map(\.absoluteString), ["https://video.ddanzi.com/clip.mp4"])
+
+        let embeds = detail.blocks.compactMap { block -> String? in
+            if case .embed(.youtube, let id) = block.kind { return id } else { return nil }
+        }
+        XCTAssertEqual(embeds, ["abcdefghijk"])
+
+        let links = detail.blocks.flatMap { block -> [(URL, String)] in
+            if case .richText(let segs) = block.kind {
+                return segs.compactMap { seg in
+                    if case .link(let url, let label) = seg { return (url, label) } else { return nil }
+                }
+            }
+            return []
+        }
+        XCTAssertEqual(links.count, 1)
+        XCTAssertEqual(links.first?.0.absoluteString, "https://example.com/ref")
+        XCTAssertEqual(links.first?.1, "참고")
+    }
+
+    func testDdanziBodyDropsHiddenSubtreeAndScriptTags() throws {
+        let html = """
+        <html><body>
+        <div class="boardR">
+          <div class="read_content">
+            <div class="xe_content">
+              <p>앞</p>
+              <div style="display:none"><img src="https://image.ddanzi.com/hidden.jpg"></div>
+              <script>var x = 1;</script>
+              <p>뒤</p>
+            </div>
+          </div>
+        </div>
+        </body></html>
+        """
+        let parser = DdanziParser()
+        let post = Post(
+            id: "ddanzi-2", site: .ddanzi, boardID: "free",
+            title: "x", author: "y", date: nil, dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://www.ddanzi.com/free/2")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        let images = detail.blocks.compactMap { block -> URL? in
+            if case .image(let url, _) = block.kind { return url } else { return nil }
+        }
+        XCTAssertTrue(images.isEmpty)
+        let prose = detail.blocks.compactMap { block -> String? in
+            if case .richText(let segs) = block.kind {
+                return segs.compactMap { if case .text(let s) = $0 { return s } else { return nil } }.joined()
+            }
+            return nil
+        }.joined()
+        XCTAssertTrue(prose.contains("앞"))
+        XCTAssertTrue(prose.contains("뒤"))
+        XCTAssertFalse(prose.contains("var x = 1"))
+    }
+
+    // MARK: - Coolenjoy
+
+    func testCoolenjoyBodyExtractsImageAndAnchor() throws {
+        let html = """
+        <html><body>
+        <article id="bo_v">
+          <div class="view-content">
+            <p>위 본문 <a href="https://example.com/ref">참고</a></p>
+            <p><a href="https://example.com/full"><img src="https://image.coolenjoy.net/wrap.jpg"></a></p>
+            <p>아래 본문</p>
+          </div>
+        </article>
+        </body></html>
+        """
+        let parser = CoolenjoyParser()
+        let post = Post(
+            id: "coolenjoy-1", site: .coolenjoy, boardID: "free",
+            title: "x", author: "y", date: nil, dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://coolenjoy.net/bbs/free/1")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        let images = detail.blocks.compactMap { block -> URL? in
+            if case .image(let url, _) = block.kind { return url } else { return nil }
+        }
+        XCTAssertEqual(images.map(\.absoluteString), ["https://image.coolenjoy.net/wrap.jpg"])
+
+        let links = detail.blocks.flatMap { block -> [(URL, String)] in
+            if case .richText(let segs) = block.kind {
+                return segs.compactMap { seg in
+                    if case .link(let url, let label) = seg { return (url, label) } else { return nil }
+                }
+            }
+            return []
+        }
+        XCTAssertEqual(links.count, 1, "anchor-wrap-image 안쪽 라벨 무시, 평문 anchor 만 link 로")
+        XCTAssertEqual(links.first?.0.absoluteString, "https://example.com/ref")
+    }
+
+    func testCoolenjoyBodyDropsHiddenSubtreeAndScriptTags() throws {
+        let html = """
+        <html><body>
+        <article id="bo_v">
+          <div class="view-content">
+            <p>앞</p>
+            <div style="display:none"><img src="https://image.coolenjoy.net/hidden.jpg"></div>
+            <script>var x = 1;</script>
+            <p>뒤</p>
+          </div>
+        </article>
+        </body></html>
+        """
+        let parser = CoolenjoyParser()
+        let post = Post(
+            id: "coolenjoy-2", site: .coolenjoy, boardID: "free",
+            title: "x", author: "y", date: nil, dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://coolenjoy.net/bbs/free/2")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        let images = detail.blocks.compactMap { block -> URL? in
+            if case .image(let url, _) = block.kind { return url } else { return nil }
+        }
+        XCTAssertTrue(images.isEmpty)
+        let prose = detail.blocks.compactMap { block -> String? in
+            if case .richText(let segs) = block.kind {
+                return segs.compactMap { if case .text(let s) = $0 { return s } else { return nil } }.joined()
+            }
+            return nil
+        }.joined()
+        XCTAssertTrue(prose.contains("앞"))
+        XCTAssertTrue(prose.contains("뒤"))
+        XCTAssertFalse(prose.contains("var x = 1"))
+    }
+
+    func testCoolenjoyBodyDropsVideoAndIframeLegacy() throws {
+        // 옛 CoolenjoyParser 는 `<video>`/`<iframe>` 케이스가 없어 본문에
+        // 표시 안 함 (default recurse → 자식 없음 → 빈 output). walker
+        // 마이그 후에도 같은 legacy 동작 유지 (skipTags 에 추가).
+        let html = """
+        <html><body>
+        <article id="bo_v">
+          <div class="view-content">
+            <p>위</p>
+            <iframe src="https://www.youtube.com/embed/abcdefghijk"></iframe>
+            <video src="https://video.example.com/clip.mp4"></video>
+            <p>아래</p>
+          </div>
+        </article>
+        </body></html>
+        """
+        let parser = CoolenjoyParser()
+        let post = Post(
+            id: "coolenjoy-3", site: .coolenjoy, boardID: "free",
+            title: "x", author: "y", date: nil, dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://coolenjoy.net/bbs/free/3")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        let nonText = detail.blocks.contains { block in
+            switch block.kind {
+            case .video, .embed: return true
+            default: return false
+            }
+        }
+        XCTAssertFalse(nonText, "Coolenjoy 는 video/iframe 본문 블록 생성 안 함 (legacy parity)")
+    }
+
+    func testCoolenjoyAnchorWrappingVideoOrIframeStaysInlineLink() throws {
+        // `mediaTags = ["img"]` override 의 실제 안전망 — `<a><iframe></a>`
+        // 가 media-wrap 으로 인식되어 YouTube embed 로 promote 되지 않고
+        // anchor 라벨이 inline link 로 보존되는지 핀. 이 fixture 가 있어야
+        // mediaTags override 가 향후 누군가 redundant 라 판단해 제거할 때
+        // 명시적으로 깨짐.
+        let html = """
+        <html><body>
+        <article id="bo_v">
+          <div class="view-content">
+            <p><a href="https://example.com/embed-link"><iframe src="https://www.youtube.com/embed/zzzzzzzzzzz"></iframe>iframe 라벨</a></p>
+            <p><a href="https://example.com/video-link"><video src="https://video.example.com/inside.mp4"></video>video 라벨</a></p>
+          </div>
+        </article>
+        </body></html>
+        """
+        let parser = CoolenjoyParser()
+        let post = Post(
+            id: "coolenjoy-4", site: .coolenjoy, boardID: "free",
+            title: "x", author: "y", date: nil, dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://coolenjoy.net/bbs/free/4")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        let embeds = detail.blocks.compactMap { block -> String? in
+            if case .embed(.youtube, let id) = block.kind { return id } else { return nil }
+        }
+        XCTAssertTrue(embeds.isEmpty, "anchor-wrap iframe 은 embed 블록 생성 안 함")
+        let videos = detail.blocks.compactMap { block -> URL? in
+            if case .video(let url, _) = block.kind { return url } else { return nil }
+        }
+        XCTAssertTrue(videos.isEmpty, "anchor-wrap video 도 video 블록 생성 안 함")
+        let links = detail.blocks.flatMap { block -> [(URL, String)] in
+            if case .richText(let segs) = block.kind {
+                return segs.compactMap { seg in
+                    if case .link(let url, let label) = seg { return (url, label) } else { return nil }
+                }
+            }
+            return []
+        }
+        XCTAssertEqual(links.count, 2)
+        XCTAssertEqual(links.map(\.0.absoluteString).sorted(),
+                       ["https://example.com/embed-link", "https://example.com/video-link"])
+    }
+
+    // MARK: - Cook82
+
+    func testCook82BodyExtractsTextImageVideoYouTubeAndAnchor() throws {
+        let html = """
+        <html><body>
+        <div id="articleBody">
+          <p>위 본문 <a href="https://example.com/ref">참고</a></p>
+          <p><img src="https://image.82cook.com/body.jpg"></p>
+          <p><video><source src="https://video.82cook.com/clip.mp4#t=0.05"></video></p>
+          <p><iframe src="https://www.youtube.com/embed/abcdefghijk"></iframe></p>
+          <p>아래 본문</p>
+        </div>
+        </body></html>
+        """
+        let parser = Cook82Parser()
+        let post = Post(
+            id: "cook82-1", site: .cook82, boardID: "free",
+            title: "x", author: "y", date: nil, dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://www.82cook.com/entiz/read.php?bn=15&num=1")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+
+        let images = detail.blocks.compactMap { block -> URL? in
+            if case .image(let url, _) = block.kind { return url } else { return nil }
+        }
+        XCTAssertEqual(images.map(\.absoluteString), ["https://image.82cook.com/body.jpg"])
+
+        let videos = detail.blocks.compactMap { block -> URL? in
+            if case .video(let url, _) = block.kind { return url } else { return nil }
+        }
+        XCTAssertEqual(videos.map(\.absoluteString), ["https://video.82cook.com/clip.mp4"])
+
+        let embeds = detail.blocks.compactMap { block -> String? in
+            if case .embed(.youtube, let id) = block.kind { return id } else { return nil }
+        }
+        XCTAssertEqual(embeds, ["abcdefghijk"])
+
+        let links = detail.blocks.flatMap { block -> [(URL, String)] in
+            if case .richText(let segs) = block.kind {
+                return segs.compactMap { seg in
+                    if case .link(let url, let label) = seg { return (url, label) } else { return nil }
+                }
+            }
+            return []
+        }
+        XCTAssertEqual(links.count, 1)
+        XCTAssertEqual(links.first?.0.absoluteString, "https://example.com/ref")
+        XCTAssertEqual(links.first?.1, "참고")
+    }
+
+    func testCook82BodyDropsHiddenSubtreeAndScriptTags() throws {
+        let html = """
+        <html><body>
+        <div id="articleBody">
+          <p>앞</p>
+          <div style="display:none"><img src="https://image.82cook.com/hidden.jpg"></div>
+          <script>var x = 1;</script>
+          <p>뒤</p>
+        </div>
+        </body></html>
+        """
+        let parser = Cook82Parser()
+        let post = Post(
+            id: "cook82-2", site: .cook82, boardID: "free",
+            title: "x", author: "y", date: nil, dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://www.82cook.com/entiz/read.php?bn=15&num=2")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        let images = detail.blocks.compactMap { block -> URL? in
+            if case .image(let url, _) = block.kind { return url } else { return nil }
+        }
+        XCTAssertTrue(images.isEmpty)
+        let prose = detail.blocks.compactMap { block -> String? in
+            if case .richText(let segs) = block.kind {
+                return segs.compactMap { if case .text(let s) = $0 { return s } else { return nil } }.joined()
+            }
+            return nil
+        }.joined()
+        XCTAssertTrue(prose.contains("앞"))
+        XCTAssertTrue(prose.contains("뒤"))
+        XCTAssertFalse(prose.contains("var x = 1"))
+    }
+
     // MARK: - Bobae
 
     func testBobaeBodyExtractsTextImageAndYouTube() throws {
