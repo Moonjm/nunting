@@ -55,7 +55,8 @@ extension Networking {
     }
 
     // Stateless delegate (no stored mutable properties); `nonisolated` so it
-    // doesn't pull the `session` initializer below into MainActor inference.
+    // doesn't pull the `session` initializer (in `Networking.swift`) into
+    // MainActor inference.
     nonisolated static let redirectUpgrader = RedirectHTTPSUpgrader()
 
     struct ResolvedRedirect {
