@@ -34,6 +34,17 @@ public struct WalkerRules: Sendable {
     /// block.
     public var shouldEmitAnchor: @Sendable (URL) -> Bool
 
+    /// First-crack handler that lets per-site logic claim arbitrary
+    /// elements (e.g. a custom React media-player wrapper whose sibling
+    /// overlay divs would otherwise leak text into the body). Returning
+    /// a non-nil array — even an empty one — tells the walker:
+    /// "I consumed this element; flush pending inline, append the blocks
+    /// I'm handing you (if any), and skip recursion into the element's
+    /// children." Returning `nil` lets the walker fall through to its
+    /// standard tag dispatch (`img`/`video`/`iframe`/`a`/`br`/blockTags).
+    /// `WalkerRules.standard(for:)` defaults this to `{ _ in nil }`.
+    public var customElement: @Sendable (Element) throws -> [ContentBlock]?
+
     public init(
         blockTags: Set<String>,
         skipTags: Set<String>,
@@ -41,7 +52,8 @@ public struct WalkerRules: Sendable {
         resolveImageURL: @escaping @Sendable (Element) throws -> URL?,
         resolveVideoURL: @escaping @Sendable (Element) throws -> URL?,
         imageBlock: @escaping @Sendable (URL) -> ContentBlock,
-        shouldEmitAnchor: @escaping @Sendable (URL) -> Bool
+        shouldEmitAnchor: @escaping @Sendable (URL) -> Bool,
+        customElement: @escaping @Sendable (Element) throws -> [ContentBlock]?
     ) {
         self.blockTags = blockTags
         self.skipTags = skipTags
@@ -50,6 +62,7 @@ public struct WalkerRules: Sendable {
         self.resolveVideoURL = resolveVideoURL
         self.imageBlock = imageBlock
         self.shouldEmitAnchor = shouldEmitAnchor
+        self.customElement = customElement
     }
 }
 
@@ -92,7 +105,8 @@ extension WalkerRules {
                 return parser.resolveHTTPURL(raw)
             },
             imageBlock: { url in .image(url) },
-            shouldEmitAnchor: { _ in true }
+            shouldEmitAnchor: { _ in true },
+            customElement: { _ in nil }
         )
     }
 }
@@ -154,6 +168,19 @@ public struct ParserBlockWalker: Sendable {
         if parser.isHidden(el) { return }
         let tag = el.tagName().lowercased()
         if rules.skipTags.contains(tag) { return }
+
+        // First-crack handler. If site-specific code claims this element
+        // (e.g. an Etoland custom video-player wrapper), respect its
+        // decision: flush pending inline, emit whatever blocks it returns,
+        // and skip recursion. Empty array still claims the element —
+        // useful for "drop this entire subtree" without emitting anything.
+        if let customBlocks = try rules.customElement(el) {
+            if !customBlocks.isEmpty {
+                flushInline(into: &blocks, inline: &inline)
+                blocks.append(contentsOf: customBlocks)
+            }
+            return
+        }
 
         switch tag {
         case "br":
