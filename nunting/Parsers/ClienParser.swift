@@ -3,29 +3,6 @@ import SwiftSoup
 public struct ClienParser: BoardParser {
     public let site: Site = .clien
 
-    /// HTML elements that mark a paragraph / block boundary in Clien post
-    /// bodies. We emit a single `\n` after each — combined with the HTML
-    /// pretty-print whitespace TextNode that sits between sibling elements
-    /// in Clien output (also collapsed to `\n` by `InlineAccumulator.trimmed`),
-    /// consecutive `<p>A</p><p>B</p>` becomes "A\n\nB" (1 blank line),
-    /// while explicit `<p>A</p><p><br></p><p>B</p>` reaches 5 newlines and
-    /// caps at 3 via `\n{4,}` → `\n\n\n` (2 blank lines). That keeps the
-    /// distinction between paragraph break and user-typed blank line.
-    nonisolated private static let blockTags: Set<String> = [
-        "p", "div", "li", "blockquote", "tr",
-        "h1", "h2", "h3", "h4", "h5", "h6",
-        "section", "article",
-    ]
-
-    /// Tags the block-walker treats as "promote to a media block" markers.
-    /// Used by `hasAnyDescendant(of:taggedAnyOf:)` to decide whether a
-    /// wrapper element should recurse as blocks or flatten to inline text.
-    /// Includes `video` so Clien's Froala GIF wrapper
-    /// (`<span class="fr-video" data-role="image-mp4"><video><source mp4>`)
-    /// recurse into the wrapper rather than flattening it as the
-    /// trailing `<button>GIF</button>` download chrome.
-    nonisolated private static let mediaTags: Set<String> = ["img", "iframe", "video"]
-
     /// `YYYY-MM-DD HH:MM(:SS)` — the timestamp Clien renders inside
     /// `div.post_date`. Used to slice out the modified timestamp when an
     /// edited post advertises both 등록일 and 수정일 in the same block.
@@ -91,21 +68,26 @@ public struct ClienParser: BoardParser {
 
         let (source, skipFirstParagraph) = try extractSource(from: article)
 
-        // Walk the article body via the shared collector so HTML
-        // pretty-print whitespace TextNodes between top-level `<p>` siblings
-        // reach the inline accumulator. Iterating `article.children()`
-        // (Elements only) and re-entering `collectBlocks` per child loses
-        // those TextNodes, splits each `<p>` into its own ContentBlock,
-        // and forces every paragraph gap down to the LazyVStack's fixed
-        // 12pt spacing — so the explicit-blank-line vs. paragraph-break
-        // distinction encoded in the markup never reaches the renderer.
-        var blocks: [ContentBlock] = []
         // Mutates the SwiftSoup document in-place; safe because `doc` is
         // local to this parse and never escapes.
         if skipFirstParagraph, let firstP = article.children().first() {
             try firstP.remove()
         }
-        try collectBlocks(from: article, into: &blocks)
+
+        var rules = WalkerRules.standard(for: self)
+        // Clien Froala GIF wrapper 끝의 `<button class="search_link">…GIF</button>`
+        // 다운로드 chrome 차단 (default skipTags 는 script/style/noscript 만 차단).
+        rules.skipTags.insert("button")
+        // <img> 는 customElement 로 claim — Clien `image(from:)` 가 srcset
+        // 폴백 (Froala 가 src 를 HTML 페이지 URL 로 잘못 채우는 케이스 처리)
+        // 과 data-img-width/height aspect ratio 추출을 한다. standard
+        // resolveImageURL/imageBlock 으로는 둘 다 표현 불가.
+        rules.customElement = { [self] el in
+            guard el.tagName().lowercased() == "img" else { return nil }
+            guard let info = try image(from: el) else { return [] }
+            return [.image(info.url, aspectRatio: info.aspectRatio)]
+        }
+        let blocks = try ParserBlockWalker(parser: self, rules: rules).walk(article)
 
         let rawDate = try doc.select("div.post_date").first()?.text() ?? ""
         let fullDateText = collapsePostDate(rawDate)
@@ -175,158 +157,6 @@ public struct ClienParser: BoardParser {
         else { return (nil, false) }
 
         return (PostSource(name: afterPipe, url: url), true)
-    }
-
-    nonisolated private func collectBlocks(from element: Element, into blocks: inout [ContentBlock]) throws {
-        if isHidden(element) { return }
-        var inline = InlineAccumulator()
-
-        func flush() {
-            let segs = inline.drain()
-            if !segs.isEmpty {
-                blocks.append(.richText(segs))
-            }
-        }
-
-        let tag = element.tagName().lowercased()
-        if tag == "img" {
-            if let image = try image(from: element) {
-                blocks.append(.image(image.url, aspectRatio: image.aspectRatio))
-            }
-            return
-        }
-        if tag == "a" {
-            // Pure anchor: no nested media → emit a single inline link and
-            // return. When the anchor wraps `<img>` / `<iframe>` (forums
-            // often wrap inline GIFs in a clickable link), fall through to
-            // the main child-walking loop below so the nested media becomes
-            // a proper block AND sibling TextNodes still contribute text
-            // via the existing TextNode branch.
-            if !hasAnyDescendant(of: element, taggedAnyOf: Self.mediaTags) {
-                if let resolved = try anchor(from: element) {
-                    inline.appendLink(url: resolved.url, label: resolved.label)
-                    flush()
-                }
-                return
-            }
-        }
-
-        for node in element.getChildNodes() {
-            if let el = node as? Element {
-                if isHidden(el) { continue }
-                let childTag = el.tagName().lowercased()
-                switch childTag {
-                case "img":
-                    flush()
-                    if let image = try image(from: el) {
-                        blocks.append(.image(image.url, aspectRatio: image.aspectRatio))
-                    }
-                case "video":
-                    // Clien Froala editor wraps GIFs as
-                    // `<span class="fr-video"><video poster=...gif><source mp4></video><button>GIF</button></span>`.
-                    // Extract the mp4 source + gif poster so the inline
-                    // player can autoplay the loop. The trailing
-                    // `<button>GIF</button>` is UI chrome — handled by
-                    // the explicit case below so its text doesn't leak.
-                    if let url = try videoURL(from: el) {
-                        flush()
-                        blocks.append(.video(url, posterURL: try videoPoster(from: el)))
-                    }
-                case "button":
-                    // Body content never contains a user-meaningful
-                    // button. Clien's GIF wrapper trailing
-                    // `<button class="search_link">...GIF</button>` would
-                    // otherwise flatten to "GIF" prose under the video.
-                    continue
-                case "iframe":
-                    // Clien embeds YouTube as <iframe src="…/embed/{id}">.
-                    // Promote to an inline `.embed(.youtube, id:)` block so
-                    // PostDetailView renders the thumbnail + tap-to-open
-                    // affordance instead of silently dropping the iframe.
-                    if let id = youtubeEmbedID(from: (try? el.attr("src")) ?? "") {
-                        flush()
-                        blocks.append(.embed(.youtube, id: id))
-                    }
-                case "br":
-                    inline.appendText("\n")
-                case "a":
-                    // Anchor wrapping `<img>` / `<iframe>` falls through to
-                    // the same recurse-as-block path the default case uses,
-                    // so an inline GIF wrapped in a clickable link still
-                    // renders as a media block instead of a bare link label.
-                    if hasAnyDescendant(of: el, taggedAnyOf: Self.mediaTags) {
-                        flush()
-                        try collectBlocks(from: el, into: &blocks)
-                    } else if let resolved = try anchor(from: el) {
-                        inline.appendLink(url: resolved.url, label: resolved.label)
-                    } else {
-                        inline.appendText(try el.text())
-                    }
-                default:
-                    if hasAnyDescendant(of: el, taggedAnyOf: Self.mediaTags) {
-                        flush()
-                        try collectBlocks(from: el, into: &blocks)
-                    } else {
-                        try collectInlines(from: el, into: &inline)
-                    }
-                    if Self.blockTags.contains(childTag) {
-                        inline.appendText("\n")
-                    }
-                }
-            } else if let textNode = node as? TextNode {
-                inline.appendText(textNode.text())
-            }
-        }
-        flush()
-    }
-
-    nonisolated private func collectInlines(from element: Element, into inline: inout InlineAccumulator) throws {
-        if isHidden(element) { return }
-        for node in element.getChildNodes() {
-            if let el = node as? Element {
-                if isHidden(el) { continue }
-                let childTag = el.tagName().lowercased()
-                switch childTag {
-                case "br":
-                    inline.appendText("\n")
-                case "a":
-                    if let resolved = try anchor(from: el) {
-                        inline.appendLink(url: resolved.url, label: resolved.label)
-                    } else {
-                        inline.appendText(try el.text())
-                    }
-                default:
-                    // Recurse first, then append `\n` for block-level tags
-                    // so user-typed Enter keystrokes nested inside non-block
-                    // wrappers (e.g. `<table><tr><td><p>...</p></td></tr>` —
-                    // Clien's legacy editor still emits these) survive into
-                    // the rendered text.
-                    try collectInlines(from: el, into: &inline)
-                    if Self.blockTags.contains(childTag) {
-                        inline.appendText("\n")
-                    }
-                }
-            } else if let textNode = node as? TextNode {
-                inline.appendText(textNode.text())
-            }
-        }
-    }
-
-    /// Pull the mp4 URL from a `<video>` element. Clien's Froala-rendered
-    /// GIFs embed the mp4 as a `<source>` child rather than the
-    /// `<video src=>` attribute, so check the child first and only fall
-    /// back to the bare `src` for non-Froala embeds. Strips trailing
-    /// fragments — Clien doesn't use them but other sites' parsers in
-    /// this codebase do, so we mirror the convention.
-    nonisolated private func videoURL(from el: Element) throws -> URL? {
-        var raw = try el.attr("src")
-        if raw.isEmpty, let source = try el.select("source").first() {
-            raw = try source.attr("src")
-        }
-        if let hash = raw.firstIndex(of: "#") {
-            raw = String(raw[..<hash])
-        }
-        return resolveHTTPURL(raw)
     }
 
     nonisolated private func image(from element: Element) throws -> (url: URL, aspectRatio: CGFloat?)? {

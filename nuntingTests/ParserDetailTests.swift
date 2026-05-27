@@ -119,7 +119,111 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertEqual(videos.first?.absoluteString, "https://example.com/clip.mp4")
     }
 
+    func testClienImageSrcsetFallbackPreservesAspectRatio() throws {
+        let html = """
+        <html><body>
+        <div class="post_article">
+            <p>
+              <img src="https://www.carscoops.com/2026/04/not-image-page/"
+                   srcset="https://cdn.example.com/photo-640.jpg 640w, https://cdn.example.com/photo-1024.jpg 1024w, https://cdn.example.com/photo-1600.jpg 1600w"
+                   data-img-width="1600"
+                   data-img-height="900">
+            </p>
+        </div>
+        <div class="post_date">2026-05-15 11:30</div>
+        </body></html>
+        """
+        let parser = ClienParser()
+        let post = Post(
+            id: "clien-image-srcset",
+            site: .clien,
+            boardID: "clien-news",
+            title: "x",
+            author: "y",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://m.clien.net/service/board/news/1")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+        let images = detail.blocks.compactMap { block -> (URL, CGFloat?)? in
+            if case .image(let url, let aspectRatio) = block.kind {
+                return (url, aspectRatio)
+            }
+            return nil
+        }
+
+        XCTAssertEqual(images.count, 1)
+        XCTAssertEqual(images.first?.0.absoluteString, "https://cdn.example.com/photo-1024.jpg")
+        XCTAssertNotNil(images.first?.1)
+        XCTAssertEqual(images.first?.1 ?? 0, CGFloat(1600.0 / 900.0), accuracy: CGFloat(0.0001))
+    }
+
+    func testClienWalkerCompositionPreservesSourceMediaEmbedAndBlankLines() throws {
+        let html = """
+        <html><body>
+        <div class="post_article">
+            <p><a href="https://example.com/original">원문</a> | Example Source</p>
+            <p>위 문단</p>
+            <p><br></p>
+            <p>중간 문단</p>
+            <p><a href="https://example.com/open"><img src="https://cdn.example.com/inside.jpg"></a></p>
+            <p><iframe src="https://www.youtube.com/embed/abcDEF12345"></iframe></p>
+            <p>아래 문단</p>
+        </div>
+        <div class="post_date">2026-05-15 11:30</div>
+        </body></html>
+        """
+        let parser = ClienParser()
+        let post = Post(
+            id: "clien-composition",
+            site: .clien,
+            boardID: "clien-news",
+            title: "x",
+            author: "y",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://m.clien.net/service/board/news/2")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+
+        XCTAssertEqual(detail.source?.name, "Example Source")
+        XCTAssertEqual(detail.source?.url.absoluteString, "https://example.com/original")
+        XCTAssertFalse(texts(in: detail.blocks).joined().contains("Example Source"), "source paragraph should be removed from body")
+
+        XCTAssertEqual(detail.blocks.count, 4)
+        guard case .richText(let head) = detail.blocks[0].kind,
+              case .image(let imageURL, _) = detail.blocks[1].kind,
+              case .embed(.youtube, let id) = detail.blocks[2].kind,
+              case .richText(let tail) = detail.blocks[3].kind
+        else { return XCTFail("expected text -> image -> youtube embed -> text block order") }
+
+        XCTAssertEqual(imageURL.absoluteString, "https://cdn.example.com/inside.jpg")
+        XCTAssertEqual(id, "abcDEF12345")
+        XCTAssertEqual(textOnly(head).joined(), "위 문단\n\n\n중간 문단")
+        XCTAssertEqual(textOnly(tail).joined(), "아래 문단")
+    }
+
     // MARK: - Ppomppu
+
+    private func texts(in blocks: [ContentBlock]) -> [String] {
+        blocks.flatMap { block -> [String] in
+            if case .richText(let segs) = block.kind {
+                return textOnly(segs)
+            }
+            return []
+        }
+    }
+
+    private func textOnly(_ segments: [InlineSegment]) -> [String] {
+        segments.compactMap { segment in
+            if case .text(let text) = segment { return text }
+            return nil
+        }
+    }
 
     func testPpomppuImgPointingAtMovEmitsVideoBlockNotImage() throws {
         // Real shape from m.ppomppu.co.kr/new/bbs_view.php?id=car&no=968820 —
