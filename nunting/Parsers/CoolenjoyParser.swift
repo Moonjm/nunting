@@ -5,22 +5,6 @@ public struct CoolenjoyParser: BoardParser {
 
     public nonisolated init() {}
 
-    /// HTML elements that mark a paragraph / block boundary in Coolenjoy
-    /// post bodies. Trailing `\n` is appended after each such block so
-    /// user-typed Enter keystrokes (rendered as separate `<p>` blocks)
-    /// survive into the displayed text instead of all collapsing into a
-    /// single line.
-    nonisolated private static let blockTags: Set<String> = [
-        "p", "div", "li", "blockquote", "tr",
-        "h1", "h2", "h3", "h4", "h5", "h6",
-        "section", "article",
-    ]
-
-    /// Tags the block-walker promotes to a media block. Paired with
-    /// `hasAnyDescendant(of:taggedAnyOf:)` so wrapper elements decide
-    /// recurse-vs-inline without doing a full `select("img")` walk.
-    nonisolated private static let mediaTags: Set<String> = ["img"]
-
     public nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         let doc = try SwiftSoup.parse(html)
         let rows = try doc.select("ul.na-table > li.d-md-table-row")
@@ -164,12 +148,13 @@ public struct CoolenjoyParser: BoardParser {
             throw ParserError.structureChanged("view-content 없음")
         }
 
-        // collectBlocks(from: contentEl) (ONE call) walks getChildNodes()
-        // including TextNodes between siblings. Iterating children() loses
-        // those TextNodes and forces every <p> into its own ContentBlock,
-        // collapsing all paragraph spacing to the renderer's fixed gap.
-        var blocks: [ContentBlock] = []
-        try collectBlocks(from: contentEl, into: &blocks)
+        var rules = WalkerRules.standard(for: self)
+        // Coolenjoy 옛 파서는 <a> 안쪽 media-wrap 판정에 ["img"] 만 사용했고
+        // <video>/<iframe> 케이스가 없어 본문에 표시 안 함. legacy parity 유지.
+        rules.mediaTags = ["img"]
+        rules.skipTags.insert("video")
+        rules.skipTags.insert("iframe")
+        let blocks = try ParserBlockWalker(parser: self, rules: rules).walk(contentEl)
 
         let fullDateText = try article.select("time").first()?.text()
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -261,124 +246,6 @@ public struct CoolenjoyParser: BoardParser {
             }
         }
         return nil
-    }
-
-    nonisolated private func collectBlocks(from element: Element, into blocks: inout [ContentBlock]) throws {
-        if isHidden(element) { return }
-        var inline = InlineAccumulator()
-
-        func flush() {
-            let segs = inline.drain()
-            if !segs.isEmpty {
-                blocks.append(.richText(segs))
-            }
-        }
-
-        let tag = element.tagName().lowercased()
-        if tag == "img" {
-            if let url = try imageURL(from: element) {
-                blocks.append(.image(url))
-            }
-            return
-        }
-        if tag == "a" {
-            // Pure anchor: no nested media → emit a single inline link and
-            // return. When the anchor wraps `<img>` (forums often wrap
-            // inline GIFs in a clickable link), fall through to the main
-            // child-walking loop below so the nested image becomes a proper
-            // block AND sibling TextNodes still contribute text via the
-            // existing TextNode branch.
-            if !hasAnyDescendant(of: element, taggedAnyOf: Self.mediaTags) {
-                if let resolved = try anchor(from: element) {
-                    inline.appendLink(url: resolved.url, label: resolved.label)
-                    flush()
-                }
-                return
-            }
-        }
-
-        for node in element.getChildNodes() {
-            if let el = node as? Element {
-                if isHidden(el) { continue }
-                let childTag = el.tagName().lowercased()
-                switch childTag {
-                case "img":
-                    flush()
-                    if let url = try imageURL(from: el) {
-                        blocks.append(.image(url))
-                    }
-                case "br":
-                    inline.appendText("\n")
-                case "a":
-                    // Anchor wrapping `<img>` falls through to the same
-                    // recurse-as-block path the default case uses, so an
-                    // inline GIF inside a clickable link still renders as
-                    // a media block instead of a bare link label.
-                    if hasAnyDescendant(of: el, taggedAnyOf: Self.mediaTags) {
-                        flush()
-                        try collectBlocks(from: el, into: &blocks)
-                    } else if let resolved = try anchor(from: el) {
-                        inline.appendLink(url: resolved.url, label: resolved.label)
-                    } else {
-                        inline.appendText(try el.text())
-                    }
-                default:
-                    let isBlock = Self.blockTags.contains(childTag)
-                    if hasAnyDescendant(of: el, taggedAnyOf: Self.mediaTags) {
-                        flush()
-                        try collectBlocks(from: el, into: &blocks)
-                    } else {
-                        try collectInlines(from: el, into: &inline)
-                    }
-                    if isBlock {
-                        inline.appendText("\n")
-                    }
-                }
-            } else if let textNode = node as? TextNode {
-                inline.appendText(textNode.text())
-            }
-        }
-        flush()
-    }
-
-    nonisolated private func collectInlines(from element: Element, into inline: inout InlineAccumulator) throws {
-        if isHidden(element) { return }
-        for node in element.getChildNodes() {
-            if let el = node as? Element {
-                if isHidden(el) { continue }
-                let childTag = el.tagName().lowercased()
-                switch childTag {
-                case "br":
-                    inline.appendText("\n")
-                case "a":
-                    if let resolved = try anchor(from: el) {
-                        inline.appendLink(url: resolved.url, label: resolved.label)
-                    } else {
-                        inline.appendText(try el.text())
-                    }
-                default:
-                    // Append `\n` for block-level tags so nested `<p>` blocks
-                    // inside non-block wrappers (e.g. legacy table-based
-                    // editors) don't all collapse onto one line.
-                    try collectInlines(from: el, into: &inline)
-                    if Self.blockTags.contains(childTag) {
-                        inline.appendText("\n")
-                    }
-                }
-            } else if let textNode = node as? TextNode {
-                inline.appendText(textNode.text())
-            }
-        }
-    }
-
-    nonisolated private func imageURL(from element: Element) throws -> URL? {
-        let src = try element.attr("src")
-        guard !src.isEmpty,
-              let url = URL(string: src, relativeTo: site.baseURL)?.absoluteURL,
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https"
-        else { return nil }
-        return url
     }
 
     nonisolated private func firstInteger(in text: String) -> Int? {

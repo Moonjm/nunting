@@ -1549,6 +1549,114 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertFalse(prose.contains("var x = 1"))
     }
 
+    // MARK: - Coolenjoy
+
+    func testCoolenjoyBodyExtractsImageAndAnchor() throws {
+        let html = """
+        <html><body>
+        <article id="bo_v">
+          <div class="view-content">
+            <p>위 본문 <a href="https://example.com/ref">참고</a></p>
+            <p><a href="https://example.com/full"><img src="https://image.coolenjoy.net/wrap.jpg"></a></p>
+            <p>아래 본문</p>
+          </div>
+        </article>
+        </body></html>
+        """
+        let parser = CoolenjoyParser()
+        let post = Post(
+            id: "coolenjoy-1", site: .coolenjoy, boardID: "free",
+            title: "x", author: "y", date: nil, dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://coolenjoy.net/bbs/free/1")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        let images = detail.blocks.compactMap { block -> URL? in
+            if case .image(let url, _) = block.kind { return url } else { return nil }
+        }
+        XCTAssertEqual(images.map(\.absoluteString), ["https://image.coolenjoy.net/wrap.jpg"])
+
+        let links = detail.blocks.flatMap { block -> [(URL, String)] in
+            if case .richText(let segs) = block.kind {
+                return segs.compactMap { seg in
+                    if case .link(let url, let label) = seg { return (url, label) } else { return nil }
+                }
+            }
+            return []
+        }
+        XCTAssertEqual(links.count, 1, "anchor-wrap-image 안쪽 라벨 무시, 평문 anchor 만 link 로")
+        XCTAssertEqual(links.first?.0.absoluteString, "https://example.com/ref")
+    }
+
+    func testCoolenjoyBodyDropsHiddenSubtreeAndScriptTags() throws {
+        let html = """
+        <html><body>
+        <article id="bo_v">
+          <div class="view-content">
+            <p>앞</p>
+            <div style="display:none"><img src="https://image.coolenjoy.net/hidden.jpg"></div>
+            <script>var x = 1;</script>
+            <p>뒤</p>
+          </div>
+        </article>
+        </body></html>
+        """
+        let parser = CoolenjoyParser()
+        let post = Post(
+            id: "coolenjoy-2", site: .coolenjoy, boardID: "free",
+            title: "x", author: "y", date: nil, dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://coolenjoy.net/bbs/free/2")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        let images = detail.blocks.compactMap { block -> URL? in
+            if case .image(let url, _) = block.kind { return url } else { return nil }
+        }
+        XCTAssertTrue(images.isEmpty)
+        let prose = detail.blocks.compactMap { block -> String? in
+            if case .richText(let segs) = block.kind {
+                return segs.compactMap { if case .text(let s) = $0 { return s } else { return nil } }.joined()
+            }
+            return nil
+        }.joined()
+        XCTAssertTrue(prose.contains("앞"))
+        XCTAssertTrue(prose.contains("뒤"))
+        XCTAssertFalse(prose.contains("var x = 1"))
+    }
+
+    func testCoolenjoyBodyDropsVideoAndIframeLegacy() throws {
+        // 옛 CoolenjoyParser 는 `<video>`/`<iframe>` 케이스가 없어 본문에
+        // 표시 안 함 (default recurse → 자식 없음 → 빈 output). walker
+        // 마이그 후에도 같은 legacy 동작 유지 (skipTags 에 추가).
+        let html = """
+        <html><body>
+        <article id="bo_v">
+          <div class="view-content">
+            <p>위</p>
+            <iframe src="https://www.youtube.com/embed/abcdefghijk"></iframe>
+            <video src="https://video.example.com/clip.mp4"></video>
+            <p>아래</p>
+          </div>
+        </article>
+        </body></html>
+        """
+        let parser = CoolenjoyParser()
+        let post = Post(
+            id: "coolenjoy-3", site: .coolenjoy, boardID: "free",
+            title: "x", author: "y", date: nil, dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://coolenjoy.net/bbs/free/3")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        let nonText = detail.blocks.contains { block in
+            switch block.kind {
+            case .video, .embed: return true
+            default: return false
+            }
+        }
+        XCTAssertFalse(nonText, "Coolenjoy 는 video/iframe 본문 블록 생성 안 함 (legacy parity)")
+    }
+
     // MARK: - Bobae
 
     func testBobaeBodyExtractsTextImageAndYouTube() throws {
