@@ -20,16 +20,6 @@ public struct EtolandParser: BoardParser {
 
     public nonisolated init() {}
 
-    /// Block-level tags whose closing forces a soft newline in the inline
-    /// accumulator so paragraphs stay separated when SwiftSoup's text walk
-    /// flattens the subtree. Same set the other detail parsers use.
-    nonisolated private static let blockTags: Set<String> = [
-        "p", "div", "li", "blockquote",
-        "h1", "h2", "h3", "h4", "h5", "h6",
-        "section", "article", "tr",
-    ]
-    nonisolated private static let skipTags: Set<String> = ["script", "style", "noscript"]
-
     public nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         // Etoland is aagag-dispatch-only; list parsing is never invoked.
         []
@@ -231,110 +221,27 @@ public struct EtolandParser: BoardParser {
 
     nonisolated private func extractBlocks(in article: Element) throws -> [ContentBlock] {
         guard let wrap = try article.select("div.view-content").first() else { return [] }
-        var blocks: [ContentBlock] = []
-        var inline = InlineAccumulator()
-        try collectBlocks(from: wrap, into: &blocks, inline: &inline)
-        flushInline(into: &blocks, inline: &inline)
-        return blocks
+
+        var rules = WalkerRules.standard(for: self)
+        rules.resolveImageURL = realImageURL(from:)   // data-src → src (etoland Next.js <Image>)
+        rules.resolveVideoURL = videoURL(from:)       // data-src → src → all <source>, plus #t= strip
+        rules.customElement = customElementHandler(_:)
+        return try ParserBlockWalker(parser: self, rules: rules).walk(wrap)
     }
 
-    nonisolated private func flushInline(into blocks: inout [ContentBlock], inline: inout InlineAccumulator) {
-        let segments = inline.drain()
-        if !segments.isEmpty {
-            blocks.append(.richText(segments))
-        }
-    }
-
-    nonisolated private func collectBlocks(
-        from element: Element,
-        into blocks: inout [ContentBlock],
-        inline: inout InlineAccumulator
-    ) throws {
-        for node in element.getChildNodes() {
-            if let child = node as? Element {
-                try handleElement(child, blocks: &blocks, inline: &inline)
-            } else if let text = node as? TextNode {
-                let raw = text.text()
-                if !raw.isEmpty { inline.appendText(raw) }
-            }
-        }
-    }
-
-    nonisolated private func handleElement(
-        _ el: Element,
-        blocks: inout [ContentBlock],
-        inline: inout InlineAccumulator
-    ) throws {
-        let tag = el.tagName().lowercased()
-
-        if Self.skipTags.contains(tag) { return }
-        if isHidden(el) { return }
-
-        // Etoland wraps `<video>` in a React-built custom player whose
-        // sibling overlays (play button, scrubber, time readout `0:00/0:00`,
-        // `1x` speed selector) are visible only via CSS positioning. The
-        // browser hides them on idle/hover; SwiftSoup's `.text()` walker
-        // treats them as plain prose and leaks the labels into the
-        // rendered post body. Detect the wrapper by its `board-video-player`
-        // class, extract just the inner `<video>` block, and skip every
-        // overlay sibling. Falling back to the generic `<video>` branch
-        // below covers the rare unwrapped case.
-        if tag == "div", Self.isVideoPlayerWrapper(el) {
-            if let video = try el.select("video").first(),
-               let url = try videoURL(from: video) {
-                flushInline(into: &blocks, inline: &inline)
-                blocks.append(.video(url, posterURL: try videoPoster(from: video)))
-            }
-            return
-        }
-
-        switch tag {
-        case "img":
-            if let url = try realImageURL(from: el) {
-                flushInline(into: &blocks, inline: &inline)
-                blocks.append(.image(url))
-            }
-            return
-        case "video":
-            if let url = try videoURL(from: el) {
-                flushInline(into: &blocks, inline: &inline)
-                blocks.append(.video(url, posterURL: try videoPoster(from: el)))
-            }
-            return
-        case "iframe":
-            let src = try el.attr("src")
-            if let id = youtubeEmbedID(from: src) {
-                flushInline(into: &blocks, inline: &inline)
-                blocks.append(.embed(.youtube, id: id))
-            }
-            return
-        case "a":
-            // Anchors wrapping `<img>` (etoland inline images sometimes ship
-            // inside a clickable wrapper that links to a lightbox URL) would
-            // otherwise be consumed as a bare link label, hiding the media.
-            // Recurse into children when there's media inside; only emit a
-            // pure inline link when the anchor has no nested media.
-            if try el.select("img, video").first() != nil {
-                try collectBlocks(from: el, into: &blocks, inline: &inline)
-                return
-            }
-            if let resolved = try anchor(from: el) {
-                inline.appendLink(url: resolved.url, label: resolved.label)
-            } else {
-                inline.appendText(try el.text())
-            }
-            return
-        case "br":
-            inline.appendText("\n")
-            return
-        default:
-            break
-        }
-
-        try collectBlocks(from: el, into: &blocks, inline: &inline)
-        if Self.blockTags.contains(tag) {
-            inline.appendText("\n")
-        }
+    /// `<div class="board-video-player">` React 커스텀 비디오 플레이어 처리.
+    /// wrapper 안에 진짜 `<video>` 하나 + overlay (play button / scrubber
+    /// `0:00/0:00` / `1x` 등)가 형제로 들어있어서, walker 가 그대로 walk 하면
+    /// overlay 텍스트가 본문에 누수된다. 여기서 비디오 URL 만 뽑아 video 블록
+    /// 으로 promote 하고 wrapper 자식 전체를 skip.
+    nonisolated private func customElementHandler(_ el: Element) throws -> [ContentBlock]? {
+        guard el.tagName().lowercased() == "div",
+              Self.isVideoPlayerWrapper(el)
+        else { return nil }
+        guard let video = try el.select("video").first(),
+              let url = try videoURL(from: video)
+        else { return [] }
+        return [.video(url, posterURL: try videoPoster(from: video))]
     }
 
     /// Etoland inlines images via Next.js `<Image>` output: a `src=` pointing
@@ -361,16 +268,22 @@ public struct EtolandParser: BoardParser {
     /// `<source>` children for older / non-lazy markup.
     nonisolated private func videoURL(from el: Element) throws -> URL? {
         for attr in ["data-src", "src"] {
-            let raw = try el.attr(attr)
+            let raw = strippedMediaFragment(try el.attr(attr))
             if let url = resolveHTTPURL(raw) { return url }
         }
         for source in try el.select("source") {
             for attr in ["data-src", "src"] {
-                let raw = try source.attr(attr)
+                let raw = strippedMediaFragment(try source.attr(attr))
                 if let url = resolveHTTPURL(raw) { return url }
             }
         }
         return nil
+    }
+
+    nonisolated private func strippedMediaFragment(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let hash = trimmed.firstIndex(of: "#") else { return trimmed }
+        return String(trimmed[..<hash])
     }
 
     /// Etoland's custom video-player wrapper carries `board-video-player`

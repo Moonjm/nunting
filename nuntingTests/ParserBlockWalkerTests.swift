@@ -200,4 +200,61 @@ final class ParserBlockWalkerTests: XCTestCase {
         else { return XCTFail("video 블록 기대") }
         XCTAssertEqual(url.absoluteString, "https://e.com/v.mp4", "data-src 우선 + #t= strip")
     }
+
+    func testCustomElementHandlerClaimsElementAndEmitsBlocks() throws {
+        // 사이트별 커스텀 wrapper 가 자식 텍스트(overlay 등)를 무시하고
+        // 자기가 만든 블록만 emit 하는 경로.
+        let blocks = try walk("앞<div class='custom-media'>overlay 텍스트</div>뒤") { rules in
+            rules.customElement = { el in
+                let cls = (try? el.attr("class")) ?? ""
+                guard cls.split(whereSeparator: { $0.isWhitespace }).contains("custom-media") else {
+                    return nil
+                }
+                return [.image(URL(string: "https://e.com/custom.png")!)]
+            }
+        }
+        // 기대: richText("앞") → image (custom) → richText("뒤"). overlay 텍스트 누락.
+        XCTAssertEqual(blocks.count, 3)
+        guard blocks.count == 3 else { return }
+        if case .richText(let head) = blocks[0].kind,
+           case .text(let s) = head.first {
+            XCTAssertTrue(s.contains("앞"))
+        } else { XCTFail("첫 블록은 richText") }
+        if case .image(let url, _) = blocks[1].kind {
+            XCTAssertEqual(url.absoluteString, "https://e.com/custom.png")
+        } else { XCTFail("두 번째 블록은 image (custom)") }
+        if case .richText(let tail) = blocks[2].kind,
+           case .text(let s) = tail.first {
+            XCTAssertTrue(s.contains("뒤"))
+        } else { XCTFail("마지막 블록은 richText") }
+        // overlay 텍스트가 어디에도 안 새어야 함
+        let allText = texts(in: blocks).joined()
+        XCTAssertFalse(allText.contains("overlay"), "custom 핸들러가 claim 한 자식 텍스트는 누락")
+    }
+
+    func testCustomElementHandlerReturningEmptyArrayDropsSubtree() throws {
+        // 빈 배열 반환 = "이 element 와 자식들 통째로 drop" — 광고 슬롯 등.
+        let blocks = try walk("앞<div class='ad'>광고</div>뒤") { rules in
+            rules.customElement = { el in
+                let cls = (try? el.attr("class")) ?? ""
+                if cls.split(whereSeparator: { $0.isWhitespace }).contains("ad") {
+                    return []
+                }
+                return nil
+            }
+        }
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(texts(in: blocks).joined(), "앞뒤")
+    }
+
+    func testCustomElementHandlerReturningNilFallsThroughToStandardDispatch() throws {
+        // nil 반환 = "이 element 는 내 책임 아님" — 표준 dispatch 이어감.
+        let blocks = try walk("<img src='https://e.com/a.png'>") { rules in
+            rules.customElement = { _ in nil }
+        }
+        XCTAssertEqual(blocks.count, 1)
+        guard case .image(let url, _) = blocks[0].kind
+        else { return XCTFail("image 블록 (nil 반환 → 표준 dispatch)") }
+        XCTAssertEqual(url.absoluteString, "https://e.com/a.png")
+    }
 }
