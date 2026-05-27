@@ -23,6 +23,7 @@ enum AlertSubscriptionError: LocalizedError {
     case http(status: Int, body: String)
     case decodeFailed(String)
     case nonHTTPResponse
+    case invalidURL(String)
 
     /// KeywordListView가 `error.localizedDescription`을 그대로 사용자에게 보여주므로
     /// case enum 이름 대신 의미 있는 문자열을 제공.
@@ -35,6 +36,8 @@ enum AlertSubscriptionError: LocalizedError {
             return "응답 디코드 실패: \(raw)"
         case .nonHTTPResponse:
             return "서버 응답 형식 오류"
+        case .invalidURL(let url):
+            return "잘못된 URL 형식: \(url)"
         }
     }
 }
@@ -144,7 +147,7 @@ final class AlertSubscriptionService {
             : baseURL.absoluteString
         let normalizedPath = path.hasPrefix("/") ? path : "/\(path)"
         guard let url = URL(string: base + normalizedPath) else {
-            throw AlertSubscriptionError.http(status: -1, body: "invalid url: \(base)\(normalizedPath)")
+            throw AlertSubscriptionError.invalidURL("\(base)\(normalizedPath)")
         }
         return url
     }
