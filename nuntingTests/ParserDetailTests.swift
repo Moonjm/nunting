@@ -1085,6 +1085,73 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertTrue(prose.contains("아래 본문"))
     }
 
+    func testInvenWalkerPreservesCollectorMediaAndLinks() throws {
+        let html = """
+        <html><body>
+        <section class="mo-board-view">
+          <div class="bbs-con">
+            <p>collector 밖 본문은 무시</p>
+            <div id="imageCollectDiv">
+              <p>위 본문 <a href="https://example.com/link">참고 링크</a></p>
+              <div style="display:none"><img src="https://upload3.inven.co.kr/upload/hidden.png"></div>
+              <p><a href="https://example.com/full"><img src="https://upload3.inven.co.kr/upload/visible.png"></a></p>
+              <p><video data-src="https://upload3.inven.co.kr/upload/clip.mp4" poster="https://upload3.inven.co.kr/upload/poster.jpg"></video></p>
+              <p>아래 본문</p>
+            </div>
+          </div>
+        </section>
+        </body></html>
+        """
+        let parser = InvenParser()
+        let post = Post(
+            id: "inven-walker",
+            site: .inven,
+            boardID: "inven-maple",
+            title: "x",
+            author: "y",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://www.inven.co.kr/board/maple/0/1")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+
+        let images = detail.blocks.compactMap { block -> URL? in
+            if case .image(let url, _) = block.kind { return url }
+            return nil
+        }
+        XCTAssertEqual(images.map(\.absoluteString), ["https://upload3.inven.co.kr/upload/visible.png"])
+
+        let videos = detail.blocks.compactMap { block -> (URL, URL?)? in
+            if case .video(let url, let posterURL) = block.kind { return (url, posterURL) }
+            return nil
+        }
+        XCTAssertEqual(videos.count, 1)
+        XCTAssertEqual(videos.first?.0.absoluteString, "https://upload3.inven.co.kr/upload/clip.mp4")
+        XCTAssertEqual(videos.first?.1?.absoluteString, "https://upload3.inven.co.kr/upload/poster.jpg")
+
+        let richSegments = detail.blocks.flatMap { block -> [InlineSegment] in
+            if case .richText(let segments) = block.kind { return segments }
+            return []
+        }
+        let prose = richSegments.compactMap { segment -> String? in
+            if case .text(let text) = segment { return text }
+            return nil
+        }.joined()
+        XCTAssertTrue(prose.contains("위 본문"))
+        XCTAssertTrue(prose.contains("아래 본문"))
+        XCTAssertFalse(prose.contains("collector 밖 본문은 무시"), "imageCollectDiv 바깥 bbs-con 본문은 walk 대상이 아님")
+
+        let links = richSegments.compactMap { segment -> (URL, String)? in
+            if case .link(let url, let label) = segment { return (url, label) }
+            return nil
+        }
+        XCTAssertEqual(links.count, 1)
+        XCTAssertEqual(links.first?.0.absoluteString, "https://example.com/link")
+        XCTAssertEqual(links.first?.1, "참고 링크")
+    }
+
     // MARK: - Bobae
 
     func testBobaeBodyExtractsTextImageAndYouTube() throws {
