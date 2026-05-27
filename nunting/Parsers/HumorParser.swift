@@ -26,13 +26,6 @@ public struct HumorParser: BoardParser {
         "/images/ai/ansim_man",
     ]
 
-    nonisolated private static let blockTags: Set<String> = [
-        "p", "div", "li", "blockquote",
-        "h1", "h2", "h3", "h4", "h5", "h6",
-        "section", "article", "tr",
-    ]
-    nonisolated private static let skipTags: Set<String> = ["script", "style", "noscript"]
-
     public nonisolated func parseList(html: String, board: Board) throws -> [Post] {
         // Humoruniv is aagag-dispatch-only; list parsing is never invoked.
         []
@@ -202,90 +195,21 @@ public struct HumorParser: BoardParser {
         guard let wrap = candidates.compactMap({ $0 }).first else { return [] }
         // 너굴맨(안심맨) 디코이 + "원본" 펼치기 버튼 정리는 parseDetail
         // 진입 시 doc 레벨에서 이미 처리됨 (본문/댓글 공통).
-        var blocks: [ContentBlock] = []
-        var inline = InlineAccumulator()
-        try collectBlocks(from: wrap, into: &blocks, inline: &inline)
-        flushInline(into: &blocks, inline: &inline)
-        return blocks
-    }
 
-    nonisolated private func flushInline(into blocks: inout [ContentBlock], inline: inout InlineAccumulator) {
-        let segments = inline.drain()
-        if !segments.isEmpty {
-            blocks.append(.richText(segments))
-        }
-    }
-
-    nonisolated private func collectBlocks(from element: Element, into blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
-        for node in element.getChildNodes() {
-            if let child = node as? Element {
-                try handleElement(child, blocks: &blocks, inline: &inline)
-            } else if let text = node as? TextNode {
-                let raw = text.text()
-                if !raw.isEmpty { inline.appendText(raw) }
+        var rules = WalkerRules.standard(for: self)
+        rules.resolveImageURL = realImageURL(from:)   // img_file_url → src → data-src + skipImageMarkers 필터
+        rules.customElement = { [self] el in
+            // Humor 본문 비디오는 raw `<video>` 가 아니라
+            // `<div onclick="comment_mp4_expand('id', 'url.mp4')">` wrapper 로
+            // 옴. onclick handler 가 매칭되면 wrapper 자체를 claim 하고
+            // 자식 썸네일은 무시.
+            let onclick = (try? el.attr("onclick")) ?? ""
+            guard !onclick.isEmpty, let videoURL = try parseMp4Click(onclick) else {
+                return nil
             }
+            return [.video(videoURL)]
         }
-    }
-
-    nonisolated private func handleElement(_ el: Element, blocks: inout [ContentBlock], inline: inout InlineAccumulator) throws {
-        let tag = el.tagName().lowercased()
-
-        if Self.skipTags.contains(tag) { return }
-        if isHidden(el) { return }
-
-        // Videos come from OnClick handlers on wrapper divs (humor doesn't
-        // ship raw <video> tags on the mobile detail page). Extract the mp4
-        // URL from the handler and skip descending into the thumbnail.
-        let onclick = try el.attr("onclick")
-        if !onclick.isEmpty, let videoURL = try parseMp4Click(onclick) {
-            flushInline(into: &blocks, inline: &inline)
-            blocks.append(.video(videoURL))
-            return
-        }
-
-        switch tag {
-        case "img":
-            if let url = try realImageURL(from: el) {
-                flushInline(into: &blocks, inline: &inline)
-                blocks.append(.image(url))
-            }
-            return
-        case "iframe":
-            let src = try el.attr("src")
-            if let id = youtubeEmbedID(from: src) {
-                flushInline(into: &blocks, inline: &inline)
-                blocks.append(.embed(.youtube, id: id))
-            }
-            return
-        case "a":
-            // Anchors wrapping `<img>` / `<video>` (forums often wrap inline
-            // GIFs in a clickable link) would otherwise be consumed here as
-            // a bare link label, hiding the media. Recurse into the children
-            // first so the nested image becomes a proper block; only treat
-            // the anchor as a link/text segment when there's no media inside.
-            if try el.select("img, video").first() != nil {
-                try collectBlocks(from: el, into: &blocks, inline: &inline)
-                return
-            }
-            if let resolved = try anchor(from: el) {
-                inline.appendLink(url: resolved.url, label: resolved.label)
-            } else {
-                inline.appendText(try el.text())
-            }
-            return
-        case "br":
-            inline.appendText("\n")
-            return
-        default:
-            break
-        }
-
-        try collectBlocks(from: el, into: &blocks, inline: &inline)
-        if Self.blockTags.contains(tag) {
-            // Separate sibling blocks with a newline so paragraphs don't
-            // fuse into a single run of prose.
-            inline.appendText("\n")
-        }
+        return try ParserBlockWalker(parser: self, rules: rules).walk(wrap)
     }
 
     nonisolated private func realImageURL(from el: Element) throws -> URL? {
