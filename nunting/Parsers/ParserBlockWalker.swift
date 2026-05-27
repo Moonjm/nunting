@@ -38,14 +38,14 @@ public struct WalkerRules: Sendable {
     /// elements (e.g. a custom React media-player wrapper whose sibling
     /// overlay divs would otherwise leak text into the body). Returning
     /// a non-nil array — even an empty one — tells the walker:
-    /// "I consumed this element; flush pending inline, append the blocks
-    /// I'm handing you (if any), and skip recursion into the element's
-    /// children." Returning `nil` lets the walker fall through to its
+    /// "I consumed this element; skip recursion into the element's children."
+    /// Non-empty arrays also flush pending inline before appending the handed
+    /// blocks. Returning `nil` lets the walker fall through to its
     /// standard tag dispatch (`img`/`video`/`iframe`/`a`/`br`/blockTags).
     /// `WalkerRules.standard(for:)` defaults this to `{ _ in nil }`.
     public var customElement: @Sendable (Element) throws -> [ContentBlock]?
 
-    public init(
+    public nonisolated init(
         blockTags: Set<String>,
         skipTags: Set<String>,
         mediaTags: Set<String>,
@@ -72,7 +72,7 @@ extension WalkerRules {
     /// `<video src>` values are promoted to absolute http(s) URLs against
     /// the site's `baseURL`. Per-site overrides patch individual closures
     /// in-place after construction.
-    public static func standard(for parser: any BoardParser) -> WalkerRules {
+    public nonisolated static func standard(for parser: any BoardParser) -> WalkerRules {
         WalkerRules(
             blockTags: [
                 "p", "div", "li", "blockquote",
@@ -119,7 +119,7 @@ public struct ParserBlockWalker: Sendable {
     public let parser: any BoardParser
     public let rules: WalkerRules
 
-    public init(parser: any BoardParser, rules: WalkerRules) {
+    public nonisolated init(parser: any BoardParser, rules: WalkerRules) {
         self.parser = parser
         self.rules = rules
     }
@@ -171,9 +171,9 @@ public struct ParserBlockWalker: Sendable {
 
         // First-crack handler. If site-specific code claims this element
         // (e.g. an Etoland custom video-player wrapper), respect its
-        // decision: flush pending inline, emit whatever blocks it returns,
-        // and skip recursion. Empty array still claims the element —
-        // useful for "drop this entire subtree" without emitting anything.
+        // decision: emit whatever blocks it returns and skip recursion.
+        // Empty array still claims the element — useful for "drop this
+        // entire subtree" without splitting surrounding inline text.
         if let customBlocks = try rules.customElement(el) {
             if !customBlocks.isEmpty {
                 flushInline(into: &blocks, inline: &inline)

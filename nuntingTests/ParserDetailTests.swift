@@ -448,7 +448,7 @@ final class ParserDetailTests: XCTestCase {
           <div class="view-content">
             <div class="board-video-player">
               <div class="relative">
-                <video data-src="https://btcdn.etoland.co.kr/static/media/etohumor07/2026/0507/optimized/abc.mp4" muted="" loop="" playsInline="" preload="none"></video>
+                <video data-src="https://btcdn.etoland.co.kr/static/media/etohumor07/2026/0507/optimized/abc.mp4#t=0.05" muted="" loop="" playsInline="" preload="none"></video>
               </div>
             </div>
           </div>
@@ -477,6 +477,88 @@ final class ParserDetailTests: XCTestCase {
             videos.first?.absoluteString,
             "https://btcdn.etoland.co.kr/static/media/etohumor07/2026/0507/optimized/abc.mp4"
         )
+    }
+
+    func testEtolandDetailDropsCustomVideoPlayerOverlayWhenVideoURLMissing() throws {
+        let html = """
+        <html><body>
+        <article>
+          <h1 class="body-m"><span class="truncate">제목</span></h1>
+          <div><div class="caption-s"><span class="nickname">x</span><time>2026-05-07 13:51</time></div></div>
+          <div class="view-content">
+            <p>본문 위</p>
+            <div class="board-video-player">
+              <video muted="" loop=""></video>
+              <button aria-label="Play video">Play video</button>
+              <div class="peer/controls">0:00 / 0:00 1x</div>
+            </div>
+            <p>본문 아래</p>
+          </div>
+        </article>
+        </body></html>
+        """
+        let parser = EtolandParser()
+        let post = Post(
+            id: "aagag-eto-v-missing",
+            site: .etoland,
+            boardID: "aagag",
+            title: "fallback",
+            author: "",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-1")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        let prose = detail.blocks.compactMap { block -> String? in
+            if case .richText(let segs) = block.kind {
+                return segs.compactMap { if case .text(let s) = $0 { return s } else { return nil } }.joined()
+            }
+            return nil
+        }.joined(separator: "\n")
+
+        XCTAssertFalse(prose.contains("0:00"), "time readout from custom-player overlay leaked into body text")
+        XCTAssertFalse(prose.contains("1x"), "speed selector label from overlay leaked into body text")
+        XCTAssertFalse(prose.contains("Play video"), "play button label leaked into body text")
+        XCTAssertTrue(prose.contains("본문 위"))
+        XCTAssertTrue(prose.contains("본문 아래"))
+        XCTAssertTrue(detail.blocks.compactMap { if case .video(let url, _) = $0.kind { return url } else { return nil } }.isEmpty)
+    }
+
+    func testEtolandDetailExtractsUnwrappedVideoFromLaterSource() throws {
+        let html = """
+        <html><body>
+        <article>
+          <h1 class="body-m"><span class="truncate">제목</span></h1>
+          <div><div class="caption-s"><span class="nickname">x</span><time>2026-05-07 13:51</time></div></div>
+          <div class="view-content">
+            <video>
+              <source src="javascript:void(0)" />
+              <source src="https://btcdn.etoland.co.kr/fallback.mp4#t=0.05" />
+            </video>
+          </div>
+        </article>
+        </body></html>
+        """
+        let parser = EtolandParser()
+        let post = Post(
+            id: "aagag-eto-v-source",
+            site: .etoland,
+            boardID: "aagag",
+            title: "fallback",
+            author: "",
+            date: nil,
+            dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-1")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        let videos = detail.blocks.compactMap { block -> URL? in
+            if case .video(let url, _) = block.kind { return url }
+            return nil
+        }
+        XCTAssertEqual(videos.count, 1)
+        XCTAssertEqual(videos.first?.absoluteString, "https://btcdn.etoland.co.kr/fallback.mp4")
     }
 
     func testEtolandCommentsURLDerivedFromPostPath() throws {

@@ -224,7 +224,7 @@ public struct EtolandParser: BoardParser {
 
         var rules = WalkerRules.standard(for: self)
         rules.resolveImageURL = realImageURL(from:)   // data-src → src (etoland Next.js <Image>)
-        // resolveVideoURL — standard(for:) 가 data-src 우선 + #t= strip 지원하므로 추가 override 불필요
+        rules.resolveVideoURL = videoURL(from:)       // data-src → src → all <source>, plus #t= strip
         rules.customElement = customElementHandler(_:)
         return try ParserBlockWalker(parser: self, rules: rules).walk(wrap)
     }
@@ -236,10 +236,11 @@ public struct EtolandParser: BoardParser {
     /// 으로 promote 하고 wrapper 자식 전체를 skip.
     nonisolated private func customElementHandler(_ el: Element) throws -> [ContentBlock]? {
         guard el.tagName().lowercased() == "div",
-              Self.isVideoPlayerWrapper(el),
-              let video = try el.select("video").first(),
-              let url = try videoURL(from: video)
+              Self.isVideoPlayerWrapper(el)
         else { return nil }
+        guard let video = try el.select("video").first(),
+              let url = try videoURL(from: video)
+        else { return [] }
         return [.video(url, posterURL: try videoPoster(from: video))]
     }
 
@@ -267,16 +268,22 @@ public struct EtolandParser: BoardParser {
     /// `<source>` children for older / non-lazy markup.
     nonisolated private func videoURL(from el: Element) throws -> URL? {
         for attr in ["data-src", "src"] {
-            let raw = try el.attr(attr)
+            let raw = strippedMediaFragment(try el.attr(attr))
             if let url = resolveHTTPURL(raw) { return url }
         }
         for source in try el.select("source") {
             for attr in ["data-src", "src"] {
-                let raw = try source.attr(attr)
+                let raw = strippedMediaFragment(try source.attr(attr))
                 if let url = resolveHTTPURL(raw) { return url }
             }
         }
         return nil
+    }
+
+    nonisolated private func strippedMediaFragment(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let hash = trimmed.firstIndex(of: "#") else { return trimmed }
+        return String(trimmed[..<hash])
     }
 
     /// Etoland's custom video-player wrapper carries `board-video-player`
