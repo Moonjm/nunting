@@ -34,27 +34,17 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = ClienParser()
-        let post = Post(
+        let post = Post.fixture(
             id: "clien-park-19184976",
             site: .clien,
             boardID: "clien-park",
-            title: "테스트",
-            author: "작성자",
-            date: nil,
-            dateText: "방금",
-            commentCount: 0,
             url: URL(string: "https://m.clien.net/service/board/park/19184976")!
         )
 
         let detail = try parser.parseDetail(html: html, post: post)
 
         // 1) 정확히 하나의 video 블록
-        let videos = detail.blocks.compactMap { block -> (URL, URL?)? in
-            if case .video(let url, let posterURL) = block.kind {
-                return (url, posterURL)
-            }
-            return nil
-        }
+        let videos = detail.blocks.videos
         XCTAssertEqual(videos.count, 1, "<video> 가 video 블록 1건으로 emit")
         if let (url, posterURL) = videos.first {
             XCTAssertEqual(url.absoluteString,
@@ -66,15 +56,7 @@ final class ParserDetailTests: XCTestCase {
         }
 
         // 2) 어떤 richText 블록도 'GIF' 라는 단독 텍스트를 포함하지 않아야 함
-        let textPieces = detail.blocks.flatMap { block -> [String] in
-            if case .richText(let segs) = block.kind {
-                return segs.compactMap { seg -> String? in
-                    if case .text(let s) = seg { return s }
-                    return nil
-                }
-            }
-            return []
-        }
+        let textPieces = detail.blocks.richTextSegments.textSegments
         for piece in textPieces {
             // 본문에는 "위 본문 텍스트" / "아래 본문 텍스트" 만 있어야 함.
             XCTAssertFalse(piece.contains("GIF"),
@@ -98,23 +80,15 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = ClienParser()
-        let post = Post(
+        let post = Post.fixture(
             id: "clien-test",
             site: .clien,
             boardID: "clien-news",
-            title: "x",
-            author: "y",
-            date: nil,
-            dateText: "",
-            commentCount: 0,
             url: URL(string: "https://m.clien.net/service/board/news/0")!
         )
 
         let detail = try parser.parseDetail(html: html, post: post)
-        let videos = detail.blocks.compactMap { block -> URL? in
-            if case .video(let url, _) = block.kind { return url }
-            return nil
-        }
+        let videos = detail.blocks.videoURLs
         XCTAssertEqual(videos.count, 1)
         XCTAssertEqual(videos.first?.absoluteString, "https://example.com/clip.mp4")
     }
@@ -134,25 +108,15 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = ClienParser()
-        let post = Post(
+        let post = Post.fixture(
             id: "clien-image-srcset",
             site: .clien,
             boardID: "clien-news",
-            title: "x",
-            author: "y",
-            date: nil,
-            dateText: "",
-            commentCount: 0,
             url: URL(string: "https://m.clien.net/service/board/news/1")!
         )
 
         let detail = try parser.parseDetail(html: html, post: post)
-        let images = detail.blocks.compactMap { block -> (URL, CGFloat?)? in
-            if case .image(let url, let aspectRatio) = block.kind {
-                return (url, aspectRatio)
-            }
-            return nil
-        }
+        let images = detail.blocks.images
 
         XCTAssertEqual(images.count, 1)
         XCTAssertEqual(images.first?.0.absoluteString, "https://cdn.example.com/photo-1024.jpg")
@@ -176,15 +140,10 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = ClienParser()
-        let post = Post(
+        let post = Post.fixture(
             id: "clien-composition",
             site: .clien,
             boardID: "clien-news",
-            title: "x",
-            author: "y",
-            date: nil,
-            dateText: "",
-            commentCount: 0,
             url: URL(string: "https://m.clien.net/service/board/news/2")!
         )
 
@@ -192,7 +151,7 @@ final class ParserDetailTests: XCTestCase {
 
         XCTAssertEqual(detail.source?.name, "Example Source")
         XCTAssertEqual(detail.source?.url.absoluteString, "https://example.com/original")
-        XCTAssertFalse(texts(in: detail.blocks).joined().contains("Example Source"), "source paragraph should be removed from body")
+        XCTAssertFalse(detail.blocks.plainText.contains("Example Source"), "source paragraph should be removed from body")
 
         XCTAssertEqual(detail.blocks.count, 4)
         guard case .richText(let head) = detail.blocks[0].kind,
@@ -203,27 +162,11 @@ final class ParserDetailTests: XCTestCase {
 
         XCTAssertEqual(imageURL.absoluteString, "https://cdn.example.com/inside.jpg")
         XCTAssertEqual(id, "abcDEF12345")
-        XCTAssertEqual(textOnly(head).joined(), "위 문단\n\n\n중간 문단")
-        XCTAssertEqual(textOnly(tail).joined(), "아래 문단")
+        XCTAssertEqual(head.plainText, "위 문단\n\n\n중간 문단")
+        XCTAssertEqual(tail.plainText, "아래 문단")
     }
 
     // MARK: - Ppomppu
-
-    private func texts(in blocks: [ContentBlock]) -> [String] {
-        blocks.flatMap { block -> [String] in
-            if case .richText(let segs) = block.kind {
-                return textOnly(segs)
-            }
-            return []
-        }
-    }
-
-    private func textOnly(_ segments: [InlineSegment]) -> [String] {
-        segments.compactMap { segment in
-            if case .text(let text) = segment { return text }
-            return nil
-        }
-    }
 
     func testPpomppuImgPointingAtMovEmitsVideoBlockNotImage() throws {
         // Real shape from m.ppomppu.co.kr/new/bbs_view.php?id=car&no=968820 —
@@ -248,28 +191,17 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = PpomppuParser()
-        let post = Post(
+        let post = Post.fixture(
             id: "ppomppu-car-968820",
             site: .ppomppu,
             boardID: "ppomppu-car",
-            title: "테스트",
-            author: "작성자",
-            date: nil,
-            dateText: "방금",
-            commentCount: 0,
             url: URL(string: "https://m.ppomppu.co.kr/new/bbs_view.php?id=car&no=968820")!
         )
 
         let detail = try parser.parseDetail(html: html, post: post)
 
-        let videos = detail.blocks.compactMap { block -> URL? in
-            if case .video(let url, _) = block.kind { return url }
-            return nil
-        }
-        let images = detail.blocks.compactMap { block -> URL? in
-            if case .image(let url, _) = block.kind { return url }
-            return nil
-        }
+        let videos = detail.blocks.videoURLs
+        let images = detail.blocks.imageURLs
         XCTAssertEqual(videos.count, 1)
         XCTAssertEqual(
             videos.first?.absoluteString,
@@ -291,27 +223,16 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = PpomppuParser()
-        let post = Post(
+        let post = Post.fixture(
             id: "ppomppu-test",
             site: .ppomppu,
             boardID: "ppomppu-car",
-            title: "x",
-            author: "y",
-            date: nil,
-            dateText: "",
-            commentCount: 0,
             url: URL(string: "https://m.ppomppu.co.kr/new/bbs_view.php?id=car&no=0")!
         )
 
         let detail = try parser.parseDetail(html: html, post: post)
-        let images = detail.blocks.compactMap { block -> URL? in
-            if case .image(let url, _) = block.kind { return url }
-            return nil
-        }
-        let videos = detail.blocks.compactMap { block -> URL? in
-            if case .video(let url, _) = block.kind { return url }
-            return nil
-        }
+        let images = detail.blocks.imageURLs
+        let videos = detail.blocks.videoURLs
         XCTAssertEqual(images.count, 1)
         XCTAssertEqual(
             images.first?.absoluteString,
@@ -345,24 +266,16 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """#
         let parser = AagagParser()
-        let post = Post(
+        let post = Post.fixture(
             id: "aagag-1065713",
             site: .aagag,
             boardID: "aagag-issue",
-            title: "테스트",
-            author: "",
-            date: nil,
-            dateText: "",
-            commentCount: 0,
             url: URL(string: "https://aagag.com/issue/?idx=1065713")!
         )
 
         let detail = try parser.parseDetail(html: html, post: post)
 
-        let videos = detail.blocks.compactMap { block -> URL? in
-            if case .video(let url, _) = block.kind { return url }
-            return nil
-        }
+        let videos = detail.blocks.videoURLs
         XCTAssertEqual(videos.count, 1)
         XCTAssertEqual(
             videos.first?.absoluteString,
@@ -386,23 +299,15 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """#
         let parser = AagagParser()
-        let post = Post(
+        let post = Post.fixture(
             id: "aagag-vid",
             site: .aagag,
             boardID: "aagag-issue",
-            title: "x",
-            author: "",
-            date: nil,
-            dateText: "",
-            commentCount: 0,
             url: URL(string: "https://aagag.com/issue/?idx=0")!
         )
 
         let detail = try parser.parseDetail(html: html, post: post)
-        let videos = detail.blocks.compactMap { block -> URL? in
-            if case .video(let url, _) = block.kind { return url }
-            return nil
-        }
+        let videos = detail.blocks.videoURLs
         XCTAssertEqual(videos.count, 1)
         XCTAssertEqual(
             videos.first?.absoluteString,
@@ -443,15 +348,10 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = EtolandParser()
-        let post = Post(
+        let post = Post.fixture(
             id: "aagag-eto-1",
             site: .etoland,
             boardID: "aagag",
-            title: "fallback",
-            author: "",
-            date: nil,
-            dateText: "",
-            commentCount: 0,
             url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-9022643")!
         )
 
@@ -463,10 +363,7 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertEqual(detail.post.recommendCount, 19)
         XCTAssertEqual(detail.post.commentCount, 17)
 
-        let images = detail.blocks.compactMap { block -> URL? in
-            if case .image(let url, _) = block.kind { return url }
-            return nil
-        }
+        let images = detail.blocks.imageURLs
         XCTAssertEqual(images.count, 1)
         XCTAssertEqual(
             images.first?.absoluteString,
@@ -504,32 +401,19 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = EtolandParser()
-        let post = Post(
+        let post = Post.fixture(
             id: "aagag-eto-v",
             site: .etoland,
             boardID: "aagag",
-            title: "fallback",
-            author: "",
-            date: nil,
-            dateText: "",
-            commentCount: 0,
             url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-1")!
         )
         let detail = try parser.parseDetail(html: html, post: post)
 
-        let videos = detail.blocks.compactMap { block -> URL? in
-            if case .video(let url, _) = block.kind { return url }
-            return nil
-        }
+        let videos = detail.blocks.videoURLs
         XCTAssertEqual(videos.count, 1)
         XCTAssertEqual(videos.first?.absoluteString, "https://btcdn.etoland.co.kr/clip.mp4")
 
-        let prose = detail.blocks.compactMap { block -> String? in
-            if case .richText(let segs) = block.kind {
-                return segs.compactMap { if case .text(let s) = $0 { return s } else { return nil } }.joined()
-            }
-            return nil
-        }.joined(separator: "\n")
+        let prose = detail.blocks.blockTexts.joined(separator: "\n")
         XCTAssertFalse(prose.contains("0:00"), "time readout from custom-player overlay leaked into body text")
         XCTAssertFalse(prose.contains("1x"), "speed selector label from overlay leaked into body text")
         XCTAssertFalse(prose.contains("Play video"), "play button label leaked into body text")
@@ -560,22 +444,14 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = EtolandParser()
-        let post = Post(
+        let post = Post.fixture(
             id: "aagag-eto-v2",
             site: .etoland,
             boardID: "aagag",
-            title: "fallback",
-            author: "",
-            date: nil,
-            dateText: "",
-            commentCount: 0,
             url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-1")!
         )
         let detail = try parser.parseDetail(html: html, post: post)
-        let videos = detail.blocks.compactMap { block -> URL? in
-            if case .video(let url, _) = block.kind { return url }
-            return nil
-        }
+        let videos = detail.blocks.videoURLs
         XCTAssertEqual(videos.count, 1)
         XCTAssertEqual(
             videos.first?.absoluteString,
@@ -602,24 +478,14 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = EtolandParser()
-        let post = Post(
+        let post = Post.fixture(
             id: "aagag-eto-v-missing",
             site: .etoland,
             boardID: "aagag",
-            title: "fallback",
-            author: "",
-            date: nil,
-            dateText: "",
-            commentCount: 0,
             url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-1")!
         )
         let detail = try parser.parseDetail(html: html, post: post)
-        let prose = detail.blocks.compactMap { block -> String? in
-            if case .richText(let segs) = block.kind {
-                return segs.compactMap { if case .text(let s) = $0 { return s } else { return nil } }.joined()
-            }
-            return nil
-        }.joined(separator: "\n")
+        let prose = detail.blocks.blockTexts.joined(separator: "\n")
 
         XCTAssertFalse(prose.contains("0:00"), "time readout from custom-player overlay leaked into body text")
         XCTAssertFalse(prose.contains("1x"), "speed selector label from overlay leaked into body text")
@@ -645,22 +511,14 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = EtolandParser()
-        let post = Post(
+        let post = Post.fixture(
             id: "aagag-eto-v-source",
             site: .etoland,
             boardID: "aagag",
-            title: "fallback",
-            author: "",
-            date: nil,
-            dateText: "",
-            commentCount: 0,
             url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-1")!
         )
         let detail = try parser.parseDetail(html: html, post: post)
-        let videos = detail.blocks.compactMap { block -> URL? in
-            if case .video(let url, _) = block.kind { return url }
-            return nil
-        }
+        let videos = detail.blocks.videoURLs
         XCTAssertEqual(videos.count, 1)
         XCTAssertEqual(videos.first?.absoluteString, "https://btcdn.etoland.co.kr/fallback.mp4")
     }
@@ -670,15 +528,10 @@ final class ParserDetailTests: XCTestCase {
         // boTable + slug pulled from the post URL's `/b/{boTable}/view/{slug}`
         // segments. Slug stays URL-encoded — etoland's API wants it that way.
         let parser = EtolandParser()
-        let post = Post(
+        let post = Post.fixture(
             id: "x",
             site: .etoland,
             boardID: "aagag",
-            title: "t",
-            author: "",
-            date: nil,
-            dateText: "",
-            commentCount: 0,
             url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-9022769")!
         )
         let url = parser.commentsURL(for: post)
@@ -711,15 +564,10 @@ final class ParserDetailTests: XCTestCase {
         // so the loader keeps `parsed.comments` (already filled by
         // parseDetail) instead of overriding with a parallel API call.
         let parser = EtolandParser()
-        let post = Post(
+        let post = Post.fixture(
             id: "x",
             site: .etoland,
             boardID: "aagag",
-            title: "t",
-            author: "",
-            date: nil,
-            dateText: "",
-            commentCount: 0,
             url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-1")!
         )
         // Marker matches the wire envelope `"data":{"comments":[…]}`,
@@ -744,15 +592,10 @@ final class ParserDetailTests: XCTestCase {
         // `fetchAllComments` must hit the API URL and decode the JSON.
         // Fixture mirrors etoland's actual API envelope shape.
         let parser = EtolandParser()
-        let post = Post(
+        let post = Post.fixture(
             id: "x",
             site: .etoland,
             boardID: "aagag",
-            title: "t",
-            author: "",
-            date: nil,
-            dateText: "",
-            commentCount: 0,
             url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-9022769")!
         )
         let bailoutHTML = "<html><template data-dgst=\"BAILOUT_TO_CLIENT_SIDE_RENDERING\"></template></html>"
@@ -798,15 +641,10 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = EtolandParser()
-        let post = Post(
+        let post = Post.fixture(
             id: "x",
             site: .etoland,
             boardID: "aagag",
-            title: "fallback",
-            author: "",
-            date: nil,
-            dateText: "",
-            commentCount: 0,
             url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-1")!
         )
         let detail = try parser.parseDetail(html: html, post: post)
@@ -830,15 +668,10 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = EtolandParser()
-        let post = Post(
+        let post = Post.fixture(
             id: "x",
             site: .etoland,
             boardID: "aagag",
-            title: "fallback",
-            author: "",
-            date: nil,
-            dateText: "",
-            commentCount: 0,
             url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-1")!
         )
         let detail = try parser.parseDetail(html: html, post: post)
@@ -868,15 +701,10 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = EtolandParser()
-        let post = Post(
+        let post = Post.fixture(
             id: "aagag-eto-img",
             site: .etoland,
             boardID: "aagag",
-            title: "fallback",
-            author: "",
-            date: nil,
-            dateText: "",
-            commentCount: 0,
             url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-1")!
         )
         let detail = try parser.parseDetail(html: html, post: post)
@@ -929,15 +757,10 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = EtolandParser()
-        let post = Post(
+        let post = Post.fixture(
             id: "aagag-eto-c",
             site: .etoland,
             boardID: "aagag",
-            title: "fallback",
-            author: "",
-            date: nil,
-            dateText: "",
-            commentCount: 0,
             url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-1")!
         )
 
@@ -996,42 +819,26 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = InvenParser()
-        let post = Post(
+        let post = Post.fixture(
             id: "inven-maple-5974-6548994",
             site: .inven,
             boardID: "inven-maple",
-            title: "테스트",
-            author: "작성자",
-            date: nil,
-            dateText: "방금",
-            commentCount: 0,
             url: URL(string: "https://www.inven.co.kr/board/maple/5974/6548994")!
         )
 
         let detail = try parser.parseDetail(html: html, post: post)
 
-        let embeds = detail.blocks.compactMap { block -> (EmbedProvider, String)? in
-            if case .embed(let provider, let id) = block.kind { return (provider, id) }
-            return nil
-        }
+        let embeds = detail.blocks.embeds
         XCTAssertEqual(embeds.count, 2, "두 개의 youtube iframe이 모두 embed 블록으로 emit")
         XCTAssertEqual(embeds.first?.0, .youtube)
         XCTAssertEqual(embeds.first?.1, "4QQedW1BDB4")
         XCTAssertEqual(embeds.last?.0, .youtube)
         XCTAssertEqual(embeds.last?.1, "S0aDEI54jRs")
 
-        let images = detail.blocks.compactMap { block -> URL? in
-            if case .image(let url, _) = block.kind { return url }
-            return nil
-        }
+        let images = detail.blocks.imageURLs
         XCTAssertEqual(images.count, 1, "iframe 처리가 기존 image 블록을 가로채면 안 됨")
 
-        let prose = detail.blocks.compactMap { block -> String? in
-            if case .richText(let segs) = block.kind {
-                return segs.compactMap { if case .text(let s) = $0 { return s } else { return nil } }.joined()
-            }
-            return nil
-        }.joined(separator: "\n")
+        let prose = detail.blocks.blockTexts.joined(separator: "\n")
         XCTAssertTrue(prose.contains("입장컷신"))
         XCTAssertTrue(prose.contains("격파영상"))
         XCTAssertTrue(prose.contains("보상"))
@@ -1056,31 +863,18 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = InvenParser()
-        let post = Post(
+        let post = Post.fixture(
             id: "inven-test",
             site: .inven,
             boardID: "inven-maple",
-            title: "x",
-            author: "y",
-            date: nil,
-            dateText: "",
-            commentCount: 0,
             url: URL(string: "https://www.inven.co.kr/board/maple/0/0")!
         )
 
         let detail = try parser.parseDetail(html: html, post: post)
-        let embeds = detail.blocks.compactMap { block -> (EmbedProvider, String)? in
-            if case .embed(let provider, let id) = block.kind { return (provider, id) }
-            return nil
-        }
+        let embeds = detail.blocks.embeds
         XCTAssertTrue(embeds.isEmpty, "youtube가 아닌 iframe은 embed 블록을 만들면 안 됨")
 
-        let prose = detail.blocks.compactMap { block -> String? in
-            if case .richText(let segs) = block.kind {
-                return segs.compactMap { if case .text(let s) = $0 { return s } else { return nil } }.joined()
-            }
-            return nil
-        }.joined(separator: "\n")
+        let prose = detail.blocks.blockTexts.joined(separator: "\n")
         XCTAssertTrue(prose.contains("위 본문"))
         XCTAssertTrue(prose.contains("아래 본문"))
     }
@@ -1103,50 +897,29 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = InvenParser()
-        let post = Post(
+        let post = Post.fixture(
             id: "inven-walker",
             site: .inven,
             boardID: "inven-maple",
-            title: "x",
-            author: "y",
-            date: nil,
-            dateText: "",
-            commentCount: 0,
             url: URL(string: "https://www.inven.co.kr/board/maple/0/1")!
         )
 
         let detail = try parser.parseDetail(html: html, post: post)
 
-        let images = detail.blocks.compactMap { block -> URL? in
-            if case .image(let url, _) = block.kind { return url }
-            return nil
-        }
+        let images = detail.blocks.imageURLs
         XCTAssertEqual(images.map(\.absoluteString), ["https://upload3.inven.co.kr/upload/visible.png"])
 
-        let videos = detail.blocks.compactMap { block -> (URL, URL?)? in
-            if case .video(let url, let posterURL) = block.kind { return (url, posterURL) }
-            return nil
-        }
+        let videos = detail.blocks.videos
         XCTAssertEqual(videos.count, 1)
         XCTAssertEqual(videos.first?.0.absoluteString, "https://upload3.inven.co.kr/upload/clip.mp4")
         XCTAssertEqual(videos.first?.1?.absoluteString, "https://upload3.inven.co.kr/upload/poster.jpg")
 
-        let richSegments = detail.blocks.flatMap { block -> [InlineSegment] in
-            if case .richText(let segments) = block.kind { return segments }
-            return []
-        }
-        let prose = richSegments.compactMap { segment -> String? in
-            if case .text(let text) = segment { return text }
-            return nil
-        }.joined()
+        let prose = detail.blocks.plainText
         XCTAssertTrue(prose.contains("위 본문"))
         XCTAssertTrue(prose.contains("아래 본문"))
         XCTAssertFalse(prose.contains("collector 밖 본문은 무시"), "imageCollectDiv 바깥 bbs-con 본문은 walk 대상이 아님")
 
-        let links = richSegments.compactMap { segment -> (URL, String)? in
-            if case .link(let url, let label) = segment { return (url, label) }
-            return nil
-        }
+        let links = detail.blocks.links
         XCTAssertEqual(links.count, 1)
         XCTAssertEqual(links.first?.0.absoluteString, "https://example.com/link")
         XCTAssertEqual(links.first?.1, "참고 링크")
@@ -1172,17 +945,14 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = HumorParser()
-        let post = Post(
-            id: "humor-1", site: .humor, boardID: "pds",
-            title: "x", author: "y", date: nil, dateText: "",
-            commentCount: 0,
+        let post = Post.fixture(
+            id: "humor-1",
+            site: .humor,
+            boardID: "pds",
             url: URL(string: "https://m.humoruniv.com/board/humor/read.html?table=pds&number=1")!
         )
         let detail = try parser.parseDetail(html: html, post: post)
-        let images = detail.blocks.compactMap { block -> URL? in
-            if case .image(let url, _) = block.kind { return url }
-            return nil
-        }
+        let images = detail.blocks.imageURLs
         XCTAssertEqual(images.map(\.absoluteString), ["https://image.humoruniv.com/orig.jpg"],
                        "img_file_url 우선 + skipImageMarkers 차단")
     }
@@ -1205,23 +975,17 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = HumorParser()
-        let post = Post(
-            id: "humor-2", site: .humor, boardID: "pds",
-            title: "x", author: "y", date: nil, dateText: "",
-            commentCount: 0,
+        let post = Post.fixture(
+            id: "humor-2",
+            site: .humor,
+            boardID: "pds",
             url: URL(string: "https://m.humoruniv.com/board/humor/read.html?table=pds&number=2")!
         )
         let detail = try parser.parseDetail(html: html, post: post)
-        let videos = detail.blocks.compactMap { block -> URL? in
-            if case .video(let url, _) = block.kind { return url }
-            return nil
-        }
+        let videos = detail.blocks.videoURLs
         XCTAssertEqual(videos.map(\.absoluteString), ["https://video.humoruniv.com/clip.mp4"])
         // 썸네일 img 는 onclick wrapper 가 claim 했으므로 image 블록 0
-        let images = detail.blocks.compactMap { block -> URL? in
-            if case .image(let url, _) = block.kind { return url }
-            return nil
-        }
+        let images = detail.blocks.imageURLs
         XCTAssertTrue(images.isEmpty, "onclick wrapper 가 claim 한 자식 썸네일은 image 블록 안 만들어야")
     }
 
@@ -1240,17 +1004,14 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = HumorParser()
-        let post = Post(
-            id: "humor-3", site: .humor, boardID: "pds",
-            title: "x", author: "y", date: nil, dateText: "",
-            commentCount: 0,
+        let post = Post.fixture(
+            id: "humor-3",
+            site: .humor,
+            boardID: "pds",
             url: URL(string: "https://m.humoruniv.com/board/humor/read.html?table=pds&number=3")!
         )
         let detail = try parser.parseDetail(html: html, post: post)
-        let embeds = detail.blocks.compactMap { block -> String? in
-            if case .embed(.youtube, let id) = block.kind { return id }
-            return nil
-        }
+        let embeds = detail.blocks.youtubeIDs
         XCTAssertEqual(embeds, ["abcdefghijk"])
         let hasHidden = detail.blocks.contains { block in
             if case .image(let url, _) = block.kind { return url.absoluteString.contains("hidden") }
@@ -1273,10 +1034,10 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = HumorParser()
-        let post = Post(
-            id: "humor-4", site: .humor, boardID: "pds",
-            title: "x", author: "y", date: nil, dateText: "",
-            commentCount: 0,
+        let post = Post.fixture(
+            id: "humor-4",
+            site: .humor,
+            boardID: "pds",
             url: URL(string: "https://m.humoruniv.com/board/humor/read.html?table=pds&number=4")!
         )
 
@@ -1303,10 +1064,7 @@ final class ParserDetailTests: XCTestCase {
             XCTFail("head[1] should be link")
         }
         XCTAssertEqual(imageURL.absoluteString, "https://image.humoruniv.com/body.jpg")
-        XCTAssertEqual(tail.compactMap { segment -> String? in
-            if case .text(let text) = segment { return text }
-            return nil
-        }.joined().trimmingCharacters(in: .whitespacesAndNewlines), "끝 본문")
+        XCTAssertEqual(tail.plainText.trimmingCharacters(in: .whitespacesAndNewlines), "끝 본문")
     }
 
     // MARK: - SLR
@@ -1329,10 +1087,10 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = SLRParser()
-        let post = Post(
-            id: "slr-1", site: .slr, boardID: "free",
-            title: "x", author: "y", date: nil, dateText: "",
-            commentCount: 0,
+        let post = Post.fixture(
+            id: "slr-1",
+            site: .slr,
+            boardID: "free",
             url: URL(string: "https://m.slrclub.com/m_view.php?id=free&no=1")!
         )
         let detail = try parser.parseDetail(html: html, post: post)
@@ -1362,46 +1120,104 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertEqual(imageURL.absoluteString, "https://image.slrclub.com/body.jpg")
         XCTAssertEqual(videoURL.absoluteString, "https://video.slrclub.com/clip.mp4", "<source src> + #t= strip")
         XCTAssertEqual(embedID, "abcdefghijk")
-        XCTAssertEqual(tail.compactMap { segment -> String? in
-            if case .text(let text) = segment { return text }
-            return nil
-        }.joined().trimmingCharacters(in: .whitespacesAndNewlines), "아래 본문")
+        XCTAssertEqual(tail.plainText.trimmingCharacters(in: .whitespacesAndNewlines), "아래 본문")
     }
 
-    func testSLRBodyDropsHiddenSubtreeAndScriptTags() throws {
-        let html = """
-        <html><body>
-        <div class="subject">제목</div>
-        <div id="userct">
-          <p>앞</p>
-          <div style="display:none"><img src="https://image.slrclub.com/hidden.jpg"></div>
-          <script>var x = 1;</script>
-          <p>뒤</p>
-        </div>
-        </body></html>
-        """
-        let parser = SLRParser()
-        let post = Post(
-            id: "slr-2", site: .slr, boardID: "free",
-            title: "x", author: "y", date: nil, dateText: "",
-            commentCount: 0,
-            url: URL(string: "https://m.slrclub.com/m_view.php?id=free&no=2")!
-        )
-        let detail = try parser.parseDetail(html: html, post: post)
-        let images = detail.blocks.compactMap { block -> URL? in
-            if case .image(let url, _) = block.kind { return url }
-            return nil
+    func testBodyDropsHiddenSubtreeAndScriptTagsAcrossSites() {
+        // Matrix: parser × wrapper HTML × URL. 4 사이트가 동일 assertion 통과해야 함.
+        // 각 사이트 본문 wrapper 가 다르지만 (`<div id=userct>`, `xe_content`, ...)
+        // hidden subtree + script drop 동작은 통일.
+        struct Case {
+            let name: String
+            let parser: any BoardParser
+            let bodyHTML: String
+            let url: URL
+            let site: Site
         }
-        XCTAssertTrue(images.isEmpty, "display:none 안 이미지 누락")
-        let prose = detail.blocks.compactMap { block -> String? in
-            if case .richText(let segs) = block.kind {
-                return segs.compactMap { if case .text(let s) = $0 { return s } else { return nil } }.joined()
+        let cases: [Case] = [
+            Case(
+                name: "SLR",
+                parser: SLRParser(),
+                bodyHTML: """
+                <div class="subject">제목</div>
+                <div id="userct">
+                  <p>앞</p>
+                  <div style="display:none"><img src="https://image.slrclub.com/hidden.jpg"></div>
+                  <script>var x = 1;</script>
+                  <p>뒤</p>
+                </div>
+                """,
+                url: URL(string: "https://m.slrclub.com/m_view.php?id=free&no=2")!,
+                site: .slr
+            ),
+            Case(
+                name: "Ddanzi",
+                parser: DdanziParser(),
+                bodyHTML: """
+                <div class="boardR">
+                  <div class="read_content">
+                    <div class="xe_content">
+                      <p>앞</p>
+                      <div style="display:none"><img src="https://image.ddanzi.com/hidden.jpg"></div>
+                      <script>var x = 1;</script>
+                      <p>뒤</p>
+                    </div>
+                  </div>
+                </div>
+                """,
+                url: URL(string: "https://www.ddanzi.com/free/2")!,
+                site: .ddanzi
+            ),
+            Case(
+                name: "Coolenjoy",
+                parser: CoolenjoyParser(),
+                bodyHTML: """
+                <article id="bo_v">
+                  <div class="view-content">
+                    <p>앞</p>
+                    <div style="display:none"><img src="https://image.coolenjoy.net/hidden.jpg"></div>
+                    <script>var x = 1;</script>
+                    <p>뒤</p>
+                  </div>
+                </article>
+                """,
+                url: URL(string: "https://coolenjoy.net/bbs/free/2")!,
+                site: .coolenjoy
+            ),
+            Case(
+                name: "Cook82",
+                parser: Cook82Parser(),
+                bodyHTML: """
+                <div id="articleBody">
+                  <p>앞</p>
+                  <div style="display:none"><img src="https://image.82cook.com/hidden.jpg"></div>
+                  <script>var x = 1;</script>
+                  <p>뒤</p>
+                </div>
+                """,
+                url: URL(string: "https://www.82cook.com/entiz/read.php?bn=15&num=2")!,
+                site: .cook82
+            ),
+        ]
+        for c in cases {
+            XCTContext.runActivity(named: c.name) { _ in
+                // do/catch wrap — `try parseDetail` 가 throw 해도 다른 case 가 멈추지
+                // 않도록. runActivity rethrows 라 throw 가 for-loop 밖으로 propagate
+                // 되면 후속 case 가 silent-skip 되는 회귀가 일어남.
+                do {
+                    let html = "<html><body>\(c.bodyHTML)</body></html>"
+                    let post = Post.fixture(site: c.site, url: c.url)
+                    let detail = try c.parser.parseDetail(html: html, post: post)
+                    XCTAssertTrue(detail.blocks.imageURLs.isEmpty, "\(c.name): display:none 안 이미지 누락")
+                    let prose = detail.blocks.plainText
+                    XCTAssertTrue(prose.contains("앞"), "\(c.name): 앞 본문 보존")
+                    XCTAssertTrue(prose.contains("뒤"), "\(c.name): 뒤 본문 보존")
+                    XCTAssertFalse(prose.contains("var x = 1"), "\(c.name): <script> 안 본문 누락")
+                } catch {
+                    XCTFail("\(c.name): parseDetail threw \(error)")
+                }
             }
-            return nil
-        }.joined()
-        XCTAssertTrue(prose.contains("앞"))
-        XCTAssertTrue(prose.contains("뒤"))
-        XCTAssertFalse(prose.contains("var x = 1"), "<script> 안 본문 누락")
+        }
     }
 
     func testSLRBodyKeepsLegacyVideoPrecedenceAndAnchorMediaRules() throws {
@@ -1416,41 +1232,24 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = SLRParser()
-        let post = Post(
-            id: "slr-3", site: .slr, boardID: "free",
-            title: "x", author: "y", date: nil, dateText: "",
-            commentCount: 0,
+        let post = Post.fixture(
+            id: "slr-3",
+            site: .slr,
+            boardID: "free",
             url: URL(string: "https://m.slrclub.com/m_view.php?id=free&no=3")!
         )
         let detail = try parser.parseDetail(html: html, post: post)
 
-        let videos = detail.blocks.compactMap { block -> URL? in
-            if case .video(let url, _) = block.kind { return url }
-            return nil
-        }
+        let videos = detail.blocks.videoURLs
         XCTAssertEqual(videos.map(\.absoluteString), ["https://video.slrclub.com/canonical.mp4"])
 
-        let images = detail.blocks.compactMap { block -> URL? in
-            if case .image(let url, _) = block.kind { return url }
-            return nil
-        }
+        let images = detail.blocks.imageURLs
         XCTAssertEqual(images.map(\.absoluteString), ["https://image.slrclub.com/wrapped.jpg"])
 
-        let embeds = detail.blocks.compactMap { block -> String? in
-            if case .embed(.youtube, let id) = block.kind { return id }
-            return nil
-        }
+        let embeds = detail.blocks.youtubeIDs
         XCTAssertTrue(embeds.isEmpty, "SLR legacy mediaTags only unwrap img/video inside anchors")
 
-        let links = detail.blocks.flatMap { block -> [(URL, String)] in
-            if case .richText(let segs) = block.kind {
-                return segs.compactMap { segment in
-                    if case .link(let url, let label) = segment { return (url, label) }
-                    return nil
-                }
-            }
-            return []
-        }
+        let links = detail.blocks.links
         XCTAssertEqual(links.count, 1)
         XCTAssertEqual(links.first?.0.absoluteString, "https://example.com/embed")
         XCTAssertEqual(links.first?.1, "iframe 링크")
@@ -1475,78 +1274,27 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = DdanziParser()
-        let post = Post(
-            id: "ddanzi-1", site: .ddanzi, boardID: "free",
-            title: "x", author: "y", date: nil, dateText: "",
-            commentCount: 0,
+        let post = Post.fixture(
+            id: "ddanzi-1",
+            site: .ddanzi,
+            boardID: "free",
             url: URL(string: "https://www.ddanzi.com/free/1")!
         )
         let detail = try parser.parseDetail(html: html, post: post)
 
-        let images = detail.blocks.compactMap { block -> URL? in
-            if case .image(let url, _) = block.kind { return url } else { return nil }
-        }
+        let images = detail.blocks.imageURLs
         XCTAssertEqual(images.map(\.absoluteString), ["https://image.ddanzi.com/body.jpg"])
 
-        let videos = detail.blocks.compactMap { block -> URL? in
-            if case .video(let url, _) = block.kind { return url } else { return nil }
-        }
+        let videos = detail.blocks.videoURLs
         XCTAssertEqual(videos.map(\.absoluteString), ["https://video.ddanzi.com/clip.mp4"])
 
-        let embeds = detail.blocks.compactMap { block -> String? in
-            if case .embed(.youtube, let id) = block.kind { return id } else { return nil }
-        }
+        let embeds = detail.blocks.youtubeIDs
         XCTAssertEqual(embeds, ["abcdefghijk"])
 
-        let links = detail.blocks.flatMap { block -> [(URL, String)] in
-            if case .richText(let segs) = block.kind {
-                return segs.compactMap { seg in
-                    if case .link(let url, let label) = seg { return (url, label) } else { return nil }
-                }
-            }
-            return []
-        }
+        let links = detail.blocks.links
         XCTAssertEqual(links.count, 1)
         XCTAssertEqual(links.first?.0.absoluteString, "https://example.com/ref")
         XCTAssertEqual(links.first?.1, "참고")
-    }
-
-    func testDdanziBodyDropsHiddenSubtreeAndScriptTags() throws {
-        let html = """
-        <html><body>
-        <div class="boardR">
-          <div class="read_content">
-            <div class="xe_content">
-              <p>앞</p>
-              <div style="display:none"><img src="https://image.ddanzi.com/hidden.jpg"></div>
-              <script>var x = 1;</script>
-              <p>뒤</p>
-            </div>
-          </div>
-        </div>
-        </body></html>
-        """
-        let parser = DdanziParser()
-        let post = Post(
-            id: "ddanzi-2", site: .ddanzi, boardID: "free",
-            title: "x", author: "y", date: nil, dateText: "",
-            commentCount: 0,
-            url: URL(string: "https://www.ddanzi.com/free/2")!
-        )
-        let detail = try parser.parseDetail(html: html, post: post)
-        let images = detail.blocks.compactMap { block -> URL? in
-            if case .image(let url, _) = block.kind { return url } else { return nil }
-        }
-        XCTAssertTrue(images.isEmpty)
-        let prose = detail.blocks.compactMap { block -> String? in
-            if case .richText(let segs) = block.kind {
-                return segs.compactMap { if case .text(let s) = $0 { return s } else { return nil } }.joined()
-            }
-            return nil
-        }.joined()
-        XCTAssertTrue(prose.contains("앞"))
-        XCTAssertTrue(prose.contains("뒤"))
-        XCTAssertFalse(prose.contains("var x = 1"))
     }
 
     // MARK: - Coolenjoy
@@ -1564,64 +1312,19 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = CoolenjoyParser()
-        let post = Post(
-            id: "coolenjoy-1", site: .coolenjoy, boardID: "free",
-            title: "x", author: "y", date: nil, dateText: "",
-            commentCount: 0,
+        let post = Post.fixture(
+            id: "coolenjoy-1",
+            site: .coolenjoy,
+            boardID: "free",
             url: URL(string: "https://coolenjoy.net/bbs/free/1")!
         )
         let detail = try parser.parseDetail(html: html, post: post)
-        let images = detail.blocks.compactMap { block -> URL? in
-            if case .image(let url, _) = block.kind { return url } else { return nil }
-        }
+        let images = detail.blocks.imageURLs
         XCTAssertEqual(images.map(\.absoluteString), ["https://image.coolenjoy.net/wrap.jpg"])
 
-        let links = detail.blocks.flatMap { block -> [(URL, String)] in
-            if case .richText(let segs) = block.kind {
-                return segs.compactMap { seg in
-                    if case .link(let url, let label) = seg { return (url, label) } else { return nil }
-                }
-            }
-            return []
-        }
+        let links = detail.blocks.links
         XCTAssertEqual(links.count, 1, "anchor-wrap-image 안쪽 라벨 무시, 평문 anchor 만 link 로")
         XCTAssertEqual(links.first?.0.absoluteString, "https://example.com/ref")
-    }
-
-    func testCoolenjoyBodyDropsHiddenSubtreeAndScriptTags() throws {
-        let html = """
-        <html><body>
-        <article id="bo_v">
-          <div class="view-content">
-            <p>앞</p>
-            <div style="display:none"><img src="https://image.coolenjoy.net/hidden.jpg"></div>
-            <script>var x = 1;</script>
-            <p>뒤</p>
-          </div>
-        </article>
-        </body></html>
-        """
-        let parser = CoolenjoyParser()
-        let post = Post(
-            id: "coolenjoy-2", site: .coolenjoy, boardID: "free",
-            title: "x", author: "y", date: nil, dateText: "",
-            commentCount: 0,
-            url: URL(string: "https://coolenjoy.net/bbs/free/2")!
-        )
-        let detail = try parser.parseDetail(html: html, post: post)
-        let images = detail.blocks.compactMap { block -> URL? in
-            if case .image(let url, _) = block.kind { return url } else { return nil }
-        }
-        XCTAssertTrue(images.isEmpty)
-        let prose = detail.blocks.compactMap { block -> String? in
-            if case .richText(let segs) = block.kind {
-                return segs.compactMap { if case .text(let s) = $0 { return s } else { return nil } }.joined()
-            }
-            return nil
-        }.joined()
-        XCTAssertTrue(prose.contains("앞"))
-        XCTAssertTrue(prose.contains("뒤"))
-        XCTAssertFalse(prose.contains("var x = 1"))
     }
 
     func testCoolenjoyBodyDropsVideoAndIframeLegacy() throws {
@@ -1641,10 +1344,10 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = CoolenjoyParser()
-        let post = Post(
-            id: "coolenjoy-3", site: .coolenjoy, boardID: "free",
-            title: "x", author: "y", date: nil, dateText: "",
-            commentCount: 0,
+        let post = Post.fixture(
+            id: "coolenjoy-3",
+            site: .coolenjoy,
+            boardID: "free",
             url: URL(string: "https://coolenjoy.net/bbs/free/3")!
         )
         let detail = try parser.parseDetail(html: html, post: post)
@@ -1674,29 +1377,18 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = CoolenjoyParser()
-        let post = Post(
-            id: "coolenjoy-4", site: .coolenjoy, boardID: "free",
-            title: "x", author: "y", date: nil, dateText: "",
-            commentCount: 0,
+        let post = Post.fixture(
+            id: "coolenjoy-4",
+            site: .coolenjoy,
+            boardID: "free",
             url: URL(string: "https://coolenjoy.net/bbs/free/4")!
         )
         let detail = try parser.parseDetail(html: html, post: post)
-        let embeds = detail.blocks.compactMap { block -> String? in
-            if case .embed(.youtube, let id) = block.kind { return id } else { return nil }
-        }
+        let embeds = detail.blocks.youtubeIDs
         XCTAssertTrue(embeds.isEmpty, "anchor-wrap iframe 은 embed 블록 생성 안 함")
-        let videos = detail.blocks.compactMap { block -> URL? in
-            if case .video(let url, _) = block.kind { return url } else { return nil }
-        }
+        let videos = detail.blocks.videoURLs
         XCTAssertTrue(videos.isEmpty, "anchor-wrap video 도 video 블록 생성 안 함")
-        let links = detail.blocks.flatMap { block -> [(URL, String)] in
-            if case .richText(let segs) = block.kind {
-                return segs.compactMap { seg in
-                    if case .link(let url, let label) = seg { return (url, label) } else { return nil }
-                }
-            }
-            return []
-        }
+        let links = detail.blocks.links
         XCTAssertEqual(links.count, 2)
         XCTAssertEqual(links.map(\.0.absoluteString).sorted(),
                        ["https://example.com/embed-link", "https://example.com/video-link"])
@@ -1717,74 +1409,27 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = Cook82Parser()
-        let post = Post(
-            id: "cook82-1", site: .cook82, boardID: "free",
-            title: "x", author: "y", date: nil, dateText: "",
-            commentCount: 0,
+        let post = Post.fixture(
+            id: "cook82-1",
+            site: .cook82,
+            boardID: "free",
             url: URL(string: "https://www.82cook.com/entiz/read.php?bn=15&num=1")!
         )
         let detail = try parser.parseDetail(html: html, post: post)
 
-        let images = detail.blocks.compactMap { block -> URL? in
-            if case .image(let url, _) = block.kind { return url } else { return nil }
-        }
+        let images = detail.blocks.imageURLs
         XCTAssertEqual(images.map(\.absoluteString), ["https://image.82cook.com/body.jpg"])
 
-        let videos = detail.blocks.compactMap { block -> URL? in
-            if case .video(let url, _) = block.kind { return url } else { return nil }
-        }
+        let videos = detail.blocks.videoURLs
         XCTAssertEqual(videos.map(\.absoluteString), ["https://video.82cook.com/clip.mp4"])
 
-        let embeds = detail.blocks.compactMap { block -> String? in
-            if case .embed(.youtube, let id) = block.kind { return id } else { return nil }
-        }
+        let embeds = detail.blocks.youtubeIDs
         XCTAssertEqual(embeds, ["abcdefghijk"])
 
-        let links = detail.blocks.flatMap { block -> [(URL, String)] in
-            if case .richText(let segs) = block.kind {
-                return segs.compactMap { seg in
-                    if case .link(let url, let label) = seg { return (url, label) } else { return nil }
-                }
-            }
-            return []
-        }
+        let links = detail.blocks.links
         XCTAssertEqual(links.count, 1)
         XCTAssertEqual(links.first?.0.absoluteString, "https://example.com/ref")
         XCTAssertEqual(links.first?.1, "참고")
-    }
-
-    func testCook82BodyDropsHiddenSubtreeAndScriptTags() throws {
-        let html = """
-        <html><body>
-        <div id="articleBody">
-          <p>앞</p>
-          <div style="display:none"><img src="https://image.82cook.com/hidden.jpg"></div>
-          <script>var x = 1;</script>
-          <p>뒤</p>
-        </div>
-        </body></html>
-        """
-        let parser = Cook82Parser()
-        let post = Post(
-            id: "cook82-2", site: .cook82, boardID: "free",
-            title: "x", author: "y", date: nil, dateText: "",
-            commentCount: 0,
-            url: URL(string: "https://www.82cook.com/entiz/read.php?bn=15&num=2")!
-        )
-        let detail = try parser.parseDetail(html: html, post: post)
-        let images = detail.blocks.compactMap { block -> URL? in
-            if case .image(let url, _) = block.kind { return url } else { return nil }
-        }
-        XCTAssertTrue(images.isEmpty)
-        let prose = detail.blocks.compactMap { block -> String? in
-            if case .richText(let segs) = block.kind {
-                return segs.compactMap { if case .text(let s) = $0 { return s } else { return nil } }.joined()
-            }
-            return nil
-        }.joined()
-        XCTAssertTrue(prose.contains("앞"))
-        XCTAssertTrue(prose.contains("뒤"))
-        XCTAssertFalse(prose.contains("var x = 1"))
     }
 
     // MARK: - Bobae
@@ -1810,15 +1455,10 @@ final class ParserDetailTests: XCTestCase {
         </body></html>
         """
         let parser = BobaeParser()
-        let post = Post(
+        let post = Post.fixture(
             id: "bobae-1",
             site: .bobae,
             boardID: "freeb",
-            title: "테스트",
-            author: "닉네임",
-            date: nil,
-            dateText: "방금",
-            commentCount: 0,
             url: URL(string: "https://m.bobaedream.co.kr/board/bbs_view/freeb/1")!
         )
 
@@ -1863,10 +1503,10 @@ final class ParserDetailTests: XCTestCase {
         </article></body></html>
         """
         let parser = BobaeParser()
-        let post = Post(
-            id: "bobae-2", site: .bobae, boardID: "freeb",
-            title: "t", author: "a", date: nil, dateText: "방금",
-            commentCount: 0,
+        let post = Post.fixture(
+            id: "bobae-2",
+            site: .bobae,
+            boardID: "freeb",
             url: URL(string: "https://m.bobaedream.co.kr/board/bbs_view/freeb/2")!
         )
         let detail = try parser.parseDetail(html: html, post: post)
