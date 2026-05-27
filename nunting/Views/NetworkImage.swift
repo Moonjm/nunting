@@ -116,36 +116,39 @@ struct NetworkImage: View {
                     // memory-cache hit, which can land during a SwiftUI
                     // body evaluation — direct `@State` mutation then
                     // trips "Modifying state during view update".
-                    // Hop to the next runloop tick to publish outside
-                    // the in-flight render.
+                    // `DispatchQueue.main.async` defers to the next
+                    // runloop tick, guaranteed outside the in-flight
+                    // render (more bulletproof than Task { @MainActor }
+                    // which the Swift cooperative executor MAY schedule
+                    // within the same runloop iteration).
+                    //
+                    // SDWebImage decodes UIImages at the device scale
+                    // (typically 3 on retina iPhones), so
+                    // `image.size.width` is the *point* width =
+                    // pixel width / scale. Multiplying back by
+                    // `image.scale` recovers the source's pixel count,
+                    // which matches the legacy `CachedAsyncImage`
+                    // convention of decoding at scale 1 (where points
+                    // and pixels were the same number). Without this
+                    // conversion the `clampsToNaturalWidth` cap shrinks
+                    // every body image to one-third of its intended
+                    // frame on retina — observed regression: aagag's
+                    // tall ~800px wide images rendering at ~133pt on a
+                    // 390pt column.
                     let aspect: CGFloat? = (image.size.height > 0)
                         ? image.size.width / image.size.height : nil
                     let naturalPointWidth = image.size.width * image.scale
-                    Task { @MainActor in
+                    DispatchQueue.main.async {
                         if measuredAspect == nil, let aspect {
                             measuredAspect = aspect
                         }
                         if measuredNaturalPointWidth == nil {
-                            // SDWebImage decodes UIImages at the device
-                            // scale (typically 3 on retina iPhones), so
-                            // `image.size.width` is the *point* width =
-                            // pixel width / scale. Multiplying back by
-                            // `image.scale` recovers the source's pixel
-                            // count, which matches the legacy
-                            // `CachedAsyncImage` convention of decoding at
-                            // scale 1 (where points and pixels were the
-                            // same number). Without this conversion the
-                            // `clampsToNaturalWidth` cap shrinks every body
-                            // image to one-third of its intended frame on
-                            // retina — observed regression: aagag's tall
-                            // ~800px wide images rendering at ~133pt on a
-                            // 390pt column.
                             measuredNaturalPointWidth = naturalPointWidth
                         }
                     }
                 }
                 .onFailure { _ in
-                    Task { @MainActor in
+                    DispatchQueue.main.async {
                         failed = true
                     }
                 }
