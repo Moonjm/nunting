@@ -205,11 +205,17 @@ struct WebmInlineWebView: UIViewRepresentable {
         }
 
         /// `WebMPlayerPool.Leaseholder` — pool promoted us from waiter.
-        /// Re-attempt acquire (now we're at the head of the queue, the
-        /// pool guarantees granting); on success attach the WebView.
+        /// Pool contract: this method MUST call back into `acquire(...)`
+        /// so the speculative `waiters.removeFirst()` settles. Calling
+        /// acquire unconditionally (rather than guarding on container
+        /// state first) satisfies the contract; the `container?.webView
+        /// == nil` guard is moved to the *attach* step so a stale
+        /// promotion (container already has a webview for some other
+        /// reason) doesn't drain the waiter queue without filling the
+        /// slot.
         func tryRecreateWebView() {
-            guard container?.webView == nil else { return }
-            if WebMPlayerPool.shared.acquire(self) {
+            guard WebMPlayerPool.shared.acquire(self) else { return }
+            if container?.webView == nil {
                 attachWebView()
             }
         }

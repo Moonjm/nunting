@@ -161,10 +161,16 @@ struct NetworkImage: View {
                 // 800×500 — enough to keep the visible loop smooth, while
                 // forcing re-decode on long animations rather than holding
                 // every frame in RAM forever.
-                .maxBufferSize(UInt(16 * 1024 * 1024))
-                // Mark the decoded frame buffer as `NSCache`-purgeable so
-                // a memory pressure event evicts frames eagerly instead
-                // of waiting for the cap.
+                .maxBufferSize(16 * 1024 * 1024)
+                // SDWebImageSwiftUI 의 `.purgeable(true)` 는 NSCache 의
+                // purgeable 플래그가 아니라 SDAnimatedImageView 의
+                // `clearBufferWhenStopped` 로 매핑됨 (AnimatedImage.swift:693).
+                // 의미: 애니메이션이 *멈출 때* 디코드된 프레임 버퍼 해제.
+                // LazyVStack 스크롤 재활용으로 off-screen 됐을 때
+                // visibility 변화 → 정지 → 버퍼 해제 경로가 발화 — 본문
+                // 짤방이 화면 밖에 오랫동안 남아있는 메모리 잔존을 줄임.
+                // memory-warning 와는 무관 (그건 SDImageCache 가 자체
+                // 처리).
                 .purgeable(true)
                 .resizable()
                 .scaledToFit()

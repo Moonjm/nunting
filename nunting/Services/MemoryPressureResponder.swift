@@ -3,9 +3,14 @@ import SDWebImage
 import UIKit
 
 /// Central handler for `UIApplication.didReceiveMemoryWarningNotification`.
-/// Drops the two HTTP-layer in-memory caches (SDImageCache 200 MB cap,
-/// URLCache 50 MB cap) the moment the system signals pressure, so the
-/// jetsam threshold isn't reached during the next view-mount spike.
+///
+/// Primary value: flushes `URLCache.shared` (50 MB mem cap) — that layer
+/// has no built-in memory-warning hook, so without this responder its
+/// contents persist through pressure events. `SDImageCache.shared` is
+/// also flushed for belt-and-suspenders, but `SDMemoryCache` already
+/// self-registers for the same notification and calls `removeAllObjects`
+/// on receipt (SDMemoryCache.m:69) — so our explicit call is redundant
+/// with iOS's native delivery. Kept for explicit ordering + test seam.
 ///
 /// Why a dedicated responder instead of inlining in `AppDelegate`:
 /// the responder can be exercised by unit tests (post the notification,

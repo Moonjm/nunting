@@ -112,6 +112,17 @@ final class WebMPlayerPoolTests: XCTestCase {
         XCTAssertEqual(d.recreateCalls, 1, "d promoted after stale c skipped")
     }
 
+    func testReleaseOnNeverAcquiredHolderIsNoOp() {
+        // release 가 dismantleUIView 외 경로 (e.g. view 가 acquire 전
+        // 즉시 사라지는 race) 에서도 안전해야 함. 비어있는 풀 상태에서
+        // release 가 어떤 부수효과도 없어야 함.
+        let stranger = StubHolder("stranger")
+        pool.release(stranger) // must not crash, must not promote anything
+        XCTAssertEqual(pool.leaseCount, 0)
+        XCTAssertEqual(pool.waiterCount, 0)
+        XCTAssertEqual(stranger.recreateCalls, 0)
+    }
+
     func testWaiterPromotedOnlyOnceUntilReacquire() {
         let a = StubHolder("a")
         let b = StubHolder("b")

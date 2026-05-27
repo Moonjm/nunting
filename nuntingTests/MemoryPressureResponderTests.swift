@@ -68,6 +68,18 @@ final class MemoryPressureResponderTests: XCTestCase {
         XCTAssertEqual(counter.urlClearCalls, 1)
     }
 
+    func testRespondBeforeInstallDefaultHandlersIsNoOp() {
+        // 설치 전이라도 호출 안전해야 함 — 기본 closure 가 빈 no-op 라
+        // 단순히 호출-크래시-안-됨 보장. AppDelegate.application(_:didFinish…)
+        // 가 실행되기 전 (테스트 환경에서 흔함) respond() 호출 경로 보호.
+        responder.clearImageMemoryCache = {}
+        responder.clearURLMemoryCache = {}
+        responder.respond() // no-op, must not crash
+        // 카운터는 위 빈 closure 로 덮어쓰여 0 유지.
+        XCTAssertEqual(counter.imageClearCalls, 0)
+        XCTAssertEqual(counter.urlClearCalls, 0)
+    }
+
     func testStartReplacesPriorObserver() {
         // Calling start() twice should not result in respond() being
         // invoked twice per notification.
