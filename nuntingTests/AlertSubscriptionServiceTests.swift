@@ -104,6 +104,23 @@ final class AlertSubscriptionServiceTests: XCTestCase {
             // ok
         }
     }
+
+    /// HTTPURLResponse가 아닌 응답이 와도 force-cast crash 대신 throw해야 함.
+    /// (file:// scheme 등 비정상 경로에서 발생 가능)
+    func testNonHTTPResponseThrowsInsteadOfCrashing() async throws {
+        let stub = NonHTTPResponseRequester()
+        let service = AlertSubscriptionService(
+            baseURL: URL(string: "http://example.com")!,
+            requester: stub,
+            uuidStore: InMemoryUUIDStore(value: "nnt_test")
+        )
+        do {
+            _ = try await service.listKeywords()
+            XCTFail("non-HTTP response에서 throw해야 함")
+        } catch AlertSubscriptionError.nonHTTPResponse {
+            // ok — 다른 AlertSubscriptionError로 떨어지면 의도 어긋남
+        }
+    }
 }
 
 // MARK: - Test stubs
@@ -134,4 +151,18 @@ actor StubHTTPRequester: HTTPRequester {
 struct InMemoryUUIDStore: UUIDStore {
     let value: String
     func getOrCreate() throws -> String { value }
+}
+
+/// HTTPURLResponse가 아닌 평범한 URLResponse를 반환.
+/// 안전 캐스트 경로 검증용.
+struct NonHTTPResponseRequester: HTTPRequester {
+    func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        let resp = URLResponse(
+            url: request.url!,
+            mimeType: nil,
+            expectedContentLength: 0,
+            textEncodingName: nil
+        )
+        return (Data(), resp)
+    }
 }
