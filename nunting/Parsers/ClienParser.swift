@@ -77,7 +77,7 @@ public struct ClienParser: BoardParser {
         var rules = WalkerRules.standard(for: self)
         // Clien Froala GIF wrapper 끝의 `<button class="search_link">…GIF</button>`
         // 다운로드 chrome 차단 (default skipTags 는 script/style/noscript 만 차단).
-        rules.skipTags = rules.skipTags.union(["button"])
+        rules.skipTags.insert("button")
         // <img> 는 customElement 로 claim — Clien `image(from:)` 가 srcset
         // 폴백 (Froala 가 src 를 HTML 페이지 URL 로 잘못 채우는 케이스 처리)
         // 과 data-img-width/height aspect ratio 추출을 한다. standard
