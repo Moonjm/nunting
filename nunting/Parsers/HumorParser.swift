@@ -203,7 +203,7 @@ public struct HumorParser: BoardParser {
             // `<div onclick="comment_mp4_expand('id', 'url.mp4')">` wrapper 로
             // 옴. onclick handler 가 매칭되면 wrapper 자체를 claim 하고
             // 자식 썸네일은 무시.
-            let onclick = (try? el.attr("onclick")) ?? ""
+            let onclick = try el.attr("onclick")
             guard !onclick.isEmpty, let videoURL = try parseMp4Click(onclick) else {
                 return nil
             }
