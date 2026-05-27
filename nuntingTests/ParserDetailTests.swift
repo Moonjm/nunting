@@ -1309,6 +1309,103 @@ final class ParserDetailTests: XCTestCase {
         }.joined().trimmingCharacters(in: .whitespacesAndNewlines), "끝 본문")
     }
 
+    // MARK: - SLR
+
+    func testSLRBodyExtractsTextImageVideoYouTubeAndAnchor() throws {
+        // SLR 본문 fixture (parser-level baseline 0개였음 → 마이그 전 ground truth).
+        // userct 선택 / standard 이미지 우선순위(src→data-src→data-original) /
+        // <video><source mp4> / YouTube iframe / 일반 <a href> 인라인 링크
+        // 한 번에 검증.
+        let html = """
+        <html><body>
+        <div class="subject">제목</div>
+        <div id="userct">
+          <p>위 본문 <a href="https://example.com/ref">참고</a></p>
+          <p><img src="https://image.slrclub.com/body.jpg"></p>
+          <p><video><source src="https://video.slrclub.com/clip.mp4#t=0.05"></video></p>
+          <p><iframe src="https://www.youtube.com/embed/abcdefghijk"></iframe></p>
+          <p>아래 본문</p>
+        </div>
+        </body></html>
+        """
+        let parser = SLRParser()
+        let post = Post(
+            id: "slr-1", site: .slr, boardID: "free",
+            title: "x", author: "y", date: nil, dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://m.slrclub.com/m_view.php?id=free&no=1")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+
+        let images = detail.blocks.compactMap { block -> URL? in
+            if case .image(let url, _) = block.kind { return url }
+            return nil
+        }
+        XCTAssertEqual(images.map(\.absoluteString), ["https://image.slrclub.com/body.jpg"])
+
+        let videos = detail.blocks.compactMap { block -> URL? in
+            if case .video(let url, _) = block.kind { return url }
+            return nil
+        }
+        XCTAssertEqual(videos.map(\.absoluteString), ["https://video.slrclub.com/clip.mp4"],
+                       "<source src> + #t= strip")
+
+        let embeds = detail.blocks.compactMap { block -> String? in
+            if case .embed(.youtube, let id) = block.kind { return id }
+            return nil
+        }
+        XCTAssertEqual(embeds, ["abcdefghijk"])
+
+        let links = detail.blocks.flatMap { block -> [(URL, String)] in
+            if case .richText(let segs) = block.kind {
+                return segs.compactMap { seg in
+                    if case .link(let url, let label) = seg { return (url, label) }
+                    return nil
+                }
+            }
+            return []
+        }
+        XCTAssertEqual(links.count, 1)
+        XCTAssertEqual(links.first?.0.absoluteString, "https://example.com/ref")
+        XCTAssertEqual(links.first?.1, "참고")
+    }
+
+    func testSLRBodyDropsHiddenSubtreeAndScriptTags() throws {
+        let html = """
+        <html><body>
+        <div class="subject">제목</div>
+        <div id="userct">
+          <p>앞</p>
+          <div style="display:none"><img src="https://image.slrclub.com/hidden.jpg"></div>
+          <script>var x = 1;</script>
+          <p>뒤</p>
+        </div>
+        </body></html>
+        """
+        let parser = SLRParser()
+        let post = Post(
+            id: "slr-2", site: .slr, boardID: "free",
+            title: "x", author: "y", date: nil, dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://m.slrclub.com/m_view.php?id=free&no=2")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        let images = detail.blocks.compactMap { block -> URL? in
+            if case .image(let url, _) = block.kind { return url }
+            return nil
+        }
+        XCTAssertTrue(images.isEmpty, "display:none 안 이미지 누락")
+        let prose = detail.blocks.compactMap { block -> String? in
+            if case .richText(let segs) = block.kind {
+                return segs.compactMap { if case .text(let s) = $0 { return s } else { return nil } }.joined()
+            }
+            return nil
+        }.joined()
+        XCTAssertTrue(prose.contains("앞"))
+        XCTAssertTrue(prose.contains("뒤"))
+        XCTAssertFalse(prose.contains("var x = 1"), "<script> 안 본문 누락")
+    }
+
     // MARK: - Bobae
 
     func testBobaeBodyExtractsTextImageAndYouTube() throws {
