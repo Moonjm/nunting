@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct PostDetailCommentsSection: View {
     let comments: [PostComment]
@@ -154,6 +155,15 @@ struct PostDetailCommentRow: View {
         }
 
         // Apply consistent link styling so embedded URLs are visibly tappable.
+        // NOTE: SwiftUI `.foregroundColor` / `.underlineStyle` here don't
+        // survive the `NSMutableAttributedString` bridge in SelectableRichText
+        // (they land on `SwiftUI.*` keys, not standard NSAttributedString
+        // keys) — the visible blue+underline you see comes from UITextView's
+        // default `.linkTextAttributes` fallback applied to spans carrying a
+        // `.link` attribute. The mention pass below switched to `\.uiKit`
+        // scope to fix the bridge loss because mention has no `.link`
+        // fallback; links are deferred until someone disables the system
+        // styling or wants a non-default accent.
         for run in base.runs {
             if run.link != nil {
                 base[run.range].foregroundColor = .accentColor
@@ -181,10 +191,28 @@ struct PostDetailCommentRow: View {
             }
             i = end
         }
+        // Apply mention styling through the UIKit attribute scope so it
+        // survives the `NSMutableAttributedString(_:)` bridge inside
+        // `SelectableRichText`. The SwiftUI `.foregroundColor` / `.font`
+        // attributes bridge to NSAttributedString under separate
+        // `SwiftUI.ForegroundColor` / `SwiftUI.Font` keys (not the
+        // standard UIKit keys), so SelectableRichText's "fill where the
+        // attribute is nil" pass treated mention runs as unstyled and
+        // overwrote them with `UIColor.label` + base font — mention
+        // rendered as plain text in the comment view. Writing the UIKit
+        // attributes directly lands on the keys NSAttributedString
+        // actually reads.
+        let mentionFont: UIFont = {
+            let baseFont = UIFont.preferredFont(forTextStyle: .subheadline)
+            if let desc = baseFont.fontDescriptor.withSymbolicTraits(.traitBold) {
+                return UIFont(descriptor: desc, size: 0)
+            }
+            return baseFont
+        }()
         for range in mentionRanges {
             if let attrRange = Range(range, in: base) {
-                base[attrRange].foregroundColor = .blue
-                base[attrRange].font = .subheadline.bold()
+                base[attrRange].uiKit.foregroundColor = .systemBlue
+                base[attrRange].uiKit.font = mentionFont
             }
         }
         return base
