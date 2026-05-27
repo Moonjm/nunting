@@ -22,6 +22,7 @@ protocol UUIDStore {
 enum AlertSubscriptionError: LocalizedError {
     case http(status: Int, body: String)
     case decodeFailed(String)
+    case nonHTTPResponse
 
     /// KeywordListView가 `error.localizedDescription`을 그대로 사용자에게 보여주므로
     /// case enum 이름 대신 의미 있는 문자열을 제공.
@@ -32,6 +33,8 @@ enum AlertSubscriptionError: LocalizedError {
             return trimmed.isEmpty ? "서버 오류 (HTTP \(status))" : "서버 오류 (HTTP \(status)): \(trimmed)"
         case .decodeFailed(let raw):
             return "응답 디코드 실패: \(raw)"
+        case .nonHTTPResponse:
+            return "서버 응답 형식 오류"
         }
     }
 }
@@ -113,7 +116,26 @@ final class AlertSubscriptionService {
     }
 
     private func send(method: String, path: String, body: Data?) async throws -> (Data, HTTPURLResponse) {
+        let req = try makeRequest(method: method, path: path, body: body)
+        let (data, resp) = try await requester.send(req)
+        let http = try validate(response: resp, data: data)
+        return (data, http)
+    }
+
+    private func makeRequest(method: String, path: String, body: Data?) throws -> URLRequest {
         let uuid = try uuidStore.getOrCreate()
+        let url = try makeURL(path: path)
+        var req = URLRequest(url: url)
+        req.httpMethod = method
+        req.setValue("Bearer \(uuid)", forHTTPHeaderField: "Authorization")
+        if let body {
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = body
+        }
+        return req
+    }
+
+    private func makeURL(path: String) throws -> URL {
         // `appendingPathComponent`은 이미 percent-encoded된 segment를 다시
         // encode해 `%25EA…` 형태로 깨뜨림. baseURL absoluteString + path를
         // 직접 합쳐 percent-encoded 결과를 그대로 유지.
@@ -124,22 +146,20 @@ final class AlertSubscriptionService {
         guard let url = URL(string: base + normalizedPath) else {
             throw AlertSubscriptionError.http(status: -1, body: "invalid url: \(base)\(normalizedPath)")
         }
-        var req = URLRequest(url: url)
-        req.httpMethod = method
-        req.setValue("Bearer \(uuid)", forHTTPHeaderField: "Authorization")
-        if let body {
-            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            req.httpBody = body
+        return url
+    }
+
+    private func validate(response: URLResponse, data: Data) throws -> HTTPURLResponse {
+        guard let http = response as? HTTPURLResponse else {
+            throw AlertSubscriptionError.nonHTTPResponse
         }
-        let (data, resp) = try await requester.send(req)
-        let http = resp as! HTTPURLResponse
         guard (200..<300).contains(http.statusCode) else {
             throw AlertSubscriptionError.http(
                 status: http.statusCode,
                 body: String(data: data, encoding: .utf8) ?? ""
             )
         }
-        return (data, http)
+        return http
     }
 }
 
