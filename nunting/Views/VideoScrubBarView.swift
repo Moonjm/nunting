@@ -61,15 +61,22 @@ final class VideoScrubBarView: UIView, InlineVideoScrubBarMarking {
     /// can install a `require(toFail:)` dependency on the enclosing
     /// scroll view's pan once the view chain is connected — keeping
     /// quick taps as seek while routing scroll attempts to the
-    /// parent ScrollView.
-    private let tap = UITapGestureRecognizer()
+    /// parent ScrollView. `var` so `didMoveToWindow` can swap in a
+    /// fresh recognizer when the parent scroll view changes (see
+    /// `tapRequiredScrollPan` comment below).
+    private var tap = UITapGestureRecognizer()
     /// Last scroll view whose pan `tap` was made to require to fail.
-    /// Tracked so re-entry to a window (the scrub bar's parent
     /// `InlineAutoplayUIView` is reused via `VideoPlayerPool`, so
-    /// `didMoveToWindow` may fire multiple times against different
-    /// scroll views) doesn't accumulate dependencies — `require(toFail:)`
-    /// has no dedup, and a stale entry would force `tap` to wait for
-    /// an unrelated scroll view that never tracks the current touch.
+    /// `didMoveToWindow` may fire multiple times against *different*
+    /// scroll views. `UIGestureRecognizer.require(toFail:)` has no
+    /// removal API and no dedup — calling it again with a different
+    /// pan accumulates an extra dependency, so the tap would have to
+    /// wait for an unrelated scroll view that never tracks the current
+    /// touch (manifests as the seek-tap going dead after the view
+    /// crosses pool slots in a different post). Fix: when the scroll
+    /// view differs from `tapRequiredScrollPan`, replace `tap`
+    /// entirely (`removeGestureRecognizer` → new instance →
+    /// `addGestureRecognizer` → install `require`).
     private weak var tapRequiredScrollPan: UIPanGestureRecognizer?
 
     override init(frame: CGRect) {
@@ -122,6 +129,10 @@ final class VideoScrubBarView: UIView, InlineVideoScrubBarMarking {
         while let c = current {
             if let sv = c as? UIScrollView {
                 if sv.panGestureRecognizer !== tapRequiredScrollPan {
+                    removeGestureRecognizer(tap)
+                    tap = UITapGestureRecognizer()
+                    tap.addTarget(self, action: #selector(handleTap(_:)))
+                    addGestureRecognizer(tap)
                     tap.require(toFail: sv.panGestureRecognizer)
                     tapRequiredScrollPan = sv.panGestureRecognizer
                 }
