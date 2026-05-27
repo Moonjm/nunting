@@ -1657,6 +1657,51 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertFalse(nonText, "Coolenjoy 는 video/iframe 본문 블록 생성 안 함 (legacy parity)")
     }
 
+    func testCoolenjoyAnchorWrappingVideoOrIframeStaysInlineLink() throws {
+        // `mediaTags = ["img"]` override 의 실제 안전망 — `<a><iframe></a>`
+        // 가 media-wrap 으로 인식되어 YouTube embed 로 promote 되지 않고
+        // anchor 라벨이 inline link 로 보존되는지 핀. 이 fixture 가 있어야
+        // mediaTags override 가 향후 누군가 redundant 라 판단해 제거할 때
+        // 명시적으로 깨짐.
+        let html = """
+        <html><body>
+        <article id="bo_v">
+          <div class="view-content">
+            <p><a href="https://example.com/embed-link"><iframe src="https://www.youtube.com/embed/zzzzzzzzzzz"></iframe>iframe 라벨</a></p>
+            <p><a href="https://example.com/video-link"><video src="https://video.example.com/inside.mp4"></video>video 라벨</a></p>
+          </div>
+        </article>
+        </body></html>
+        """
+        let parser = CoolenjoyParser()
+        let post = Post(
+            id: "coolenjoy-4", site: .coolenjoy, boardID: "free",
+            title: "x", author: "y", date: nil, dateText: "",
+            commentCount: 0,
+            url: URL(string: "https://coolenjoy.net/bbs/free/4")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        let embeds = detail.blocks.compactMap { block -> String? in
+            if case .embed(.youtube, let id) = block.kind { return id } else { return nil }
+        }
+        XCTAssertTrue(embeds.isEmpty, "anchor-wrap iframe 은 embed 블록 생성 안 함")
+        let videos = detail.blocks.compactMap { block -> URL? in
+            if case .video(let url, _) = block.kind { return url } else { return nil }
+        }
+        XCTAssertTrue(videos.isEmpty, "anchor-wrap video 도 video 블록 생성 안 함")
+        let links = detail.blocks.flatMap { block -> [(URL, String)] in
+            if case .richText(let segs) = block.kind {
+                return segs.compactMap { seg in
+                    if case .link(let url, let label) = seg { return (url, label) } else { return nil }
+                }
+            }
+            return []
+        }
+        XCTAssertEqual(links.count, 2)
+        XCTAssertEqual(links.map(\.0.absoluteString).sorted(),
+                       ["https://example.com/embed-link", "https://example.com/video-link"])
+    }
+
     // MARK: - Cook82
 
     func testCook82BodyExtractsTextImageVideoYouTubeAndAnchor() throws {

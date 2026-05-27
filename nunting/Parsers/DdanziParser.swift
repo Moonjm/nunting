@@ -168,6 +168,11 @@ public struct DdanziParser: BoardParser {
 
     nonisolated private func extractBlocks(in doc: Document) throws -> [ContentBlock] {
         guard let wrap = try doc.select(".read_content .xe_content").first() else { return [] }
+        // 옛 Ddanzi `<a>` 처리는 `el.select("img, video")` 만 검사해 iframe
+        // wrap 케이스를 drop 했지만, walker standard 는 iframe 포함이라
+        // `<a><iframe src=youtube/embed/…></a>` 이 YouTube embed 블록으로
+        // 새로 surface 됨. 다른 6개 마이그된 파서(Bobae/Ppomppu/Etoland/
+        // Clien/Inven/Humor) 와 동일한 동작 — 의도된 개선.
         let rules = WalkerRules.standard(for: self)
         return try ParserBlockWalker(parser: self, rules: rules).walk(wrap)
     }
