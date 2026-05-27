@@ -117,8 +117,8 @@ final class AlertSubscriptionServiceTests: XCTestCase {
         do {
             _ = try await service.listKeywords()
             XCTFail("non-HTTP response에서 throw해야 함")
-        } catch is AlertSubscriptionError {
-            // ok
+        } catch AlertSubscriptionError.nonHTTPResponse {
+            // ok — 다른 AlertSubscriptionError로 떨어지면 의도 어긋남
         }
     }
 }
