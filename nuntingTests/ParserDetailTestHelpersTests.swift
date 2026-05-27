@@ -28,6 +28,7 @@ final class ParserDetailTestHelpersTests: XCTestCase {
             .video(videoURL, posterURL: posterURL),
             .image(img2),
             .embed(.youtube, id: "abc123"),
+            .embed(.instagram, id: "ig1"),
             .dealLink(deal, label: "특가"),
             .richText([
                 .text("두번째 블록"),
@@ -65,9 +66,18 @@ final class ParserDetailTestHelpersTests: XCTestCase {
 
     func testEmbedsExtractsProviderAndID() {
         let e = blocks().embeds
-        XCTAssertEqual(e.count, 1)
+        XCTAssertEqual(e.count, 2, "youtube + instagram 모두 포함")
         XCTAssertEqual(e[0].0, .youtube)
         XCTAssertEqual(e[0].1, "abc123")
+        XCTAssertEqual(e[1].0, .instagram)
+        XCTAssertEqual(e[1].1, "ig1")
+    }
+
+    func testYoutubeIDsFiltersNonYoutubeEmbeds() {
+        // youtubeIDs 가 `.youtube` 만 통과시키는 필터 branch 핀 — synthetic
+        // fixture 에 youtube + instagram 둘 다 있어서 filter 가 실제로 동작해야
+        // 통과. `==` 가 `!=` 로 typo 나면 ["ig1"] 가 나와 fail.
+        XCTAssertEqual(blocks().youtubeIDs, ["abc123"])
     }
 
     func testDealLinksExtractsURLAndLabel() {

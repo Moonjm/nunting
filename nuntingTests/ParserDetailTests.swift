@@ -1123,7 +1123,7 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertEqual(tail.plainText.trimmingCharacters(in: .whitespacesAndNewlines), "아래 본문")
     }
 
-    func testBodyDropsHiddenSubtreeAndScriptTagsAcrossSites() throws {
+    func testBodyDropsHiddenSubtreeAndScriptTagsAcrossSites() {
         // Matrix: parser × wrapper HTML × URL. 4 사이트가 동일 assertion 통과해야 함.
         // 각 사이트 본문 wrapper 가 다르지만 (`<div id=userct>`, `xe_content`, ...)
         // hidden subtree + script drop 동작은 통일.
@@ -1200,15 +1200,22 @@ final class ParserDetailTests: XCTestCase {
             ),
         ]
         for c in cases {
-            try XCTContext.runActivity(named: c.name) { _ in
-                let html = "<html><body>\(c.bodyHTML)</body></html>"
-                let post = Post.fixture(site: c.site, url: c.url)
-                let detail = try c.parser.parseDetail(html: html, post: post)
-                XCTAssertTrue(detail.blocks.imageURLs.isEmpty, "\(c.name): display:none 안 이미지 누락")
-                let prose = detail.blocks.blockTexts.joined()
-                XCTAssertTrue(prose.contains("앞"), "\(c.name): 앞 본문 보존")
-                XCTAssertTrue(prose.contains("뒤"), "\(c.name): 뒤 본문 보존")
-                XCTAssertFalse(prose.contains("var x = 1"), "\(c.name): <script> 안 본문 누락")
+            XCTContext.runActivity(named: c.name) { _ in
+                // do/catch wrap — `try parseDetail` 가 throw 해도 다른 case 가 멈추지
+                // 않도록. runActivity rethrows 라 throw 가 for-loop 밖으로 propagate
+                // 되면 후속 case 가 silent-skip 되는 회귀가 일어남.
+                do {
+                    let html = "<html><body>\(c.bodyHTML)</body></html>"
+                    let post = Post.fixture(site: c.site, url: c.url)
+                    let detail = try c.parser.parseDetail(html: html, post: post)
+                    XCTAssertTrue(detail.blocks.imageURLs.isEmpty, "\(c.name): display:none 안 이미지 누락")
+                    let prose = detail.blocks.plainText
+                    XCTAssertTrue(prose.contains("앞"), "\(c.name): 앞 본문 보존")
+                    XCTAssertTrue(prose.contains("뒤"), "\(c.name): 뒤 본문 보존")
+                    XCTAssertFalse(prose.contains("var x = 1"), "\(c.name): <script> 안 본문 누락")
+                } catch {
+                    XCTFail("\(c.name): parseDetail threw \(error)")
+                }
             }
         }
     }
