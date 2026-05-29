@@ -157,7 +157,7 @@ public struct CoolenjoyParser: BoardParser {
 
         let fullDateText = try article.select("time").first()?.text()
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let viewCount = try metaValueInArticle(article: article, label: "조회").flatMap(firstInteger)
+        let viewCount = try metaValueInArticle(article: article, label: "조회").flatMap(ParserText.firstInteger(in:))
 
         return PostDetail(
             post: post,
@@ -171,10 +171,10 @@ public struct CoolenjoyParser: BoardParser {
 
     nonisolated private func resolvePostURL(titleEl: Element, row: Element) throws -> URL? {
         let href = try titleEl.attr("href")
-        if !href.isEmpty && href != "#",
-           let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL,
-           let scheme = url.scheme?.lowercased(),
-           scheme == "http" || scheme == "https" {
+        // resolveHTTPURL covers the empty / scheme checks; the explicit
+        // `!= "#"` guard stays because a bare "#" resolves to the board page
+        // (base URL + empty fragment) and would otherwise pass.
+        if href != "#", let url = resolveHTTPURL(href) {
             return url
         }
         let onclick = try row.attr("onclick")
@@ -245,18 +245,6 @@ public struct CoolenjoyParser: BoardParser {
             }
         }
         return nil
-    }
-
-    nonisolated private func firstInteger(in text: String) -> Int? {
-        var digits = ""
-        for char in text {
-            if char.isNumber {
-                digits.append(char)
-            } else if !digits.isEmpty && char != "," {
-                break
-            }
-        }
-        return digits.isEmpty ? nil : Int(digits)
     }
 
     nonisolated private func stripSuffix(_ s: String, suffix: String) -> String? {

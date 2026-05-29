@@ -81,13 +81,7 @@ extension WalkerRules {
             ],
             skipTags: ["script", "style", "noscript"],
             mediaTags: ["img", "video", "iframe"],
-            resolveImageURL: { el in
-                for attr in ["src", "data-src", "data-original"] {
-                    let raw = try el.attr(attr)
-                    if let url = parser.resolveHTTPURL(raw) { return url }
-                }
-                return nil
-            },
+            resolveImageURL: { parser.imageURL(from: $0, attributes: ["src", "data-src", "data-original"]) },
             resolveVideoURL: { el in
                 // 사이트별로 lazy-load 를 위해 data-src 를 우선 채우는 케이스가
                 // 흔해서 data-src → src 순으로 시도. `<source>` 자식도 동일.

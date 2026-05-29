@@ -51,20 +51,11 @@ public struct BobaeParser: BoardParser {
         let blocks = try extractBlocks(in: doc)
         let comments = try extractComments(in: doc)
 
-        let updated = Post(
-            id: post.id,
-            site: post.site,
-            boardID: post.boardID,
+        let updated = post.enrichedForDetail(
             title: title,
             author: author,
-            date: post.date,
-            dateText: post.dateText,
-            commentCount: post.commentCount,
-            url: post.url,
-            viewCount: viewCount ?? post.viewCount,
-            recommendCount: recommend ?? post.recommendCount,
-            levelText: post.levelText,
-            hasAuthIcon: post.hasAuthIcon
+            viewCount: viewCount,
+            recommendCount: recommend
         )
 
         return PostDetail(
@@ -188,7 +179,7 @@ public struct BobaeParser: BoardParser {
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let dateText = try extractCommentDate(utilEl)
             let likeCount = try extractCommentLikes(in: li)
-            let stickerURL = try extractCommentSticker(in: replyEl)
+            let stickerURL = extractCommentSticker(in: replyEl)
             let cmtID = extractCommentID(from: li) ?? "idx\(idx)"
 
             guard !author.isEmpty || !content.isEmpty || stickerURL != nil
@@ -255,31 +246,14 @@ public struct BobaeParser: BoardParser {
         return Int(raw) ?? 0
     }
 
-    nonisolated private func extractCommentSticker(in replyEl: Element) throws -> URL? {
-        // Comment images — bobaedream renders attached images inline within
-        // the .reply div. Strip loading/icon chrome the same way humor does.
-        for img in try replyEl.select("img") {
-            let candidates = [
-                try img.attr("data-original"),
-                try img.attr("data-src"),
-                try img.attr("src"),
-            ]
-            for raw in candidates {
-                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty,
-                      !trimmed.contains("loading"),
-                      !trimmed.contains("/icon"),
-                      !trimmed.contains("/images/ic")
-                else { continue }
-                let normalized = trimmed.hasPrefix("//") ? "https:" + trimmed : trimmed
-                guard let url = URL(string: normalized, relativeTo: site.baseURL)?.absoluteURL,
-                      let scheme = url.scheme?.lowercased(),
-                      scheme == "http" || scheme == "https"
-                else { continue }
-                return url
-            }
-        }
-        return nil
+    /// Comment images — bobaedream renders attached images inline within the
+    /// .reply div. Strip loading / icon chrome the same way humor does.
+    nonisolated private func extractCommentSticker(in replyEl: Element) -> URL? {
+        firstImageURL(
+            in: replyEl,
+            attributes: ["data-original", "data-src", "src"],
+            skipMarkers: ["loading", "/icon", "/images/ic"]
+        )
     }
 
     nonisolated private func extractCommentID(from li: Element) -> String? {

@@ -192,6 +192,56 @@ extension BoardParser {
         return url
     }
 
+    /// First usable http(s) image URL among `element`'s candidate
+    /// `attributes`, tried in priority order. Skips empty values and any
+    /// whose value contains a `skipMarkers` substring (loading bars, icon
+    /// chrome, proxy decoys), then resolves the survivor through
+    /// `resolveHTTPURL` (trim, `//`→https promotion, baseURL resolution,
+    /// scheme validation). Consolidates the attribute-fallback loop the
+    /// per-site `<img>` resolvers (`realImageURL`, the walker's default
+    /// `resolveImageURL`, the comment-sticker pickers) each hand-rolled.
+    ///
+    /// A missing attribute is treated as absent (`try?`), not an error — the
+    /// walker's old inline default used `try el.attr(attr)`, but SwiftSoup's
+    /// `attr(_:)` returns `""` for a missing attribute rather than throwing,
+    /// so the only paths that differ are malformed-document edge cases the
+    /// `<img>` resolvers want to skip past anyway.
+    public nonisolated func imageURL(
+        from element: Element,
+        attributes: [String],
+        skipMarkers: [String] = []
+    ) -> URL? {
+        for attr in attributes {
+            guard let raw = try? element.attr(attr) else { continue }
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            if skipMarkers.contains(where: trimmed.contains) { continue }
+            if let url = resolveHTTPURL(trimmed) { return url }
+        }
+        return nil
+    }
+
+    /// First usable image URL among the `<img>` descendants matched by
+    /// `selector` (default: every `<img>`), applying
+    /// `imageURL(from:attributes:skipMarkers:)` to each in document order so a
+    /// progress-bar / chrome `<img>` doesn't shadow a real attachment behind
+    /// it. Consolidates the `extractCommentSticker` loops the Bobae / Ddanzi /
+    /// Humor comment parsers each kept.
+    public nonisolated func firstImageURL(
+        in element: Element,
+        selector: String = "img",
+        attributes: [String],
+        skipMarkers: [String] = []
+    ) -> URL? {
+        guard let imgs = try? element.select(selector) else { return nil }
+        for img in imgs {
+            if let url = imageURL(from: img, attributes: attributes, skipMarkers: skipMarkers) {
+                return url
+            }
+        }
+        return nil
+    }
+
     /// HTML5 `<video poster="...">` — when present, parsers forward it so
     /// the inline tap-to-play frame shows the site's intended thumbnail
     /// rather than a plain black box. Identical enough across every
@@ -277,6 +327,107 @@ public enum ParserText {
         return regex.stringByReplacingMatches(
             in: trimmed, range: range, withTemplate: "…"
         )
+    }
+
+    /// First contiguous run of digits in `text` as an `Int`, transparently
+    /// stepping over thousands separators (`,`) inside the run and stopping at
+    /// the first other non-digit. Returns nil when there's no digit at all.
+    /// e.g. `"조회 1,234"` → `1234`. Shared by the Clien / Coolenjoy meta
+    /// parsers, which read counts out of label-prefixed prose.
+    public nonisolated static func firstInteger(in text: String) -> Int? {
+        var digits = ""
+        for char in text {
+            if char.isNumber {
+                digits.append(char)
+            } else if !digits.isEmpty && char != "," {
+                break
+            }
+        }
+        return digits.isEmpty ? nil : Int(digits)
+    }
+
+    /// Decode JS-string escapes (`\"`, `\\`, `\/`, `\n`, `\t`, `\r`,
+    /// `\uXXXX`) into their literal characters so a JS-string payload becomes
+    /// valid JSON / plain text. Other backslash sequences pass the second
+    /// char through unchanged.
+    ///
+    /// `JSON.stringify` encodes supplementary-plane characters (emoji like
+    /// 🐶 = U+1F436) as a UTF-16 surrogate pair — `🐶`.
+    /// `UnicodeScalar(_ v: UInt32)` returns nil for any surrogate code point
+    /// (U+D800–U+DFFF) by spec, so a naive per-`\u` loop silently drops both
+    /// halves and the emoji disappears. When we see a high surrogate, peek the
+    /// next `\uXXXX` for a low surrogate and combine via the standard
+    /// `0x10000 + (high - 0xD800) * 0x400 + (low - 0xDC00)` formula. Stray
+    /// (unpaired) surrogates fall through unchanged rather than emitting a
+    /// replacement char — they only show up in malformed upstream payloads and
+    /// we'd rather pass them along than lie. Shared by the Aagag (`AAGAG_AA.content`)
+    /// and Etoland (`__next_f.push`) script-payload extractors.
+    public nonisolated static func unescapeJSString(_ s: String) -> String {
+        // Index-based scan over a Character array (rather than a consuming
+        // `String.Iterator`): the surrogate-pair path needs to *peek* the
+        // chars after `\uXXXX` and back out if they don't form a `\uXXXX`
+        // low surrogate. With an iterator those peeked chars are already
+        // consumed and get dropped on the bail-out path, silently eating the
+        // text that followed an unpaired high surrogate (e.g. `\uD83Dabc`
+        // would lose the `a`). Indexing lets the no-match path rewind by
+        // advancing only past the chars actually claimed.
+        let chars = Array(s)
+        var out = ""
+        out.reserveCapacity(chars.count)
+        var i = 0
+        while i < chars.count {
+            let c = chars[i]
+            guard c == "\\", i + 1 < chars.count else { out.append(c); i += 1; continue }
+            let next = chars[i + 1]
+            switch next {
+            case "\"": out.append("\""); i += 2
+            case "\\": out.append("\\"); i += 2
+            case "/": out.append("/"); i += 2
+            case "n": out.append("\n"); i += 2
+            case "t": out.append("\t"); i += 2
+            case "r": out.append("\r"); i += 2
+            case "u":
+                // `\uXXXX` needs 4 hex digits at i+2…i+5.
+                guard i + 5 < chars.count,
+                      let code = UInt32(String(chars[(i + 2)...(i + 5)]), radix: 16)
+                else {
+                    // Truncated / non-hex `\u`: pass the backslash through
+                    // literally and resume at the next char so nothing after
+                    // it is lost.
+                    out.append(c)
+                    i += 1
+                    continue
+                }
+                if (0xD800...0xDBFF).contains(code) {
+                    // High surrogate — try to pair with a `\uXXXX` low
+                    // surrogate at i+6…i+11.
+                    if i + 11 < chars.count,
+                       chars[i + 6] == "\\", chars[i + 7] == "u",
+                       let low = UInt32(String(chars[(i + 8)...(i + 11)]), radix: 16),
+                       (0xDC00...0xDFFF).contains(low) {
+                        let combined = 0x10000 + (code - 0xD800) * 0x400 + (low - 0xDC00)
+                        if let scalar = UnicodeScalar(combined) {
+                            out.append(Character(scalar))
+                        }
+                        i += 12
+                    } else {
+                        // Unpaired high surrogate: drop it (Swift can't form a
+                        // Character from a lone surrogate) but advance only
+                        // past the `\uXXXX` so the following chars survive.
+                        i += 6
+                    }
+                } else {
+                    if let scalar = UnicodeScalar(code) {
+                        out.append(Character(scalar))
+                    }
+                    i += 6
+                }
+            default:
+                out.append(next)
+                i += 2
+            }
+        }
+        return out
     }
 }
 

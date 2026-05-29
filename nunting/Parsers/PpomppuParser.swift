@@ -23,11 +23,7 @@ public struct PpomppuParser: BoardParser {
 
             guard let link = try row.select("a[href*=bbs_view.php]").first() else { return nil }
             let href = try link.attr("href")
-            guard !href.isEmpty,
-                  let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL,
-                  let scheme = url.scheme?.lowercased(),
-                  scheme == "http" || scheme == "https"
-            else { return nil }
+            guard let url = resolveHTTPURL(href) else { return nil }
 
             // Skip sponsored / cross-board entries (e.g. id=sponsor at top of freeboard).
             if let postBoardID = queryValue(in: url, name: "id"), postBoardID != boardID {
@@ -335,10 +331,7 @@ public struct PpomppuParser: BoardParser {
         if let gif = try element.select("a.btn_show_org").first() {
             let href = try gif.attr("data-org-src")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !href.isEmpty,
-               let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL,
-               let scheme = url.scheme?.lowercased(),
-               scheme == "http" || scheme == "https" {
+            if let url = resolveHTTPURL(href) {
                 return url
             }
         }

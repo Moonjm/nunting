@@ -92,7 +92,7 @@ public struct ClienParser: BoardParser {
         let rawDate = try doc.select("div.post_date").first()?.text() ?? ""
         let fullDateText = collapsePostDate(rawDate)
         let viewCountText = try doc.select("div.view_count").first()?.text() ?? ""
-        let viewCount = firstInteger(in: viewCountText)
+        let viewCount = ParserText.firstInteger(in: viewCountText)
 
         let comments = try parseComments(doc: doc)
 
@@ -148,9 +148,7 @@ public struct ClienParser: BoardParser {
         else { return (nil, false) }
 
         let href = try anchor.attr("href")
-        guard let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL,
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https",
+        guard let url = resolveHTTPURL(href),
               let host = url.host?.lowercased(),
               !host.hasSuffix(".clien.net"),
               host != "clien.net"
@@ -308,17 +306,5 @@ public struct ClienParser: BoardParser {
             ))
         }
         return results
-    }
-
-    nonisolated private func firstInteger(in text: String) -> Int? {
-        var digits = ""
-        for char in text {
-            if char.isNumber {
-                digits.append(char)
-            } else if !digits.isEmpty && char != "," {
-                break
-            }
-        }
-        return digits.isEmpty ? nil : Int(digits)
     }
 }
