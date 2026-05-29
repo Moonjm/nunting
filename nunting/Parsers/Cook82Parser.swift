@@ -54,20 +54,10 @@ public struct Cook82Parser: BoardParser {
         let blocks = try extractBlocks(in: doc)
         let comments = try extractComments(in: doc)
 
-        let updated = Post(
-            id: post.id,
-            site: post.site,
-            boardID: post.boardID,
+        let updated = post.enrichedForDetail(
             title: title,
             author: author.isEmpty ? post.author : author,
-            date: post.date,
-            dateText: post.dateText,
-            commentCount: post.commentCount,
-            url: post.url,
-            viewCount: viewCount ?? post.viewCount,
-            recommendCount: post.recommendCount,
-            levelText: post.levelText,
-            hasAuthIcon: post.hasAuthIcon
+            viewCount: viewCount
         )
 
         return PostDetail(

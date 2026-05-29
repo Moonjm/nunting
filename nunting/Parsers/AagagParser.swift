@@ -161,21 +161,7 @@ public struct AagagParser: BoardParser {
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
         return PostDetail(
-            post: Post(
-                id: post.id,
-                site: post.site,
-                boardID: post.boardID,
-                title: title,
-                author: post.author,
-                date: post.date,
-                dateText: post.dateText,
-                commentCount: post.commentCount,
-                url: post.url,
-                viewCount: post.viewCount,
-                recommendCount: post.recommendCount,
-                levelText: post.levelText,
-                hasAuthIcon: post.hasAuthIcon
-            ),
+            post: post.enrichedForDetail(title: title),
             blocks: blocks,
             fullDateText: dateText,
             viewCount: nil,

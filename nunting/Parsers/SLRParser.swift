@@ -45,20 +45,11 @@ public struct SLRParser: BoardParser {
         let (author, fullDate, view, recommend) = try extractMeta(in: doc)
         let blocks = try extractBlocks(in: doc)
 
-        let updated = Post(
-            id: post.id,
-            site: post.site,
-            boardID: post.boardID,
+        let updated = post.enrichedForDetail(
             title: title,
             author: author.isEmpty ? post.author : author,
-            date: post.date,
-            dateText: post.dateText,
-            commentCount: post.commentCount,
-            url: post.url,
-            viewCount: view ?? post.viewCount,
-            recommendCount: recommend ?? post.recommendCount,
-            levelText: post.levelText,
-            hasAuthIcon: post.hasAuthIcon
+            viewCount: view,
+            recommendCount: recommend
         )
 
         return PostDetail(

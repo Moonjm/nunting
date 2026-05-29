@@ -48,6 +48,39 @@ public struct Post: Identifiable, Hashable {
         self.levelText = levelText
         self.hasAuthIcon = hasAuthIcon
     }
+
+    /// Returns a copy enriched with detail-page metadata, preserving every
+    /// list-resolved field the detail page doesn't restate (id, site,
+    /// boardID, url, date, dateText, levelText, hasAuthIcon). A nil count
+    /// keeps the current value, so a `parseDetail` can forward only what the
+    /// detail page actually surfaced and let the list-derived value stand in
+    /// otherwise — i.e. passing `viewCount: parsed` reproduces the
+    /// `parsed ?? post.viewCount` fallback the call sites used to spell out.
+    /// Collapses the ~13-line field-copy block the parser `parseDetail`
+    /// implementations otherwise repeated verbatim.
+    public nonisolated func enrichedForDetail(
+        title: String,
+        author: String? = nil,
+        commentCount: Int? = nil,
+        viewCount: Int? = nil,
+        recommendCount: Int? = nil
+    ) -> Post {
+        Post(
+            id: id,
+            site: site,
+            boardID: boardID,
+            title: title,
+            author: author ?? self.author,
+            date: date,
+            dateText: dateText,
+            commentCount: commentCount ?? self.commentCount,
+            url: url,
+            viewCount: viewCount ?? self.viewCount,
+            recommendCount: recommendCount ?? self.recommendCount,
+            levelText: levelText,
+            hasAuthIcon: hasAuthIcon
+        )
+    }
 }
 
 public struct ContentBlock: Identifiable, Hashable {

@@ -50,20 +50,12 @@ public struct EtolandParser: BoardParser {
         let meta = try extractMeta(in: article)
         let blocks = try extractBlocks(in: article)
 
-        let updated = Post(
-            id: post.id,
-            site: post.site,
-            boardID: post.boardID,
+        let updated = post.enrichedForDetail(
             title: title,
             author: meta.author.isEmpty ? post.author : meta.author,
-            date: post.date,
-            dateText: post.dateText,
-            commentCount: meta.commentCount ?? post.commentCount,
-            url: post.url,
-            viewCount: meta.viewCount ?? post.viewCount,
-            recommendCount: meta.recommendCount ?? post.recommendCount,
-            levelText: post.levelText,
-            hasAuthIcon: post.hasAuthIcon
+            commentCount: meta.commentCount,
+            viewCount: meta.viewCount,
+            recommendCount: meta.recommendCount
         )
 
         return PostDetail(

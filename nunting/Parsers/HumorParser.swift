@@ -79,20 +79,11 @@ public struct HumorParser: BoardParser {
         let blocks = try extractBlocks(in: doc)
         let comments = try extractComments(in: doc)
 
-        let updated = Post(
-            id: post.id,
-            site: post.site,
-            boardID: post.boardID,
+        let updated = post.enrichedForDetail(
             title: title,
             author: author,
-            date: post.date,
-            dateText: post.dateText,
-            commentCount: post.commentCount,
-            url: post.url,
-            viewCount: viewCount ?? post.viewCount,
-            recommendCount: recommend ?? post.recommendCount,
-            levelText: post.levelText,
-            hasAuthIcon: post.hasAuthIcon
+            viewCount: viewCount,
+            recommendCount: recommend
         )
 
         return PostDetail(
