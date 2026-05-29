@@ -257,6 +257,37 @@ final class ParserListTests: XCTestCase {
         XCTAssertEqual(ParserText.cleanTitle("일반 제목"), "일반 제목")
     }
 
+    func testUnescapeJSStringDecodesEscapesAndSurrogatePairs() {
+        // Basic escapes.
+        XCTAssertEqual(ParserText.unescapeJSString(#"a\nb\tc\\d\/e\"f"#), "a\nb\tc\\d/e\"f")
+        // Single `\uXXXX` (BMP) — Korean syllable 한 = U+D55C.
+        XCTAssertEqual(ParserText.unescapeJSString(#"한글"#), "한글")
+        // Surrogate pair — 🐶 = U+1F436 = 🐶.
+        XCTAssertEqual(ParserText.unescapeJSString(#"멍🐶멍"#), "멍🐶멍")
+        // Unknown escape passes the second char through (`\'` → `'`).
+        XCTAssertEqual(ParserText.unescapeJSString(#"it\'s"#), "it's")
+    }
+
+    func testUnescapeJSStringDoesNotEatTextAfterUnpairedSurrogate() {
+        // Regression: an unpaired high surrogate must drop only itself, not
+        // the characters that follow. The old iterator-based scan consumed
+        // the peeked chars and lost them on the bail-out path.
+        XCTAssertEqual(ParserText.unescapeJSString(#"\uD83Dabc"#), "abc")
+        // High surrogate followed by a non-low-surrogate `\uXXXX`: drop the
+        // unpaired high surrogate, keep the valid BMP scalar that follows.
+        XCTAssertEqual(ParserText.unescapeJSString(#"\uD83D가"#), "가")
+        // Truncated `\u` at end of string passes the backslash through.
+        XCTAssertEqual(ParserText.unescapeJSString(#"x\uD"#), #"x\uD"#)
+    }
+
+    func testFirstIntegerExtractsLeadingRunWithSeparators() {
+        XCTAssertEqual(ParserText.firstInteger(in: "조회 1,234"), 1234)
+        XCTAssertEqual(ParserText.firstInteger(in: "  42 회"), 42)
+        XCTAssertEqual(ParserText.firstInteger(in: "1,000,000 plus 99"), 1_000_000)
+        XCTAssertNil(ParserText.firstInteger(in: "no digits here"))
+        XCTAssertNil(ParserText.firstInteger(in: ""))
+    }
+
     func testAagagListCleansBrokenTitleEntity() throws {
         let html = """
         <html><body>
