@@ -142,10 +142,7 @@ public struct HumorParser: BoardParser {
     nonisolated private func extractSource(in doc: Document) throws -> PostSource? {
         guard let anchor = try doc.select(".ct_info_sale a[href]").first() else { return nil }
         let href = try anchor.attr("href")
-        guard !href.isEmpty,
-              let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL,
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https",
+        guard let url = resolveHTTPURL(href),
               let host = url.host
         else { return nil }
         let label = try anchor.text().trimmingCharacters(in: .whitespacesAndNewlines)

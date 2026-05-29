@@ -171,10 +171,10 @@ public struct CoolenjoyParser: BoardParser {
 
     nonisolated private func resolvePostURL(titleEl: Element, row: Element) throws -> URL? {
         let href = try titleEl.attr("href")
-        if !href.isEmpty && href != "#",
-           let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL,
-           let scheme = url.scheme?.lowercased(),
-           scheme == "http" || scheme == "https" {
+        // resolveHTTPURL covers the empty / scheme checks; the explicit
+        // `!= "#"` guard stays because a bare "#" resolves to the board page
+        // (base URL + empty fragment) and would otherwise pass.
+        if href != "#", let url = resolveHTTPURL(href) {
             return url
         }
         let onclick = try row.attr("onclick")

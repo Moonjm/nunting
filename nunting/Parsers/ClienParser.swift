@@ -148,9 +148,7 @@ public struct ClienParser: BoardParser {
         else { return (nil, false) }
 
         let href = try anchor.attr("href")
-        guard let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL,
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https",
+        guard let url = resolveHTTPURL(href),
               let host = url.host?.lowercased(),
               !host.hasSuffix(".clien.net"),
               host != "clien.net"

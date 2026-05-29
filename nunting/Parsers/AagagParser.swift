@@ -80,10 +80,7 @@ public struct AagagParser: BoardParser {
             } else {
                 href = rawHref
             }
-            guard let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL,
-                  let scheme = url.scheme?.lowercased(),
-                  scheme == "http" || scheme == "https"
-            else { continue }
+            guard let url = resolveHTTPURL(href) else { continue }
 
             // De-dup: aagag often repeats hot items at the bottom of issue pages.
             let ss = try el.attr("ss")

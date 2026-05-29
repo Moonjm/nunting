@@ -21,11 +21,7 @@ public struct InvenParser: BoardParser {
         return try rows.compactMap { row -> Post? in
             guard let titleLink = try row.select("a.contentLink").first() else { return nil }
             let href = try titleLink.attr("href")
-            guard !href.isEmpty,
-                  let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL,
-                  let scheme = url.scheme?.lowercased(),
-                  scheme == "http" || scheme == "https"
-            else { return nil }
+            guard let url = resolveHTTPURL(href) else { return nil }
 
             let title = ParserText.cleanTitle(
                 try titleLink.select("span.subject").first()?.text() ?? ""
