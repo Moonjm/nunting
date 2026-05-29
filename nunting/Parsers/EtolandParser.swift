@@ -223,7 +223,10 @@ public struct EtolandParser: BoardParser {
         guard let wrap = try article.select("div.view-content").first() else { return [] }
 
         var rules = WalkerRules.standard(for: self)
-        rules.resolveImageURL = realImageURL(from:)   // data-src → src (etoland Next.js <Image>)
+        // data-src → src: Next.js `<Image>` ships the unoptimised original in
+        // `data-src` and a CDN-transform URL (920-wide WebP) in `src`; prefer
+        // the original so Retina renders don't pin to the downscaled WebP.
+        rules.resolveImageURL = { imageURL(from: $0, attributes: ["data-src", "src"]) }
         rules.resolveVideoURL = videoURL(from:)       // data-src → src → all <source>, plus #t= strip
         rules.customElement = customElementHandler(_:)
         return try ParserBlockWalker(parser: self, rules: rules).walk(wrap)
@@ -242,22 +245,6 @@ public struct EtolandParser: BoardParser {
               let url = try videoURL(from: video)
         else { return [] }
         return [.video(url, posterURL: try videoPoster(from: video))]
-    }
-
-    /// Etoland inlines images via Next.js `<Image>` output: a `src=` pointing
-    /// at the CDN's transform endpoint
-    /// (`https://btcdn.etoland.co.kr/optimize/w_920,format_webp,q_90,position_entropy/<original>`)
-    /// alongside a `data-src=` carrying the unoptimised original. Prefer the
-    /// raw original so we don't pin the renderer to a 920-wide WebP that
-    /// loses fidelity on Retina displays. Fall back to `src` when `data-src`
-    /// is missing (older posts or non-image-content figures).
-    nonisolated private func realImageURL(from el: Element) throws -> URL? {
-        for attr in ["data-src", "src"] {
-            let raw = try el.attr(attr).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !raw.isEmpty else { continue }
-            if let url = resolveHTTPURL(raw) { return url }
-        }
-        return nil
     }
 
     /// Etoland's React video player renders the `<video>` lazily: the real
@@ -307,7 +294,7 @@ public struct EtolandParser: BoardParser {
     /// `childrenComments` into a flat `[PostComment]` with reply markers.
     nonisolated private static func extractComments(from html: String) -> [PostComment] {
         guard let arrayJSON = extractCommentsArrayJS(from: html) else { return [] }
-        let unescaped = unescapeJSString("[" + arrayJSON + "]")
+        let unescaped = ParserText.unescapeJSString("[" + arrayJSON + "]")
         guard let data = unescaped.data(using: .utf8) else { return [] }
         guard let raw = try? JSONDecoder().decode([RawComment].self, from: data) else { return [] }
         var out: [PostComment] = []
@@ -351,72 +338,6 @@ public struct EtolandParser: BoardParser {
             i += 1
         }
         return nil
-    }
-
-    /// Decode JS-string escapes (`\"`, `\\`, `\n`, `\t`, `\r`, `\/`,
-    /// `\uXXXX`) into their literal characters so the result is valid
-    /// JSON. Other backslash sequences pass the second char through
-    /// unchanged — etoland doesn't ship anything weirder than the above.
-    ///
-    /// `JSON.stringify` in Next.js encodes supplementary-plane characters
-    /// (emoji like 🐶 = U+1F436) as a UTF-16 surrogate pair —
-    /// `🐶`. `UnicodeScalar(_ v: UInt32)` returns `nil` for any
-    /// surrogate code point (U+D800–U+DFFF) by spec, so a naive per-`\u`
-    /// loop silently drops both halves and the emoji disappears. When we
-    /// see a high surrogate, peek the next 6 chars for a `\uXXXX` low
-    /// surrogate and combine via the standard
-    /// `0x10000 + (high - 0xD800) * 0x400 + (low - 0xDC00)` formula.
-    /// Stray (unpaired) surrogates fall through unchanged rather than
-    /// emitting a replacement char — they only show up in malformed
-    /// upstream payloads and we'd rather pass them along than lie.
-    nonisolated private static func unescapeJSString(_ s: String) -> String {
-        var out = ""
-        out.reserveCapacity(s.count)
-        var iter = s.makeIterator()
-        while let c = iter.next() {
-            guard c == "\\" else { out.append(c); continue }
-            guard let next = iter.next() else { break }
-            switch next {
-            case "\"": out.append("\"")
-            case "\\": out.append("\\")
-            case "/": out.append("/")
-            case "n": out.append("\n")
-            case "t": out.append("\t")
-            case "r": out.append("\r")
-            case "u":
-                guard let code = readHex4(&iter) else { continue }
-                if (0xD800...0xDBFF).contains(code) {
-                    // High surrogate — peek `\uXXXX` low surrogate.
-                    guard let backslash = iter.next(), backslash == "\\",
-                          let u = iter.next(), u == "u",
-                          let low = readHex4(&iter),
-                          (0xDC00...0xDFFF).contains(low)
-                    else {
-                        // Unpaired high surrogate; emit nothing (Swift
-                        // can't make a Character from it anyway).
-                        continue
-                    }
-                    let combined = 0x10000 + (code - 0xD800) * 0x400 + (low - 0xDC00)
-                    if let scalar = UnicodeScalar(combined) {
-                        out.append(Character(scalar))
-                    }
-                } else if let scalar = UnicodeScalar(code) {
-                    out.append(Character(scalar))
-                }
-            default:
-                out.append(next)
-            }
-        }
-        return out
-    }
-
-    nonisolated private static func readHex4(_ iter: inout String.Iterator) -> UInt32? {
-        var hex = ""
-        for _ in 0..<4 {
-            guard let h = iter.next() else { return nil }
-            hex.append(h)
-        }
-        return UInt32(hex, radix: 16)
     }
 
     nonisolated private static func flatten(_ raw: RawComment, into out: inout [PostComment], isReply: Bool) {

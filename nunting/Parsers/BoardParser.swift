@@ -192,6 +192,50 @@ extension BoardParser {
         return url
     }
 
+    /// First usable http(s) image URL among `element`'s candidate
+    /// `attributes`, tried in priority order. Skips empty values and any
+    /// whose value contains a `skipMarkers` substring (loading bars, icon
+    /// chrome, proxy decoys), then resolves the survivor through
+    /// `resolveHTTPURL` (trim, `//`→https promotion, baseURL resolution,
+    /// scheme validation). Consolidates the attribute-fallback loop the
+    /// per-site `<img>` resolvers (`realImageURL`, the walker's default
+    /// `resolveImageURL`, the comment-sticker pickers) each hand-rolled.
+    public nonisolated func imageURL(
+        from element: Element,
+        attributes: [String],
+        skipMarkers: [String] = []
+    ) -> URL? {
+        for attr in attributes {
+            guard let raw = try? element.attr(attr) else { continue }
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            if skipMarkers.contains(where: trimmed.contains) { continue }
+            if let url = resolveHTTPURL(trimmed) { return url }
+        }
+        return nil
+    }
+
+    /// First usable image URL among the `<img>` descendants matched by
+    /// `selector` (default: every `<img>`), applying
+    /// `imageURL(from:attributes:skipMarkers:)` to each in document order so a
+    /// progress-bar / chrome `<img>` doesn't shadow a real attachment behind
+    /// it. Consolidates the `extractCommentSticker` loops the Bobae / Ddanzi /
+    /// Humor comment parsers each kept.
+    public nonisolated func firstImageURL(
+        in element: Element,
+        selector: String = "img",
+        attributes: [String],
+        skipMarkers: [String] = []
+    ) -> URL? {
+        guard let imgs = try? element.select(selector) else { return nil }
+        for img in imgs {
+            if let url = imageURL(from: img, attributes: attributes, skipMarkers: skipMarkers) {
+                return url
+            }
+        }
+        return nil
+    }
+
     /// HTML5 `<video poster="...">` — when present, parsers forward it so
     /// the inline tap-to-play frame shows the site's intended thumbnail
     /// rather than a plain black box. Identical enough across every
@@ -277,6 +321,89 @@ public enum ParserText {
         return regex.stringByReplacingMatches(
             in: trimmed, range: range, withTemplate: "…"
         )
+    }
+
+    /// First contiguous run of digits in `text` as an `Int`, transparently
+    /// stepping over thousands separators (`,`) inside the run and stopping at
+    /// the first other non-digit. Returns nil when there's no digit at all.
+    /// e.g. `"조회 1,234"` → `1234`. Shared by the Clien / Coolenjoy meta
+    /// parsers, which read counts out of label-prefixed prose.
+    public nonisolated static func firstInteger(in text: String) -> Int? {
+        var digits = ""
+        for char in text {
+            if char.isNumber {
+                digits.append(char)
+            } else if !digits.isEmpty && char != "," {
+                break
+            }
+        }
+        return digits.isEmpty ? nil : Int(digits)
+    }
+
+    /// Decode JS-string escapes (`\"`, `\\`, `\/`, `\n`, `\t`, `\r`,
+    /// `\uXXXX`) into their literal characters so a JS-string payload becomes
+    /// valid JSON / plain text. Other backslash sequences pass the second
+    /// char through unchanged.
+    ///
+    /// `JSON.stringify` encodes supplementary-plane characters (emoji like
+    /// 🐶 = U+1F436) as a UTF-16 surrogate pair — `🐶`.
+    /// `UnicodeScalar(_ v: UInt32)` returns nil for any surrogate code point
+    /// (U+D800–U+DFFF) by spec, so a naive per-`\u` loop silently drops both
+    /// halves and the emoji disappears. When we see a high surrogate, peek the
+    /// next `\uXXXX` for a low surrogate and combine via the standard
+    /// `0x10000 + (high - 0xD800) * 0x400 + (low - 0xDC00)` formula. Stray
+    /// (unpaired) surrogates fall through unchanged rather than emitting a
+    /// replacement char — they only show up in malformed upstream payloads and
+    /// we'd rather pass them along than lie. Shared by the Aagag (`AAGAG_AA.content`)
+    /// and Etoland (`__next_f.push`) script-payload extractors.
+    public nonisolated static func unescapeJSString(_ s: String) -> String {
+        var out = ""
+        out.reserveCapacity(s.count)
+        var iter = s.makeIterator()
+        while let c = iter.next() {
+            guard c == "\\" else { out.append(c); continue }
+            guard let next = iter.next() else { break }
+            switch next {
+            case "\"": out.append("\"")
+            case "\\": out.append("\\")
+            case "/": out.append("/")
+            case "n": out.append("\n")
+            case "t": out.append("\t")
+            case "r": out.append("\r")
+            case "u":
+                guard let code = readHex4(&iter) else { continue }
+                if (0xD800...0xDBFF).contains(code) {
+                    // High surrogate — peek `\uXXXX` low surrogate.
+                    guard let backslash = iter.next(), backslash == "\\",
+                          let u = iter.next(), u == "u",
+                          let low = readHex4(&iter),
+                          (0xDC00...0xDFFF).contains(low)
+                    else {
+                        // Unpaired high surrogate; emit nothing (Swift
+                        // can't make a Character from it anyway).
+                        continue
+                    }
+                    let combined = 0x10000 + (code - 0xD800) * 0x400 + (low - 0xDC00)
+                    if let scalar = UnicodeScalar(combined) {
+                        out.append(Character(scalar))
+                    }
+                } else if let scalar = UnicodeScalar(code) {
+                    out.append(Character(scalar))
+                }
+            default:
+                out.append(next)
+            }
+        }
+        return out
+    }
+
+    nonisolated private static func readHex4(_ iter: inout String.Iterator) -> UInt32? {
+        var hex = ""
+        for _ in 0..<4 {
+            guard let h = iter.next() else { return nil }
+            hex.append(h)
+        }
+        return UInt32(hex, radix: 16)
     }
 }
 

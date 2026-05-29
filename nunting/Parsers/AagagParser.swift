@@ -199,39 +199,9 @@ public struct AagagParser: BoardParser {
                   match.range(at: 1).location != NSNotFound
             else { continue }
             let body = ns.substring(with: match.range(at: 1))
-            return Self.unescapeJSString(body)
+            return ParserText.unescapeJSString(body)
         }
         return nil
-    }
-
-    nonisolated private static func unescapeJSString(_ s: String) -> String {
-        var out = ""
-        out.reserveCapacity(s.count)
-        var iter = s.makeIterator()
-        while let c = iter.next() {
-            guard c == "\\" else { out.append(c); continue }
-            guard let next = iter.next() else { break }
-            switch next {
-            case "n": out.append("\n")
-            case "t": out.append("\t")
-            case "r": out.append("\r")
-            case "\"": out.append("\"")
-            case "'": out.append("'")
-            case "\\": out.append("\\")
-            case "/": out.append("/")
-            case "u":
-                var hex = ""
-                for _ in 0..<4 {
-                    if let h = iter.next() { hex.append(h) }
-                }
-                if let scalar = UInt32(hex, radix: 16).flatMap(UnicodeScalar.init) {
-                    out.append(Character(scalar))
-                }
-            default:
-                out.append(next)
-            }
-        }
-        return out
     }
 
     /// Parse the AAGAG_AA.content string: text + `[sTag]{json}[/sTag]` payloads.

@@ -197,7 +197,15 @@ public struct HumorParser: BoardParser {
         // 진입 시 doc 레벨에서 이미 처리됨 (본문/댓글 공통).
 
         var rules = WalkerRules.standard(for: self)
-        rules.resolveImageURL = realImageURL(from:)   // img_file_url → src → data-src + skipImageMarkers 필터
+        // humoruniv 본문 이미지는 `down-webp.humoruniv.com` 압축본을 `src` 에 두고
+        // 원본 JPG 를 `img_file_url` 속성에 백업으로 박아둔다. 페이지는 WebP 가
+        // 404 일 때 인라인 `OnError` 핸들러로 `img_file_url` 로 갈아끼우는데, 우리
+        // 파서는 그 JS 를 안 돌리니 src 가 사라진 WebP 면 "다시 시도" 플레이스홀더가
+        // 뜬다 (관측 사례: pds#1410992). 댓글 측 stickerURL 과 정책을 맞춰 원본 JPG 가
+        // 있으면 그쪽을 1순위로 시도하고, skipImageMarkers 로 chrome 이미지를 거른다.
+        rules.resolveImageURL = {
+            imageURL(from: $0, attributes: ["img_file_url", "src", "data-src"], skipMarkers: Self.skipImageMarkers)
+        }
         rules.customElement = { [self] el in
             // Humor 본문 비디오는 raw `<video>` 가 아니라
             // `<div onclick="comment_mp4_expand('id', 'url.mp4')">` wrapper 로
@@ -210,29 +218,6 @@ public struct HumorParser: BoardParser {
             return [.video(videoURL)]
         }
         return try ParserBlockWalker(parser: self, rules: rules).walk(wrap)
-    }
-
-    nonisolated private func realImageURL(from el: Element) throws -> URL? {
-        // humoruniv 본문 이미지는 `down-webp.humoruniv.com` 압축본을 `src` 에 두고
-        // 원본 JPG 를 `img_file_url` 속성에 백업으로 박아둔다. 페이지는 WebP 가
-        // 404 일 때 인라인 `OnError` 핸들러로 `img_file_url` 로 갈아끼우는데,
-        // 우리 파서는 그 JS 를 안 돌리니 src 가 사라진 WebP 면 그대로 "다시 시도"
-        // 플레이스홀더가 뜬다 (관측 사례: pds#1410992 의 본문 이미지가 WebP 404
-        // 로 통째로 비어 보이는 증상). 댓글 측 extractCommentSticker 가 이미
-        // 같은 이유로 img_file_url 을 1순위로 쓰는 것과 정책을 맞춰 본문도 원본
-        // JPG 가 있으면 그쪽을 먼저 시도한다.
-        let candidates: [String] = [
-            try el.attr("img_file_url"),
-            try el.attr("src"),
-            try el.attr("data-src"),
-        ]
-        for raw in candidates {
-            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { continue }
-            if Self.skipImageMarkers.contains(where: trimmed.contains) { continue }
-            if let url = resolveHTTPURL(trimmed) { return url }
-        }
-        return nil
     }
 
     nonisolated private func parseMp4Click(_ onclick: String) throws -> URL? {
@@ -301,7 +286,7 @@ public struct HumorParser: BoardParser {
             // When a comment carries a playable mp4 attachment we render the
             // video directly and skip the static thumbnail — otherwise the
             // thumbnail would flash behind the player while it loads.
-            let stickerURL = videoURL == nil ? try extractCommentSticker(in: li) : nil
+            let stickerURL = videoURL == nil ? extractCommentSticker(in: li) : nil
             let authIconURL = try extractAuthIcon(in: li)
 
             guard !author.isEmpty || !content.isEmpty || stickerURL != nil || videoURL != nil
@@ -336,39 +321,22 @@ public struct HumorParser: BoardParser {
         return nil
     }
 
-    nonisolated private func extractCommentSticker(in li: Element) throws -> URL? {
-        // Humor renders attached comment images via:
-        //   <div class="comment_file">
-        //     <img src='/images/loading_bar2.gif' ...>          (progress bar)
-        //     <img class="img_compress"
-        //          src="//timg.humoruniv.com/thumb.php?url=..." (proxy thumb)
-        //          img_file_url="//down.humoruniv.com/.../r_r...jpg" (original)>
-        // We iterate every <img> in the comment_file wrapper so the progress
-        // bar doesn't shadow the real attachment, and we prefer img_file_url
-        // (untransformed original) over the thumb proxy for zoom quality.
-        for img in try li.select(".comment_file img") {
-            let candidates = [
-                try img.attr("img_file_url"),
-                try img.attr("data-original"),
-                try img.attr("src"),
-            ]
-            for raw in candidates {
-                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty,
-                      !trimmed.contains("loading_bar")
-                else { continue }
-                // Scheme-relative URLs ("//down.humoruniv.com/...") get a
-                // fixed https scheme so the image loader can resolve them
-                // without a relative base that might pick http.
-                let normalized = trimmed.hasPrefix("//") ? "https:" + trimmed : trimmed
-                guard let url = URL(string: normalized, relativeTo: site.baseURL)?.absoluteURL,
-                      let scheme = url.scheme?.lowercased(),
-                      scheme == "http" || scheme == "https"
-                else { continue }
-                return url
-            }
-        }
-        return nil
+    /// Humor renders attached comment images via:
+    ///   <div class="comment_file">
+    ///     <img src='/images/loading_bar2.gif' ...>          (progress bar)
+    ///     <img class="img_compress"
+    ///          src="//timg.humoruniv.com/thumb.php?url=..." (proxy thumb)
+    ///          img_file_url="//down.humoruniv.com/.../r_r...jpg" (original)>
+    /// Iterate every <img> in the wrapper so the progress bar doesn't shadow
+    /// the real attachment, prefer img_file_url (untransformed original) over
+    /// the thumb proxy for zoom quality, and skip the loading-bar decoy.
+    nonisolated private func extractCommentSticker(in li: Element) -> URL? {
+        firstImageURL(
+            in: li,
+            selector: ".comment_file img",
+            attributes: ["img_file_url", "data-original", "src"],
+            skipMarkers: ["loading_bar"]
+        )
     }
 
     nonisolated private func extractAuthIcon(in li: Element) throws -> URL? {

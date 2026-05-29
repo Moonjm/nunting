@@ -259,7 +259,7 @@ public struct DdanziParser: BoardParser {
                     .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
                 let content = try renderCommentContent(in: li)
-                let sticker = try extractCommentSticker(in: li)
+                let sticker = extractCommentSticker(in: li)
 
                 if author.isEmpty, content.isEmpty, sticker == nil { continue }
 
@@ -281,17 +281,12 @@ public struct DdanziParser: BoardParser {
 
     /// Pull the first inline image out as a sticker URL so the comment
     /// renders as `[text] + image` the same way other parsers do.
-    nonisolated private func extractCommentSticker(in li: Element) throws -> URL? {
-        guard let img = try li.select(".fdComment .xe_content img").first() else { return nil }
-        var src = try img.attr("src")
-        if src.isEmpty { src = try img.attr("data-src") }
-        guard !src.isEmpty else { return nil }
-        let normalized = src.hasPrefix("//") ? "https:" + src : src
-        guard let url = URL(string: normalized, relativeTo: Site.ddanzi.baseURL)?.absoluteURL,
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https"
-        else { return nil }
-        return url
+    nonisolated private func extractCommentSticker(in li: Element) -> URL? {
+        firstImageURL(
+            in: li,
+            selector: ".fdComment .xe_content img",
+            attributes: ["src", "data-src"]
+        )
     }
 
     /// SwiftSoup's `.text()` normalises whitespace to a single space, so a
