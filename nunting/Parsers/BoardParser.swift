@@ -200,6 +200,12 @@ extension BoardParser {
     /// scheme validation). Consolidates the attribute-fallback loop the
     /// per-site `<img>` resolvers (`realImageURL`, the walker's default
     /// `resolveImageURL`, the comment-sticker pickers) each hand-rolled.
+    ///
+    /// A missing attribute is treated as absent (`try?`), not an error — the
+    /// walker's old inline default used `try el.attr(attr)`, but SwiftSoup's
+    /// `attr(_:)` returns `""` for a missing attribute rather than throwing,
+    /// so the only paths that differ are malformed-document edge cases the
+    /// `<img>` resolvers want to skip past anyway.
     public nonisolated func imageURL(
         from element: Element,
         attributes: [String],
