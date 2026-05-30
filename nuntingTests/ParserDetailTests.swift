@@ -1,4 +1,5 @@
 import XCTest
+import SwiftSoup
 @testable import nunting
 /// Fixture-based regression tests for parser `parseDetail` body
 /// extraction. Same rationale as `ParserListTests` — pin the smallest
@@ -1517,5 +1518,59 @@ final class ParserDetailTests: XCTestCase {
             return false
         }
         XCTAssertFalse(hasHidden, "display:none 안 이미지 누락")
+    }
+
+    // MARK: - convertAnchorsToMarkdown (comment anchor handling)
+
+    /// Repro for the SLR/Bobae/Ddanzi/Humor/Ppomppu comment bug: those
+    /// parsers strip `<img>` *before* calling `convertAnchorsToMarkdown`, so
+    /// an image wrapped in a link — `<a href="x.gif"><img src="x.gif"></a>`
+    /// (the image is rendered separately as a sticker) — arrives here as a
+    /// bare `<a href="x.gif"></a>`. The href must NOT leak into the rendered
+    /// text as a markdown link; the image URL was showing up as visible text
+    /// next to the rendered sticker. (real case: m.slrclub.com/v/free/41637430)
+    func testConvertAnchorsDropsLabellessAnchorInsteadOfLeakingURL() throws {
+        let parser = SLRParser()
+        let body = try SwiftSoup.parseBodyFragment(
+            #"<a href="https://i.pinimg.com/originals/73/x.gif" target="_blank"></a>"#
+        ).body()!
+        parser.convertAnchorsToMarkdown(in: body)
+        let text = try body.text().trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertFalse(text.contains("pinimg"), "label 없는 앵커가 URL을 텍스트로 흘림: \(text)")
+        XCTAssertTrue(text.isEmpty, "label 없는 앵커는 드롭돼야 함, got: \(text)")
+    }
+
+    /// When the `<img>` is still present (parsers that convert anchors before
+    /// stripping media), the anchor unwraps to leave the image — still no URL
+    /// text leak.
+    func testConvertAnchorsUnwrapsAnchorStillWrappingImage() throws {
+        let parser = SLRParser()
+        let body = try SwiftSoup.parseBodyFragment(
+            #"<a href="https://x/y.gif"><img src="https://x/y.gif"></a>"#
+        ).body()!
+        parser.convertAnchorsToMarkdown(in: body)
+        let text = try body.text().trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertFalse(text.contains("https://"), "이미지 래퍼 앵커가 URL 흘림: \(text)")
+    }
+
+    /// A genuine text link must still become a tappable markdown link.
+    func testConvertAnchorsKeepsTextLinkAsMarkdown() throws {
+        let parser = SLRParser()
+        let body = try SwiftSoup.parseBodyFragment(
+            #"<a href="https://example.com">예시</a>"#
+        ).body()!
+        parser.convertAnchorsToMarkdown(in: body)
+        XCTAssertEqual(try body.text(), "[예시](<https://example.com>)")
+    }
+
+    /// A bare-URL link (label == its own href text) keeps showing the URL —
+    /// the drop rule only targets *labelless* anchors.
+    func testConvertAnchorsKeepsBareURLTextLink() throws {
+        let parser = SLRParser()
+        let body = try SwiftSoup.parseBodyFragment(
+            #"<a href="https://example.com/x">https://example.com/x</a>"#
+        ).body()!
+        parser.convertAnchorsToMarkdown(in: body)
+        XCTAssertEqual(try body.text(), "[https://example.com/x](<https://example.com/x>)")
     }
 }

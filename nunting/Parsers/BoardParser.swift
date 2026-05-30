@@ -114,13 +114,25 @@ extension BoardParser {
             }
             let href = (try? el.attr("href")) ?? ""
             let label = ((try? el.text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            // A label-less anchor carries no visible text. It's almost always
+            // a media-wrapper (`<a href="x.gif"><img></a>`) whose `<img>` the
+            // parser already stripped to render as a separate sticker — the
+            // media-descendant branch above only fires while the `<img>` is
+            // still present, and several comment parsers strip media *before*
+            // calling this. Synthesizing a `[url](<url>)` link from the bare
+            // href surfaces the raw image path as text beside the rendered
+            // image (real case: m.slrclub.com comment GIFs). Drop the empty
+            // anchor instead, mirroring the unwrap the media branch does.
+            if label.isEmpty {
+                _ = try? el.unwrap()
+                continue
+            }
             guard !href.isEmpty,
                   let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL,
                   let scheme = url.scheme?.lowercased(),
                   scheme == "http" || scheme == "https"
             else { continue }
-            let displayLabel = label.isEmpty ? url.absoluteString : label
-            let safe = displayLabel
+            let safe = label
                 .replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "[", with: "\\[")
                 .replacingOccurrences(of: "]", with: "\\]")
