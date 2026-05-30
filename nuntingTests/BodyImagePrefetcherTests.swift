@@ -55,6 +55,17 @@ final class BodyImagePrefetcherTests: XCTestCase {
         )
     }
 
+    func testVisibleIndexItselfIsMarkedAsRequested() {
+        // url(0) repeats at index 3. With window 1 the prefetcher never warms
+        // index 3 ahead of anyone, but url(0) must already be in `requested`
+        // from when index 0 was visible (it's loaded on-screen), so visiting
+        // index 2 — whose window is index 3 = url(0) — yields nothing.
+        let p = BodyImagePrefetcher(urls: [url(0), url(1), url(2), url(0)], window: 1)
+        XCTAssertEqual(p.claimFreshURLs(forVisibleIndex: 0), [url(1)])
+        XCTAssertEqual(p.claimFreshURLs(forVisibleIndex: 1), [url(2)])
+        XCTAssertEqual(p.claimFreshURLs(forVisibleIndex: 2), [])
+    }
+
     func testDedupCollapsesSchemeNormalizedDuplicates() {
         // Same image listed as both http and https collapses to one key
         // after `atsSafe` — the `requested` set is post-normalization, so the

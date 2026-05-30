@@ -59,12 +59,22 @@ final class BodyImagePrefetcher {
     /// would be wasted.
     func claimFreshURLs(forVisibleIndex index: Int) -> [URL] {
         guard index >= 0 else { return [] }
+        // The visible image is loaded by its on-screen `NetworkImage`, not by
+        // the prefetcher — mark it requested so a later duplicate occurrence
+        // of the same image isn't redundantly warmed.
+        if index < urls.count { requested.insert(urls[index].atsSafe) }
         let start = index + 1
         let end = min(start + window, urls.count)
         guard start < end else { return [] }
-        return urls[start..<end]
-            .map(\.atsSafe)
-            .filter { requested.insert($0).inserted }
+        // Explicit loop rather than `filter { requested.insert(...).inserted }`
+        // — mutating `requested` inside a functional chain is an anti-pattern
+        // that would silently break under a future `.lazy`.
+        var fresh: [URL] = []
+        for url in urls[start..<end] {
+            let safe = url.atsSafe
+            if requested.insert(safe).inserted { fresh.append(safe) }
+        }
+        return fresh
     }
 
     /// Stop any in-flight prefetch. Called when the overlay hides
