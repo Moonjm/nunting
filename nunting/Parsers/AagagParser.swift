@@ -295,7 +295,7 @@ public struct AagagParser: BoardParser {
                 id: "\(site.rawValue)-c-\(raw.w_idx)",
                 author: raw.w_nick,
                 dateText: raw.stime,
-                content: stripCommentHTML(raw.w_content),
+                content: renderCommentText(fromHTML: raw.w_content),
                 likeCount: raw.w_good,
                 isReply: (raw.w_cmt_reply ?? "").isEmpty == false,
                 stickerURL: extractCommentImageURL(from: raw.w_content),
@@ -323,18 +323,6 @@ public struct AagagParser: BoardParser {
               scheme == "http" || scheme == "https"
         else { return nil }
         return url
-    }
-
-    nonisolated private func stripCommentHTML(_ raw: String) -> String {
-        guard let doc = try? SwiftSoup.parseBodyFragment(raw),
-              let body = doc.body()
-        else { return raw }
-
-        // Convert anchors to markdown so PostDetailView's comment renderer can
-        // make them tappable (shared BoardParser helper).
-        convertAnchorsToMarkdown(in: body)
-        stampBlockBreaks(in: body)
-        return normalizeCommentWhitespace((try? body.text()) ?? raw)
     }
 
     nonisolated private func issueIdx(from post: Post) -> String? {

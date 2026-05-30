@@ -220,16 +220,9 @@ public struct InvenParser: BoardParser {
             working = decoded
         }
 
-        // Final pass: parse as HTML so block tags get the newline marker treatment.
-        guard let doc = try? SwiftSoup.parseBodyFragment(working),
-              let body = doc.body()
-        else { return working }
-
-        // Preserve anchors as tappable markdown links — `.text()` below
-        // would otherwise strip the href and lose the URL entirely.
-        convertAnchorsToMarkdown(in: body)
-        stampBlockBreaks(in: body)
-        return normalizeCommentWhitespace((try? body.text()) ?? raw)
+        // Final pass: parse as HTML so block tags get the newline marker
+        // treatment (shared BoardParser comment-flatten pipeline).
+        return renderCommentText(fromHTML: working)
     }
 
     /// Decodes one layer of HTML character references without invoking a
