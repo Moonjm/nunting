@@ -65,6 +65,13 @@ struct NetworkImage: View {
     /// upscaling 3× into a full-column white box.
     var clampsToNaturalWidth: Bool = false
 
+    /// Fired once, the first time this image becomes eligible to load — for
+    /// gated images that's when the viewport gate opens; for eager
+    /// (`visibilityGated == false`) images it's on first appear. Body images
+    /// use it to drive `BodyImagePrefetcher` look-ahead; default `nil` so
+    /// icon / sticker / poster callers pay nothing.
+    var onBecameVisible: (() -> Void)? = nil
+
     // Per-image priority intentionally absent. The legacy `loadPriority:
     // index` integer queue is not faithfully expressible against
     // SDWebImage's binary `.highPriority` flag (only the front-of-queue
@@ -78,6 +85,7 @@ struct NetworkImage: View {
 
     @Environment(\.displayScale) private var displayScale
     @State private var hasBeenVisible = false
+    @State private var didReportVisible = false
     @State private var measuredAspect: CGFloat?
     @State private var measuredNaturalPointWidth: CGFloat?
     @State private var failed = false
@@ -192,7 +200,14 @@ struct NetworkImage: View {
             DispatchQueue.main.async {
                 guard !hasBeenVisible else { return }
                 hasBeenVisible = true
+                reportVisibleIfNeeded()
             }
+        }
+        .onAppear {
+            // Eager (non-gated) images never receive a visibility callback,
+            // so report on appear instead — keeps the prefetch look-ahead
+            // anchored at the first body image (which loads immediately).
+            if !visibilityGated { reportVisibleIfNeeded() }
         }
         #if DEBUG
         .task(id: url) {
@@ -208,6 +223,15 @@ struct NetworkImage: View {
             print("[NetworkImage] WARNING: gated image at \(url) hasn't received an onScrollVisibilityChange callback after 1s — is it inside a ScrollView?")
         }
         #endif
+    }
+
+    /// Fire `onBecameVisible` at most once. Called from the gate-open path
+    /// (gated) and from `.onAppear` (eager); the `didReportVisible` latch
+    /// makes repeated appears / callbacks idempotent.
+    private func reportVisibleIfNeeded() {
+        guard !didReportVisible else { return }
+        didReportVisible = true
+        onBecameVisible?()
     }
 
     @ViewBuilder

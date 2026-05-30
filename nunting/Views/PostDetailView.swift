@@ -82,6 +82,18 @@ struct PostDetailView: View, Equatable {
     /// the first timer to clear the flag while the second cover is
     /// still mid-animation, flashing the detail content briefly.
     @State private var coverGeneration = 0
+    /// Look-ahead warmer for body images. Rebuilt whenever the body image
+    /// set changes (new post / refresh); nil until the first image arrives.
+    @State private var imagePrefetcher: BodyImagePrefetcher?
+
+    /// Body image URLs in document order — drives both the prefetcher's
+    /// look-ahead list and the "is this the first image?" eager-load check.
+    private var bodyImageURLs: [URL] {
+        (loader.detail?.blocks ?? []).compactMap {
+            if case .image(let url, _) = $0.kind { return url }
+            return nil
+        }
+    }
 
     /// Minimum wall-clock delay between view appearance and the first
     /// `detail = ...` commit. Must exceed the iOS push animation (~350ms);
@@ -197,6 +209,20 @@ struct PostDetailView: View, Equatable {
             let renderReadyAt = ContinuousClock.now.advanced(by: Self.renderCommitDelay)
             await loader.load(post: post, cache: cache, renderReadyAt: renderReadyAt)
         }
+        // Rebuild the look-ahead warmer whenever the body image set changes
+        // (post load, pull-to-refresh). Cancel the old one first so a
+        // superseded post stops warming its tail.
+        .onChange(of: bodyImageURLs) { _, urls in
+            imagePrefetcher?.cancel()
+            guard !urls.isEmpty else { imagePrefetcher = nil; return }
+            let prefetcher = BodyImagePrefetcher(urls: urls)
+            // Warm the head right away. The first image is eager (above the
+            // fold), so its look-ahead shouldn't depend on whether its
+            // `onAppear` fires before or after this `onChange`.
+            prefetcher.imageBecameVisible(at: 0)
+            imagePrefetcher = prefetcher
+        }
+        .onDisappear { imagePrefetcher?.cancel() }
         .fullScreenCover(item: $selectedImage) { item in
             ImageViewer(url: item.url, onDismissBegin: { beginDismissCover() })
         }
@@ -319,6 +345,12 @@ struct PostDetailView: View, Equatable {
             // `SDWebImageDownloader.config.maxConcurrentDownloads`
             // (set in `SDWebImageSetup`), so dropping the lazy gate
             // doesn't burst the downloader.
+            //
+            // Computed once per render: maps each image block's id to its
+            // 0-based position among image blocks, so the case below can spot
+            // the first image (eager-load) and report look-ahead positions to
+            // the prefetcher.
+            let imageIndexByID = imageIndexMap(in: detail.blocks)
             VStack(alignment: .leading, spacing: 12) {
                 ForEach(Array(detail.blocks.enumerated()), id: \.element.id) { _, block in
                     switch block.kind {
@@ -355,11 +387,23 @@ struct PostDetailView: View, Equatable {
                         // native resolution costs more memory but
                         // `SDImageCache`'s 200MB cap evicts older
                         // entries to keep total residency bounded.
+                        let imageIndex = imageIndexByID[block.id]
                         NetworkImage(
                             url: url,
                             aspectRatio: aspectRatio,
-                            visibilityGated: true,
-                            clampsToNaturalWidth: true
+                            // Eager-load the first body image: it's above the
+                            // fold on open, so skip the viewport gate and let
+                            // its fetch start at commit instead of waiting for
+                            // the first scroll-visibility callback.
+                            visibilityGated: imageIndex != 0,
+                            clampsToNaturalWidth: true,
+                            // Each visible body image warms the next few below
+                            // it so scrolling lands on cache hits.
+                            onBecameVisible: {
+                                if let imageIndex {
+                                    imagePrefetcher?.imageBecameVisible(at: imageIndex)
+                                }
+                            }
                         )
                         .contentShape(Rectangle())
                         .onTapGesture {
@@ -385,6 +429,22 @@ struct PostDetailView: View, Equatable {
                 }
             }
         }
+    }
+
+    /// Maps each image block's id to its 0-based index among the image
+    /// blocks in `blocks` (richText / video / embed blocks don't advance the
+    /// counter). Used to identify the first body image for eager-load and to
+    /// give each image a stable position for prefetch look-ahead.
+    private func imageIndexMap(in blocks: [ContentBlock]) -> [ContentBlock.ID: Int] {
+        var map: [ContentBlock.ID: Int] = [:]
+        var index = 0
+        for block in blocks {
+            if case .image = block.kind {
+                map[block.id] = index
+                index += 1
+            }
+        }
+        return map
     }
 
     private func attributedString(from segments: [InlineSegment]) -> AttributedString {
