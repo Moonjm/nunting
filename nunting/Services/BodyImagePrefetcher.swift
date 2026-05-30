@@ -21,8 +21,12 @@ final class BodyImagePrefetcher {
     /// `imageBecameVisible(at:)` is a position in this list.
     private let urls: [URL]
     private let window: Int
-    /// A dedicated instance (not `.shared`) so `cancel()` only tears down
-    /// this screen's prefetch, never another consumer's.
+    /// A dedicated instance (not `.shared`) so `cancel()` only drops this
+    /// screen's prefetch tokens, never another consumer's. Note the
+    /// underlying `SDWebImageDownloader` / `SDImageCache` are still the shared
+    /// singletons — which is exactly why `.lowPriority` matters: prefetch and
+    /// on-screen loads compete for the same 4 downloader slots, and the
+    /// priority is what lets visible images win.
     private let prefetcher = SDWebImagePrefetcher()
     /// URLs already handed to the prefetcher — never re-issued.
     private var requested = Set<URL>()
@@ -54,16 +58,21 @@ final class BodyImagePrefetcher {
     /// a raw `http://` URL would cache under a different key and the prefetch
     /// would be wasted.
     func claimFreshURLs(forVisibleIndex index: Int) -> [URL] {
+        guard index >= 0 else { return [] }
         let start = index + 1
         let end = min(start + window, urls.count)
-        guard start >= 0, start < end else { return [] }
+        guard start < end else { return [] }
         return urls[start..<end]
             .map(\.atsSafe)
             .filter { requested.insert($0).inserted }
     }
 
-    /// Stop any in-flight prefetch — called when the screen tears down or its
-    /// image set changes, so a closed post doesn't keep warming its tail.
+    /// Stop any in-flight prefetch. Called when the overlay hides
+    /// (`isOverlayVisible` → false) or the image set changes (post swap /
+    /// pull-to-refresh) so a left-behind post doesn't keep warming its tail.
+    /// The detail overlay is keep-alive (it survives dismissal with only an
+    /// offset animation), so cancellation is driven by those explicit signals
+    /// rather than `.onDisappear`, which doesn't fire on a normal dismiss.
     func cancel() {
         prefetcher.cancelPrefetching()
     }

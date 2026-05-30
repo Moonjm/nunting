@@ -54,4 +54,20 @@ final class BodyImagePrefetcherTests: XCTestCase {
             [URL(string: "https://cdn.example.com/1.webp")!]
         )
     }
+
+    func testDedupCollapsesSchemeNormalizedDuplicates() {
+        // Same image listed as both http and https collapses to one key
+        // after `atsSafe` — the `requested` set is post-normalization, so the
+        // second occurrence must not be re-queued.
+        let dupes = [
+            URL(string: "https://cdn.example.com/0.webp")!,
+            URL(string: "http://cdn.example.com/1.webp")!,
+            URL(string: "https://cdn.example.com/1.webp")!,
+        ]
+        let p = BodyImagePrefetcher(urls: dupes, window: 3)
+        XCTAssertEqual(
+            p.claimFreshURLs(forVisibleIndex: 0),
+            [URL(string: "https://cdn.example.com/1.webp")!]
+        )
+    }
 }

@@ -222,6 +222,13 @@ struct PostDetailView: View, Equatable {
             prefetcher.imageBecameVisible(at: 0)
             imagePrefetcher = prefetcher
         }
+        // The overlay is keep-alive, so `.onDisappear` doesn't fire on a
+        // normal dismiss — cancel off the visibility flag instead so warming
+        // stops the moment the user leaves the post. `.onDisappear` still
+        // covers genuine teardown (scene exit).
+        .onChange(of: isOverlayVisible) { _, visible in
+            if !visible { imagePrefetcher?.cancel() }
+        }
         .onDisappear { imagePrefetcher?.cancel() }
         .fullScreenCover(item: $selectedImage) { item in
             ImageViewer(url: item.url, onDismissBegin: { beginDismissCover() })
