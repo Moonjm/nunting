@@ -90,7 +90,7 @@ struct PostDetailView: View, Equatable {
     /// look-ahead list and the "is this the first image?" eager-load check.
     private var bodyImageURLs: [URL] {
         (loader.detail?.blocks ?? []).compactMap {
-            if case .image(let url, _) = $0.kind { return url }
+            if case .image(let url, _, _) = $0.kind { return url }
             return nil
         }
     }
@@ -374,7 +374,7 @@ struct PostDetailView: View, Equatable {
                             font: .preferredFont(forTextStyle: .body)
                         )
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    case .image(let url, let aspectRatio):
+                    case .image(let url, let posterURL, let aspectRatio):
                         // Body images go through SDWebImage's
                         // `AnimatedImage` (libwebp for animated WebP /
                         // GIF / APNG, native fast path for stills) via
@@ -398,6 +398,7 @@ struct PostDetailView: View, Equatable {
                         NetworkImage(
                             url: url,
                             aspectRatio: aspectRatio,
+                            posterURL: posterURL,
                             // Eager-load the first body image: it's above the
                             // fold on open, so skip the viewport gate and let
                             // its fetch start at commit instead of waiting for

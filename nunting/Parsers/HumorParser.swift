@@ -194,6 +194,22 @@ public struct HumorParser: BoardParser {
         rules.resolveImageURL = {
             imageURL(from: $0, attributes: ["img_file_url", "src", "data-src"], skipMarkers: Self.skipImageMarkers)
         }
+        // `img_compress` 이미지는 위 resolveImageURL 이 `img_file_url` 의 작은
+        // 정적 JPG 로 갈아끼우지만, `simple_attach_img` 직접 첨부는 원본
+        // webp 가 그대로 남는다 — 이 중 애니메이션 움짤은 수 MB~수십 MB 라
+        // 다운로드+디코드에 수 초가 걸리고 그동안 placeholder 가 회색 박스로만
+        // 떠서 "깨진 것"처럼 보였다 (pds#1412160: 354프레임 720×1280 15.5MB).
+        // humoruniv 의 `timg.humoruniv.com/thumb.php?url=…&SIZE=…` 프록시가
+        // 같은 이미지의 ~2KB 정적 썸네일을 주므로, webp 로 resolve 된 경우에만
+        // 이걸 blur-up 포스터로 달아 즉시 저해상도 프리뷰를 띄운다. JPG 로
+        // 갈아탄 이미지(=가벼움)는 webp 가 아니라 자연히 제외돼 불필요한
+        // 썸네일 요청이 붙지 않는다.
+        rules.imageBlock = { url in
+            guard url.pathExtension.lowercased() == "webp",
+                  let poster = URL(string: "https://timg.humoruniv.com/thumb.php?url=\(url.absoluteString)&SIZE=120x90")
+            else { return .image(url) }
+            return .image(url, posterURL: poster)
+        }
         rules.customElement = { [self] el in
             // Humor 본문 비디오는 raw `<video>` 가 아니라
             // `<div onclick="comment_mp4_expand('id', 'url.mp4')">` wrapper 로

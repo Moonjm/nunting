@@ -27,6 +27,17 @@ struct NetworkImage: View {
     /// HTML (older posts / sites without `<img width=…>` markup).
     var aspectRatio: CGFloat? = nil
 
+    /// Optional low-res still (e.g. humoruniv's `thumb.php` ~2 KB thumbnail)
+    /// shown — heavily blurred — *behind* the loading spinner while the real
+    /// image downloads. Large animated WebP bodies (354-frame / 15 MB 짤방)
+    /// take seconds to arrive and decode; without this the slot was a flat
+    /// gray box that read as "broken" rather than "loading" (the symptom that
+    /// motivated this). The poster fetch is itself gated — it only fires from
+    /// the loading placeholder, which only renders once the viewport gate is
+    /// open — so off-screen gated images don't eagerly pull thumbnails.
+    /// `nil` (every non-humoruniv caller today) → spinner over plain surface.
+    var posterURL: URL? = nil
+
     /// Long-edge cap in *points*. Multiplied by `displayScale` to derive
     /// the pixel cap SD's `imageThumbnailPixelSize` expects, so callers
     /// pass the same units the legacy `maxDimension` param used. `nil`
@@ -117,7 +128,7 @@ struct NetworkImage: View {
                     url: url.atsSafe,
                     context: thumbnailContext
                 ) {
-                    placeholder
+                    loadingPlaceholder
                 }
                 .onSuccess { image, _, _ in
                     // SDWebImage fires `.onSuccess` synchronously on
@@ -183,10 +194,13 @@ struct NetworkImage: View {
                 .resizable()
                 .scaledToFit()
             } else {
-                // Closed-gate placeholder — must be shape-identical to
-                // `AnimatedImage`'s placeholder so the swap when
-                // `hasBeenVisible` flips doesn't visibly redraw.
-                placeholder
+                // Closed-gate placeholder — frame-identical to the loading
+                // placeholder's base so the swap when `hasBeenVisible` flips
+                // only *adds* the spinner / blurred poster (load starting)
+                // rather than resizing. Deliberately bare: a gated image that
+                // hasn't scrolled into view isn't loading yet, so no spinner
+                // and — crucially — no poster fetch.
+                gatePlaceholder
             }
         }
         .applyAspect(effectiveAspect)
@@ -234,10 +248,41 @@ struct NetworkImage: View {
         onBecameVisible?()
     }
 
+    /// Pre-load state for gated images that haven't scrolled into view:
+    /// plain surface (or clear for decorative slots). No spinner, no poster.
     @ViewBuilder
-    private var placeholder: some View {
+    private var gatePlaceholder: some View {
         if showsPlaceholder {
             Color("AppSurface2")
+        } else {
+            Color.clear
+        }
+    }
+
+    /// In-flight load state: a centered spinner over the surface, plus — when
+    /// a `posterURL` exists — the low-res still scaled to fill and heavily
+    /// blurred behind it (blur-up). `Color("AppSurface2")` stays the sizing
+    /// anchor so the frame matches `gatePlaceholder` exactly; the poster and
+    /// spinner are overlays that fill / center within it, then `.clipped()`
+    /// trims the blur bleed. SDWebImage swaps this whole view out for the real
+    /// image on `.onSuccess`.
+    @ViewBuilder
+    private var loadingPlaceholder: some View {
+        if showsPlaceholder {
+            Color("AppSurface2")
+                .overlay {
+                    if let posterURL {
+                        AnimatedImage(url: posterURL.atsSafe) {
+                            Color.clear
+                        }
+                        .resizable()
+                        .scaledToFill()
+                        .blur(radius: 18, opaque: true)
+                        .allowsHitTesting(false)
+                    }
+                }
+                .overlay { ProgressView() }
+                .clipped()
         } else {
             Color.clear
         }

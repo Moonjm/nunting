@@ -41,7 +41,7 @@ final class ParserBlockWalkerTests: XCTestCase {
         // 기대: richText("앞 텍스트") → image → richText("뒷 텍스트")
         XCTAssertEqual(blocks.count, 3)
         guard case .richText(let head) = blocks[0].kind,
-              case .image(let url, _) = blocks[1].kind,
+              case .image(let url, _, _) = blocks[1].kind,
               case .richText(let tail) = blocks[2].kind
         else { return XCTFail("순서: richText → image → richText 기대") }
         XCTAssertEqual(head.first.map { seg -> String in
@@ -87,7 +87,7 @@ final class ParserBlockWalkerTests: XCTestCase {
     func testAnchorWrappingImageEmitsImageNotLink() throws {
         let blocks = try walk("<a href='https://e.com/x'><img src='https://e.com/a.png'></a>")
         XCTAssertEqual(blocks.count, 1)
-        guard case .image(let url, _) = blocks[0].kind
+        guard case .image(let url, _, _) = blocks[0].kind
         else { return XCTFail("이미지 블록 기대 (앵커 라벨 무시)") }
         XCTAssertEqual(url.absoluteString, "https://e.com/a.png")
     }
@@ -160,7 +160,7 @@ final class ParserBlockWalkerTests: XCTestCase {
         } else {
             XCTFail("첫 블록은 richText('앞 ') 기대")
         }
-        if case .image(let url, _) = blocks[1].kind {
+        if case .image(let url, _, _) = blocks[1].kind {
             XCTAssertEqual(url.absoluteString, "https://e.com/a.png")
         } else {
             XCTFail("두 번째 블록은 image (anchor 라벨 무시)")
@@ -202,7 +202,7 @@ final class ParserBlockWalkerTests: XCTestCase {
            case .text(let s) = head.first {
             XCTAssertTrue(s.contains("앞"))
         } else { XCTFail("첫 블록은 richText") }
-        if case .image(let url, _) = blocks[1].kind {
+        if case .image(let url, _, _) = blocks[1].kind {
             XCTAssertEqual(url.absoluteString, "https://e.com/custom.png")
         } else { XCTFail("두 번째 블록은 image (custom)") }
         if case .richText(let tail) = blocks[2].kind,
@@ -234,7 +234,7 @@ final class ParserBlockWalkerTests: XCTestCase {
             rules.customElement = { _ in nil }
         }
         XCTAssertEqual(blocks.count, 1)
-        guard case .image(let url, _) = blocks[0].kind
+        guard case .image(let url, _, _) = blocks[0].kind
         else { return XCTFail("image 블록 (nil 반환 → 표준 dispatch)") }
         XCTAssertEqual(url.absoluteString, "https://e.com/a.png")
     }
