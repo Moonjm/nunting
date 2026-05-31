@@ -100,6 +100,14 @@ struct NetworkImage: View {
     @State private var measuredAspect: CGFloat?
     @State private var measuredNaturalPointWidth: CGFloat?
     @State private var failed = false
+    // Wall-clock anchor for the perceived "gray → image" wait: stamped when
+    // the real-image view first appears (= viewport gate open / eager appear,
+    // the moment the loading placeholder shows) and read back in `.onSuccess`.
+    // The elapsed span therefore covers download-queue wait + transfer +
+    // decode — exactly what the user sees, not just the network leg. Always
+    // present (referenced from an unconditional `.onAppear`); only the
+    // read-back log is `#if DEBUG`, so release just stamps an unread Date.
+    @State private var loadStartedAt: Date?
 
     var body: some View {
         let effectiveAspect = aspectRatio ?? measuredAspect
@@ -130,7 +138,15 @@ struct NetworkImage: View {
                 ) {
                     loadingPlaceholder
                 }
-                .onSuccess { image, _, _ in
+                .onSuccess { image, data, cacheType in
+                    #if DEBUG
+                    // Kept in a standalone method, not inline: the timing
+                    // formatter (switch + several `.map`s) blew up SwiftUI's
+                    // `body` result-builder type inference when written in the
+                    // closure directly.
+                    logLoadTiming(image: image, data: data, cacheType: cacheType)
+                    #endif
+
                     // SDWebImage fires `.onSuccess` synchronously on
                     // memory-cache hit, which can land during a SwiftUI
                     // body evaluation — direct `@State` mutation then
@@ -193,6 +209,16 @@ struct NetworkImage: View {
                 .purgeable(true)
                 .resizable()
                 .scaledToFit()
+                // Must sit *after* the SDWebImage-specific modifiers
+                // (`onSuccess`/`maxBufferSize`/…): those are defined on
+                // `AnimatedImage` and return `AnimatedImage`, whereas
+                // `.onAppear` returns `some View` and would strip the type,
+                // breaking the rest of the chain. First appearance of the
+                // real-image view = start of the perceived wait; latch once so
+                // a SwiftUI re-appear (cell recycle) doesn't reset it mid-flight.
+                .onAppear {
+                    if loadStartedAt == nil { loadStartedAt = Date() }
+                }
             } else {
                 // Closed-gate placeholder — frame-identical to the loading
                 // placeholder's base so the swap when `hasBeenVisible` flips
@@ -247,6 +273,28 @@ struct NetworkImage: View {
         didReportVisible = true
         onBecameVisible?()
     }
+
+    #if DEBUG
+    /// One line per resolved body image: perceived wait (gate-open → success,
+    /// so it includes download-queue wait + transfer + decode), cache origin
+    /// (`network` = real fetch, `memory`/`disk` = cache hit), payload size,
+    /// decoded pixel dimensions, and the filename. Lets the heavy-WebP latency
+    /// be split between "big download" vs "slow decode" from device logs.
+    private func logLoadTiming(image: PlatformImage, data: Data?, cacheType: SDImageCacheType) {
+        let elapsedText = loadStartedAt
+            .map { String(format: "%.0fms", Date().timeIntervalSince($0) * 1000) } ?? "?"
+        let source: String
+        switch cacheType {
+        case .memory: source = "memory"
+        case .disk: source = "disk"
+        default: source = "network"
+        }
+        let sizeText = data.map { String(format: "%.0fKB", Double($0.count) / 1024) } ?? "cached"
+        let pxW = Int(image.size.width * image.scale)
+        let pxH = Int(image.size.height * image.scale)
+        print("[NetworkImage.timing] \(elapsedText) | \(source) | \(sizeText) | \(pxW)x\(pxH) | \(url.lastPathComponent)")
+    }
+    #endif
 
     /// Pre-load state for gated images that haven't scrolled into view:
     /// plain surface (or clear for decorative slots). No spinner, no poster.
