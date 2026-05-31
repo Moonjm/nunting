@@ -137,102 +137,19 @@ struct NetworkImage: View {
                     Color.clear
                 }
             } else if !visibilityGated || hasBeenVisible {
-                // `.atsSafe` upgrades plain `http://` to `https://` so
-                // ATS-clean CDNs serve through without an
-                // `NSAllowsArbitraryLoads` exception. Mirrors the
-                // legacy `CachedAsyncImage` pre-fetch URL transform —
-                // missing this caused board image CDNs that publish
-                // their canonical `<img src>` as `http://` (carisyou,
-                // some tistory mirrors) to silently fail on first
-                // load, which surfaced as a flood of "다시 시도"
-                // retry placeholders right after the SD migration.
-                AnimatedImage(
-                    url: url.atsSafe,
-                    options: decodesFirstFrameOnly ? [.decodeFirstFrameOnly] : [],
-                    context: thumbnailContext
-                ) {
-                    loadingPlaceholder
-                }
-                .onSuccess { image, data, cacheType in
-                    #if DEBUG
-                    // Kept in a standalone method, not inline: the timing
-                    // formatter (switch + several `.map`s) blew up SwiftUI's
-                    // `body` result-builder type inference when written in the
-                    // closure directly.
-                    logLoadTiming(image: image, data: data, cacheType: cacheType)
-                    #endif
-
-                    // SDWebImage fires `.onSuccess` synchronously on
-                    // memory-cache hit, which can land during a SwiftUI
-                    // body evaluation — direct `@State` mutation then
-                    // trips "Modifying state during view update".
-                    // `DispatchQueue.main.async` defers to the next
-                    // runloop tick, guaranteed outside the in-flight
-                    // render (more bulletproof than Task { @MainActor }
-                    // which the Swift cooperative executor MAY schedule
-                    // within the same runloop iteration).
-                    //
-                    // SDWebImage decodes UIImages at the device scale
-                    // (typically 3 on retina iPhones), so
-                    // `image.size.width` is the *point* width =
-                    // pixel width / scale. Multiplying back by
-                    // `image.scale` recovers the source's pixel count,
-                    // which matches the legacy `CachedAsyncImage`
-                    // convention of decoding at scale 1 (where points
-                    // and pixels were the same number). Without this
-                    // conversion the `clampsToNaturalWidth` cap shrinks
-                    // every body image to one-third of its intended
-                    // frame on retina — observed regression: aagag's
-                    // tall ~800px wide images rendering at ~133pt on a
-                    // 390pt column.
-                    let aspect: CGFloat? = (image.size.height > 0)
-                        ? image.size.width / image.size.height : nil
-                    let naturalPointWidth = image.size.width * image.scale
-                    DispatchQueue.main.async {
-                        if measuredAspect == nil, let aspect {
-                            measuredAspect = aspect
-                        }
-                        if measuredNaturalPointWidth == nil {
-                            measuredNaturalPointWidth = naturalPointWidth
-                        }
-                    }
-                }
-                .onFailure { _ in
-                    DispatchQueue.main.async {
-                        failed = true
-                    }
-                }
-                // Cap decoded-frame memory for animated WebP/GIF (Korean
-                // board 짤방 are typically 100-300 frames; SDAnimatedImageView's
-                // default `maxBufferSize = 0` means "decode all frames upfront"
-                // which can balloon to 60-100 MB per long animation and was a
-                // main contributor to jetsam kills during detail loading).
-                // 16 MB caps a single animation at ~80 RGBA frames @ retina
-                // 800×500 — enough to keep the visible loop smooth, while
-                // forcing re-decode on long animations rather than holding
-                // every frame in RAM forever.
-                .maxBufferSize(16 * 1024 * 1024)
-                // SDWebImageSwiftUI 의 `.purgeable(true)` 는 NSCache 의
-                // purgeable 플래그가 아니라 SDAnimatedImageView 의
-                // `clearBufferWhenStopped` 로 매핑됨 (AnimatedImage.swift:693).
-                // 의미: 애니메이션이 *멈출 때* 디코드된 프레임 버퍼 해제.
-                // LazyVStack 스크롤 재활용으로 off-screen 됐을 때
-                // visibility 변화 → 정지 → 버퍼 해제 경로가 발화 — 본문
-                // 짤방이 화면 밖에 오랫동안 남아있는 메모리 잔존을 줄임.
-                // memory-warning 와는 무관 (그건 SDImageCache 가 자체
-                // 처리).
-                .purgeable(true)
-                .resizable()
-                .scaledToFit()
-                // Must sit *after* the SDWebImage-specific modifiers
-                // (`onSuccess`/`maxBufferSize`/…): those are defined on
-                // `AnimatedImage` and return `AnimatedImage`, whereas
-                // `.onAppear` returns `some View` and would strip the type,
-                // breaking the rest of the chain. First appearance of the
-                // real-image view = start of the perceived wait; latch once so
-                // a SwiftUI re-appear (cell recycle) doesn't reset it mid-flight.
-                .onAppear {
-                    if loadStartedAt == nil { loadStartedAt = Date() }
+                // Heavy animated WebP (humoruniv 짤방) renders through `WebImage`
+                // with first-frame-only decode; everything else animates inline
+                // via `AnimatedImage`. The split exists because
+                // `SDAnimatedImageView` (AnimatedImage's backing view) ignores
+                // `.decodeFirstFrameOnly` and decodes the whole 354-frame
+                // animation (~14 s, blocking SDImageCache's serial decode queue
+                // so the rest of the post stays blank), whereas `WebImage` goes
+                // through `SDWebImageManager`, which honours the option (~0.1 s,
+                // static still). Verified by direct timing — see commit msg.
+                if decodesFirstFrameOnly {
+                    staticBodyImage
+                } else {
+                    animatedBodyImage
                 }
             } else {
                 // Closed-gate placeholder — frame-identical to the loading
@@ -278,6 +195,83 @@ struct NetworkImage: View {
             print("[NetworkImage] WARNING: gated image at \(url) hasn't received an onScrollVisibilityChange callback after 1s — is it inside a ScrollView?")
         }
         #endif
+    }
+
+    /// Default body-image view: animates inline via `AnimatedImage`
+    /// (libwebp). `.atsSafe` upgrades plain `http://` to `https://` so
+    /// ATS-clean CDNs serve through without an `NSAllowsArbitraryLoads`
+    /// exception — board CDNs that publish their canonical `<img src>` as
+    /// `http://` (carisyou, some tistory mirrors) otherwise flooded the retry
+    /// placeholder after the SD migration.
+    private var animatedBodyImage: some View {
+        AnimatedImage(url: url.atsSafe, context: thumbnailContext) {
+            loadingPlaceholder
+        }
+        .onSuccess { handleLoadSuccess($0, $1, $2) }
+        .onFailure { _ in handleLoadFailure() }
+        // Cap decoded-frame memory for animated WebP/GIF (짤방 are 100-300
+        // frames; SDAnimatedImageView's default `maxBufferSize = 0` decodes
+        // all frames upfront → 60-100 MB per long animation, a jetsam driver).
+        .maxBufferSize(16 * 1024 * 1024)
+        // `.purgeable(true)` maps to `clearBufferWhenStopped`: release decoded
+        // frames when the animation stops (off-screen via LazyVStack recycle).
+        .purgeable(true)
+        .resizable()
+        .scaledToFit()
+        // `.onAppear` returns `some View`, so it must sit after the
+        // AnimatedImage-typed modifiers or it'd strip the type and break them.
+        .onAppear { stampLoadStart() }
+    }
+
+    /// Heavy-animated-WebP body view: first-frame-only static still via
+    /// `WebImage`. See the call-site comment for why this can't be
+    /// `AnimatedImage`. No `maxBufferSize`/`purgeable` — there's no animation
+    /// buffer to manage.
+    private var staticBodyImage: some View {
+        WebImage(
+            url: url.atsSafe,
+            options: [.decodeFirstFrameOnly],
+            context: thumbnailContext
+        ) { image in
+            image.resizable().scaledToFit()
+        } placeholder: {
+            loadingPlaceholder
+        }
+        .onSuccess { handleLoadSuccess($0, $1, $2) }
+        .onFailure { _ in handleLoadFailure() }
+        .onAppear { stampLoadStart() }
+    }
+
+    /// Latch the perceived-wait clock at first appearance of the real-image
+    /// view. Idempotent so a SwiftUI re-appear (cell recycle) doesn't reset it.
+    private func stampLoadStart() {
+        if loadStartedAt == nil { loadStartedAt = Date() }
+    }
+
+    /// Shared `.onSuccess` handler for both body-image paths.
+    ///
+    /// SDWebImage decodes UIImages at the device scale (≈3 on retina), so
+    /// `image.size.width` is the *point* width = pixel width / scale.
+    /// Multiplying back by `image.scale` recovers the source pixel count,
+    /// matching the legacy `CachedAsyncImage` (scale-1) convention — without
+    /// it `clampsToNaturalWidth` shrinks every body image to a third of its
+    /// frame on retina. `DispatchQueue.main.async` defers the `@State` write
+    /// past the in-flight render (SD can fire `.onSuccess` synchronously on a
+    /// memory-cache hit, which would trip "Modifying state during view update").
+    private func handleLoadSuccess(_ image: PlatformImage, _ data: Data?, _ cacheType: SDImageCacheType) {
+        #if DEBUG
+        logLoadTiming(image: image, data: data, cacheType: cacheType)
+        #endif
+        let aspect: CGFloat? = (image.size.height > 0) ? image.size.width / image.size.height : nil
+        let naturalPointWidth = image.size.width * image.scale
+        DispatchQueue.main.async {
+            if measuredAspect == nil, let aspect { measuredAspect = aspect }
+            if measuredNaturalPointWidth == nil { measuredNaturalPointWidth = naturalPointWidth }
+        }
+    }
+
+    private func handleLoadFailure() {
+        DispatchQueue.main.async { failed = true }
     }
 
     /// Fire `onBecameVisible` at most once. Called from the gate-open path
