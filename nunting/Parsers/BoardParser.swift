@@ -123,6 +123,9 @@ extension BoardParser {
             // href surfaces the raw image path as text beside the rendered
             // image (real case: m.slrclub.com comment GIFs). Drop the empty
             // anchor instead, mirroring the unwrap the media branch does.
+            // This also intentionally drops a genuinely text-less `<a href></a>`
+            // (no label, no media) — a browser renders nothing for it either,
+            // so surfacing its raw URL as text was never the right behavior.
             if label.isEmpty {
                 _ = try? el.unwrap()
                 continue
