@@ -404,12 +404,9 @@ public struct PpomppuParser: BoardParser {
         try copy.select(
             "img, script, style, video, source, .wrapper_video, a.btn_show_org, a.scrap_bx_href, .scrap_bx"
         ).remove()
-        // Preserve remaining anchors as tappable markdown links — `.text()`
-        // below would otherwise drop the href and render the label as
-        // unlinked prose.
-        convertAnchorsToMarkdown(in: copy)
-        stampBlockBreaks(in: copy)
-        return normalizeCommentWhitespace(try copy.text())
+        // Preserve remaining anchors as tappable markdown links, stamp block
+        // breaks, flatten and normalize (shared BoardParser comment pipeline).
+        return renderCommentText(from: copy)
     }
 
     nonisolated private func splitCategoryAuthor(_ raw: String) -> (category: String?, author: String) {

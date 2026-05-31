@@ -114,13 +114,28 @@ extension BoardParser {
             }
             let href = (try? el.attr("href")) ?? ""
             let label = ((try? el.text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            // A label-less anchor carries no visible text. It's almost always
+            // a media-wrapper (`<a href="x.gif"><img></a>`) whose `<img>` the
+            // parser already stripped to render as a separate sticker — the
+            // media-descendant branch above only fires while the `<img>` is
+            // still present, and several comment parsers strip media *before*
+            // calling this. Synthesizing a `[url](<url>)` link from the bare
+            // href surfaces the raw image path as text beside the rendered
+            // image (real case: m.slrclub.com comment GIFs). Drop the empty
+            // anchor instead, mirroring the unwrap the media branch does.
+            // This also intentionally drops a genuinely text-less `<a href></a>`
+            // (no label, no media) — a browser renders nothing for it either,
+            // so surfacing its raw URL as text was never the right behavior.
+            if label.isEmpty {
+                _ = try? el.unwrap()
+                continue
+            }
             guard !href.isEmpty,
                   let url = URL(string: href, relativeTo: site.baseURL)?.absoluteURL,
                   let scheme = url.scheme?.lowercased(),
                   scheme == "http" || scheme == "https"
             else { continue }
-            let displayLabel = label.isEmpty ? url.absoluteString : label
-            let safe = displayLabel
+            let safe = label
                 .replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "[", with: "\\[")
                 .replacingOccurrences(of: "]", with: "\\]")
@@ -173,6 +188,28 @@ extension BoardParser {
         s = s.replacingOccurrences(of: #"[ \t]*\n[ \t]*"#, with: "\n", options: .regularExpression)
         s = s.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The comment-body flatten pipeline every parser shares once it has
+    /// isolated the comment's content subtree: rewrite `<a href>` to
+    /// tappable markdown, stamp block-tag line breaks, flatten via `.text()`,
+    /// then normalize whitespace. Mutates `element` in place (anchor rewrite),
+    /// so callers pass a `.copy()` after their own site-specific stripping.
+    /// Consolidates the identical tail in Aagag/Inven/Ppomppu comment parsers.
+    public nonisolated func renderCommentText(from element: Element) -> String {
+        convertAnchorsToMarkdown(in: element)
+        stampBlockBreaks(in: element)
+        return normalizeCommentWhitespace((try? element.text()) ?? "")
+    }
+
+    /// `renderCommentText(from:)` for parsers whose comment payload arrives as
+    /// a raw HTML *string* (API JSON bodies) rather than a live DOM subtree —
+    /// wraps it in a SwiftSoup body parse. Returns `html` unchanged if the
+    /// fragment can't be parsed. Used by the Aagag `/api/cmt` and Inven JSON
+    /// comment paths.
+    public nonisolated func renderCommentText(fromHTML html: String) -> String {
+        guard let body = try? SwiftSoup.parseBodyFragment(html).body() else { return html }
+        return renderCommentText(from: body)
     }
 
     /// Resolve a raw URL string (attribute value, style `url(...)` payload,
