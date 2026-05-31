@@ -307,7 +307,8 @@ struct NetworkImage: View {
         let sizeText = data.map { String(format: "%.0fKB", Double($0.count) / 1024) } ?? "cached"
         let pxW = Int(image.size.width * image.scale)
         let pxH = Int(image.size.height * image.scale)
-        print("[NetworkImage.timing] \(elapsedText) | \(source) | \(sizeText) | \(pxW)x\(pxH) | \(url.lastPathComponent)")
+        let ff = decodesFirstFrameOnly ? "ff=1" : "ff=0"
+        print("[NetworkImage.timing] \(elapsedText) | \(source) | \(sizeText) | \(pxW)x\(pxH) | \(ff) | \(url.lastPathComponent)")
     }
     #endif
 
