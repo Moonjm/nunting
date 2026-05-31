@@ -114,14 +114,6 @@ struct NetworkImage: View {
     @State private var measuredAspect: CGFloat?
     @State private var measuredNaturalPointWidth: CGFloat?
     @State private var failed = false
-    // Wall-clock anchor for the perceived "gray → image" wait: stamped when
-    // the real-image view first appears (= viewport gate open / eager appear,
-    // the moment the loading placeholder shows) and read back in `.onSuccess`.
-    // The elapsed span therefore covers download-queue wait + transfer +
-    // decode — exactly what the user sees, not just the network leg. Always
-    // present (referenced from an unconditional `.onAppear`); only the
-    // read-back log is `#if DEBUG`, so release just stamps an unread Date.
-    @State private var loadStartedAt: Date?
 
     var body: some View {
         let effectiveAspect = aspectRatio ?? measuredAspect
@@ -207,7 +199,7 @@ struct NetworkImage: View {
         AnimatedImage(url: url.atsSafe, context: thumbnailContext) {
             loadingPlaceholder
         }
-        .onSuccess { handleLoadSuccess($0, $1, $2) }
+        .onSuccess { image, _, _ in handleLoadSuccess(image) }
         .onFailure { _ in handleLoadFailure() }
         // Cap decoded-frame memory for animated WebP/GIF (짤방 are 100-300
         // frames; SDAnimatedImageView's default `maxBufferSize = 0` decodes
@@ -218,9 +210,6 @@ struct NetworkImage: View {
         .purgeable(true)
         .resizable()
         .scaledToFit()
-        // `.onAppear` returns `some View`, so it must sit after the
-        // AnimatedImage-typed modifiers or it'd strip the type and break them.
-        .onAppear { stampLoadStart() }
     }
 
     /// Heavy-animated-WebP body view: first-frame-only static still via
@@ -237,15 +226,8 @@ struct NetworkImage: View {
         } placeholder: {
             loadingPlaceholder
         }
-        .onSuccess { handleLoadSuccess($0, $1, $2) }
+        .onSuccess { image, _, _ in handleLoadSuccess(image) }
         .onFailure { _ in handleLoadFailure() }
-        .onAppear { stampLoadStart() }
-    }
-
-    /// Latch the perceived-wait clock at first appearance of the real-image
-    /// view. Idempotent so a SwiftUI re-appear (cell recycle) doesn't reset it.
-    private func stampLoadStart() {
-        if loadStartedAt == nil { loadStartedAt = Date() }
     }
 
     /// Shared `.onSuccess` handler for both body-image paths.
@@ -258,10 +240,7 @@ struct NetworkImage: View {
     /// frame on retina. `DispatchQueue.main.async` defers the `@State` write
     /// past the in-flight render (SD can fire `.onSuccess` synchronously on a
     /// memory-cache hit, which would trip "Modifying state during view update").
-    private func handleLoadSuccess(_ image: PlatformImage, _ data: Data?, _ cacheType: SDImageCacheType) {
-        #if DEBUG
-        logLoadTiming(image: image, data: data, cacheType: cacheType)
-        #endif
+    private func handleLoadSuccess(_ image: PlatformImage) {
         let aspect: CGFloat? = (image.size.height > 0) ? image.size.width / image.size.height : nil
         let naturalPointWidth = image.size.width * image.scale
         DispatchQueue.main.async {
@@ -282,29 +261,6 @@ struct NetworkImage: View {
         didReportVisible = true
         onBecameVisible?()
     }
-
-    #if DEBUG
-    /// One line per resolved body image: perceived wait (gate-open → success,
-    /// so it includes download-queue wait + transfer + decode), cache origin
-    /// (`network` = real fetch, `memory`/`disk` = cache hit), payload size,
-    /// decoded pixel dimensions, and the filename. Lets the heavy-WebP latency
-    /// be split between "big download" vs "slow decode" from device logs.
-    private func logLoadTiming(image: PlatformImage, data: Data?, cacheType: SDImageCacheType) {
-        let elapsedText = loadStartedAt
-            .map { String(format: "%.0fms", Date().timeIntervalSince($0) * 1000) } ?? "?"
-        let source: String
-        switch cacheType {
-        case .memory: source = "memory"
-        case .disk: source = "disk"
-        default: source = "network"
-        }
-        let sizeText = data.map { String(format: "%.0fKB", Double($0.count) / 1024) } ?? "cached"
-        let pxW = Int(image.size.width * image.scale)
-        let pxH = Int(image.size.height * image.scale)
-        let ff = decodesFirstFrameOnly ? "ff=1" : "ff=0"
-        print("[NetworkImage.timing] \(elapsedText) | \(source) | \(sizeText) | \(pxW)x\(pxH) | \(ff) | \(url.lastPathComponent)")
-    }
-    #endif
 
     /// Pre-load state for gated images that haven't scrolled into view:
     /// plain surface (or clear for decorative slots). No spinner, no poster.
