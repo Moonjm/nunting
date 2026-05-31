@@ -399,6 +399,13 @@ struct PostDetailView: View, Equatable {
                             url: url,
                             aspectRatio: aspectRatio,
                             posterURL: posterURL,
+                            // A poster is attached only to heavy humoruniv
+                            // direct-attach WebP (animated 짤방). Those also get
+                            // first-frame-only inline decode: full-animation
+                            // decode is ~14s and blocks the shared serial decode
+                            // queue, freezing every image below it. Static
+                            // inline + tap-to-play (fullscreen) instead.
+                            decodesFirstFrameOnly: posterURL != nil,
                             // Eager-load the first body image: it's above the
                             // fold on open, so skip the viewport gate and let
                             // its fetch start at commit instead of waiting for

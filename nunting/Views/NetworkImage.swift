@@ -38,6 +38,20 @@ struct NetworkImage: View {
     /// `nil` (every non-humoruniv caller today) → spinner over plain surface.
     var posterURL: URL? = nil
 
+    /// When `true`, the inline decode is forced to the first frame only
+    /// (`SDWebImageDecodeFirstFrameOnly`) — a static still, no animation.
+    ///
+    /// Why: a heavy animated WebP (the humoruniv 짤방 case — 354 frames /
+    /// 720×1280 / 15 MB) decodes ALL frames at load (~41 ms/frame on device =
+    /// ~14 s, ~1.2 GB if held). Worse, that decode runs on SDImageCache's
+    /// *serial* ioQueue, so it blocks every image queued behind it — the post
+    /// below the 짤방 stays blank for the full ~14 s. First-frame-only collapses
+    /// that to a single-frame decode (~40 ms): the feed shows a static frame
+    /// instantly and the queue is freed. The animation is still viewable —
+    /// tapping opens the fullscreen `ImageViewer`, which decodes + plays it on
+    /// demand. Small inline GIFs/WebP keep animating (this stays `false`).
+    var decodesFirstFrameOnly: Bool = false
+
     /// Long-edge cap in *points*. Multiplied by `displayScale` to derive
     /// the pixel cap SD's `imageThumbnailPixelSize` expects, so callers
     /// pass the same units the legacy `maxDimension` param used. `nil`
@@ -134,6 +148,7 @@ struct NetworkImage: View {
                 // retry placeholders right after the SD migration.
                 AnimatedImage(
                     url: url.atsSafe,
+                    options: decodesFirstFrameOnly ? [.decodeFirstFrameOnly] : [],
                     context: thumbnailContext
                 ) {
                     loadingPlaceholder
