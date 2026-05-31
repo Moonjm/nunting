@@ -21,6 +21,17 @@ final class BodyImagePrefetcher {
     /// `imageBecameVisible(at:)` is a position in this list.
     private let urls: [URL]
     private let window: Int
+    /// `atsSafe` URLs that must never be prefetched — the heavy animated-WebP
+    /// 짤방 (humoruniv direct-attach). Prefetching warms the cache via a *full*
+    /// decode (no first-frame option), which for a 354-frame / 15 MB webp is
+    /// ~14 s on `SDImageCache`'s **serial** decode queue — and that one decode
+    /// blocks every other image queued behind it, so the whole post below the
+    /// 짤방 stays blank for ~14 s (observed: pds#1412160). These images render
+    /// inline as a cheap first-frame still on demand instead (see
+    /// `NetworkImage.decodesFirstFrameOnly`), so there's nothing worth warming.
+    /// They still occupy their slot in `urls` (index math / dedup unchanged) —
+    /// only the prefetch fetch is suppressed.
+    private let skipPrefetch: Set<URL>
     /// A dedicated instance (not `.shared`) so `cancel()` only drops this
     /// screen's prefetch tokens, never another consumer's. Note the
     /// underlying `SDWebImageDownloader` / `SDImageCache` are still the shared
@@ -31,9 +42,10 @@ final class BodyImagePrefetcher {
     /// URLs already handed to the prefetcher — never re-issued.
     private var requested = Set<URL>()
 
-    init(urls: [URL], window: Int = 3) {
+    init(urls: [URL], window: Int = 3, skipPrefetch: Set<URL> = []) {
         self.urls = urls
         self.window = window
+        self.skipPrefetch = skipPrefetch
     }
 
     /// The image at `index` became visible — warm the next `window` URLs that
@@ -72,7 +84,10 @@ final class BodyImagePrefetcher {
         var fresh: [URL] = []
         for url in urls[start..<end] {
             let safe = url.atsSafe
-            if requested.insert(safe).inserted { fresh.append(safe) }
+            // Mark requested regardless (dedup), but suppress the fetch for
+            // skip-listed heavy webp — they'd block the serial decode queue.
+            let isNew = requested.insert(safe).inserted
+            if isNew && !skipPrefetch.contains(safe) { fresh.append(safe) }
         }
         return fresh
     }

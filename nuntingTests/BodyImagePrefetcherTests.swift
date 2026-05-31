@@ -81,4 +81,16 @@ final class BodyImagePrefetcherTests: XCTestCase {
             [URL(string: "https://cdn.example.com/1.webp")!]
         )
     }
+
+    func testSkipPrefetchURLsAreOmittedFromFetchButStillMarkedRequested() {
+        // url(2) is a heavy webp (first-frame-only inline) → must not be
+        // prefetched (its full decode blocks the serial queue). It still
+        // occupies its slot: window from index 0 is {1,2,3}, 2 dropped.
+        let p = BodyImagePrefetcher(urls: urls(10), window: 3, skipPrefetch: [url(2)])
+        XCTAssertEqual(p.claimFreshURLs(forVisibleIndex: 0), [url(1), url(3)],
+                       "skip-listed url(2) omitted from the prefetch list")
+        // url(2) was marked requested, so re-windowing over it adds nothing;
+        // index 1's window {2,3,4} yields only the still-fresh url(4).
+        XCTAssertEqual(p.claimFreshURLs(forVisibleIndex: 1), [url(4)])
+    }
 }

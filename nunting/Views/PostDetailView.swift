@@ -95,6 +95,20 @@ struct PostDetailView: View, Equatable {
         }
     }
 
+    /// `atsSafe` URLs of heavy animated-WebP body images (the ones with a
+    /// blur-up poster → rendered first-frame-only inline). The prefetcher must
+    /// skip these: a full-decode prefetch of a 354-frame webp blocks the shared
+    /// serial decode queue for ~14s. Matches `NetworkImage`'s
+    /// `decodesFirstFrameOnly: posterURL != nil` gate.
+    private var prefetchSkipURLs: Set<URL> {
+        Set((loader.detail?.blocks ?? []).compactMap {
+            if case .image(let url, let posterURL, _) = $0.kind, posterURL != nil {
+                return url.atsSafe
+            }
+            return nil
+        })
+    }
+
     /// Minimum wall-clock delay between view appearance and the first
     /// `detail = ...` commit. Must exceed the iOS push animation (~350ms);
     /// committing earlier causes SwiftUI to build the image-heavy subtree
@@ -215,7 +229,7 @@ struct PostDetailView: View, Equatable {
         .onChange(of: bodyImageURLs) { _, urls in
             imagePrefetcher?.cancel()
             guard !urls.isEmpty else { imagePrefetcher = nil; return }
-            let prefetcher = BodyImagePrefetcher(urls: urls)
+            let prefetcher = BodyImagePrefetcher(urls: urls, skipPrefetch: prefetchSkipURLs)
             // Warm the head right away. The first image is eager (above the
             // fold), so its look-ahead shouldn't depend on whether its
             // `onAppear` fires before or after this `onChange`.
