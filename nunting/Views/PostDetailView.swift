@@ -90,9 +90,23 @@ struct PostDetailView: View, Equatable {
     /// look-ahead list and the "is this the first image?" eager-load check.
     private var bodyImageURLs: [URL] {
         (loader.detail?.blocks ?? []).compactMap {
-            if case .image(let url, _) = $0.kind { return url }
+            if case .image(let url, _, _) = $0.kind { return url }
             return nil
         }
+    }
+
+    /// `atsSafe` URLs of heavy animated-WebP body images (the ones with a
+    /// blur-up poster → rendered first-frame-only inline). The prefetcher must
+    /// skip these: a full-decode prefetch of a 354-frame webp blocks the shared
+    /// serial decode queue for ~14s. Matches `NetworkImage`'s
+    /// `decodesFirstFrameOnly: posterURL != nil` gate.
+    private var prefetchSkipURLs: Set<URL> {
+        Set((loader.detail?.blocks ?? []).compactMap {
+            if case .image(let url, let posterURL, _) = $0.kind, posterURL != nil {
+                return url.atsSafe
+            }
+            return nil
+        })
     }
 
     /// Minimum wall-clock delay between view appearance and the first
@@ -215,7 +229,7 @@ struct PostDetailView: View, Equatable {
         .onChange(of: bodyImageURLs) { _, urls in
             imagePrefetcher?.cancel()
             guard !urls.isEmpty else { imagePrefetcher = nil; return }
-            let prefetcher = BodyImagePrefetcher(urls: urls)
+            let prefetcher = BodyImagePrefetcher(urls: urls, skipPrefetch: prefetchSkipURLs)
             // Warm the head right away. The first image is eager (above the
             // fold), so its look-ahead shouldn't depend on whether its
             // `onAppear` fires before or after this `onChange`.
@@ -374,7 +388,7 @@ struct PostDetailView: View, Equatable {
                             font: .preferredFont(forTextStyle: .body)
                         )
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    case .image(let url, let aspectRatio):
+                    case .image(let url, let posterURL, let aspectRatio):
                         // Body images go through SDWebImage's
                         // `AnimatedImage` (libwebp for animated WebP /
                         // GIF / APNG, native fast path for stills) via
@@ -398,6 +412,24 @@ struct PostDetailView: View, Equatable {
                         NetworkImage(
                             url: url,
                             aspectRatio: aspectRatio,
+                            posterURL: posterURL,
+                            // A poster is attached only to heavy humoruniv
+                            // direct-attach WebP (animated 짤방). Those also get
+                            // first-frame-only inline decode: full-animation
+                            // decode is ~14s and blocks the shared serial decode
+                            // queue, freezing every image below it. Static
+                            // inline + tap-to-play (fullscreen) instead.
+                            //
+                            // KNOWN SCOPE LIMIT: this gate is humoruniv-only by
+                            // design — `posterURL` is set solely by HumorParser
+                            // (the one board with a thumbnail proxy to source a
+                            // poster from). A large animated WebP from another
+                            // board (Clien/Etoland/…) has `posterURL == nil`, so
+                            // it still goes through `AnimatedImage` and would
+                            // reproduce the freeze. Not yet observed elsewhere;
+                            // if it surfaces, decouple first-frame-only from
+                            // poster availability (its own block flag).
+                            decodesFirstFrameOnly: posterURL != nil,
                             // Eager-load the first body image: it's above the
                             // fold on open, so skip the viewport gate and let
                             // its fetch start at commit instead of waiting for

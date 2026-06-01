@@ -156,7 +156,7 @@ final class ParserDetailTests: XCTestCase {
 
         XCTAssertEqual(detail.blocks.count, 4)
         guard case .richText(let head) = detail.blocks[0].kind,
-              case .image(let imageURL, _) = detail.blocks[1].kind,
+              case .image(let imageURL, _, _) = detail.blocks[1].kind,
               case .embed(.youtube, let id) = detail.blocks[2].kind,
               case .richText(let tail) = detail.blocks[3].kind
         else { return XCTFail("expected text -> image -> youtube embed -> text block order") }
@@ -958,6 +958,78 @@ final class ParserDetailTests: XCTestCase {
                        "img_file_url 우선 + skipImageMarkers 차단")
     }
 
+    func testHumorBodyDirectWebPGetsBlurUpPosterButJPGDoesNot() throws {
+        // `simple_attach_img` 직접 첨부 webp(움짤)는 원본만 있고 정적 대체본이
+        // 없어 다운로드+디코드에 수 초 걸린다 → thumb.php blur-up 포스터를 단다.
+        // 반면 `img_compress` 는 위 우선순위 규칙이 `img_file_url` JPG 로 갈아타
+        // resolve 결과가 webp 가 아니므로 포스터가 붙지 않아야 (가벼운 이미지에
+        // 불필요한 썸네일 요청을 막는 게 핵심). pds#1412160 회귀 핀.
+        let html = """
+        <html><body>
+        <div id="read_subject_div"><h2><a>제목</a></h2></div>
+        <div id="wrap_copy">
+          <div class="body_editor">
+            <img class="simple_attach_img" src="https://down.humoruniv.com//data/anim.webp">
+            <img class="img_compress" img_file_url="https://down.humoruniv.com//data/orig.jpg" src="https://down-webp.humoruniv.com/c.webp">
+          </div>
+        </div>
+        </body></html>
+        """
+        let parser = HumorParser()
+        let post = Post.fixture(
+            id: "humor-poster",
+            site: .humor,
+            boardID: "pds",
+            url: URL(string: "https://m.humoruniv.com/board/humor/read.html?table=pds&number=1412160")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        let images: [(url: URL, poster: URL?)] = detail.blocks.compactMap { block in
+            if case .image(let url, let poster, _) = block.kind { (url, poster) } else { nil }
+        }
+        XCTAssertEqual(images.count, 2)
+
+        // 직접 첨부 webp → 원본 src 그대로 + thumb.php 포스터.
+        XCTAssertEqual(images[0].url.absoluteString, "https://down.humoruniv.com//data/anim.webp")
+        XCTAssertEqual(
+            images[0].poster?.absoluteString,
+            "https://timg.humoruniv.com/thumb.php?url=https://down.humoruniv.com//data/anim.webp&SIZE=120x90",
+            "직접 첨부 webp 에는 blur-up 포스터가 붙어야"
+        )
+
+        // img_compress → img_file_url JPG 로 resolve → webp 아님 → 포스터 nil.
+        XCTAssertEqual(images[1].url.absoluteString, "https://down.humoruniv.com//data/orig.jpg")
+        XCTAssertNil(images[1].poster, "JPG 로 갈아탄 가벼운 이미지엔 포스터 미부착")
+    }
+
+    func testHumorPosterEncodesQueryBreakingCharsInSourceURL() throws {
+        // 방어적: src 에 자체 쿼리(`&`)가 있으면 thumb.php 의 바깥 쿼리를 깨
+        // SIZE 가 url 값으로 빨려든다. `&` 는 %26 로 인코딩돼 SIZE 가 보존돼야.
+        // (`://`,`/` 는 서버가 raw 를 요구하므로 그대로 유지.)
+        let html = """
+        <html><body>
+        <div id="read_subject_div"><h2><a>제목</a></h2></div>
+        <div id="wrap_copy"><div class="body_editor">
+          <img class="simple_attach_img" src="https://down.humoruniv.com//data/anim.webp?v=1&t=2">
+        </div></div>
+        </body></html>
+        """
+        let parser = HumorParser()
+        let post = Post.fixture(
+            id: "humor-poster-q", site: .humor, boardID: "pds",
+            url: URL(string: "https://m.humoruniv.com/board/humor/read.html?table=pds&number=1")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        guard case .image(_, let poster, _)? = detail.blocks.first(where: {
+            if case .image = $0.kind { return true }; return false
+        })?.kind, let poster else {
+            return XCTFail("webp 이미지 + 포스터 기대")
+        }
+        let s = poster.absoluteString
+        XCTAssertTrue(s.contains("%26t=2"), "src 의 & 는 %26 로 인코딩: \(s)")
+        XCTAssertTrue(s.hasSuffix("&SIZE=120x90"), "바깥 SIZE 파라미터 보존: \(s)")
+        XCTAssertTrue(s.contains("://down.humoruniv.com//data"), ":/ 는 raw 유지: \(s)")
+    }
+
     func testHumorBodyOnclickMp4PromotesToVideoBlock() throws {
         // Humor 비디오는 `<div onclick="comment_mp4_expand('id', 'url.mp4')">`
         // 형태로 옴 — onclick handler 파싱이 표준 dispatch 전에 동작해야 함.
@@ -1015,7 +1087,7 @@ final class ParserDetailTests: XCTestCase {
         let embeds = detail.blocks.youtubeIDs
         XCTAssertEqual(embeds, ["abcdefghijk"])
         let hasHidden = detail.blocks.contains { block in
-            if case .image(let url, _) = block.kind { return url.absoluteString.contains("hidden") }
+            if case .image(let url, _, _) = block.kind { return url.absoluteString.contains("hidden") }
             return false
         }
         XCTAssertFalse(hasHidden, "display:none 안 이미지 누락")
@@ -1046,7 +1118,7 @@ final class ParserDetailTests: XCTestCase {
 
         XCTAssertEqual(detail.blocks.count, 3)
         guard case .richText(let head) = detail.blocks[0].kind,
-              case .image(let imageURL, _) = detail.blocks[1].kind,
+              case .image(let imageURL, _, _) = detail.blocks[1].kind,
               case .richText(let tail) = detail.blocks[2].kind
         else {
             return XCTFail("expected richText, image, richText; got \(detail.blocks.map(\.kind))")
@@ -1098,7 +1170,7 @@ final class ParserDetailTests: XCTestCase {
 
         XCTAssertEqual(detail.blocks.count, 5)
         guard case .richText(let head) = detail.blocks[0].kind,
-              case .image(let imageURL, _) = detail.blocks[1].kind,
+              case .image(let imageURL, _, _) = detail.blocks[1].kind,
               case .video(let videoURL, _) = detail.blocks[2].kind,
               case .embed(.youtube, let embedID) = detail.blocks[3].kind,
               case .richText(let tail) = detail.blocks[4].kind
@@ -1476,7 +1548,7 @@ final class ParserDetailTests: XCTestCase {
         } else {
             XCTFail("첫 블록은 richText 이어야 함")
         }
-        if case .image(let url, _) = kinds[1] {
+        if case .image(let url, _, _) = kinds[1] {
             XCTAssertEqual(url.absoluteString, "https://e.com/bobae-a.png")
         } else {
             XCTFail("두 번째 블록은 image 이어야 함")
@@ -1512,7 +1584,7 @@ final class ParserDetailTests: XCTestCase {
         )
         let detail = try parser.parseDetail(html: html, post: post)
         let hasHidden = detail.blocks.contains { block in
-            if case .image(let url, _) = block.kind {
+            if case .image(let url, _, _) = block.kind {
                 return url.absoluteString.contains("hidden")
             }
             return false

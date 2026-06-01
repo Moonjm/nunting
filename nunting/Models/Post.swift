@@ -89,7 +89,7 @@ public struct ContentBlock: Identifiable, Hashable {
 
     public enum Kind: Hashable {
         case richText([InlineSegment])
-        case image(url: URL, aspectRatio: CGFloat?)
+        case image(url: URL, posterURL: URL?, aspectRatio: CGFloat?)
         case video(url: URL, posterURL: URL?)
         case dealLink(url: URL, label: String)
         case embed(provider: EmbedProvider, id: String)
@@ -106,8 +106,8 @@ public struct ContentBlock: Identifiable, Hashable {
     public nonisolated static func richText(_ segments: [InlineSegment]) -> ContentBlock {
         .init(id: UUID(), kind: .richText(segments))
     }
-    public nonisolated static func image(_ url: URL, aspectRatio: CGFloat? = nil) -> ContentBlock {
-        .init(id: UUID(), kind: .image(url: url, aspectRatio: aspectRatio))
+    public nonisolated static func image(_ url: URL, posterURL: URL? = nil, aspectRatio: CGFloat? = nil) -> ContentBlock {
+        .init(id: UUID(), kind: .image(url: url, posterURL: posterURL, aspectRatio: aspectRatio))
     }
     public nonisolated static func video(_ url: URL, posterURL: URL? = nil) -> ContentBlock {
         .init(id: UUID(), kind: .video(url: url, posterURL: posterURL))
@@ -166,7 +166,7 @@ public struct PostDetail {
 
     public var images: [URL] {
         blocks.compactMap { block in
-            if case .image(let url, _) = block.kind { url } else { nil }
+            if case .image(let url, _, _) = block.kind { url } else { nil }
         }
     }
 }

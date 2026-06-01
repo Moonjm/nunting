@@ -22,7 +22,7 @@ extension Array where Element == ContentBlock {
     /// `(url, aspectRatio?)` for every `.image` block.
     var images: [(URL, CGFloat?)] {
         compactMap { block -> (URL, CGFloat?)? in
-            if case .image(let url, let aspectRatio) = block.kind {
+            if case .image(let url, _, let aspectRatio) = block.kind {
                 return (url, aspectRatio)
             }
             return nil

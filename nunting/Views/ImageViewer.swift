@@ -94,7 +94,15 @@ struct ImageViewer: View {
         // with headroom for pinch-to-zoom.
         let maxPixelSize = min(max(2400 * displayScale, 1024), 4096)
         let context: [SDWebImageContextOption: Any] = [
-            .imageThumbnailPixelSize: NSValue(cgSize: CGSize(width: maxPixelSize, height: maxPixelSize))
+            .imageThumbnailPixelSize: NSValue(cgSize: CGSize(width: maxPixelSize, height: maxPixelSize)),
+            // Decode animated WebP/GIF as a *lazy* `SDAnimatedImage` (frames
+            // decoded on demand during playback) instead of the default path,
+            // which materialises every frame into `UIImage.images` up front —
+            // for a 354-frame / 720×1280 짤방 that's ~14s + ~1.2 GB and froze
+            // the viewer behind a spinner. The lazy image returns in ~50ms;
+            // `SDAnimatedImageView` (below) then plays it within a bounded
+            // buffer. Static images are unaffected (single-frame SDAnimatedImage).
+            .animatedImageClass: SDAnimatedImage.self,
         ]
 
         // SDWebImageManager.loadImage handles fetch + decode + memory /
@@ -139,7 +147,13 @@ private struct ZoomableImageView: UIViewRepresentable {
         scrollView.showsVerticalScrollIndicator = false
         scrollView.decelerationRate = .fast
 
-        let imageView = UIImageView(image: image)
+        // `SDAnimatedImageView` (a `UIImageView` subclass) plays a lazy
+        // `SDAnimatedImage` frame-by-frame; a plain `UIImageView` would show
+        // only its poster frame. `maxBufferSize` caps decoded-frame residency
+        // (default 0 = buffer every frame → ~1.2 GB on a 354-frame 짤방).
+        let imageView = SDAnimatedImageView()
+        imageView.image = image
+        imageView.maxBufferSize = 16 * 1024 * 1024
         imageView.contentMode = .scaleAspectFit
         imageView.isUserInteractionEnabled = true
         imageView.frame = scrollView.bounds
