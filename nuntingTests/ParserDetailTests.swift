@@ -1001,6 +1001,35 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertNil(images[1].poster, "JPG 로 갈아탄 가벼운 이미지엔 포스터 미부착")
     }
 
+    func testHumorPosterEncodesQueryBreakingCharsInSourceURL() throws {
+        // 방어적: src 에 자체 쿼리(`&`)가 있으면 thumb.php 의 바깥 쿼리를 깨
+        // SIZE 가 url 값으로 빨려든다. `&` 는 %26 로 인코딩돼 SIZE 가 보존돼야.
+        // (`://`,`/` 는 서버가 raw 를 요구하므로 그대로 유지.)
+        let html = """
+        <html><body>
+        <div id="read_subject_div"><h2><a>제목</a></h2></div>
+        <div id="wrap_copy"><div class="body_editor">
+          <img class="simple_attach_img" src="https://down.humoruniv.com//data/anim.webp?v=1&t=2">
+        </div></div>
+        </body></html>
+        """
+        let parser = HumorParser()
+        let post = Post.fixture(
+            id: "humor-poster-q", site: .humor, boardID: "pds",
+            url: URL(string: "https://m.humoruniv.com/board/humor/read.html?table=pds&number=1")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        guard case .image(_, let poster, _)? = detail.blocks.first(where: {
+            if case .image = $0.kind { return true }; return false
+        })?.kind, let poster else {
+            return XCTFail("webp 이미지 + 포스터 기대")
+        }
+        let s = poster.absoluteString
+        XCTAssertTrue(s.contains("%26t=2"), "src 의 & 는 %26 로 인코딩: \(s)")
+        XCTAssertTrue(s.hasSuffix("&SIZE=120x90"), "바깥 SIZE 파라미터 보존: \(s)")
+        XCTAssertTrue(s.contains("://down.humoruniv.com//data"), ":/ 는 raw 유지: \(s)")
+    }
+
     func testHumorBodyOnclickMp4PromotesToVideoBlock() throws {
         // Humor 비디오는 `<div onclick="comment_mp4_expand('id', 'url.mp4')">`
         // 형태로 옴 — onclick handler 파싱이 표준 dispatch 전에 동작해야 함.

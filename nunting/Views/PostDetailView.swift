@@ -419,6 +419,16 @@ struct PostDetailView: View, Equatable {
                             // decode is ~14s and blocks the shared serial decode
                             // queue, freezing every image below it. Static
                             // inline + tap-to-play (fullscreen) instead.
+                            //
+                            // KNOWN SCOPE LIMIT: this gate is humoruniv-only by
+                            // design — `posterURL` is set solely by HumorParser
+                            // (the one board with a thumbnail proxy to source a
+                            // poster from). A large animated WebP from another
+                            // board (Clien/Etoland/…) has `posterURL == nil`, so
+                            // it still goes through `AnimatedImage` and would
+                            // reproduce the freeze. Not yet observed elsewhere;
+                            // if it surfaces, decouple first-frame-only from
+                            // poster availability (its own block flag).
                             decodesFirstFrameOnly: posterURL != nil,
                             // Eager-load the first body image: it's above the
                             // fold on open, so skip the viewport gate and let

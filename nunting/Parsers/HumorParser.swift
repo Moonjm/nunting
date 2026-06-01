@@ -206,7 +206,7 @@ public struct HumorParser: BoardParser {
         // 썸네일 요청이 붙지 않는다.
         rules.imageBlock = { url in
             guard url.pathExtension.lowercased() == "webp",
-                  let poster = URL(string: "https://timg.humoruniv.com/thumb.php?url=\(url.absoluteString)&SIZE=120x90")
+                  let poster = Self.thumbnailProxyURL(for: url)
             else { return .image(url) }
             return .image(url, posterURL: poster)
         }
@@ -222,6 +222,25 @@ public struct HumorParser: BoardParser {
             return [.video(videoURL)]
         }
         return try ParserBlockWalker(parser: self, rules: rules).walk(wrap)
+    }
+
+    /// `timg.humoruniv.com/thumb.php` proxy URL for a source image — the
+    /// ~2KB static thumbnail used as a blur-up poster.
+    ///
+    /// The proxy takes the source as a raw `?url=<src>` value and **rejects a
+    /// fully percent-encoded URL with 403** (it wants the `://` and `/`
+    /// verbatim). So we keep the URL-safe characters the server expects and
+    /// only percent-encode the ones that would otherwise break the *outer*
+    /// query — `&`, `#`, space — preventing a `src` with its own query string
+    /// from swallowing the trailing `SIZE` param. For today's humoruniv editor
+    /// images (no query) the output is byte-identical to the raw form.
+    nonisolated private static func thumbnailProxyURL(for source: URL) -> URL? {
+        let safe = CharacterSet(charactersIn:
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~:/?=")
+        guard let encoded = source.absoluteString.addingPercentEncoding(withAllowedCharacters: safe) else {
+            return nil
+        }
+        return URL(string: "https://timg.humoruniv.com/thumb.php?url=\(encoded)&SIZE=120x90")
     }
 
     nonisolated private func parseMp4Click(_ onclick: String) throws -> URL? {
