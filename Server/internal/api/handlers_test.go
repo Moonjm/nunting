@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -217,5 +218,57 @@ func TestNormalizeKeyword(t *testing.T) {
 		if got != c.want {
 			t.Errorf("normalizeKeyword(%q): want %q, got %q", c.in, c.want, got)
 		}
+	}
+}
+
+func TestAlertHistoryEndpoint(t *testing.T) {
+	srv, store := newTestServer(t)
+	defer srv.Close()
+	defer store.Close()
+
+	// 빈 이력은 "null" 이 아니라 "[]" 여야 함. (요청이 user 도 생성)
+	code, body := do(t, "GET", srv.URL+"/me/alert-history", "nnt_x", "")
+	if code != 200 || strings.TrimSpace(body) != "[]" {
+		t.Fatalf("empty: want 200 '[]', got %d %q", code, body)
+	}
+
+	if _, err := store.RecordAlert(t.Context(), "nnt_x", "갤럭시", "1001", "갤럭시 핫딜", "https://m.ppomppu.co.kr/1001"); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	code, body = do(t, "GET", srv.URL+"/me/alert-history?limit=10", "nnt_x", "")
+	if code != 200 {
+		t.Fatalf("want 200, got %d %q", code, body)
+	}
+	var items []db.AlertHistoryItem
+	if err := json.Unmarshal([]byte(body), &items); err != nil {
+		t.Fatalf("decode %q: %v", body, err)
+	}
+	if len(items) != 1 || items[0].Keyword != "갤럭시" || items[0].Title != "갤럭시 핫딜" {
+		t.Fatalf("unexpected items: %+v", items)
+	}
+	if items[0].URL != "https://m.ppomppu.co.kr/1001" || items[0].PostNo != "1001" {
+		t.Errorf("unexpected row: %+v", items[0])
+	}
+	if items[0].Read || items[0].ID == 0 {
+		t.Errorf("want unread with id set, got %+v", items[0])
+	}
+
+	// 읽음 마킹 후 read=true 로 바뀌어야 함.
+	id := items[0].ID
+	code, _ = do(t, "POST", srv.URL+fmt.Sprintf("/me/alert-history/%d/read", id), "nnt_x", "")
+	if code != 200 {
+		t.Fatalf("mark read: want 200, got %d", code)
+	}
+	code, body = do(t, "GET", srv.URL+"/me/alert-history", "nnt_x", "")
+	_ = json.Unmarshal([]byte(body), &items)
+	if !items[0].Read {
+		t.Errorf("want read=true after mark, got %+v", items[0])
+	}
+
+	// 잘못된 id → 400.
+	code, _ = do(t, "POST", srv.URL+"/me/alert-history/abc/read", "nnt_x", "")
+	if code != 400 {
+		t.Errorf("invalid id: want 400, got %d", code)
 	}
 }

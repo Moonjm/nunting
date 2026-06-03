@@ -42,6 +42,32 @@ enum AlertSubscriptionError: LocalizedError {
     }
 }
 
+// MARK: - Models
+
+/// 서버 `/me/alert-history` 응답의 한 건. 키 이름은 서버 Go `AlertHistoryItem`
+/// (snake_case) 과 합의됨.
+struct AlertHistoryItem: Decodable, Identifiable {
+    let keyword: String
+    let postNo: String
+    let title: String
+    let url: String
+    let sentAt: TimeInterval  // Unix seconds
+
+    enum CodingKeys: String, CodingKey {
+        case keyword
+        case postNo = "post_no"
+        case title
+        case url
+        case sentAt = "sent_at"
+    }
+
+    /// 서버는 id 를 노출하지 않으므로 행 식별은 (postNo, sentAt) 조합으로.
+    /// 같은 글이 다른 시각에 재매칭될 일은 거의 없지만 충돌 방지로 둘 다 사용.
+    var id: String { "\(postNo)-\(Int(sentAt))" }
+
+    var sentDate: Date { Date(timeIntervalSince1970: sentAt) }
+}
+
 // MARK: - Service
 
 final class AlertSubscriptionService {
@@ -101,6 +127,17 @@ final class AlertSubscriptionService {
     func removeKeyword(_ keyword: String) async throws {
         let encoded = keyword.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? keyword
         _ = try await delete("/me/keywords/\(encoded)")
+    }
+
+    /// 서버가 기록한 키워드 매칭 이력을 최신순으로 가져온다. 매칭/푸시 발송은
+    /// 전부 서버에서 일어나므로(클라는 푸시를 받을 뿐) 이력의 source of truth 도 서버.
+    func fetchAlertHistory(limit: Int = 100) async throws -> [AlertHistoryItem] {
+        let (data, _) = try await get("/me/alert-history?limit=\(limit)")
+        do {
+            return try JSONDecoder().decode([AlertHistoryItem].self, from: data)
+        } catch {
+            throw AlertSubscriptionError.decodeFailed(String(data: data, encoding: .utf8) ?? "")
+        }
     }
 
     // MARK: - HTTP helpers

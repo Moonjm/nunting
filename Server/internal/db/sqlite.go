@@ -27,6 +27,19 @@ CREATE TABLE IF NOT EXISTS keyword_subs (
 );
 CREATE INDEX IF NOT EXISTS idx_users_with_token
     ON users(uuid) WHERE push_token IS NOT NULL;
+CREATE TABLE IF NOT EXISTS alert_history (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    uuid    TEXT NOT NULL,
+    keyword TEXT NOT NULL,
+    post_no TEXT NOT NULL,
+    title   TEXT NOT NULL,
+    url     TEXT NOT NULL,
+    sent_at INTEGER NOT NULL,
+    read_at INTEGER,
+    FOREIGN KEY (uuid) REFERENCES users(uuid) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_alert_history_uuid_id
+    ON alert_history(uuid, id DESC);
 `
 
 // Store 는 *sql.DB 래퍼. 모든 query method 가 context-aware.
@@ -49,6 +62,14 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(schemaSQL); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("schema: %w", err)
+	}
+	// read_at 없던 시절(초기 alert_history) 배포 DB 마이그레이션. 이미 컬럼이
+	// 있으면 "duplicate column name" 만 무시하고, 그 외 에러는 전파.
+	if _, err := db.Exec(`ALTER TABLE alert_history ADD COLUMN read_at INTEGER`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			db.Close()
+			return nil, fmt.Errorf("migrate read_at: %w", err)
+		}
 	}
 	return &Store{db: db}, nil
 }
@@ -198,6 +219,66 @@ func titleContainsAllTokens(lowerTitle, keyword string) bool {
 		}
 	}
 	return hadAny
+}
+
+// AlertHistoryItem 클라이언트에 노출하는 알림 이력 한 건. JSON 태그는
+// iOS AlertHistoryItem (snake_case) 디코더와 합의된 형태. Read 는 read_at
+// 컬럼이 set 됐는지(=글을 열어 읽음 처리됐는지) 여부.
+type AlertHistoryItem struct {
+	ID      int64  `json:"id"`
+	Keyword string `json:"keyword"`
+	PostNo  string `json:"post_no"`
+	Title   string `json:"title"`
+	URL     string `json:"url"`
+	SentAt  int64  `json:"sent_at"` // Unix seconds
+	Read    bool   `json:"read"`
+}
+
+// RecordAlert 매칭된 글을 유저 이력에 한 줄 추가하고 새 row id 를 반환한다
+// (read_at = NULL → 안 읽음). 반환 id 는 APNs payload 에 실어 푸시-탭 시 읽음
+// 처리에 쓴다. 보관 개수 제한 없음 — 전부 누적. 푸시 발송 성공/실패와 무관하게
+// "매칭됨" 시점을 기록하며, 실패해도 폴 사이클을 막지 않게 caller 가 로그만 남김.
+func (s *Store) RecordAlert(ctx context.Context, uuid, keyword, postNo, title, url string) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO alert_history (uuid, keyword, post_no, title, url, sent_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		uuid, keyword, postNo, title, url, time.Now().Unix())
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// ListAlertHistory 유저의 알림 이력을 최신순으로 limit 건 반환.
+func (s *Store) ListAlertHistory(ctx context.Context, uuid string, limit int) ([]AlertHistoryItem, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, keyword, post_no, title, url, sent_at, read_at
+		 FROM alert_history WHERE uuid = ? ORDER BY id DESC LIMIT ?`, uuid, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AlertHistoryItem{}
+	for rows.Next() {
+		var it AlertHistoryItem
+		var readAt sql.NullInt64
+		if err := rows.Scan(&it.ID, &it.Keyword, &it.PostNo, &it.Title, &it.URL, &it.SentAt, &readAt); err != nil {
+			return nil, err
+		}
+		it.Read = readAt.Valid
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
+// MarkAlertRead 해당 유저의 알림 한 건을 읽음 처리(read_at = now). uuid 조건으로
+// 남의 알림은 못 건드린다. 이미 읽음이면 no-op(read_at IS NULL 가드, idempotent).
+func (s *Store) MarkAlertRead(ctx context.Context, uuid string, id int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE alert_history SET read_at = ?
+		 WHERE uuid = ? AND id = ? AND read_at IS NULL`,
+		time.Now().Unix(), uuid, id)
+	return err
 }
 
 // ClearPushTokenByValue APNs 410 self-heal — 토큰 값으로 user 찾아 NULL.

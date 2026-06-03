@@ -26,7 +26,7 @@ type apnsCall struct {
 	PostID  string
 }
 
-func (a *recordedAPNs) Send(ctx context.Context, token, keyword string, post Post) error {
+func (a *recordedAPNs) Send(ctx context.Context, token, keyword string, alertID int64, post Post) error {
 	a.calls = append(a.calls, apnsCall{token, keyword, post.ID})
 	return nil
 }

@@ -20,7 +20,7 @@ type Fetcher interface {
 	FetchAndParse(ctx context.Context, page int) ([]Post, error)
 }
 type APNsSender interface {
-	Send(ctx context.Context, deviceToken, matchedKeyword string, post Post) error
+	Send(ctx context.Context, deviceToken, matchedKeyword string, alertID int64, post Post) error
 }
 
 // HTTPFetcher 실 ppomppu 호출 — FetchListPage + ParseList 를 묶음.
@@ -162,7 +162,15 @@ walk:
 			continue
 		}
 		for _, m := range matches {
-			if err := p.apns.Send(ctx, m.PushToken, m.Keyword, post); err != nil {
+			// 알림 이력은 발송 시도 전에 기록 — 토큰 만료 등으로 push 가
+			// 실패해도 "키워드가 매칭됐다" 는 사실은 남긴다. 기록 실패는
+			// 폴 사이클을 막지 않게 로그만 남기고 진행(alertID=0 → 클라 무시).
+			alertID, err := p.store.RecordAlert(ctx, m.UUID, m.Keyword, post.PostNo, post.Title, post.URL)
+			if err != nil {
+				slog.Error("poller_history_error", "uuid", m.UUID, "post_id", post.ID, "err", err)
+				alertID = 0
+			}
+			if err := p.apns.Send(ctx, m.PushToken, m.Keyword, alertID, post); err != nil {
 				slog.Error("poller_apns_error", "uuid", m.UUID, "post_id", post.ID, "err", err)
 				continue
 			}
