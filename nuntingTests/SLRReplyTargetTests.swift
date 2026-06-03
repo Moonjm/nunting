@@ -19,13 +19,16 @@ final class SLRReplyTargetTests: XCTestCase {
 
         XCTAssertEqual(comments.count, 2)
 
-        // 원댓글: 대상 없음 → 대괄호 없음.
+        // 원댓글: 대상 없음 → replyTarget nil, 본문 그대로.
         XCTAssertEqual(comments[0].author, "한국참교육협회")
         XCTAssertFalse(comments[0].isReply)
+        XCTAssertNil(comments[0].replyTarget)
         XCTAssertEqual(comments[0].content, "원댓글 내용")
 
-        // 답글: 대상(tn) 이 `[이름]` 으로 본문 앞에.
+        // 답글: 대상(tn) 은 구조화 필드(replyTarget)로, 본문엔 안 박힘.
+        // (뷰가 파란 `@이름` 멘션으로 렌더 — 닉네임 특수문자 안전)
         XCTAssertTrue(comments[1].isReply)
-        XCTAssertEqual(comments[1].content, "[한국참교육협회] 노무현 대통령 조롱하는게 놀이..")
+        XCTAssertEqual(comments[1].replyTarget, "한국참교육협회")
+        XCTAssertEqual(comments[1].content, "노무현 대통령 조롱하는게 놀이..")
     }
 }

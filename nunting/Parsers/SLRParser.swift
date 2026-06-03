@@ -247,24 +247,23 @@ public struct SLRParser: BoardParser {
             let author = (entry.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             let rendered = renderMemo(entry.memo ?? "")
 
-            // 답글 대상 닉네임(tn)을 웹과 동일하게 본문 앞에 `[이름]` 으로 노출.
-            // 앱은 그동안 tn 을 버려 답글에 누구한테 단 건지 안 보였다.
+            // 답글 대상 닉네임(JSON tn)은 구조화 필드로 넘겨 뷰가 뽐뿌 멘션과
+            // 동일한 파란 `@이름` 으로 렌더한다. (앱이 그동안 tn 을 버려 답글에
+            // 누구한테 단 건지 안 보였다.) SLR 닉네임은 특수문자(*, -, ~)가 많아
+            // 본문 텍스트 스캔 강조로는 잘리므로 텍스트에 박지 않고 필드로 전달.
             let target = (entry.tn ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            var content = rendered.text
-            if !target.isEmpty {
-                content = content.isEmpty ? "[\(target)]" : "[\(target)] \(content)"
-            }
 
-            if author.isEmpty, content.isEmpty, rendered.sticker == nil { continue }
+            if author.isEmpty, rendered.text.isEmpty, rendered.sticker == nil, target.isEmpty { continue }
 
             let id = "slr-c-\(entry.pk ?? "idx\(idx)")"
             results.append(PostComment(
                 id: id,
                 author: author,
                 dateText: entry.dt ?? "",
-                content: content,
+                content: rendered.text,
                 likeCount: entry.vt ?? 0,
                 isReply: entry.th != nil,
+                replyTarget: target.isEmpty ? nil : target,
                 stickerURL: rendered.sticker,
                 videoURL: rendered.video
             ))
