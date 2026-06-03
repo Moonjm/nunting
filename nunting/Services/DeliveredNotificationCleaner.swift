@@ -71,6 +71,12 @@ enum DeliveredNotificationCleaner {
         guard PostNotificationKey.make(from: post.url) != nil else { return }
 
         let center = UNUserNotificationCenter.current()
+        // The completion runs on a background queue. Safe under the
+        // project's Swift 5 config: `removeDeliveredNotifications` is
+        // thread-safe and `AlertSubscriptionService.shared` is stateless
+        // (only `let` props + URLSession), so the detached Task races
+        // nothing. A future Swift 6 / strict-concurrency move would need
+        // `AlertSubscriptionService: Sendable` and a hop to the actor.
         center.getDeliveredNotifications { delivered in
             let projected = delivered.map { note -> DeliveredAlert in
                 let info = note.request.content.userInfo

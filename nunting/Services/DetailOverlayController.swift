@@ -117,11 +117,13 @@ final class DetailOverlayController {
         let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
         let queryItems = comps?.queryItems ?? []
         let boardID = queryItems.first(where: { $0.name == "id" })?.value ?? ""
-        let postNo = queryItems.first(where: { $0.name == "no" })?.value ?? UUID().uuidString
         let post = Post(
-            // boardID 비어있으면 site.rawValue로 fallback — 다른 사이트의 같은
-            // postNo끼리 cache key 충돌 방지(예: clien-12345 vs inven-12345).
-            id: "\(boardID.isEmpty ? site.rawValue : boardID)-\(postNo)",
+            // 단일 출처(`PostNotificationKey.make`)로 키 생성 — `DeliveredNotificationCleaner`
+            // 가 알림 매칭에 쓰는 키와 글자 그대로 일치해야 한다. `no` 없는
+            // 비정상 deep-link만 UUID로 fallback(boardID 비면 site.rawValue 접두 —
+            // 다른 사이트의 같은 postNo끼리 cache key 충돌 방지).
+            id: PostNotificationKey.make(from: url)
+                ?? "\(boardID.isEmpty ? site.rawValue : boardID)-\(UUID().uuidString)",
             site: site,
             boardID: boardID,
             title: title,
