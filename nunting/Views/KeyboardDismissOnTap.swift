@@ -21,8 +21,12 @@ final class KeyboardDismissTapCoordinator: NSObject, UIGestureRecognizerDelegate
 
     func install() {
         installCount += 1
-        // 이미 달려 있으면 카운트만 증가. (window 가 아직 없으면 다음 install 때 재시도)
-        guard recognizer == nil, let window = Self.keyWindow else { return }
+        // 이미 살아있는 window 에 부착돼 있으면 카운트만 증가.
+        if recognizer != nil, window != nil { return }
+        // 미설치 or weak window 가 해제된 경우 → 현재 key window 에 (재)부착.
+        // (window 가 아직 없으면 다음 install 때 재시도)
+        guard let window = Self.keyWindow else { return }
+        recognizer = nil  // 죽은 window 의 stale 참조 정리
         let tap = UITapGestureRecognizer(target: window, action: #selector(UIView.endEditing))
         tap.cancelsTouchesInView = false
         tap.delegate = self
