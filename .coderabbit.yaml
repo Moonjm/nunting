@@ -12,7 +12,6 @@ reviews:
     - "!**/*.pbxproj"
     - "!**/*.xcworkspacedata"
     - "!**/*.xcscheme"
-    - "!**/*.plist"
     - "!Server/go.sum"
   path_instructions:
     - path: "nunting/**/*.swift"
