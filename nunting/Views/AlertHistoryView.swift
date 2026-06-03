@@ -3,6 +3,9 @@ import SwiftUI
 /// 키워드 매칭으로 발송된 알림 이력. 서버가 매칭 시점에 기록한 것을
 /// 최신순으로 보여주고, 행을 탭하면 푸시 탭과 동일하게 상세 overlay 로 진입.
 /// 매칭/이력 기록은 전부 서버에서 일어나므로 여기선 읽기 전용으로 표시만 한다.
+///
+/// load()/markRead() 가 await 후 @State 를 갱신하므로 @MainActor 로 격리.
+@MainActor
 struct AlertHistoryView: View {
     /// 행 탭 시 시트를 닫고 상세 overlay 를 띄우기 위해 부모(KeywordListView)
     /// 시트의 dismiss 를 받는다.

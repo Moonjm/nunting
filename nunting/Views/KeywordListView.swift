@@ -4,6 +4,10 @@ import UIKit
 
 /// 키워드 리스트 + 추가/삭제. 첫 키워드 추가 시 푸시 권한 요청.
 /// 권한 거부 시 상단 배너로 안내(키워드 저장은 가능, 알림은 안 옴).
+///
+/// async 메서드(loadAll/submitNewKeyword/performDeletion)가 await 후 @State 를
+/// 만지므로 뷰 전체를 @MainActor 로 격리해 메인 스레드 갱신을 보장.
+@MainActor
 struct KeywordListView: View {
     /// 종 아이콘 시트의 두 탭: 키워드 관리 / 매칭된 알림 이력.
     private enum Tab: Hashable { case keywords, history }

@@ -15,12 +15,14 @@ final class KeyboardDismissTapCoordinator: NSObject, UIGestureRecognizerDelegate
 
     private weak var window: UIWindow?
     private var recognizer: UITapGestureRecognizer?
+    /// 설치 참조 수. 여러 화면이 동시에 쓰거나 화면 전환 시 install/remove 가
+    /// 겹쳐도(새 화면 install 후 옛 화면 remove) 0 이 될 때까지 인식기를 유지.
+    private var installCount = 0
 
     func install() {
-        guard let window = Self.keyWindow else { return }
-        // 이미 같은 window 에 달려 있으면 중복 설치 방지.
-        if recognizer != nil, self.window === window { return }
-        remove()
+        installCount += 1
+        // 이미 달려 있으면 카운트만 증가. (window 가 아직 없으면 다음 install 때 재시도)
+        guard recognizer == nil, let window = Self.keyWindow else { return }
         let tap = UITapGestureRecognizer(target: window, action: #selector(UIView.endEditing))
         tap.cancelsTouchesInView = false
         tap.delegate = self
@@ -30,6 +32,8 @@ final class KeyboardDismissTapCoordinator: NSObject, UIGestureRecognizerDelegate
     }
 
     func remove() {
+        installCount = max(0, installCount - 1)
+        guard installCount == 0 else { return }
         if let recognizer, let window {
             window.removeGestureRecognizer(recognizer)
         }
