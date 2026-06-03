@@ -214,15 +214,20 @@ extension BoardParser {
 
     /// 텍스트 노드의 비단절 공백(U+00A0, `&nbsp;`)을 nbsp sentinel 로 치환한다.
     ///
-    /// SwiftSoup `.text()` 정규화는 `Character.isWhitespace`(U+00A0 == true)를
-    /// 써서 단어 사이 nbsp 를 단일 공백이 아니라 **통째로 떨어뜨린다** — 인접
-    /// 단어가 붙어버린다(실측: 뽐뿌 대댓글 `<b>@닉</b>&nbsp;본문` → "@닉본문").
-    /// 멘션 강조가 닉네임 뒤 본문 첫 단어까지 먹는 버그의 근본 원인.
+    /// SwiftSoup `.text()` 는 `Character.isWhitespace`(U+00A0 == true)로 nbsp 를
+    /// whitespace 취급한다. 노드 *내부* nbsp 는 일반 공백 한 칸으로 접히지만,
+    /// **inline 요소 경계(다음 텍스트 노드 선두)의 nbsp 는 leading-strip 으로
+    /// 통째로 사라진다** — 인접 단어가 붙어버린다(실측: 뽐뿌 대댓글
+    /// `<b>@닉</b>&nbsp;본문` → "@닉본문"). 멘션 강조가 닉네임 뒤 본문 첫 단어까지
+    /// 먹는 버그의 근본 원인.
     ///
     /// 일반 공백으로 바꾸는 것만으론 부족하다 — stampBlockBreaks 이후 `.text()`
-    /// 가 inline 경계의 선두 공백을 또 흡수한다. 그래서 blockMarker 처럼 **비공백
+    /// 가 그 경계 선두 공백을 또 흡수한다. 그래서 blockMarker 처럼 **비공백
     /// sentinel**(nbspMarker)로 바꿔 flatten 을 통과시킨 뒤 normalizeCommentWhitespace
     /// 에서 공백으로 복원한다.
+    ///
+    /// 적용 범위: `renderCommentText` 를 타는 파서(Ppomppu/Aagag/Inven)의 댓글.
+    /// bare `.text()` 를 쓰는 다른 파서엔 적용 안 됨(현재 그쪽 멘션 사례 없음).
     public nonisolated func normalizeNonBreakingSpaces(in element: Element) {
         guard let all = try? element.getAllElements() else { return }
         for el in all.array() {
