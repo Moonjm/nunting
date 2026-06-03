@@ -44,6 +44,12 @@ extension BoardParser {
     /// payload rather than collapsible whitespace.
     public nonisolated static var blockMarker: String { "\u{0001}NL\u{0001}" }
 
+    /// 비단절 공백(U+00A0) 보존용 sentinel. `.text()` 정규화가 nbsp 를
+    /// whitespace 로 보고 단어 사이에서 떨어뜨리므로(인접 단어가 붙음), flatten
+    /// 전에 이 비공백 sentinel 로 치환해 통과시킨 뒤 `normalizeCommentWhitespace`
+    /// 에서 일반 공백으로 되돌린다. blockMarker 와 같은 수법(U+0001 control 양옆).
+    public nonisolated static var nbspMarker: String { "\u{0001}SP\u{0001}" }
+
     public nonisolated func commentsURL(for post: Post) -> URL? { nil }
     public nonisolated func parseComments(html: String) throws -> [PostComment] { [] }
 
@@ -185,6 +191,9 @@ extension BoardParser {
     /// cleaners.
     public nonisolated func normalizeCommentWhitespace(_ text: String) -> String {
         var s = text.replacingOccurrences(of: Self.blockMarker, with: "\n")
+        // nbsp sentinel → 일반 공백. block 처리 전에 풀어 줄바꿈 인접 공백
+        // 정리(아래 정규식)에 자연히 포함되게 한다.
+        s = s.replacingOccurrences(of: Self.nbspMarker, with: " ")
         s = s.replacingOccurrences(of: #"[ \t]*\n[ \t]*"#, with: "\n", options: .regularExpression)
         s = s.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -197,9 +206,32 @@ extension BoardParser {
     /// so callers pass a `.copy()` after their own site-specific stripping.
     /// Consolidates the identical tail in Aagag/Inven/Ppomppu comment parsers.
     public nonisolated func renderCommentText(from element: Element) -> String {
+        normalizeNonBreakingSpaces(in: element)
         convertAnchorsToMarkdown(in: element)
         stampBlockBreaks(in: element)
         return normalizeCommentWhitespace((try? element.text()) ?? "")
+    }
+
+    /// 텍스트 노드의 비단절 공백(U+00A0, `&nbsp;`)을 nbsp sentinel 로 치환한다.
+    ///
+    /// SwiftSoup `.text()` 정규화는 `Character.isWhitespace`(U+00A0 == true)를
+    /// 써서 단어 사이 nbsp 를 단일 공백이 아니라 **통째로 떨어뜨린다** — 인접
+    /// 단어가 붙어버린다(실측: 뽐뿌 대댓글 `<b>@닉</b>&nbsp;본문` → "@닉본문").
+    /// 멘션 강조가 닉네임 뒤 본문 첫 단어까지 먹는 버그의 근본 원인.
+    ///
+    /// 일반 공백으로 바꾸는 것만으론 부족하다 — stampBlockBreaks 이후 `.text()`
+    /// 가 inline 경계의 선두 공백을 또 흡수한다. 그래서 blockMarker 처럼 **비공백
+    /// sentinel**(nbspMarker)로 바꿔 flatten 을 통과시킨 뒤 normalizeCommentWhitespace
+    /// 에서 공백으로 복원한다.
+    public nonisolated func normalizeNonBreakingSpaces(in element: Element) {
+        guard let all = try? element.getAllElements() else { return }
+        for el in all.array() {
+            for textNode in el.textNodes() {
+                let whole = textNode.getWholeText()
+                guard whole.contains("\u{00A0}") else { continue }
+                _ = textNode.text(whole.replacingOccurrences(of: "\u{00A0}", with: Self.nbspMarker))
+            }
+        }
     }
 
     /// `renderCommentText(from:)` for parsers whose comment payload arrives as
