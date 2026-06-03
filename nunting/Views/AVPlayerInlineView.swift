@@ -185,7 +185,10 @@ final class InlineAutoplayUIView: UIView, VideoPlayerPool.Leaseholder {
                 // and, with no further visibility change to re-fire
                 // `setPlaying`, it would stall on its poster. This is
                 // the "scroll back up and a visible video stops
-                // playing" bug.
+                // playing" bug. `player != nil` here guarantees we
+                // still hold a pool lease (every path that nils the
+                // player also releases the lease, except this kept-warm
+                // pause), so `notifyResumed`'s lease lookup always hits.
                 VideoPlayerPool.shared.notifyResumed(self)
                 player?.play()
             }

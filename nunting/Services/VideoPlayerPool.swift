@@ -158,6 +158,18 @@ final class VideoPlayerPool {
     /// changed again, no `setPlaying` re-fires to recreate the player —
     /// it stalls on its poster mid-screen. This is the "scroll up and
     /// a visible video stops playing" bug.
+    ///
+    /// Unlike `notifyPaused`/`release`, this does NOT promote a waiter:
+    /// resuming reclaims a slot the lease already held, so no slot
+    /// frees up. It also only matters for a pause→resume pair with no
+    /// waiter queued in between — if a waiter was promoted while this
+    /// lease sat paused, the promotion already evicted it (eviction
+    /// prefers paused) and the guard below no-ops, which is the correct
+    /// outcome: a visible waiter rightly preempts a then-off-screen
+    /// pause. That guard is also why resume-after-eviction is safe —
+    /// an evicted lease is gone here, but in that case the view's
+    /// `player` was torn down so `setPlaying(true)` takes the
+    /// `tryRecreatePlayer` branch instead and never reaches here.
     func notifyResumed(_ view: Leaseholder) {
         guard let i = leases.firstIndex(where: { $0.view === view }) else { return }
         leases.remove(at: i)
