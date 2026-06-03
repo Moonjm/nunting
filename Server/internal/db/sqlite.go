@@ -273,6 +273,8 @@ func (s *Store) ListAlertHistory(ctx context.Context, uuid string, limit int) ([
 
 // MarkAlertRead 해당 유저의 알림 한 건을 읽음 처리(read_at = now). uuid 조건으로
 // 남의 알림은 못 건드린다. 이미 읽음이면 no-op(read_at IS NULL 가드, idempotent).
+// 매칭 row 가 없어도(없는 id/남의 id) 에러 없이 통과 — uuid 스코프로 데이터는
+// 보호되고, 멱등 의도라 caller(핸들러)는 항상 200 을 돌려준다.
 func (s *Store) MarkAlertRead(ctx context.Context, uuid string, id int64) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE alert_history SET read_at = ?

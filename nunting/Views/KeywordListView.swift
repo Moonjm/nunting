@@ -212,6 +212,9 @@ struct KeywordListView: View {
             errorMessage = "키워드 불러오기 실패: \(error.localizedDescription)"
         }
         // 히스토리 탭에 들어가기 전에도 안 읽음 뱃지가 보이게 개수만 미리 조회.
+        // AlertHistoryView 진입 시 한 번 더 fetch 되지만(이중 호출), 1인·수백 행
+        // 규모라 비용이 무시할 만해 별도 count 엔드포인트는 두지 않는다. 더 최신인
+        // 쪽이 onUnreadCountChange 로 badge 를 덮어써 일관성도 자연히 수렴.
         if let history = try? await AlertSubscriptionService.shared.fetchAlertHistory() {
             unreadCount = history.filter { !$0.read }.count
         }
@@ -286,11 +289,12 @@ struct KeywordListView: View {
 
 /// 한 구독(AND 키워드)을 토큰 칩 묶음으로 렌더. 한 행(row) = 한 묶음이라
 /// 행 안의 칩들이 "모두 포함(AND)" 임을 그룹핑으로 표현 — 구분자(+) 없이 미니멀.
+/// 토큰이 많아 행 폭을 넘으면 FlowLayout 이 다음 줄로 흘려보내 잘리지 않게 한다.
 private struct TokenRow: View {
     let tokens: [String]
 
     var body: some View {
-        HStack(spacing: 6) {
+        FlowLayout(hSpacing: 6, vSpacing: 6) {
             ForEach(Array(tokens.enumerated()), id: \.offset) { _, token in
                 Text(token)
                     .font(.subheadline)
@@ -300,6 +304,45 @@ private struct TokenRow: View {
             }
         }
         .padding(.vertical, 2)
+    }
+}
+
+/// 자식 뷰를 좌→우로 배치하다 폭을 넘으면 다음 줄로 wrap 하는 단순 flow 레이아웃.
+/// 칩(토큰)이 많은 AND 키워드가 한 줄을 넘겨도 잘리지 않게 한다.
+private struct FlowLayout: Layout {
+    var hSpacing: CGFloat = 6
+    var vSpacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0, widest: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0 && x + size.width > maxWidth {
+                x = 0
+                y += rowHeight + vSpacing
+                rowHeight = 0
+            }
+            x += size.width + hSpacing
+            rowHeight = max(rowHeight, size.height)
+            widest = max(widest, x - hSpacing)
+        }
+        return CGSize(width: min(widest, maxWidth), height: y + rowHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX, y = bounds.minY, rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > bounds.minX && x + size.width > bounds.maxX {
+                x = bounds.minX
+                y += rowHeight + vSpacing
+                rowHeight = 0
+            }
+            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + hSpacing
+            rowHeight = max(rowHeight, size.height)
+        }
     }
 }
 
