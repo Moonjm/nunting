@@ -230,7 +230,7 @@ extension BoardParser {
     /// bare `.text()` 를 쓰는 다른 파서엔 적용 안 됨(현재 그쪽 멘션 사례 없음).
     public nonisolated func normalizeNonBreakingSpaces(in element: Element) {
         guard let all = try? element.getAllElements() else { return }
-        for el in all.array() {
+        for el in all {
             for textNode in el.textNodes() {
                 let whole = textNode.getWholeText()
                 guard whole.contains("\u{00A0}") else { continue }
