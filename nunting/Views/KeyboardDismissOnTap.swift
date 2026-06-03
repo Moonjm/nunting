@@ -50,12 +50,16 @@ final class KeyboardDismissTapCoordinator: NSObject, UIGestureRecognizerDelegate
         _ gestureRecognizer: UIGestureRecognizer,
         shouldReceive touch: UITouch
     ) -> Bool {
-        var view = touch.view
-        while let current = view {
-            if current is UIControl { return false }
-            view = current.superview
+        // 제스처 델리게이트 콜백은 메인스레드 터치 루프에서 동기 호출됨 → 메인액터
+        // 격리 UI 프로퍼티 접근 허용. (전제 위반 시 assumeIsolated 가 trap)
+        MainActor.assumeIsolated {
+            var view = touch.view
+            while let current = view {
+                if current is UIControl { return false }
+                view = current.superview
+            }
+            return true
         }
-        return true
     }
 
     // 다른 제스처(스크롤/스와이프)와 동시 인식 허용 — 가로채지 않음.

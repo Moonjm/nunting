@@ -1,0 +1,24 @@
+# https://docs.coderabbit.ai/reference/yaml-template
+language: ko-KR
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!**/*.pbxproj"
+    - "!**/*.xcworkspacedata"
+    - "!**/*.xcscheme"
+    - "!Server/go.sum"
+  path_instructions:
+    - path: "nunting/**/*.swift"
+      instructions: "SwiftUI/iOS 관례 준수 여부 확인. 메인스레드 UI 갱신, 옵셔널 강제 언랩, retain cycle(클로저 캡처) 위주로 점검."
+    - path: "nuntingTests/**/*.swift"
+      instructions: "테스트 의도가 명확한지, 비동기 대기 누락이나 flaky 가능성 위주로 점검."
+    - path: "Server/**/*.go"
+      instructions: "에러 핸들링 누락, goroutine 누수, context 전파, 동시성 데이터 경쟁 위주로 점검."
+chat:
+  auto_reply: true

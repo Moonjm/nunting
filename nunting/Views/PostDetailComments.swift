@@ -136,7 +136,7 @@ struct PostDetailCommentRow: View {
     /// 스캔(`@`+영숫자)으로는 특수문자 닉네임이 잘리므로 여기서 정확히 렌더.
     /// 뽐뿌(본문에 `@닉` 이 박혀 스캔으로 강조)와 외형이 동일해진다.
     private func displayContent(for comment: PostComment) -> AttributedString {
-        var styled = comment.content.isEmpty ? AttributedString() : styledContent(comment.content)
+        let styled = comment.content.isEmpty ? AttributedString() : styledContent(comment.content)
         guard let target = comment.replyTarget, !target.isEmpty else { return styled }
 
         var mention = AttributedString(styled.characters.isEmpty ? "@\(target)" : "@\(target) ")
