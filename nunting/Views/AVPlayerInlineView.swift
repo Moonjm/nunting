@@ -66,7 +66,7 @@ struct InlineAutoplayVideoView: UIViewRepresentable {
 /// synchronously) against future Swift mode changes or accidental
 /// `nonisolated` overrides on individual methods.
 @MainActor
-final class InlineAutoplayUIView: UIView {
+final class InlineAutoplayUIView: UIView, VideoPlayerPool.Leaseholder {
     /// Bottom strip height reserved for the scrub bar's UIKit gesture
     /// recognizers. The SwiftUI tap-to-fullscreen overlay excludes
     /// the same height via `.padding(.bottom:)` so the two
@@ -177,6 +177,16 @@ final class InlineAutoplayUIView: UIView {
                 // `tryRecreatePlayer()` when a slot opens.
                 tryRecreatePlayer()
             } else {
+                // Player survived a brief off-screen pause (lease kept
+                // alive but flagged `isPaused` by `notifyPaused`).
+                // Tell the pool the lease is active again so this
+                // now-visible video is no longer eviction-eligible —
+                // otherwise a later acquire could evict it mid-screen
+                // and, with no further visibility change to re-fire
+                // `setPlaying`, it would stall on its poster. This is
+                // the "scroll back up and a visible video stops
+                // playing" bug.
+                VideoPlayerPool.shared.notifyResumed(self)
                 player?.play()
             }
         } else {
