@@ -216,6 +216,12 @@ struct PostDetailView: View, Equatable {
         })
         .task(id: post.id) {
             readStore.markRead(post)
+            // Viewing the post by any route (feed tap, push-banner tap,
+            // in-app alert-list tap) clears its keyword-alert banner from
+            // Notification Center and marks the matching alert read, so
+            // the OS notification and the in-app unread badge don't
+            // linger after the user has actually read the post.
+            DeliveredNotificationCleaner.clear(for: post)
             // Anchor the commit gate at view appearance; the loader starts
             // work immediately and only waits on this deadline before
             // writing image-heavy state. Cache-hit short-circuit lives
