@@ -235,7 +235,8 @@ public struct SLRParser: BoardParser {
         let del: Int?
     }
 
-    nonisolated private func decodeComments(data: Data) -> [PostComment] {
+    // internal(테스트 접근용): 실제 JSON 바이트로 디코딩 로직 검증.
+    nonisolated func decodeComments(data: Data) -> [PostComment] {
         guard let payload = try? JSONDecoder().decode(SLRJSON.self, from: data),
               let entries = payload.c
         else { return [] }
@@ -245,14 +246,23 @@ public struct SLRParser: BoardParser {
             if (entry.del ?? 0) != 0 { continue }
             let author = (entry.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             let rendered = renderMemo(entry.memo ?? "")
-            if author.isEmpty, rendered.text.isEmpty, rendered.sticker == nil { continue }
+
+            // 답글 대상 닉네임(tn)을 웹과 동일하게 본문 앞에 `[이름]` 으로 노출.
+            // 앱은 그동안 tn 을 버려 답글에 누구한테 단 건지 안 보였다.
+            let target = (entry.tn ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            var content = rendered.text
+            if !target.isEmpty {
+                content = content.isEmpty ? "[\(target)]" : "[\(target)] \(content)"
+            }
+
+            if author.isEmpty, content.isEmpty, rendered.sticker == nil { continue }
 
             let id = "slr-c-\(entry.pk ?? "idx\(idx)")"
             results.append(PostComment(
                 id: id,
                 author: author,
                 dateText: entry.dt ?? "",
-                content: rendered.text,
+                content: content,
                 likeCount: entry.vt ?? 0,
                 isReply: entry.th != nil,
                 stickerURL: rendered.sticker,
