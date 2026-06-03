@@ -40,20 +40,40 @@ final class VideoPlayerPool {
     /// pattern that LazyVStack realises, leaves room for one
     /// just-out-of-viewport entry the user is likely to scroll back
     /// to, and keeps the worst-case AVPlayer residency under ~60 MB.
-    private static let maxConcurrent = 3
+    static let maxConcurrent = 3
+
+    /// Abstract lease holder. Production wires this to
+    /// `InlineAutoplayUIView`; tests inject a stub that records the
+    /// eviction / promotion callbacks so the pool's bookkeeping can be
+    /// verified without spinning up real `AVPlayer`s. Mirrors
+    /// `WebMPlayerPool.Leaseholder`.
+    protocol Leaseholder: AnyObject {
+        /// Promote a previously-denied waiter (a slot freed). The holder
+        /// MUST call back into `acquire(...)` during this method.
+        func tryRecreatePlayer()
+        /// The pool pulled this holder's lease to make room for another;
+        /// the holder should tear its player down.
+        func releasePlayerForPoolEviction()
+    }
 
     private struct Lease {
-        weak var view: InlineAutoplayUIView?
+        weak var view: Leaseholder?
         /// `false` while the view's `setPlaying(true)` is the most
         /// recent state, `true` after `notifyPaused`. Eviction prefers
         /// paused entries — playing entries are only evicted when
         /// every other lease is also playing AND a new acquire arrives,
         /// in which case the displaced view goes to the waiter list.
+        ///
+        /// A lease that paused at the viewport edge but kept its player
+        /// alive (fast-resume path) is flipped back to `false` by
+        /// `notifyResumed` when the view returns to screen — otherwise
+        /// the pool would treat a now-visible, playing video as
+        /// eviction-eligible and pull it out from under the user.
         var isPaused: Bool
     }
 
     private struct Waiter {
-        weak var view: InlineAutoplayUIView?
+        weak var view: Leaseholder?
     }
 
     /// Front = oldest, back = newest. Eviction prefers paused entries
@@ -71,7 +91,7 @@ final class VideoPlayerPool {
     /// should stay player-less and wait — the pool will call
     /// `view.tryRecreatePlayer()` when a slot opens).
     @discardableResult
-    func acquire(_ view: InlineAutoplayUIView) -> Bool {
+    func acquire(_ view: Leaseholder) -> Bool {
         compactDeadRefs()
 
         // Already in pool: refresh position to back, clear paused
@@ -117,17 +137,49 @@ final class VideoPlayerPool {
     /// the slot as eviction-eligible and promotes a waiter if one is
     /// queued — the just-paused slot can now be ceded to a waiting
     /// visible view.
-    func notifyPaused(_ view: InlineAutoplayUIView) {
+    func notifyPaused(_ view: Leaseholder) {
         if let i = leases.firstIndex(where: { $0.view === view }) {
             leases[i].isPaused = true
         }
         promoteWaiterIfPossible()
     }
 
+    /// View tells pool it resumed playback while reusing the player it
+    /// kept alive across a brief off-screen pause (the fast-resume path
+    /// in `setPlaying(true)` when `player != nil`). Clears the paused
+    /// flag and refreshes recency so the lease is no longer
+    /// eviction-eligible and sorts as newest — mirrors what a fresh
+    /// `acquire` does, minus the player creation.
+    ///
+    /// Without this, a video that paused at the viewport edge and then
+    /// scrolled back into view keeps `isPaused == true`: the next view
+    /// that needs a slot evicts this on-screen, playing video
+    /// (eviction prefers paused leases), and since its visibility never
+    /// changed again, no `setPlaying` re-fires to recreate the player —
+    /// it stalls on its poster mid-screen. This is the "scroll up and
+    /// a visible video stops playing" bug.
+    ///
+    /// Unlike `notifyPaused`/`release`, this does NOT promote a waiter:
+    /// resuming reclaims a slot the lease already held, so no slot
+    /// frees up. It also only matters for a pause→resume pair with no
+    /// waiter queued in between — if a waiter was promoted while this
+    /// lease sat paused, the promotion already evicted it (eviction
+    /// prefers paused) and the guard below no-ops, which is the correct
+    /// outcome: a visible waiter rightly preempts a then-off-screen
+    /// pause. That guard is also why resume-after-eviction is safe —
+    /// an evicted lease is gone here, but in that case the view's
+    /// `player` was torn down so `setPlaying(true)` takes the
+    /// `tryRecreatePlayer` branch instead and never reaches here.
+    func notifyResumed(_ view: Leaseholder) {
+        guard let i = leases.firstIndex(where: { $0.view === view }) else { return }
+        leases.remove(at: i)
+        leases.append(Lease(view: view, isPaused: false))
+    }
+
     /// Full removal from both lease and waiter lists. Used by view
     /// teardown / dismantle / URL change. After this returns the
     /// freed slot may be granted to the oldest waiter.
-    func release(_ view: InlineAutoplayUIView) {
+    func release(_ view: Leaseholder) {
         leases.removeAll { $0.view === view || $0.view == nil }
         removeFromWaiters(view)
         promoteWaiterIfPossible()
@@ -153,7 +205,7 @@ final class VideoPlayerPool {
         view.tryRecreatePlayer()
     }
 
-    private func removeFromWaiters(_ view: InlineAutoplayUIView) {
+    private func removeFromWaiters(_ view: Leaseholder) {
         waiters.removeAll { $0.view === view || $0.view == nil }
     }
 
@@ -161,4 +213,16 @@ final class VideoPlayerPool {
         leases.removeAll { $0.view == nil }
         waiters.removeAll { $0.view == nil }
     }
+
+    // MARK: - Test-only inspection
+
+    #if DEBUG
+    var leaseCount: Int { leases.count }
+    var waiterCount: Int { waiters.count }
+    var pausedLeaseCount: Int { leases.lazy.filter { $0.isPaused }.count }
+    func resetForTesting() {
+        leases.removeAll()
+        waiters.removeAll()
+    }
+    #endif
 }
