@@ -1,8 +1,9 @@
 import XCTest
 @testable import nunting
 
-/// SLR 답글의 대상 닉네임(JSON `tn`)을 웹처럼 `[이름]` 으로 본문 앞에 노출하는지.
-/// 회귀: 앱이 tn 을 버려 답글에 누구한테 단 건지 안 보이던 버그.
+/// SLR 답글의 대상 닉네임(JSON `tn`)을 구조화 필드 replyTarget 로 surface 하는지
+/// (뷰가 파란 `@이름` 멘션으로 렌더). 회귀: 앱이 tn 을 버려 답글에 누구한테 단
+/// 건지 안 보이던 버그.
 final class SLRReplyTargetTests: XCTestCase {
 
     // 실제 m.slrclub.com /bbs/comment_db/load.php JSON 모양(축약).
@@ -13,7 +14,7 @@ final class SLRReplyTargetTests: XCTestCase {
     ]}
     """
 
-    func testReplyShowsTargetNameInBrackets() throws {
+    func testReplyExposesTargetNickname() throws {
         let data = Data(json.utf8)
         let comments = SLRParser().decodeComments(data: data)
 
