@@ -25,6 +25,13 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         let userInfo = response.notification.request.content.userInfo
         guard let urlStr = userInfo["url"] as? String, let url = URL(string: urlStr) else { return }
         let title = response.notification.request.content.body
+
+        // 푸시 탭 = 글 열기 → 읽음 처리. payload 의 alert_id 로 서버 read_at set.
+        // (JSON number 라 NSNumber 로 들어옴. 0/누락이면 무시 — 이력 기록 실패 케이스.)
+        if let alertID = (userInfo["alert_id"] as? NSNumber)?.intValue, alertID > 0 {
+            Task { try? await AlertSubscriptionService.shared.markAlertRead(id: alertID) }
+        }
+
         Task { @MainActor in
             DetailOverlayController.shared.present(url: url, title: title)
         }

@@ -14,14 +14,14 @@ func TestStubMode_LogsButDoesNotPanic(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	post := poll.Post{ID: "ppomppu-1", Title: "테스트", PostNo: "1", URL: "https://example.com/1"}
-	if err := c.Send(context.Background(), "tok", "테스트", post); err != nil {
+	if err := c.Send(context.Background(), "tok", "테스트", 1, post); err != nil {
 		t.Errorf("stub Send must not error: %v", err)
 	}
 }
 
 func TestBuildPayload(t *testing.T) {
 	post := poll.Post{ID: "ppomppu-1", Title: "갤럭시 신상", PostNo: "1", URL: "https://m.ppomppu.co.kr/new/bbs_view.php?id=ppomppu&no=1"}
-	raw := BuildPayload("갤럭시", post)
+	raw := BuildPayload("갤럭시", 42, post)
 
 	var got map[string]any
 	if err := json.Unmarshal(raw, &got); err != nil {
@@ -43,5 +43,9 @@ func TestBuildPayload(t *testing.T) {
 	}
 	if got["url"] != post.URL {
 		t.Errorf("url: %v", got["url"])
+	}
+	// alert_id 는 JSON number → float64 로 디코드됨.
+	if got["alert_id"] != float64(42) {
+		t.Errorf("alert_id: %v", got["alert_id"])
 	}
 }

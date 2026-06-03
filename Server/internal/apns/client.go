@@ -70,8 +70,9 @@ func (c *Client) SetTokenClearer(tc TokenClearer) {
 }
 
 // BuildPayload iOS 클라이언트와 합의된 APNs JSON 페이로드.
-// Swift NotificationDelegate 가 userInfo["url"] 로 deep-link.
-func BuildPayload(matchedKeyword string, post poll.Post) []byte {
+// Swift NotificationDelegate 가 userInfo["url"] 로 deep-link, userInfo["alert_id"]
+// 로 푸시-탭 읽음 처리. alertID 0 이면 이력 기록 실패 케이스 — 클라가 무시.
+func BuildPayload(matchedKeyword string, alertID int64, post poll.Post) []byte {
 	payload := map[string]any{
 		"aps": map[string]any{
 			"alert": map[string]any{
@@ -80,7 +81,8 @@ func BuildPayload(matchedKeyword string, post poll.Post) []byte {
 			},
 			"sound": "default",
 		},
-		"url": post.URL,
+		"url":      post.URL,
+		"alert_id": alertID,
 	}
 	b, _ := json.Marshal(payload)
 	return b
@@ -88,8 +90,8 @@ func BuildPayload(matchedKeyword string, post poll.Post) []byte {
 
 // Send 모드 분기. real 이면 HTTP/2 POST, stub 이면 stderr 로깅.
 // 410 Unregistered 응답 시 token clearer 호출(있다면).
-func (c *Client) Send(ctx context.Context, deviceToken, matchedKeyword string, post poll.Post) error {
-	payload := BuildPayload(matchedKeyword, post)
+func (c *Client) Send(ctx context.Context, deviceToken, matchedKeyword string, alertID int64, post poll.Post) error {
+	payload := BuildPayload(matchedKeyword, alertID, post)
 
 	if c.real == nil {
 		fmt.Fprintf(os.Stderr, "[apns-stub] token=%s keyword=%s body=%s\n", deviceToken, matchedKeyword, post.Title)

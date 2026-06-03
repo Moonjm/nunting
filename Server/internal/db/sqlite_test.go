@@ -189,3 +189,134 @@ func TestMatchedUsersForTitle(t *testing.T) {
 		}
 	}
 }
+
+func TestRecordAndListAlertHistory(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := store.UpsertUser(ctx, "nnt_a"); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	for i := 0; i < 3; i++ {
+		if _, err := store.RecordAlert(ctx, "nnt_a", "갤럭시", "100"+string(rune('0'+i)), "title "+string(rune('0'+i)), "https://x/"+string(rune('0'+i))); err != nil {
+			t.Fatalf("record %d: %v", i, err)
+		}
+	}
+
+	items, err := store.ListAlertHistory(ctx, "nnt_a", 10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("want 3 items, got %d", len(items))
+	}
+	// 최신순(가장 최근 insert 가 맨 앞).
+	if items[0].Title != "title 2" {
+		t.Errorf("want newest first, got %q", items[0].Title)
+	}
+	if items[0].Keyword != "갤럭시" || items[0].URL != "https://x/2" || items[0].PostNo != "1002" {
+		t.Errorf("unexpected row: %+v", items[0])
+	}
+	if items[0].SentAt == 0 {
+		t.Errorf("sent_at not set")
+	}
+	// 새 알림은 안 읽음(read_at NULL) 이어야 하고 id 가 채워져야 함.
+	if items[0].Read {
+		t.Errorf("new alert should be unread")
+	}
+	if items[0].ID == 0 {
+		t.Errorf("id not set")
+	}
+}
+
+func TestRecordAlertNoCap(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := store.UpsertUser(ctx, "nnt_a"); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	// 보관 제한 제거 — 250건 넣으면 250건 모두 남아야 함.
+	const total = 250
+	for i := 0; i < total; i++ {
+		if _, err := store.RecordAlert(ctx, "nnt_a", "k", "n", "t", "u"); err != nil {
+			t.Fatalf("record %d: %v", i, err)
+		}
+	}
+
+	var n int
+	store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM alert_history WHERE uuid='nnt_a'").Scan(&n)
+	if n != total {
+		t.Errorf("want all %d rows kept, got %d", total, n)
+	}
+}
+
+func TestMarkAlertRead(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := store.UpsertUser(ctx, "nnt_a"); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if _, err := store.RecordAlert(ctx, "nnt_a", "갤럭시", "1001", "t", "u"); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	items, _ := store.ListAlertHistory(ctx, "nnt_a", 10)
+	if len(items) != 1 || items[0].Read {
+		t.Fatalf("setup: want 1 unread, got %+v", items)
+	}
+	id := items[0].ID
+
+	// 다른 유저는 못 건드림 — uuid 불일치면 no-op.
+	if err := store.MarkAlertRead(ctx, "nnt_other", id); err != nil {
+		t.Fatalf("mark(other): %v", err)
+	}
+	items, _ = store.ListAlertHistory(ctx, "nnt_a", 10)
+	if items[0].Read {
+		t.Errorf("other user must not mark read")
+	}
+
+	// 본인은 읽음 처리됨.
+	if err := store.MarkAlertRead(ctx, "nnt_a", id); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	items, _ = store.ListAlertHistory(ctx, "nnt_a", 10)
+	if !items[0].Read {
+		t.Errorf("want read after mark")
+	}
+}
+
+func TestAlertHistoryCascadesOnUserDelete(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := store.UpsertUser(ctx, "nnt_a"); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if _, err := store.RecordAlert(ctx, "nnt_a", "k", "n", "t", "u"); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, "DELETE FROM users WHERE uuid='nnt_a'"); err != nil {
+		t.Fatalf("delete user: %v", err)
+	}
+	var n int
+	store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM alert_history").Scan(&n)
+	if n != 0 {
+		t.Errorf("want cascade delete, %d rows remain", n)
+	}
+}

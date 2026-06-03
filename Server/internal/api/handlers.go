@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/Moonjm/nunting/server/internal/db"
@@ -111,6 +112,54 @@ func (h *handlers) addKeyword(w http.ResponseWriter, r *http.Request) {
 	b, _ := json.Marshal(normalized)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(b)
+}
+
+// alertHistoryDefaultLimit / alertHistoryMaxLimit GET /me/alert-history 의
+// limit 쿼리 기본값과 상한. DB 보관 개수는 무제한이지만 한 응답의 payload 가
+// 비대해지지 않게 API 페이지 상한만 둔다(1인 도구라 넉넉히).
+const (
+	alertHistoryDefaultLimit = 200
+	alertHistoryMaxLimit     = 1000
+)
+
+// GET /me/alert-history?limit=100 → 최신순 AlertHistoryItem 배열(JSON).
+func (h *handlers) listAlertHistory(w http.ResponseWriter, r *http.Request) {
+	limit := alertHistoryDefaultLimit
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > alertHistoryMaxLimit {
+		limit = alertHistoryMaxLimit
+	}
+	items, err := h.store.ListAlertHistory(r.Context(), UUIDFrom(r.Context()), limit)
+	if err != nil {
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	// nil → [] 보장 ("null" 대신 "[]").
+	if items == nil {
+		items = []db.AlertHistoryItem{}
+	}
+	b, _ := json.Marshal(items)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(b)
+}
+
+// POST /me/alert-history/{id}/read → 해당 알림을 읽음 처리. 클라가 알림 행을
+// 탭해 글을 열 때 호출. 멱등(이미 읽음이면 no-op).
+func (h *handlers) markAlertRead(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	if err := h.store.MarkAlertRead(r.Context(), UUIDFrom(r.Context()), id); err != nil {
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 func (h *handlers) removeKeyword(w http.ResponseWriter, r *http.Request) {
