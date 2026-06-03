@@ -70,9 +70,10 @@ struct PostDetailCommentRow: View {
                         .foregroundStyle(.pink)
                 }
             }
-            if !comment.content.isEmpty {
+            let display = displayContent(for: comment)
+            if !display.characters.isEmpty {
                 SelectableRichText(
-                    attributedString: styledContent(comment.content),
+                    attributedString: display,
                     font: .preferredFont(forTextStyle: .subheadline)
                 )
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -129,6 +130,29 @@ struct PostDetailCommentRow: View {
         Self.styledCache.setObject(StyledBox(result), forKey: key)
         return result
     }
+
+    /// 본문 styled content 앞에 답글 대상 멘션(`@이름`, 파란 볼드)을 붙인다.
+    /// SLR 처럼 대상이 구조화 필드(`replyTarget`)로 오는 경우 — 본문 텍스트
+    /// 스캔(`@`+영숫자)으로는 특수문자 닉네임이 잘리므로 여기서 정확히 렌더.
+    /// 뽐뿌(본문에 `@닉` 이 박혀 스캔으로 강조)와 외형이 동일해진다.
+    private func displayContent(for comment: PostComment) -> AttributedString {
+        var styled = comment.content.isEmpty ? AttributedString() : styledContent(comment.content)
+        guard let target = comment.replyTarget, !target.isEmpty else { return styled }
+
+        var mention = AttributedString(styled.characters.isEmpty ? "@\(target)" : "@\(target) ")
+        mention.uiKit.foregroundColor = .systemBlue
+        mention.uiKit.font = Self.mentionFont
+        return mention + styled
+    }
+
+    /// 멘션(@닉) 강조용 볼드 폰트. computeStyledContent 와 displayContent 가 공유.
+    static let mentionFont: UIFont = {
+        let baseFont = UIFont.preferredFont(forTextStyle: .subheadline)
+        if let desc = baseFont.fontDescriptor.withSymbolicTraits(.traitBold) {
+            return UIFont(descriptor: desc, size: 0)
+        }
+        return baseFont
+    }()
 
     private static func computeStyledContent(_ text: String) -> AttributedString {
         // First parse markdown so any `[label](<url>)` anchors that the
@@ -202,17 +226,10 @@ struct PostDetailCommentRow: View {
         // rendered as plain text in the comment view. Writing the UIKit
         // attributes directly lands on the keys NSAttributedString
         // actually reads.
-        let mentionFont: UIFont = {
-            let baseFont = UIFont.preferredFont(forTextStyle: .subheadline)
-            if let desc = baseFont.fontDescriptor.withSymbolicTraits(.traitBold) {
-                return UIFont(descriptor: desc, size: 0)
-            }
-            return baseFont
-        }()
         for range in mentionRanges {
             if let attrRange = Range(range, in: base) {
                 base[attrRange].uiKit.foregroundColor = .systemBlue
-                base[attrRange].uiKit.font = mentionFont
+                base[attrRange].uiKit.font = Self.mentionFont
             }
         }
         return base

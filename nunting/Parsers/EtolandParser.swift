@@ -332,7 +332,7 @@ public struct EtolandParser: BoardParser {
         return nil
     }
 
-    nonisolated private static func flatten(_ raw: RawComment, into out: inout [PostComment], isReply: Bool) {
+    nonisolated private static func flatten(_ raw: RawComment, into out: inout [PostComment], isReply: Bool, replyTarget: String? = nil) {
         let author: String = {
             if let nick = raw.member?.nickname, !nick.isEmpty { return nick }
             if raw.isAnonymous == true { return "익명" }
@@ -410,12 +410,15 @@ public struct EtolandParser: BoardParser {
             content: finalContent,
             likeCount: raw.recommendCount ?? 0,
             isReply: isReply,
+            replyTarget: replyTarget,
             stickerURL: stickerURL,
             videoURL: videoURL,
             authIconURL: avatarURL
         ))
+        // 답글은 content/데이터에 대상 표기가 없고 중첩 구조로만 표현되므로,
+        // 자식에게 현재(부모) 닉네임을 대상으로 넘겨 뷰가 파란 @대상 으로 렌더.
         for child in raw.childrenComments ?? [] {
-            flatten(child, into: &out, isReply: true)
+            flatten(child, into: &out, isReply: true, replyTarget: author.isEmpty ? nil : author)
         }
     }
 

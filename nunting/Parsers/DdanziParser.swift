@@ -222,7 +222,8 @@ public struct DdanziParser: BoardParser {
         let commentHtml: String?
     }
 
-    nonisolated private func decodeComments(data: Data) -> [PostComment] {
+    // internal(테스트 접근용): 실제 commentHtml JSON 으로 디코딩 로직 검증.
+    nonisolated func decodeComments(data: Data) -> [PostComment] {
         guard let payload = try? JSONDecoder().decode(CommentResponse.self, from: data),
               let fragment = payload.commentHtml,
               !fragment.isEmpty
@@ -249,10 +250,17 @@ public struct DdanziParser: BoardParser {
                 let dateText = try li.select(".fbMeta .time").first()?.text()
                     .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
+                // 답글 대상 닉네임은 `.re_com_nickname`("@대상") 에 있다. content
+                // 에서는 (중복 방지로) 떼어내지만, 구조화 필드로 넘겨 뷰가 뽐뿌·SLR
+                // 과 동일한 파란 @대상 으로 렌더한다. 앞의 "@" 는 뷰가 다시 붙이므로 제거.
+                let rawTarget = (try? li.select(".re_com_nickname").first()?.text())?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let target = rawTarget.hasPrefix("@") ? String(rawTarget.dropFirst()) : rawTarget
+
                 let content = try renderCommentContent(in: li)
                 let sticker = extractCommentSticker(in: li)
 
-                if author.isEmpty, content.isEmpty, sticker == nil { continue }
+                if author.isEmpty, content.isEmpty, sticker == nil, target.isEmpty { continue }
 
                 results.append(PostComment(
                     id: "ddanzi-c-\(cmtID)",
@@ -261,6 +269,7 @@ public struct DdanziParser: BoardParser {
                     content: content,
                     likeCount: 0,
                     isReply: isReply,
+                    replyTarget: target.isEmpty ? nil : target,
                     stickerURL: sticker
                 ))
             }
