@@ -7,6 +7,8 @@ struct AlertHistoryView: View {
     /// 행 탭 시 시트를 닫고 상세 overlay 를 띄우기 위해 부모(KeywordListView)
     /// 시트의 dismiss 를 받는다.
     let onOpen: (URL, String) -> Void
+    /// 안 읽음 개수가 바뀔 때마다 부모(탭 뱃지)에 알린다.
+    var onUnreadCountChange: (Int) -> Void = { _ in }
 
     @State private var items: [AlertHistoryItem] = []
     @State private var isLoading = true
@@ -49,7 +51,12 @@ struct AlertHistoryView: View {
     }
 
     private func row(_ item: AlertHistoryItem) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
+            // 안 읽음 표시 점(Mail 스타일). 읽으면 자리만 유지해 정렬 흔들림 방지.
+            Circle()
+                .fill(item.read ? Color.clear : Color.accentColor)
+                .frame(width: 8, height: 8)
+
             Image(systemName: "bell.badge.fill")
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(Color.accentColor)
@@ -58,7 +65,7 @@ struct AlertHistoryView: View {
 
             VStack(alignment: .leading, spacing: 5) {
                 Text(item.title)
-                    .font(.subheadline.weight(.medium))
+                    .font(.subheadline.weight(item.read ? .regular : .semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
@@ -100,7 +107,18 @@ struct AlertHistoryView: View {
 
     private func open(_ item: AlertHistoryItem) {
         guard let url = URL(string: item.url) else { return }
+        markRead(item)
         onOpen(url, item.title)
+    }
+
+    /// "글을 열면 읽음" — 로컬 optimistic 갱신 + 서버 read_at set.
+    private func markRead(_ item: AlertHistoryItem) {
+        guard !item.read else { return }
+        if let idx = items.firstIndex(where: { $0.id == item.id }) {
+            items[idx].read = true
+        }
+        onUnreadCountChange(items.filter { !$0.read }.count)
+        Task { try? await AlertSubscriptionService.shared.markAlertRead(id: item.id) }
     }
 
     private func load() async {
@@ -108,6 +126,7 @@ struct AlertHistoryView: View {
         defer { isLoading = false }
         do {
             items = try await AlertSubscriptionService.shared.fetchAlertHistory()
+            onUnreadCountChange(items.filter { !$0.read }.count)
         } catch {
             errorMessage = "알림 이력 불러오기 실패: \(error.localizedDescription)"
         }

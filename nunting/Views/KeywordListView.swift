@@ -15,6 +15,7 @@ struct KeywordListView: View {
     @State private var newKeyword = ""
     @State private var errorMessage: String?
     @State private var pushAuthStatus: UNAuthorizationStatus = .notDetermined
+    @State private var unreadCount = 0
 
     /// 삭제 confirm 대기 중인 키워드들. 비어있지 않으면 확인 alert 표시.
     /// 확정 전까지 실제 삭제는 하지 않는다(취소 시 복원 로직 불필요).
@@ -22,20 +23,24 @@ struct KeywordListView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            tabSwitcher
+            tabBar
 
             switch tab {
             case .keywords:
                 keywordsList
             case .history:
-                AlertHistoryView { url, title in
-                    dismiss()
-                    DetailOverlayController.shared.present(url: url, title: title)
-                }
+                AlertHistoryView(
+                    onOpen: { url, title in
+                        dismiss()
+                        DetailOverlayController.shared.present(url: url, title: title)
+                    },
+                    onUnreadCountChange: { unreadCount = $0 }
+                )
             }
         }
         .navigationTitle("알림")
         .navigationBarTitleDisplayMode(.inline)
+        .dismissKeyboardOnBackgroundTap()
         .task { await loadAll() }
         .alert("키워드 삭제", isPresented: deleteConfirmBinding) {
             Button("삭제", role: .destructive) {
@@ -49,54 +54,63 @@ struct KeywordListView: View {
         }
     }
 
-    /// 키워드 / 받은 알림 전환 — 선택 캡슐이 스프링으로 슬라이딩하는 커스텀
-    /// 세그먼트. 기본 `.segmented` Picker 보다 강조가 분명하고 부드럽다.
-    private var tabSwitcher: some View {
-        HStack(spacing: 4) {
-            segment(.keywords, title: "키워드", icon: "tag.fill")
-            segment(.history, title: "받은 알림", icon: "bell.fill")
+    // MARK: - 상단 언더라인 탭
+
+    /// 선택된 탭 라벨 아래 2pt 인디케이터가 슬라이딩하는 상단 탭바
+    /// (Threads/App Store 스타일). 좌측 정렬 + 하단 헤어라인.
+    private var tabBar: some View {
+        HStack(spacing: 0) {
+            tabButton(.keywords, "키워드")
+            tabButton(.history, "받은 알림")
         }
-        .padding(4)
-        .background(Capsule().fill(Color(.secondarySystemFill)))
-        .padding(.horizontal)
-        .padding(.top, 10)
-        .padding(.bottom, 6)
+        .padding(.top, 8)
+        .overlay(alignment: .bottom) { Divider() }
     }
 
-    private func segment(_ value: Tab, title: String, icon: String) -> some View {
+    private func tabButton(_ value: Tab, _ title: String) -> some View {
         let selected = tab == value
-        return Button {
-            dismissKeyboard()
-            withAnimation(.snappy(duration: 0.28)) { tab = value }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: icon).font(.caption.weight(.semibold))
-                Text(title).font(.subheadline.weight(.semibold))
+        // 밑줄(overlay)을 라벨에 붙여 폭 = 라벨 폭 으로 고정한 뒤, 바깥 frame 으로
+        // 각 탭을 50% 폭에 중앙 배치 → 라벨·밑줄이 가운데 정렬(App Store/Music 느낌).
+        return HStack(spacing: 5) {
+            Text(title)
+                .font(.subheadline.weight(selected ? .semibold : .regular))
+                .foregroundStyle(selected ? Color.primary : Color.secondary)
+            if value == .history && unreadCount > 0 {
+                Text("\(unreadCount)")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
+                    .background(Color.red, in: Capsule())
             }
-            .foregroundStyle(selected ? .white : Color.secondary)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
-            .background {
-                if selected {
-                    Capsule()
-                        .fill(Color.accentColor)
-                        .matchedGeometryEffect(id: "tabSelection", in: tabNamespace)
-                }
-            }
-            .contentShape(Capsule())
         }
-        .buttonStyle(.plain)
+        .padding(.bottom, 9)
+        .overlay(alignment: .bottom) {
+            if selected {
+                Capsule()
+                    .fill(.tint)
+                    .frame(height: 2)
+                    .matchedGeometryEffect(id: "tabUnderline", in: tabNamespace)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            dismissKeyboard()
+            withAnimation(.snappy(duration: 0.2)) { tab = value }
+        }
     }
+
+    // MARK: - 키워드 탭
 
     private var keywordsList: some View {
         List {
             if pushAuthStatus == .denied {
-                Section {
-                    permissionBanner
-                }
+                Section { permissionBanner }
             }
+
             Section {
-                HStack {
+                HStack(spacing: 8) {
                     TextField("예: 삼다수, 500ml", text: $newKeyword)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled(true)
@@ -105,43 +119,55 @@ struct KeywordListView: View {
                             dismissKeyboard()
                             Task { await submitNewKeyword() }
                         }
+                    // 상시 노출(액션 포인트 명확) — 빈칸이면 비활성 회색. Return 으로도 등록.
                     Button("추가") {
                         dismissKeyboard()
                         Task { await submitNewKeyword() }
                     }
-                    .disabled(newKeyword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .font(.subheadline.weight(.semibold))
+                    .buttonStyle(.borderless)
+                    .disabled(trimmedNewKeyword.isEmpty)
                 }
             } header: {
-                Text("새 키워드")
+                Text("키워드 추가")
             } footer: {
-                Text("콤마로 구분하면 모두 포함된 글만 알림 (예: 삼다수, 500ml)")
+                Text("쉼표로 구분하면 모두 포함된 글만 알려드려요.")
             }
+
             if let errorMessage {
-                Section { Text(errorMessage).foregroundStyle(.red).font(.footnote) }
+                Section {
+                    Text(errorMessage).foregroundStyle(.red).font(.footnote)
+                }
             }
-            Section("등록됨") {
+
+            Section {
                 if keywords.isEmpty {
-                    Text("아직 키워드가 없습니다").foregroundStyle(.secondary)
+                    Text("등록된 키워드가 없어요")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                 } else {
                     ForEach(keywords, id: \.self) { kw in
-                        HStack {
-                            Text(kw)
-                            Spacer()
-                            Button {
-                                dismissKeyboard()
-                                pendingDeletion = [kw]
-                            } label: {
-                                Image(systemName: "minus.circle.fill")
-                                    .foregroundStyle(.red)
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("삭제: \(kw)")
-                        }
+                        TokenRow(tokens: tokens(of: kw))
                     }
                     .onDelete(perform: requestDeleteKeywords)
                 }
+            } header: {
+                Text(keywords.isEmpty ? "등록된 키워드" : "등록된 키워드 \(keywords.count)")
             }
         }
+        .listStyle(.insetGrouped)
+        .scrollDismissesKeyboard(.interactively)
+    }
+
+    // MARK: - 파생값
+
+    private var trimmedNewKeyword: String {
+        newKeyword.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 정규화된 CSV 키워드를 AND 토큰 배열로. "355ml,제로" → ["355ml", "제로"].
+    private func tokens(of keyword: String) -> [String] {
+        keyword.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
     }
 
     /// 삭제 확인 alert 의 메시지. 단일/복수에 맞춰 문구 변경.
@@ -176,12 +202,18 @@ struct KeywordListView: View {
         .padding(.vertical, 4)
     }
 
+    // MARK: - 동작
+
     private func loadAll() async {
         await refreshAuthStatus()
         do {
             keywords = try await AlertSubscriptionService.shared.listKeywords()
         } catch {
             errorMessage = "키워드 불러오기 실패: \(error.localizedDescription)"
+        }
+        // 히스토리 탭에 들어가기 전에도 안 읽음 뱃지가 보이게 개수만 미리 조회.
+        if let history = try? await AlertSubscriptionService.shared.fetchAlertHistory() {
+            unreadCount = history.filter { !$0.read }.count
         }
     }
 
@@ -191,7 +223,7 @@ struct KeywordListView: View {
     }
 
     private func submitNewKeyword() async {
-        let raw = newKeyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = trimmedNewKeyword
         guard !raw.isEmpty else { return }
         errorMessage = nil
 
@@ -219,7 +251,7 @@ struct KeywordListView: View {
         }
     }
 
-    /// 스와이프 삭제 — 즉시 지우지 않고 confirm 대기 목록에만 담는다.
+    /// 스와이프/편집 삭제 — 즉시 지우지 않고 confirm 대기 목록에만 담는다.
     /// 실제 제거는 확인 alert 의 "삭제" 확정 후 performDeletion 에서.
     private func requestDeleteKeywords(at offsets: IndexSet) {
         dismissKeyboard()
@@ -249,6 +281,25 @@ struct KeywordListView: View {
         if anyFailed {
             await loadAll()
         }
+    }
+}
+
+/// 한 구독(AND 키워드)을 토큰 칩 묶음으로 렌더. 한 행(row) = 한 묶음이라
+/// 행 안의 칩들이 "모두 포함(AND)" 임을 그룹핑으로 표현 — 구분자(+) 없이 미니멀.
+private struct TokenRow: View {
+    let tokens: [String]
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(Array(tokens.enumerated()), id: \.offset) { _, token in
+                Text(token)
+                    .font(.subheadline)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(Color(.secondarySystemFill), in: Capsule())
+            }
+        }
+        .padding(.vertical, 2)
     }
 }
 
