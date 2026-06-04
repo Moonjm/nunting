@@ -92,10 +92,11 @@ public struct BobaeParser: BoardParser {
             html = try await fetcher(post.url)
         }
         let doc = try SwiftSoup.parse(html)
-        let inlinePage = try extractComments(in: doc)
+        let info = try commentPageInfo(in: doc)
+        let inlinePage = try extractComments(in: doc, page: info?.current ?? 1)
 
         // 페이저(`.page span.num`)가 없거나 1페이지면 inline 이 전부.
-        guard let info = try commentPageInfo(in: doc), info.total > 1,
+        guard let info, info.total > 1,
               let params = Self.commentCallParams(in: html)
         else { return inlinePage }
 
@@ -108,7 +109,7 @@ public struct BobaeParser: BoardParser {
                 group.addTask {
                     do {
                         let pageHTML = try await fetcher(url)
-                        return (page, try self.parseCommentFragment(html: pageHTML))
+                        return (page, try self.parseCommentFragment(html: pageHTML, page: page))
                     } catch {
                         return (page, nil)
                     }
@@ -166,14 +167,19 @@ public struct BobaeParser: BoardParser {
             let isCommentPager = try anchors.contains { try $0.attr("href").contains("comment_call") }
             guard isCommentPager else { continue }
             var nums: [Int] = []
-            var current = 1
+            var current: Int?
             for a in anchors {
                 let text = try a.text().trimmingCharacters(in: .whitespacesAndNewlines)
                 guard let n = Int(text) else { continue }
                 nums.append(n)
                 if a.hasClass("on") { current = n }
             }
-            guard let total = nums.max() else { continue }
+            // `a.on` 이 현재 페이지(=inline 으로 렌더된 페이지). 이게 없으면
+            // 마크업이 바뀐 것이라 current 를 임의로 1 로 두면 inline(실제로는
+            // 마지막 페이지)이 page 1 슬롯에 들어가 fetch 한 page 1 과 충돌하고
+            // 순서가 깨진다. 그럴 땐 nil 을 돌려 inline-only 로 안전하게 내려간다
+            // (수정 전 동작과 동일 — 더 나빠지지 않음).
+            guard let current, let total = nums.max() else { continue }
             return (current, total)
         }
         return nil
@@ -246,7 +252,7 @@ public struct BobaeParser: BoardParser {
 
     // MARK: - Comments
 
-    nonisolated private func extractComments(in doc: Document) throws -> [PostComment] {
+    nonisolated private func extractComments(in doc: Document, page: Int = 1) throws -> [PostComment] {
         // Bobaedream's comment markup:
         //   <div class="reple_body"><ul class="list">
         //     <li class="best"> ... </li>      (top-voted, duplicated in normal list)
@@ -259,18 +265,22 @@ public struct BobaeParser: BoardParser {
         // reply is the leading `<div class="ico_area">댓글</div>` badge.
         // Best entries are a duplicated preview of top-voted items from the
         // main list; skip them so we don't render each one twice.
-        return try parseCommentNodes(doc.select(".reple_body > ul.list > li"))
+        return try parseCommentNodes(doc.select(".reple_body > ul.list > li"), page: page)
     }
 
     /// `comment_call` AJAX 응답은 `.reple_body` 래퍼 없이 `ul.list > li` 만 싣는다.
     /// (detail 페이지의 메뉴 등 다른 `ul.list` 와 섞일 일이 없는 fragment 이므로
     /// 셀렉터를 느슨하게 써도 안전하다.)
-    nonisolated private func parseCommentFragment(html: String) throws -> [PostComment] {
+    nonisolated private func parseCommentFragment(html: String, page: Int) throws -> [PostComment] {
         let doc = try SwiftSoup.parse(html)
-        return try parseCommentNodes(doc.select("ul.list > li"))
+        return try parseCommentNodes(doc.select("ul.list > li"), page: page)
     }
 
-    nonisolated private func parseCommentNodes(_ nodes: Elements) throws -> [PostComment] {
+    /// `page` 는 id 없는 댓글의 synthetic id(`idx{n}`)에 섞어 페이지 간 충돌을
+    /// 막는다 — 페이지마다 enumerate idx 가 0 부터 다시 시작하므로, page 를 안
+    /// 섞으면 서로 다른 페이지의 id 없는 두 댓글이 같은 id 를 받아 SwiftUI
+    /// ForEach 키가 충돌한다(멀티페이지 병합 후 발생).
+    nonisolated private func parseCommentNodes(_ nodes: Elements, page: Int) throws -> [PostComment] {
         var results: [PostComment] = []
         for (idx, li) in nodes.enumerated() {
             // `.best` entries are a duplicated preview of top-voted comments
@@ -299,7 +309,7 @@ public struct BobaeParser: BoardParser {
             let dateText = try extractCommentDate(utilEl)
             let likeCount = try extractCommentLikes(in: li)
             let stickerURL = extractCommentSticker(in: replyEl)
-            let cmtID = extractCommentID(from: li) ?? "idx\(idx)"
+            let cmtID = extractCommentID(from: li) ?? "p\(page)idx\(idx)"
 
             guard !author.isEmpty || !content.isEmpty || stickerURL != nil
             else { continue }

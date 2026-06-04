@@ -147,8 +147,8 @@ public struct PpomppuParser: BoardParser {
             firstHtml = try await fetcher(post.url)
         }
         let firstDoc = try SwiftSoup.parse(firstHtml)
-        let firstPage = try parseComments(in: firstDoc)
         let info = try commentPageInfo(in: firstDoc)
+        let firstPage = try parseComments(in: firstDoc, fallbackPage: info.current)
         if info.total <= 1 { return firstPage }
 
         // 모바일 detail 은 댓글 **마지막** 페이지를 inline 으로 렌더한다(page 1
@@ -168,7 +168,8 @@ public struct PpomppuParser: BoardParser {
                 group.addTask {
                     do {
                         let html = try await fetcher(pageURL)
-                        return (page, try self.parseComments(html: html))
+                        let pageDoc = try SwiftSoup.parse(html)
+                        return (page, try self.parseComments(in: pageDoc, fallbackPage: page))
                     } catch {
                         return (page, nil)
                     }
@@ -183,10 +184,14 @@ public struct PpomppuParser: BoardParser {
 
     public nonisolated func parseComments(html: String) throws -> [PostComment] {
         let doc = try SwiftSoup.parse(html)
-        return try parseComments(in: doc)
+        return try parseComments(in: doc, fallbackPage: 1)
     }
 
-    nonisolated private func parseComments(in doc: Document) throws -> [PostComment] {
+    /// `fallbackPage` 는 id 없는 댓글의 synthetic id 에 섞어 페이지 간 충돌을
+    /// 막는다 — 페이지마다 `results.count` 가 0 부터 다시 시작하므로, page 를
+    /// 안 섞으면 서로 다른 페이지의 id 없는 두 댓글이 같은 id 를 받아 SwiftUI
+    /// ForEach 키가 충돌한다(멀티페이지 병합 후 발생).
+    nonisolated private func parseComments(in doc: Document, fallbackPage: Int) throws -> [PostComment] {
         let nodes = try doc.select("div.cmAr div[class*=sect-cmt]")
         var results: [PostComment] = []
         for node in nodes {
@@ -211,7 +216,7 @@ public struct PpomppuParser: BoardParser {
                     let raw = try ctx.attr("id")
                     return String(raw.dropFirst(4))
                 }
-                return "fallback-\(results.count)"
+                return "fallback-p\(fallbackPage)-\(results.count)"
             }()
 
             let writerEl = try node.select("h6.com_name span.com_name_writer").first()
