@@ -59,6 +59,24 @@ final class AlertSubscriptionServiceTests: XCTestCase {
         )
     }
 
+    /// removeKeyword 의 keyword 에 "/" 가 있어도 한 세그먼트로 유지(%2F).
+    /// urlPathAllowed 는 "/" 를 안 막아 "a/b" 가 다중 세그먼트로 새던 버그 방지.
+    func testRemoveKeywordEncodesSlashAsSingleSegment() async throws {
+        let stub = StubHTTPRequester()
+        await stub.setNext(status: 204, body: "")
+        let service = AlertSubscriptionService(
+            baseURL: URL(string: "http://example.com")!,
+            requester: stub,
+            uuidStore: InMemoryUUIDStore(value: "nnt_test")
+        )
+        try await service.removeKeyword("a/b")
+        let recorded = await stub.lastRequest()
+        let urlStr = recorded?.url?.absoluteString ?? ""
+        XCTAssertTrue(urlStr.contains("/me/keywords/a%2Fb"),
+                      "'/' 가 %2F 로 인코딩돼 단일 세그먼트여야 함: \(urlStr)")
+        XCTAssertFalse(urlStr.contains("/me/keywords/a/b"))
+    }
+
     /// registerPushToken → PUT body `{"token": "<hex>"}`.
     func testRegisterPushTokenSendsHexBody() async throws {
         let stub = StubHTTPRequester()

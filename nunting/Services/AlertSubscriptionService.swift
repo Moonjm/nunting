@@ -137,7 +137,11 @@ final class AlertSubscriptionService {
     }
 
     func removeKeyword(_ keyword: String) async throws {
-        let encoded = keyword.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? keyword
+        // `/` 는 path-allowed 라 그대로 두면 "a/b" 키워드가 여러 세그먼트로
+        // 쪼개져 서버 `{keyword}` 라우트가 단일 키워드로 못 받는다. `/` 만
+        // 빼고 인코딩해 키워드 전체를 한 세그먼트로 보낸다.
+        let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
+        let encoded = keyword.addingPercentEncoding(withAllowedCharacters: allowed) ?? keyword
         _ = try await delete("/me/keywords/\(encoded)")
     }
 

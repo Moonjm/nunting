@@ -321,6 +321,13 @@ struct KeywordListView: View {
     /// loadAll 로 resync 해 사라진 항목 복원.
     private func performDeletion(_ targets: [KeywordSub]) async {
         let ids = Set(targets.map(\.keyword))
+        // 편집 중인 행이 삭제 대상에 포함되면 편집 상태를 비운다. 안 그러면
+        // 삭제 후에도 입력창에 그 행이 남아 "저장" 시 방금 지운 행이 되살아난다.
+        if let editingOriginal, ids.contains(editingOriginal) {
+            self.editingOriginal = nil
+            newKeyword = ""
+            inputFocused = false
+        }
         keywords.removeAll { ids.contains($0.keyword) }
         var anyFailed = false
         for t in targets {
@@ -347,10 +354,14 @@ private struct TokenRow: View {
     var body: some View {
         FlowLayout(hSpacing: 6, vSpacing: 6) {
             ForEach(Array(includeTokens.enumerated()), id: \.offset) { _, token in
+                // 시각은 배경색으로만 구분(설계대로). 색을 못 보는 VoiceOver
+                // 사용자를 위해 포함/제외 역할은 접근성 레이블로만 덧붙인다.
                 chip(token, background: Color(.secondarySystemFill))
+                    .accessibilityLabel("포함 \(token)")
             }
             ForEach(Array(excludeTokens.enumerated()), id: \.offset) { _, token in
                 chip(token, background: Color.red.opacity(0.18))
+                    .accessibilityLabel("제외 \(token)")
             }
         }
         .padding(.vertical, 2)
