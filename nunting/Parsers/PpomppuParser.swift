@@ -156,18 +156,26 @@ public struct PpomppuParser: BoardParser {
         // 빠진 페이지(특히 1번)가 누락된다 — "스크롤하면 같은 댓글이 다시 나옴"
         // 의 원인. detail 댓글을 실제 인덱스(info.current)에 놓고 나머지 페이지만
         // 가져온다.
+        // 페이지 단위 실패는 흡수한다. throwing group 으로 하나라도 throw 하면
+        // 그룹 전체가 취소되고, 호출부(`PostDetailLoader`)의 `try?` 가 댓글을
+        // 통째로 nil 처리한다 — 페이지가 많을수록 단일 실패 확률이 누적돼
+        // 멀쩡한 페이지까지 통째로 사라진다. 실패한 페이지만 건너뛰고 나머지는
+        // 살린다.
         var pageMap: [Int: [PostComment]] = [info.current: firstPage]
-        try await withThrowingTaskGroup(of: (Int, [PostComment]).self) { group in
+        await withTaskGroup(of: (Int, [PostComment]?).self) { group in
             for page in 1...info.total where page != info.current {
                 guard let pageURL = appendingCommentPage(to: post.url, page: page) else { continue }
                 group.addTask {
-                    let html = try await fetcher(pageURL)
-                    let comments = try self.parseComments(html: html)
-                    return (page, comments)
+                    do {
+                        let html = try await fetcher(pageURL)
+                        return (page, try self.parseComments(html: html))
+                    } catch {
+                        return (page, nil)
+                    }
                 }
             }
-            for try await (page, comments) in group {
-                pageMap[page] = comments
+            for await (page, comments) in group {
+                if let comments { pageMap[page] = comments }
             }
         }
         return (1...info.total).flatMap { pageMap[$0] ?? [] }
