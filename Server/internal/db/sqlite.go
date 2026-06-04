@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS keyword_subs (
     uuid    TEXT NOT NULL,
     keyword TEXT NOT NULL,
+    exclude TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (uuid, keyword),
     FOREIGN KEY (uuid) REFERENCES users(uuid) ON DELETE CASCADE
 );
@@ -69,6 +70,14 @@ func Open(path string) (*Store, error) {
 		if !strings.Contains(err.Error(), "duplicate column name") {
 			db.Close()
 			return nil, fmt.Errorf("migrate read_at: %w", err)
+		}
+	}
+	// keyword_subs.exclude 없던 시절(제외 키워드 도입 전) 배포 DB 마이그레이션.
+	// 기존 행은 ''(제외 없음)이 되어 도입 전과 동일하게 동작.
+	if _, err := db.Exec(`ALTER TABLE keyword_subs ADD COLUMN exclude TEXT NOT NULL DEFAULT ''`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			db.Close()
+			return nil, fmt.Errorf("migrate exclude: %w", err)
 		}
 	}
 	return &Store{db: db}, nil
@@ -123,17 +132,25 @@ type Match struct {
 	Keyword   string
 }
 
-func (s *Store) ListKeywords(ctx context.Context, uuid string) ([]string, error) {
+// KeywordSub 한 구독 행: 포함 키워드(CSV AND 토큰)와 제외 단어(CSV OR 토큰).
+// 둘 다 정규화된 CSV(소문자/trim/dedup/정렬). exclude == "" 면 제외 없음.
+// JSON 태그는 iOS KeywordSub 디코더와 합의된 형태.
+type KeywordSub struct {
+	Keyword string `json:"keyword"`
+	Exclude string `json:"exclude"`
+}
+
+func (s *Store) ListKeywords(ctx context.Context, uuid string) ([]KeywordSub, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT keyword FROM keyword_subs WHERE uuid = ? ORDER BY keyword`, uuid)
+		`SELECT keyword, exclude FROM keyword_subs WHERE uuid = ? ORDER BY keyword`, uuid)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := []string{}
+	out := []KeywordSub{}
 	for rows.Next() {
-		var k string
-		if err := rows.Scan(&k); err != nil {
+		var k KeywordSub
+		if err := rows.Scan(&k.Keyword, &k.Exclude); err != nil {
 			return nil, err
 		}
 		out = append(out, k)
@@ -141,7 +158,8 @@ func (s *Store) ListKeywords(ctx context.Context, uuid string) ([]string, error)
 	return out, rows.Err()
 }
 
-// AddKeyword 중복은 PK 충돌 무시(INSERT OR IGNORE).
+// AddKeyword 제외 없는 포함 키워드만 추가(중복은 PK 충돌 무시). exclude 컬럼은
+// DEFAULT '' 로 채워진다. 제외까지 다루는 경로는 UpsertKeyword 를 쓴다.
 func (s *Store) AddKeyword(ctx context.Context, uuid, keyword string) error {
 	// 빈 키워드는 silent reject — INSTR(LOWER(title), "") 는 모든 글에 매칭되어
 	// 사용자에게 폴 사이클마다 push 폭격이 됨. API 계층(Task 5)도 trim 후
@@ -151,6 +169,20 @@ func (s *Store) AddKeyword(ctx context.Context, uuid, keyword string) error {
 	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT OR IGNORE INTO keyword_subs (uuid, keyword) VALUES (?, ?)`, uuid, keyword)
+	return err
+}
+
+// UpsertKeyword 포함 키워드 행을 추가하거나, 이미 있으면 그 행의 제외 단어를
+// 갱신한다. keyword 가 행 식별자(PK)이므로 같은 keyword 로 다시 호출하면
+// exclude 만 덮어쓴다 — 클라의 "행 편집(제외 수정)" 통로.
+func (s *Store) UpsertKeyword(ctx context.Context, uuid, keyword, exclude string) error {
+	if keyword == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO keyword_subs (uuid, keyword, exclude) VALUES (?, ?, ?)
+		ON CONFLICT(uuid, keyword) DO UPDATE SET exclude = excluded.exclude`,
+		uuid, keyword, exclude)
 	return err
 }
 
@@ -171,7 +203,7 @@ func (s *Store) RemoveKeyword(ctx context.Context, uuid, keyword string) error {
 func (s *Store) MatchedUsersForTitle(ctx context.Context, title string) ([]Match, error) {
 	lowerTitle := strings.ToLower(title)
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT u.uuid, u.push_token, k.keyword
+		SELECT u.uuid, u.push_token, k.keyword, k.exclude
 		FROM keyword_subs k
 		JOIN users u ON u.uuid = k.uuid
 		WHERE u.push_token IS NOT NULL
@@ -185,7 +217,8 @@ func (s *Store) MatchedUsersForTitle(ctx context.Context, title string) ([]Match
 	seen := map[string]bool{} // user 당 첫 매칭 키워드만 (중복 push 방지)
 	for rows.Next() {
 		var m Match
-		if err := rows.Scan(&m.UUID, &m.PushToken, &m.Keyword); err != nil {
+		var exclude string
+		if err := rows.Scan(&m.UUID, &m.PushToken, &m.Keyword, &exclude); err != nil {
 			return nil, err
 		}
 		if seen[m.UUID] {
@@ -194,10 +227,32 @@ func (s *Store) MatchedUsersForTitle(ctx context.Context, title string) ([]Match
 		if !titleContainsAllTokens(lowerTitle, m.Keyword) {
 			continue
 		}
+		// 제외 단어가 하나라도 제목에 있으면 이 행은 탈락. seen 을 세우지
+		// 않고 continue 하므로 같은 user 의 다음 행(다른 포함 키워드)은 계속
+		// 평가된다 — 포함O·제외X 인 첫 행이 알림 대상.
+		if excludeHitAnyToken(lowerTitle, exclude) {
+			continue
+		}
 		seen[m.UUID] = true
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// excludeHitAnyToken: lowerTitle 에 exclude(정규화된 CSV)의 토큰이 **하나라도**
+// substring 으로 들어있으면 true (OR — 포함의 AND 와 반대). 빈 exclude 는
+// false(제외 없음). exclude 는 이미 lowercase 저장이라 토큰 ToLower 불필요.
+func excludeHitAnyToken(lowerTitle, exclude string) bool {
+	for _, t := range strings.Split(exclude, ",") {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		if strings.Contains(lowerTitle, t) {
+			return true
+		}
+	}
+	return false
 }
 
 // titleContainsAllTokens: lowerTitle 에 keyword(정규화된 CSV)의 모든 토큰이

@@ -2,18 +2,19 @@ import XCTest
 @testable import nunting
 
 final class AlertSubscriptionServiceTests: XCTestCase {
-    /// addKeyword → POST + 정규화 결과 echo. 서버 Plan 2가 `"galaxy s25"` 형태로 200 반환.
-    func testAddKeywordReturnsNormalizedFromServer() async throws {
+    /// upsertKeyword → POST {keyword, exclude} + 정규화된 KeywordSub echo.
+    func testUpsertKeywordReturnsNormalizedFromServer() async throws {
         let stub = StubHTTPRequester()
-        await stub.setNext(status: 201, body: #""galaxy s25""#)
+        await stub.setNext(status: 201, body: #"{"keyword":"galaxy s25","exclude":"중고"}"#)
         let uuidStore = InMemoryUUIDStore(value: "nnt_test")
         let service = AlertSubscriptionService(
             baseURL: URL(string: "http://example.com")!,
             requester: stub,
             uuidStore: uuidStore
         )
-        let normalized = try await service.addKeyword("  Galaxy S25  ")
-        XCTAssertEqual(normalized, "galaxy s25")
+        let sub = try await service.upsertKeyword(keyword: "  Galaxy S25  ", exclude: "중고")
+        XCTAssertEqual(sub.keyword, "galaxy s25")
+        XCTAssertEqual(sub.exclude, "중고")
 
         let recorded = await stub.lastRequest()
         XCTAssertEqual(recorded?.url?.absoluteString, "http://example.com/me/keywords")
@@ -21,19 +22,22 @@ final class AlertSubscriptionServiceTests: XCTestCase {
         XCTAssertEqual(recorded?.value(forHTTPHeaderField: "Authorization"), "Bearer nnt_test")
         let body = String(data: recorded?.httpBody ?? Data(), encoding: .utf8)
         XCTAssertTrue(body?.contains("Galaxy S25") == true)
+        XCTAssertTrue(body?.contains("중고") == true)
     }
 
-    /// listKeywords → GET → JSON array.
+    /// listKeywords → GET → [KeywordSub] (keyword/exclude 객체 배열).
     func testListKeywordsParsesJSONArray() async throws {
         let stub = StubHTTPRequester()
-        await stub.setNext(status: 200, body: #"["apple","banana"]"#)
+        await stub.setNext(status: 200,
+            body: #"[{"keyword":"apple","exclude":""},{"keyword":"banana","exclude":"used,중고"}]"#)
         let service = AlertSubscriptionService(
             baseURL: URL(string: "http://example.com")!,
             requester: stub,
             uuidStore: InMemoryUUIDStore(value: "nnt_test")
         )
         let listed = try await service.listKeywords()
-        XCTAssertEqual(listed, ["apple", "banana"])
+        XCTAssertEqual(listed.map(\.keyword), ["apple", "banana"])
+        XCTAssertEqual(listed.map(\.exclude), ["", "used,중고"])
     }
 
     /// removeKeyword → DELETE /me/keywords/{encoded}.
@@ -53,6 +57,24 @@ final class AlertSubscriptionServiceTests: XCTestCase {
             recorded?.url?.absoluteString.contains("/me/keywords/%EA%B0%A4%EB%9F%AD%EC%8B%9C") == true,
             "한글 keyword segment가 percent-encoded돼야 함"
         )
+    }
+
+    /// removeKeyword 의 keyword 에 "/" 가 있어도 한 세그먼트로 유지(%2F).
+    /// urlPathAllowed 는 "/" 를 안 막아 "a/b" 가 다중 세그먼트로 새던 버그 방지.
+    func testRemoveKeywordEncodesSlashAsSingleSegment() async throws {
+        let stub = StubHTTPRequester()
+        await stub.setNext(status: 204, body: "")
+        let service = AlertSubscriptionService(
+            baseURL: URL(string: "http://example.com")!,
+            requester: stub,
+            uuidStore: InMemoryUUIDStore(value: "nnt_test")
+        )
+        try await service.removeKeyword("a/b")
+        let recorded = await stub.lastRequest()
+        let urlStr = recorded?.url?.absoluteString ?? ""
+        XCTAssertTrue(urlStr.contains("/me/keywords/a%2Fb"),
+                      "'/' 가 %2F 로 인코딩돼 단일 세그먼트여야 함: \(urlStr)")
+        XCTAssertFalse(urlStr.contains("/me/keywords/a/b"))
     }
 
     /// registerPushToken → PUT body `{"token": "<hex>"}`.
@@ -98,7 +120,7 @@ final class AlertSubscriptionServiceTests: XCTestCase {
             uuidStore: InMemoryUUIDStore(value: "nnt_test")
         )
         do {
-            _ = try await service.addKeyword("x")
+            _ = try await service.upsertKeyword(keyword: "x", exclude: "")
             XCTFail("400 응답에서 throw해야 함")
         } catch is AlertSubscriptionError {
             // ok

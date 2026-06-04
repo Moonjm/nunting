@@ -15,15 +15,20 @@ struct KeywordListView: View {
     @Environment(\.dismiss) private var dismiss
     @Namespace private var tabNamespace
     @State private var tab: Tab = .keywords
-    @State private var keywords: [String] = []
+    @State private var keywords: [KeywordSub] = []
     @State private var newKeyword = ""
     @State private var errorMessage: String?
     @State private var pushAuthStatus: UNAuthorizationStatus = .notDetermined
     @State private var unreadCount = 0
+    @FocusState private var inputFocused: Bool
+
+    /// 편집 중인 행의 원래 포함 키워드(PK). nil = 신규 추가. 편집 저장 시
+    /// 포함이 바뀌어 PK가 달라지면 이 값으로 이전 행을 지운다.
+    @State private var editingOriginal: String?
 
     /// 삭제 confirm 대기 중인 키워드들. 비어있지 않으면 확인 alert 표시.
     /// 확정 전까지 실제 삭제는 하지 않는다(취소 시 복원 로직 불필요).
-    @State private var pendingDeletion: [String] = []
+    @State private var pendingDeletion: [KeywordSub] = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -115,16 +120,17 @@ struct KeywordListView: View {
 
             Section {
                 HStack(spacing: 8) {
-                    TextField("예: 삼다수, 500ml", text: $newKeyword)
+                    TextField("예: 갤럭시, -중고", text: $newKeyword)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled(true)
+                        .focused($inputFocused)
                         .submitLabel(.done)
                         .onSubmit {
                             dismissKeyboard()
                             Task { await submitNewKeyword() }
                         }
                     // 상시 노출(액션 포인트 명확) — 빈칸이면 비활성 회색. Return 으로도 등록.
-                    Button("추가") {
+                    Button(editingOriginal == nil ? "추가" : "저장") {
                         dismissKeyboard()
                         Task { await submitNewKeyword() }
                     }
@@ -133,9 +139,9 @@ struct KeywordListView: View {
                     .disabled(trimmedNewKeyword.isEmpty)
                 }
             } header: {
-                Text("키워드 추가")
+                Text(editingOriginal == nil ? "키워드 추가" : "키워드 편집")
             } footer: {
-                Text("쉼표로 구분하면 모두 포함된 글만 알려드려요.")
+                Text("쉼표로 구분하면 모두 포함된 글만 알려드려요. 단어 앞에 -를 붙이면 제외돼요. 예: 갤럭시, -중고, -판매")
             }
 
             if let errorMessage {
@@ -150,8 +156,13 @@ struct KeywordListView: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(keywords, id: \.self) { kw in
-                        TokenRow(tokens: tokens(of: kw))
+                    ForEach(keywords) { kw in
+                        TokenRow(
+                            includeTokens: tokens(of: kw.keyword),
+                            excludeTokens: tokens(of: kw.exclude)
+                        )
+                        .contentShape(Rectangle())
+                        .onTapGesture { beginEdit(kw) }
                     }
                     .onDelete(perform: requestDeleteKeywords)
                 }
@@ -177,7 +188,7 @@ struct KeywordListView: View {
     /// 삭제 확인 alert 의 메시지. 단일/복수에 맞춰 문구 변경.
     private var deletePrompt: String {
         if pendingDeletion.count == 1 {
-            return "'\(pendingDeletion[0])' 키워드를 삭제할까요?"
+            return "'\(pendingDeletion[0].keyword)' 키워드를 삭제할까요?"
         }
         return "키워드 \(pendingDeletion.count)개를 삭제할까요?"
     }
@@ -229,10 +240,26 @@ struct KeywordListView: View {
         pushAuthStatus = s.authorizationStatus
     }
 
+    /// 행을 탭하면 그 행을 단일 입력 문자열로 복원해 입력칸을 편집 모드로.
+    /// 저장 시 포함이 바뀌면 editingOriginal 로 이전 행을 지운다.
+    private func beginEdit(_ kw: KeywordSub) {
+        errorMessage = nil
+        editingOriginal = kw.keyword
+        newKeyword = KeywordInput.compose(keyword: kw.keyword, exclude: kw.exclude)
+        inputFocused = true
+    }
+
     private func submitNewKeyword() async {
         let raw = trimmedNewKeyword
         guard !raw.isEmpty else { return }
         errorMessage = nil
+
+        // 입력 한 줄 → (포함, 제외) 분리. 포함이 하나도 없으면(전부 -단어) 거부.
+        let parsed = KeywordInput.parse(raw)
+        guard !parsed.include.isEmpty else {
+            errorMessage = "포함할 키워드를 최소 하나 입력하세요. (앞에 -는 제외 단어)"
+            return
+        }
 
         // 첫 키워드 추가 시 푸시 권한 요청. 이미 결정된 상태면 no-op.
         if pushAuthStatus == .notDetermined {
@@ -246,15 +273,33 @@ struct KeywordListView: View {
             }
         }
 
+        let original = editingOriginal
         do {
-            let normalized = try await AlertSubscriptionService.shared.addKeyword(raw)
+            let sub = try await AlertSubscriptionService.shared.upsertKeyword(
+                keyword: parsed.include, exclude: parsed.exclude)
             newKeyword = ""
-            if !keywords.contains(normalized) {
-                keywords.append(normalized)
-                keywords.sort()  // 서버도 정렬 응답
+            editingOriginal = nil
+            inputFocused = false
+            // 편집 중 포함이 바뀌어 PK(=keyword)가 달라졌으면 이전 행 제거.
+            // 삭제 실패 시: 새 행 upsert 는 이미 됐지만 옛 행이 서버에 남아
+            // 다음 loadAll 에서 되살아난다(둘 다 보임). performDeletion 과 같은
+            // 규율로 에러 표시 + 즉시 resync 해 로컬/서버 상태를 맞춘다.
+            if let original, original != sub.keyword {
+                do {
+                    try await AlertSubscriptionService.shared.removeKeyword(original)
+                    keywords.removeAll { $0.keyword == original }
+                } catch {
+                    errorMessage = "이전 키워드 삭제 실패: \(error.localizedDescription)"
+                    await loadAll()
+                    return
+                }
             }
+            // upsert 결과로 로컬 행 교체(신규/제외갱신 모두 커버) 후 정렬.
+            keywords.removeAll { $0.keyword == sub.keyword }
+            keywords.append(sub)
+            keywords.sort { $0.keyword < $1.keyword }  // 서버도 keyword 정렬 응답
         } catch {
-            errorMessage = "추가 실패: \(error.localizedDescription)"
+            errorMessage = "저장 실패: \(error.localizedDescription)"
         }
     }
 
@@ -274,14 +319,22 @@ struct KeywordListView: View {
 
     /// confirm 확정 후 호출 — optimistic 제거 + 서버 삭제. 서버 fail 시
     /// loadAll 로 resync 해 사라진 항목 복원.
-    private func performDeletion(_ targets: [String]) async {
-        keywords.removeAll { targets.contains($0) }
+    private func performDeletion(_ targets: [KeywordSub]) async {
+        let ids = Set(targets.map(\.keyword))
+        // 편집 중인 행이 삭제 대상에 포함되면 편집 상태를 비운다. 안 그러면
+        // 삭제 후에도 입력창에 그 행이 남아 "저장" 시 방금 지운 행이 되살아난다.
+        if let editingOriginal, ids.contains(editingOriginal) {
+            self.editingOriginal = nil
+            newKeyword = ""
+            inputFocused = false
+        }
+        keywords.removeAll { ids.contains($0.keyword) }
         var anyFailed = false
-        for kw in targets {
+        for t in targets {
             do {
-                try await AlertSubscriptionService.shared.removeKeyword(kw)
+                try await AlertSubscriptionService.shared.removeKeyword(t.keyword)
             } catch {
-                errorMessage = "삭제 실패(\(kw)): \(error.localizedDescription)"
+                errorMessage = "삭제 실패(\(t.keyword)): \(error.localizedDescription)"
                 anyFailed = true
             }
         }
@@ -291,23 +344,35 @@ struct KeywordListView: View {
     }
 }
 
-/// 한 구독(AND 키워드)을 토큰 칩 묶음으로 렌더. 한 행(row) = 한 묶음이라
-/// 행 안의 칩들이 "모두 포함(AND)" 임을 그룹핑으로 표현 — 구분자(+) 없이 미니멀.
-/// 토큰이 많아 행 폭을 넘으면 FlowLayout 이 다음 줄로 흘려보내 잘리지 않게 한다.
+/// 한 구독 행을 토큰 칩 묶음으로 렌더. 포함 칩(AND)은 기본 회색 배경, 제외
+/// 칩(OR)은 같은 줄에 이어 붙되 **배경색만 빨강 계열**로 구분한다(라벨/구분자
+/// 없이 색으로만). 토큰이 많아 행 폭을 넘으면 FlowLayout 이 다음 줄로 흘린다.
 private struct TokenRow: View {
-    let tokens: [String]
+    let includeTokens: [String]
+    let excludeTokens: [String]
 
     var body: some View {
         FlowLayout(hSpacing: 6, vSpacing: 6) {
-            ForEach(Array(tokens.enumerated()), id: \.offset) { _, token in
-                Text(token)
-                    .font(.subheadline)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(Color(.secondarySystemFill), in: Capsule())
+            ForEach(Array(includeTokens.enumerated()), id: \.offset) { _, token in
+                // 시각은 배경색으로만 구분(설계대로). 색을 못 보는 VoiceOver
+                // 사용자를 위해 포함/제외 역할은 접근성 레이블로만 덧붙인다.
+                chip(token, background: Color(.secondarySystemFill))
+                    .accessibilityLabel("포함 \(token)")
+            }
+            ForEach(Array(excludeTokens.enumerated()), id: \.offset) { _, token in
+                chip(token, background: Color.red.opacity(0.18))
+                    .accessibilityLabel("제외 \(token)")
             }
         }
         .padding(.vertical, 2)
+    }
+
+    private func chip(_ token: String, background: Color) -> some View {
+        Text(token)
+            .font(.subheadline)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(background, in: Capsule())
     }
 }
 

@@ -69,9 +69,9 @@ func (h *handlers) listKeywords(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
-	// nil → []string{} 보장 ("null" 대신 "[]" 응답).
+	// nil → [] 보장 ("null" 대신 "[]" 응답).
 	if keys == nil {
-		keys = []string{}
+		keys = []db.KeywordSub{}
 	}
 	// json.Marshal 사용 — json.Encoder.Encode 가 trailing newline 을 붙여
 	// strict-equal 테스트와 일부 클라이언트 디코더가 까다로워질 수 있음.
@@ -80,36 +80,43 @@ func (h *handlers) listKeywords(w http.ResponseWriter, r *http.Request) {
 	w.Write(b)
 }
 
-// POST /me/keywords { "keyword": "<raw>" } → 200 "<normalized>" (JSON string)
+// POST /me/keywords { "keyword": "<raw>", "exclude": "<raw>" }
+//   → 200 {"keyword":"<norm>","exclude":"<norm>"} (upsert)
+//
+// keyword 가 행 식별자(PK)이고 exclude 는 갱신 대상이라, 같은 keyword 로 다시
+// POST 하면 제외만 덮어쓴다(클라의 행 편집 통로). exclude 누락/빈값은 "제외
+// 없음". 포함(AND)과 제외(OR) 둘 다 normalizeKeyword 로 정규화한다.
 func (h *handlers) addKeyword(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Keyword string `json:"keyword"`
+		Exclude string `json:"exclude"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
-	// raw 입력 길이 캡 — normalizeKeyword 의 strings.Split DoS 방어.
-	if len(body.Keyword) > maxRawKeywordLength {
+	// raw 입력 길이 캡 — normalizeKeyword 의 strings.Split DoS 방어(양쪽 다).
+	if len(body.Keyword) > maxRawKeywordLength || len(body.Exclude) > maxRawKeywordLength {
 		http.Error(w, "keyword too long", http.StatusBadRequest)
 		return
 	}
 	// normalizeKeyword: split → trim+lower → dedup → sort → join. 상세는 함수 doc 참조.
-	normalized := normalizeKeyword(body.Keyword)
-	if normalized == "" {
+	keyword := normalizeKeyword(body.Keyword)
+	if keyword == "" {
 		http.Error(w, "keyword empty", http.StatusBadRequest)
 		return
 	}
-	if len(normalized) > maxKeywordLength {
+	// 제외는 비어도 됨(제외 없음). 정규화 후 빈 문자열이면 그대로 "".
+	exclude := normalizeKeyword(body.Exclude)
+	if len(keyword) > maxKeywordLength || len(exclude) > maxKeywordLength {
 		http.Error(w, "keyword too long", http.StatusBadRequest)
 		return
 	}
-	if err := h.store.AddKeyword(r.Context(), UUIDFrom(r.Context()), normalized); err != nil {
+	if err := h.store.UpsertKeyword(r.Context(), UUIDFrom(r.Context()), keyword, exclude); err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
-	// JSON string ("\"갤럭시\"") — Marshal 이 안전한 quoting/escaping 보장.
-	b, _ := json.Marshal(normalized)
+	b, _ := json.Marshal(db.KeywordSub{Keyword: keyword, Exclude: exclude})
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(b)
 }

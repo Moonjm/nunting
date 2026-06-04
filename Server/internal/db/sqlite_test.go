@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 )
 
@@ -100,7 +101,7 @@ func TestKeywordCRUD(t *testing.T) {
 	store.AddKeyword(ctx, "nnt_a", "갤럭시")
 	keys, _ = store.ListKeywords(ctx, "nnt_a")
 	want := []string{"갤럭시", "삼성"}
-	if len(keys) != 2 || keys[0] != want[0] || keys[1] != want[1] {
+	if len(keys) != 2 || keys[0].Keyword != want[0] || keys[1].Keyword != want[1] {
 		t.Errorf("want %v sorted, got %v", want, keys)
 	}
 
@@ -110,8 +111,131 @@ func TestKeywordCRUD(t *testing.T) {
 
 	store.RemoveKeyword(ctx, "nnt_a", "삼성")
 	keys, _ = store.ListKeywords(ctx, "nnt_a")
-	if len(keys) != 1 || keys[0] != "갤럭시" {
+	if len(keys) != 1 || keys[0].Keyword != "갤럭시" {
 		t.Errorf("want [갤럭시], got %v", keys)
+	}
+}
+
+func TestUpsertKeywordAndExcludeMatching(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	store.UpsertUser(ctx, "nnt_a")
+	store.SetPushToken(ctx, "nnt_a", "tok_a")
+	// 포함 "갤럭시", 제외 "중고,판매".
+	if err := store.UpsertKeyword(ctx, "nnt_a", "갤럭시", "중고,판매"); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	// ListKeywords 가 exclude 동반 반환.
+	keys, _ := store.ListKeywords(ctx, "nnt_a")
+	if len(keys) != 1 || keys[0].Keyword != "갤럭시" || keys[0].Exclude != "중고,판매" {
+		t.Fatalf("list: want 갤럭시/중고,판매, got %+v", keys)
+	}
+
+	// 포함O · 제외X → 매칭.
+	m, _ := store.MatchedUsersForTitle(ctx, "갤럭시 S25 개봉기")
+	if len(m) != 1 || m[0].UUID != "nnt_a" {
+		t.Errorf("include hit, no exclude: want [nnt_a], got %+v", m)
+	}
+
+	// 포함O · 제외O(중고) → 탈락.
+	m, _ = store.MatchedUsersForTitle(ctx, "갤럭시 중고 팝니다")
+	if len(m) != 0 {
+		t.Errorf("exclude '중고' present: want empty, got %+v", m)
+	}
+	// 다른 제외 토큰(판매)도 탈락 — OR 의미.
+	m, _ = store.MatchedUsersForTitle(ctx, "갤럭시 판매합니다")
+	if len(m) != 0 {
+		t.Errorf("exclude '판매' present: want empty, got %+v", m)
+	}
+
+	// upsert 재호출로 제외 갱신(행 중복 없이 exclude 만 교체).
+	if err := store.UpsertKeyword(ctx, "nnt_a", "갤럭시", ""); err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+	keys, _ = store.ListKeywords(ctx, "nnt_a")
+	if len(keys) != 1 || keys[0].Exclude != "" {
+		t.Fatalf("exclude cleared: want 1 row exclude='', got %+v", keys)
+	}
+	// 제외가 비었으니 이제 "갤럭시 중고" 도 매칭.
+	m, _ = store.MatchedUsersForTitle(ctx, "갤럭시 중고 팝니다")
+	if len(m) != 1 {
+		t.Errorf("after clearing exclude: want match, got %+v", m)
+	}
+}
+
+// 레거시 DB(exclude 컬럼 없던 시절) 를 Open 이 ALTER 로 마이그레이션하는 경로.
+// :memory: 테스트는 항상 exclude 포함 CREATE 라 ADD COLUMN 분기를 안 타므로,
+// 디스크에 옛 스키마를 만들어 실제 backfill 을 검증한다.
+func TestExcludeColumnMigrationOnLegacyDB(t *testing.T) {
+	path := t.TempDir() + "/legacy.db"
+
+	// exclude 없던 keyword_subs + 기존 행 수동 생성. 드라이버 "sqlite" 는
+	// sqlite.go 의 blank import 로 (같은 패키지라) 이미 등록돼 있다.
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	_, err = raw.Exec(`
+		CREATE TABLE users (uuid TEXT PRIMARY KEY, push_token TEXT, created_at INTEGER NOT NULL);
+		CREATE TABLE keyword_subs (uuid TEXT NOT NULL, keyword TEXT NOT NULL, PRIMARY KEY (uuid, keyword));
+		INSERT INTO users (uuid, push_token, created_at) VALUES ('nnt_a', NULL, 0);
+		INSERT INTO keyword_subs (uuid, keyword) VALUES ('nnt_a', '갤럭시');`)
+	if err != nil {
+		t.Fatalf("legacy schema: %v", err)
+	}
+	raw.Close()
+
+	// Open 이 CREATE TABLE IF NOT EXISTS(no-op) 후 ALTER 로 exclude 추가 + backfill.
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open(migrate): %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	keys, err := store.ListKeywords(ctx, "nnt_a")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(keys) != 1 || keys[0].Keyword != "갤럭시" || keys[0].Exclude != "" {
+		t.Fatalf("legacy row after migration: want 갤럭시/'', got %+v", keys)
+	}
+
+	// 추가된 컬럼이 정상 동작하는지: upsert 로 제외 갱신 후 매칭에 반영.
+	if err := store.UpsertKeyword(ctx, "nnt_a", "갤럭시", "중고"); err != nil {
+		t.Fatalf("upsert after migrate: %v", err)
+	}
+	keys, _ = store.ListKeywords(ctx, "nnt_a")
+	if len(keys) != 1 || keys[0].Exclude != "중고" {
+		t.Errorf("exclude after upsert: want 중고, got %+v", keys)
+	}
+}
+
+func TestMatchedUsersExcludeFallsThroughToNextRow(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	store.UpsertUser(ctx, "nnt_a")
+	store.SetPushToken(ctx, "nnt_a", "tok_a")
+	// 같은 user 의 두 행: "갤럭시"(제외 중고) + "삼성"(제외 없음).
+	store.UpsertKeyword(ctx, "nnt_a", "갤럭시", "중고")
+	store.UpsertKeyword(ctx, "nnt_a", "삼성", "")
+
+	// "삼성 갤럭시 중고": 갤럭시 행은 제외(중고)로 탈락하지만, 삼성 행이
+	// 매칭되어 알림은 1건 발생해야 한다(첫 행 탈락이 user 전체를 막지 않음).
+	m, _ := store.MatchedUsersForTitle(ctx, "삼성 갤럭시 중고 한정")
+	if len(m) != 1 || m[0].UUID != "nnt_a" || m[0].Keyword != "삼성" {
+		t.Errorf("fall-through to 삼성 row: want [nnt_a/삼성], got %+v", m)
 	}
 }
 
