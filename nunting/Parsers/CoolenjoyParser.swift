@@ -88,6 +88,10 @@ public struct CoolenjoyParser: BoardParser {
             }
         }
 
+        // 취소는 페이지 실패가 아니다 — child task 가 CancellationError 를
+        // (page, nil) 로 흡수했더라도, 취소된 로드가 부분 댓글을 정상 완료처럼
+        // 반환해 popped 뷰에 늦게 붙는 걸 막으려 여기서 다시 올린다.
+        try Task.checkCancellation()
         return (1...totalPages).flatMap { pageMap[$0] ?? [] }
     }
 

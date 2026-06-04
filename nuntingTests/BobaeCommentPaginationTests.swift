@@ -155,6 +155,29 @@ final class BobaeCommentPaginationTests: XCTestCase {
         XCTAssertTrue(requested.isEmpty, "a.on 없으면 추가 fetch 없이 inline-only")
     }
 
+    /// 취소는 페이지 실패와 다르게 흡수하면 안 된다 — 취소된 로드가 부분 댓글을
+    /// 정상 완료처럼 반환하면 popped 뷰에 늦게 붙는다. child task 가 성공해도
+    /// 부모 task 가 취소됐으면 throw 해야 한다.
+    func testCancellationThrowsInsteadOfReturningPartial() async throws {
+        let parser = BobaeParser()
+        let detail = detailHTML(current: 2, total: 2, comments: [("p2a", "A", 21)])
+
+        let task = Task {
+            try await parser.fetchAllComments(for: post(), detailHTML: detail) { _ in
+                // 취소될 때까지 대기 → 그 뒤엔 성공 응답을 줘도 throw 돼야 함.
+                while !Task.isCancelled { await Task.yield() }
+                return self.fragment(current: 1, total: 2, comments: [("p1a", "B", 11)])
+            }
+        }
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("취소 시 부분 댓글 대신 CancellationError 를 던져야 함")
+        } catch is CancellationError {
+            // 기대대로
+        }
+    }
+
     func testPageFetchFailureIsAbsorbedAndInlineSurvives() async throws {
         struct PageError: Error {}
         let parser = BobaeParser()
