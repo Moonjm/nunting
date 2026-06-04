@@ -99,27 +99,55 @@ public struct DdanziParser: BoardParser {
             return []
         }
 
-        // 2) XE `exec_json` is a quirk: the JS library sets the request's
-        //    `Content-Type` to `application/json` but still sends the params
-        //    URL-encoded in the body. The server-side handler branches on
-        //    the `Content-Type` header to decide whether to emit JSON or
-        //    render the full HTML layout — so sending
-        //    `x-www-form-urlencoded` returns the login / view page instead
-        //    of the JSON payload we need here.
-        let data = try await Networking.postForm(
+        // 2) 댓글은 XE 기본 100개/페이지로 페이지네이션된다. `cpage=0` 은 XE 가
+        //    "마지막 페이지(최신)"로 해석하므로 그것만 받으면 100개 넘는 글에서
+        //    앞 페이지가 통째로 빠진다. 1페이지를 받아 `_page_no`(총 페이지 수)를
+        //    읽고, 나머지(2..N)를 병렬로 받아 시간순(1..N)으로 합친다. ppomppu
+        //    파서의 댓글 페이지네이션과 동일한 구조.
+        let firstData = try await fetchCommentPage(params: params, cpage: 1, referer: post.url)
+        let firstPage = decodeComments(data: firstData)
+        let totalPages = min(decodeCommentPageCount(data: firstData), Self.maxCommentPages)
+        if totalPages <= 1 { return firstPage }
+
+        var pageMap: [Int: [PostComment]] = [1: firstPage]
+        try await withThrowingTaskGroup(of: (Int, [PostComment]).self) { group in
+            for page in 2...totalPages {
+                group.addTask {
+                    let data = try await self.fetchCommentPage(
+                        params: params, cpage: page, referer: post.url)
+                    return (page, self.decodeComments(data: data))
+                }
+            }
+            for try await (page, comments) in group {
+                pageMap[page] = comments
+            }
+        }
+        return (1...totalPages).flatMap { pageMap[$0] ?? [] }
+    }
+
+    /// 댓글 페이지 fetch 상한(무한 루프/이상 응답 방어). 100개/페이지 기준
+    /// ~5천 댓글이라 실제 딴지 글은 한참 못 미친다.
+    nonisolated private static let maxCommentPages = 50
+
+    /// XE `exec_json` 댓글 목록 POST. JS 라이브러리가 `Content-Type` 을
+    /// `application/json` 으로 보내면서도 body 는 URL-encoded 로 싣는 quirk가
+    /// 있어, 서버가 헤더로 JSON/HTML 분기를 한다 — `x-www-form-urlencoded` 로
+    /// 보내면 로그인/뷰 페이지가 돌아온다. `contentType` 오버라이드로 회피.
+    nonisolated private func fetchCommentPage(
+        params: CommentParams, cpage: Int, referer: URL
+    ) async throws -> Data {
+        try await Networking.postForm(
             url: site.baseURL,
             parameters: [
                 "module": "board",
                 "act": "dispBoardContentCommentListHtml",
                 "mid": params.mid,
                 "document_srl": params.documentSrl,
-                "cpage": "0",
+                "cpage": String(cpage),
             ],
-            referer: post.url,
+            referer: referer,
             contentType: "application/json"
         )
-
-        return decodeComments(data: data)
     }
 
     // MARK: - Field extraction
@@ -277,6 +305,32 @@ public struct DdanziParser: BoardParser {
         } catch {
             return []
         }
+    }
+
+    /// 댓글 fragment 에서 총 댓글 페이지 수를 읽는다. XE 가 심는 hidden
+    /// `<input id="_page_no">` 가 현재 페이지와 무관한 **절대 총 페이지 수**라
+    /// (cpage=1·2 양쪽에서 동일) 윈도잉되는 `.pagination .number` nav 보다
+    /// 신뢰도가 높아 우선한다. `_page_no` 가 없으면 `.number` 앵커 최대값으로
+    /// 폴백, 그마저 없으면 1(단일 페이지). internal: 테스트 접근용.
+    nonisolated func decodeCommentPageCount(data: Data) -> Int {
+        guard let payload = try? JSONDecoder().decode(CommentResponse.self, from: data),
+              let fragment = payload.commentHtml, !fragment.isEmpty,
+              let doc = try? SwiftSoup.parseBodyFragment(fragment)
+        else { return 1 }
+        let body = doc.body() ?? doc
+
+        if let raw = try? body.select("#_page_no").first()?.attr("value"),
+           let n = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)), n >= 1 {
+            return n
+        }
+        // 폴백: pagination 의 페이지 번호 앵커 최대값(active 도 `.number` 클래스를
+        // 같이 가져 함께 잡힌다). 윈도잉되면 과소집계될 수 있으나 _page_no 부재 시
+        // 차선책 — 그래도 "마지막 페이지만" 보다는 낫다.
+        if let anchors = try? body.select(".pagination a.number"),
+           let maxN = anchors.compactMap({ Int((try? $0.text()) ?? "") }).max(), maxN >= 1 {
+            return maxN
+        }
+        return 1
     }
 
     /// Pull the first inline image out as a sticker URL so the comment
