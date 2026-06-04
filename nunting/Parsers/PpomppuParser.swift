@@ -148,12 +148,17 @@ public struct PpomppuParser: BoardParser {
         }
         let firstDoc = try SwiftSoup.parse(firstHtml)
         let firstPage = try parseComments(in: firstDoc)
-        let totalPages = try totalCommentPages(in: firstDoc)
-        if totalPages <= 1 { return firstPage }
+        let info = try commentPageInfo(in: firstDoc)
+        if info.total <= 1 { return firstPage }
 
-        var pageMap: [Int: [PostComment]] = [1: firstPage]
+        // 모바일 detail 은 댓글 **마지막** 페이지를 inline 으로 렌더한다(page 1
+        // 아님). 그 댓글을 무조건 page 1 로 놓으면 `current` 페이지가 중복되고
+        // 빠진 페이지(특히 1번)가 누락된다 — "스크롤하면 같은 댓글이 다시 나옴"
+        // 의 원인. detail 댓글을 실제 인덱스(info.current)에 놓고 나머지 페이지만
+        // 가져온다.
+        var pageMap: [Int: [PostComment]] = [info.current: firstPage]
         try await withThrowingTaskGroup(of: (Int, [PostComment]).self) { group in
-            for page in 2...totalPages {
+            for page in 1...info.total where page != info.current {
                 guard let pageURL = appendingCommentPage(to: post.url, page: page) else { continue }
                 group.addTask {
                     let html = try await fetcher(pageURL)
@@ -165,7 +170,7 @@ public struct PpomppuParser: BoardParser {
                 pageMap[page] = comments
             }
         }
-        return (1...totalPages).flatMap { pageMap[$0] ?? [] }
+        return (1...info.total).flatMap { pageMap[$0] ?? [] }
     }
 
     public nonisolated func parseComments(html: String) throws -> [PostComment] {
@@ -240,13 +245,20 @@ public struct PpomppuParser: BoardParser {
         return results
     }
 
-    nonisolated private func totalCommentPages(in doc: Document) throws -> Int {
-        guard let pageEl = try doc.select("div.cmt-topInfo span.cmt-page").first() else { return 1 }
+    /// 댓글 페이지 정보 "current / total". 모바일 detail 은 **마지막** 댓글
+    /// 페이지를 inline 으로 렌더하므로(예 "3 / 3"), total 뿐 아니라 current 도
+    /// 읽어야 detail 댓글을 올바른 페이지 슬롯에 놓을 수 있다. current 를
+    /// 1...total 로 clamp. 못 읽으면 (1, 1).
+    nonisolated private func commentPageInfo(in doc: Document) throws -> (current: Int, total: Int) {
+        guard let pageEl = try doc.select("div.cmt-topInfo span.cmt-page").first() else { return (1, 1) }
         let text = try pageEl.text()
-        // Format: "1 / N"
+        // Format: "3 / 3" (prevPage/nextPage 앵커는 텍스트 없음).
         let parts = text.split(separator: "/").map { $0.trimmingCharacters(in: .whitespaces) }
-        guard parts.count == 2, let total = Int(parts[1].filter(\.isNumber)) else { return 1 }
-        return max(1, total)
+        guard parts.count == 2,
+              let current = Int(parts[0].filter(\.isNumber)),
+              let total = Int(parts[1].filter(\.isNumber)), total >= 1
+        else { return (1, 1) }
+        return (min(max(1, current), total), total)
     }
 
     nonisolated private func appendingCommentPage(to url: URL, page: Int) -> URL? {
