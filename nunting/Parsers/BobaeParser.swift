@@ -68,8 +68,116 @@ public struct BobaeParser: BoardParser {
         )
     }
 
-    // Comments live in the same detail page — no separate fetch needed.
-    public nonisolated func commentsURL(for post: Post) -> URL? { nil }
+    // 댓글 페이지네이션은 detail HTML 안의 `comment_call` 파라미터로만 만들 수
+    // 있어(테이블명 `uni_cmt_NNNN` 이 URL 에 없다), commentsURL 은 게이트 통과용
+    // sentinel 로 post.url 만 돌려주고 실제 작업은 fetchAllComments 에서 한다.
+    // Ppomppu / Ddanzi 와 동일한 구조.
+    public nonisolated func commentsURL(for post: Post) -> URL? { post.url }
+
+    /// 보배드림 모바일 detail 은 댓글 **마지막** 페이지(50개/페이지)만 inline 으로
+    /// 렌더한다 — 그것만 읽으면 앞 페이지가 통째로 빠진다(61개 글 → 11개만). detail
+    /// 의 `.page` 페이저에서 현재/총 페이지를 읽어, inline 을 실제 인덱스에 놓고
+    /// 나머지 페이지를 `comment_call` AJAX 로 병렬 fetch 후 1..N 순서로 합친다.
+    public nonisolated func fetchAllComments(
+        for post: Post,
+        detailHTML: String?,
+        fetcher: @escaping @Sendable (URL) async throws -> String
+    ) async throws -> [PostComment] {
+        // 호출부가 이미 받아둔 detail 본문을 재사용 — inline 첫 페이지가 그 안에
+        // 있어 post.url 재요청은 중복 parse 일 뿐이다.
+        let html: String
+        if let detailHTML {
+            html = detailHTML
+        } else {
+            html = try await fetcher(post.url)
+        }
+        let doc = try SwiftSoup.parse(html)
+        let inlinePage = try extractComments(in: doc)
+
+        // 페이저(`.page span.num`)가 없거나 1페이지면 inline 이 전부.
+        guard let info = try commentPageInfo(in: doc), info.total > 1,
+              let params = Self.commentCallParams(in: html)
+        else { return inlinePage }
+
+        var pageMap: [Int: [PostComment]] = [info.current: inlinePage]
+        // 페이지 단위 실패는 흡수한다(호출부 `try?` 가 throw 시 댓글을 통째로
+        // nil 처리하므로). 실패한 페이지만 건너뛰고 나머지는 살린다.
+        await withTaskGroup(of: (Int, [PostComment]?).self) { group in
+            for page in 1...info.total where page != info.current {
+                guard let url = commentPageURL(params: params, page: page) else { continue }
+                group.addTask {
+                    do {
+                        let pageHTML = try await fetcher(url)
+                        return (page, try self.parseCommentFragment(html: pageHTML))
+                    } catch {
+                        return (page, nil)
+                    }
+                }
+            }
+            for await (page, comments) in group {
+                if let comments { pageMap[page] = comments }
+            }
+        }
+        return (1...info.total).flatMap { pageMap[$0] ?? [] }
+    }
+
+    /// `comment_call('uni_cmt_2606','strange','6925135','strange','6925135',...)`
+    /// 의 앞 5개 인자(테이블·게시판·글번호·원게시판·원글번호). 정렬/페이지 링크
+    /// 어디서든 동일하게 나오므로 첫 매치만 쓴다.
+    nonisolated private static let commentCallRegex = try! NSRegularExpression(
+        pattern: #"comment_call\(\s*'([^']*)'\s*,\s*'([^']*)'\s*,\s*'([^']*)'\s*,\s*'([^']*)'\s*,\s*'([^']*)'"#,
+        options: []
+    )
+
+    nonisolated private struct CommentCallParams {
+        let selTb: String, mapCD: String, mapNO: String, ocode: String, ono: String
+    }
+
+    nonisolated private static func commentCallParams(in html: String) -> CommentCallParams? {
+        let ns = html as NSString
+        guard let m = commentCallRegex.firstMatch(
+            in: html, range: NSRange(location: 0, length: ns.length)),
+            m.numberOfRanges >= 6
+        else { return nil }
+        func g(_ i: Int) -> String { ns.substring(with: m.range(at: i)) }
+        return CommentCallParams(selTb: g(1), mapCD: g(2), mapNO: g(3), ocode: g(4), ono: g(5))
+    }
+
+    nonisolated private func commentPageURL(params: CommentCallParams, page: Int) -> URL? {
+        // /board/comment_call/{selTb}/{mapCD}/{mapNO}/{ocode}/{ono}?page=N
+        let path = "/board/comment_call/\(params.selTb)/\(params.mapCD)/\(params.mapNO)/\(params.ocode)/\(params.ono)"
+        guard var comps = URLComponents(
+            url: site.baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)
+        else { return nil }
+        comps.queryItems = [
+            URLQueryItem(name: "secondtime", value: "Y"),
+            URLQueryItem(name: "page", value: "\(page)"),
+            URLQueryItem(name: "strOrder", value: ""),
+        ]
+        return comps.url
+    }
+
+    /// 댓글 페이저에서 현재/총 페이지. 게시판 목록 페이저 등 다른 `.page` 와
+    /// 구분하려고 `comment_call` 링크를 가진 `span.num` 만 본다. 현재 페이지는
+    /// `a.on`, 총 페이지는 숫자 앵커 최댓값.
+    nonisolated private func commentPageInfo(in doc: Document) throws -> (current: Int, total: Int)? {
+        for span in try doc.select("div.page span.num") {
+            let anchors = try span.select("a")
+            let isCommentPager = try anchors.contains { try $0.attr("href").contains("comment_call") }
+            guard isCommentPager else { continue }
+            var nums: [Int] = []
+            var current = 1
+            for a in anchors {
+                let text = try a.text().trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let n = Int(text) else { continue }
+                nums.append(n)
+                if a.hasClass("on") { current = n }
+            }
+            guard let total = nums.max() else { continue }
+            return (current, total)
+        }
+        return nil
+    }
 
     // MARK: - Field extraction
 
@@ -151,7 +259,18 @@ public struct BobaeParser: BoardParser {
         // reply is the leading `<div class="ico_area">댓글</div>` badge.
         // Best entries are a duplicated preview of top-voted items from the
         // main list; skip them so we don't render each one twice.
-        let nodes = try doc.select(".reple_body > ul.list > li")
+        return try parseCommentNodes(doc.select(".reple_body > ul.list > li"))
+    }
+
+    /// `comment_call` AJAX 응답은 `.reple_body` 래퍼 없이 `ul.list > li` 만 싣는다.
+    /// (detail 페이지의 메뉴 등 다른 `ul.list` 와 섞일 일이 없는 fragment 이므로
+    /// 셀렉터를 느슨하게 써도 안전하다.)
+    nonisolated private func parseCommentFragment(html: String) throws -> [PostComment] {
+        let doc = try SwiftSoup.parse(html)
+        return try parseCommentNodes(doc.select("ul.list > li"))
+    }
+
+    nonisolated private func parseCommentNodes(_ nodes: Elements) throws -> [PostComment] {
         var results: [PostComment] = []
         for (idx, li) in nodes.enumerated() {
             // `.best` entries are a duplicated preview of top-voted comments
