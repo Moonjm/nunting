@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 )
 
@@ -165,6 +166,54 @@ func TestUpsertKeywordAndExcludeMatching(t *testing.T) {
 	m, _ = store.MatchedUsersForTitle(ctx, "갤럭시 중고 팝니다")
 	if len(m) != 1 {
 		t.Errorf("after clearing exclude: want match, got %+v", m)
+	}
+}
+
+// 레거시 DB(exclude 컬럼 없던 시절) 를 Open 이 ALTER 로 마이그레이션하는 경로.
+// :memory: 테스트는 항상 exclude 포함 CREATE 라 ADD COLUMN 분기를 안 타므로,
+// 디스크에 옛 스키마를 만들어 실제 backfill 을 검증한다.
+func TestExcludeColumnMigrationOnLegacyDB(t *testing.T) {
+	path := t.TempDir() + "/legacy.db"
+
+	// exclude 없던 keyword_subs + 기존 행 수동 생성. 드라이버 "sqlite" 는
+	// sqlite.go 의 blank import 로 (같은 패키지라) 이미 등록돼 있다.
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	_, err = raw.Exec(`
+		CREATE TABLE users (uuid TEXT PRIMARY KEY, push_token TEXT, created_at INTEGER NOT NULL);
+		CREATE TABLE keyword_subs (uuid TEXT NOT NULL, keyword TEXT NOT NULL, PRIMARY KEY (uuid, keyword));
+		INSERT INTO users (uuid, push_token, created_at) VALUES ('nnt_a', NULL, 0);
+		INSERT INTO keyword_subs (uuid, keyword) VALUES ('nnt_a', '갤럭시');`)
+	if err != nil {
+		t.Fatalf("legacy schema: %v", err)
+	}
+	raw.Close()
+
+	// Open 이 CREATE TABLE IF NOT EXISTS(no-op) 후 ALTER 로 exclude 추가 + backfill.
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open(migrate): %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	keys, err := store.ListKeywords(ctx, "nnt_a")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(keys) != 1 || keys[0].Keyword != "갤럭시" || keys[0].Exclude != "" {
+		t.Fatalf("legacy row after migration: want 갤럭시/'', got %+v", keys)
+	}
+
+	// 추가된 컬럼이 정상 동작하는지: upsert 로 제외 갱신 후 매칭에 반영.
+	if err := store.UpsertKeyword(ctx, "nnt_a", "갤럭시", "중고"); err != nil {
+		t.Fatalf("upsert after migrate: %v", err)
+	}
+	keys, _ = store.ListKeywords(ctx, "nnt_a")
+	if len(keys) != 1 || keys[0].Exclude != "중고" {
+		t.Errorf("exclude after upsert: want 중고, got %+v", keys)
 	}
 }
 

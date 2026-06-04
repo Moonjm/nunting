@@ -281,9 +281,18 @@ struct KeywordListView: View {
             editingOriginal = nil
             inputFocused = false
             // 편집 중 포함이 바뀌어 PK(=keyword)가 달라졌으면 이전 행 제거.
+            // 삭제 실패 시: 새 행 upsert 는 이미 됐지만 옛 행이 서버에 남아
+            // 다음 loadAll 에서 되살아난다(둘 다 보임). performDeletion 과 같은
+            // 규율로 에러 표시 + 즉시 resync 해 로컬/서버 상태를 맞춘다.
             if let original, original != sub.keyword {
-                keywords.removeAll { $0.keyword == original }
-                try? await AlertSubscriptionService.shared.removeKeyword(original)
+                do {
+                    try await AlertSubscriptionService.shared.removeKeyword(original)
+                    keywords.removeAll { $0.keyword == original }
+                } catch {
+                    errorMessage = "이전 키워드 삭제 실패: \(error.localizedDescription)"
+                    await loadAll()
+                    return
+                }
             }
             // upsert 결과로 로컬 행 교체(신규/제외갱신 모두 커버) 후 정렬.
             keywords.removeAll { $0.keyword == sub.keyword }
