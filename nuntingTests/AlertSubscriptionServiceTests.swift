@@ -2,18 +2,19 @@ import XCTest
 @testable import nunting
 
 final class AlertSubscriptionServiceTests: XCTestCase {
-    /// addKeyword → POST + 정규화 결과 echo. 서버 Plan 2가 `"galaxy s25"` 형태로 200 반환.
-    func testAddKeywordReturnsNormalizedFromServer() async throws {
+    /// upsertKeyword → POST {keyword, exclude} + 정규화된 KeywordSub echo.
+    func testUpsertKeywordReturnsNormalizedFromServer() async throws {
         let stub = StubHTTPRequester()
-        await stub.setNext(status: 201, body: #""galaxy s25""#)
+        await stub.setNext(status: 201, body: #"{"keyword":"galaxy s25","exclude":"중고"}"#)
         let uuidStore = InMemoryUUIDStore(value: "nnt_test")
         let service = AlertSubscriptionService(
             baseURL: URL(string: "http://example.com")!,
             requester: stub,
             uuidStore: uuidStore
         )
-        let normalized = try await service.addKeyword("  Galaxy S25  ")
-        XCTAssertEqual(normalized, "galaxy s25")
+        let sub = try await service.upsertKeyword(keyword: "  Galaxy S25  ", exclude: "중고")
+        XCTAssertEqual(sub.keyword, "galaxy s25")
+        XCTAssertEqual(sub.exclude, "중고")
 
         let recorded = await stub.lastRequest()
         XCTAssertEqual(recorded?.url?.absoluteString, "http://example.com/me/keywords")
@@ -21,19 +22,22 @@ final class AlertSubscriptionServiceTests: XCTestCase {
         XCTAssertEqual(recorded?.value(forHTTPHeaderField: "Authorization"), "Bearer nnt_test")
         let body = String(data: recorded?.httpBody ?? Data(), encoding: .utf8)
         XCTAssertTrue(body?.contains("Galaxy S25") == true)
+        XCTAssertTrue(body?.contains("중고") == true)
     }
 
-    /// listKeywords → GET → JSON array.
+    /// listKeywords → GET → [KeywordSub] (keyword/exclude 객체 배열).
     func testListKeywordsParsesJSONArray() async throws {
         let stub = StubHTTPRequester()
-        await stub.setNext(status: 200, body: #"["apple","banana"]"#)
+        await stub.setNext(status: 200,
+            body: #"[{"keyword":"apple","exclude":""},{"keyword":"banana","exclude":"used,중고"}]"#)
         let service = AlertSubscriptionService(
             baseURL: URL(string: "http://example.com")!,
             requester: stub,
             uuidStore: InMemoryUUIDStore(value: "nnt_test")
         )
         let listed = try await service.listKeywords()
-        XCTAssertEqual(listed, ["apple", "banana"])
+        XCTAssertEqual(listed.map(\.keyword), ["apple", "banana"])
+        XCTAssertEqual(listed.map(\.exclude), ["", "used,중고"])
     }
 
     /// removeKeyword → DELETE /me/keywords/{encoded}.
@@ -98,7 +102,7 @@ final class AlertSubscriptionServiceTests: XCTestCase {
             uuidStore: InMemoryUUIDStore(value: "nnt_test")
         )
         do {
-            _ = try await service.addKeyword("x")
+            _ = try await service.upsertKeyword(keyword: "x", exclude: "")
             XCTFail("400 응답에서 throw해야 함")
         } catch is AlertSubscriptionError {
             // ok

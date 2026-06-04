@@ -68,6 +68,15 @@ struct AlertHistoryItem: Decodable, Identifiable {
     var sentDate: Date { Date(timeIntervalSince1970: sentAt) }
 }
 
+/// 한 구독 행: 포함 키워드(CSV AND 토큰)와 제외 단어(CSV OR 토큰). 서버 Go
+/// `KeywordSub` (keyword/exclude) 와 합의된 형태. `exclude == ""` 면 제외 없음.
+/// `id` 는 포함 키워드(행 PK) — 같은 글에 대한 ForEach/upsert 식별자.
+struct KeywordSub: Codable, Hashable, Identifiable {
+    let keyword: String
+    let exclude: String
+    var id: String { keyword }
+}
+
 // MARK: - Service
 
 final class AlertSubscriptionService {
@@ -103,22 +112,25 @@ final class AlertSubscriptionService {
         _ = try await put("/me/push-token", jsonBody: #"{"token":null}"#)
     }
 
-    func listKeywords() async throws -> [String] {
+    func listKeywords() async throws -> [KeywordSub] {
         let (data, _) = try await get("/me/keywords")
         do {
-            return try JSONDecoder().decode([String].self, from: data)
+            return try JSONDecoder().decode([KeywordSub].self, from: data)
         } catch {
             throw AlertSubscriptionError.decodeFailed(String(data: data, encoding: .utf8) ?? "")
         }
     }
 
+    /// 포함 키워드 행을 추가하거나, 같은 `keyword` 면 그 행의 제외 단어를 갱신
+    /// (서버 upsert). `keyword`/`exclude` 둘 다 raw 로 보내고 서버가 정규화한
+    /// 결과(`KeywordSub`)를 돌려준다. 행 편집(제외 수정)도 이 메서드로.
     @discardableResult
-    func addKeyword(_ raw: String) async throws -> String {
-        let payload = ["keyword": raw]
+    func upsertKeyword(keyword: String, exclude: String) async throws -> KeywordSub {
+        let payload = ["keyword": keyword, "exclude": exclude]
         let body = try JSONEncoder().encode(payload)
         let (data, _) = try await post("/me/keywords", jsonBody: body)
         do {
-            return try JSONDecoder().decode(String.self, from: data)
+            return try JSONDecoder().decode(KeywordSub.self, from: data)
         } catch {
             throw AlertSubscriptionError.decodeFailed(String(data: data, encoding: .utf8) ?? "")
         }

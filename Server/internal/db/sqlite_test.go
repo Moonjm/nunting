@@ -100,7 +100,7 @@ func TestKeywordCRUD(t *testing.T) {
 	store.AddKeyword(ctx, "nnt_a", "갤럭시")
 	keys, _ = store.ListKeywords(ctx, "nnt_a")
 	want := []string{"갤럭시", "삼성"}
-	if len(keys) != 2 || keys[0] != want[0] || keys[1] != want[1] {
+	if len(keys) != 2 || keys[0].Keyword != want[0] || keys[1].Keyword != want[1] {
 		t.Errorf("want %v sorted, got %v", want, keys)
 	}
 
@@ -110,8 +110,83 @@ func TestKeywordCRUD(t *testing.T) {
 
 	store.RemoveKeyword(ctx, "nnt_a", "삼성")
 	keys, _ = store.ListKeywords(ctx, "nnt_a")
-	if len(keys) != 1 || keys[0] != "갤럭시" {
+	if len(keys) != 1 || keys[0].Keyword != "갤럭시" {
 		t.Errorf("want [갤럭시], got %v", keys)
+	}
+}
+
+func TestUpsertKeywordAndExcludeMatching(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	store.UpsertUser(ctx, "nnt_a")
+	store.SetPushToken(ctx, "nnt_a", "tok_a")
+	// 포함 "갤럭시", 제외 "중고,판매".
+	if err := store.UpsertKeyword(ctx, "nnt_a", "갤럭시", "중고,판매"); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	// ListKeywords 가 exclude 동반 반환.
+	keys, _ := store.ListKeywords(ctx, "nnt_a")
+	if len(keys) != 1 || keys[0].Keyword != "갤럭시" || keys[0].Exclude != "중고,판매" {
+		t.Fatalf("list: want 갤럭시/중고,판매, got %+v", keys)
+	}
+
+	// 포함O · 제외X → 매칭.
+	m, _ := store.MatchedUsersForTitle(ctx, "갤럭시 S25 개봉기")
+	if len(m) != 1 || m[0].UUID != "nnt_a" {
+		t.Errorf("include hit, no exclude: want [nnt_a], got %+v", m)
+	}
+
+	// 포함O · 제외O(중고) → 탈락.
+	m, _ = store.MatchedUsersForTitle(ctx, "갤럭시 중고 팝니다")
+	if len(m) != 0 {
+		t.Errorf("exclude '중고' present: want empty, got %+v", m)
+	}
+	// 다른 제외 토큰(판매)도 탈락 — OR 의미.
+	m, _ = store.MatchedUsersForTitle(ctx, "갤럭시 판매합니다")
+	if len(m) != 0 {
+		t.Errorf("exclude '판매' present: want empty, got %+v", m)
+	}
+
+	// upsert 재호출로 제외 갱신(행 중복 없이 exclude 만 교체).
+	if err := store.UpsertKeyword(ctx, "nnt_a", "갤럭시", ""); err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+	keys, _ = store.ListKeywords(ctx, "nnt_a")
+	if len(keys) != 1 || keys[0].Exclude != "" {
+		t.Fatalf("exclude cleared: want 1 row exclude='', got %+v", keys)
+	}
+	// 제외가 비었으니 이제 "갤럭시 중고" 도 매칭.
+	m, _ = store.MatchedUsersForTitle(ctx, "갤럭시 중고 팝니다")
+	if len(m) != 1 {
+		t.Errorf("after clearing exclude: want match, got %+v", m)
+	}
+}
+
+func TestMatchedUsersExcludeFallsThroughToNextRow(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+
+	store.UpsertUser(ctx, "nnt_a")
+	store.SetPushToken(ctx, "nnt_a", "tok_a")
+	// 같은 user 의 두 행: "갤럭시"(제외 중고) + "삼성"(제외 없음).
+	store.UpsertKeyword(ctx, "nnt_a", "갤럭시", "중고")
+	store.UpsertKeyword(ctx, "nnt_a", "삼성", "")
+
+	// "삼성 갤럭시 중고": 갤럭시 행은 제외(중고)로 탈락하지만, 삼성 행이
+	// 매칭되어 알림은 1건 발생해야 한다(첫 행 탈락이 user 전체를 막지 않음).
+	m, _ := store.MatchedUsersForTitle(ctx, "삼성 갤럭시 중고 한정")
+	if len(m) != 1 || m[0].UUID != "nnt_a" || m[0].Keyword != "삼성" {
+		t.Errorf("fall-through to 삼성 row: want [nnt_a/삼성], got %+v", m)
 	}
 }
 

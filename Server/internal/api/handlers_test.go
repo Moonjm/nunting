@@ -95,14 +95,12 @@ func TestKeywordsCRUD(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("add: want 200, got %d body=%q", code, body)
 	}
-	var added string
-	json.Unmarshal([]byte(body), &added)
-	if added != "갤럭시" {
-		t.Errorf("want '갤럭시', got %q", added)
+	if body != `{"keyword":"갤럭시","exclude":""}` {
+		t.Errorf("add response: got %q", body)
 	}
 
 	code, body = do(t, "GET", srv.URL+"/me/keywords", "nnt_x", "")
-	if code != 200 || body != `["갤럭시"]` {
+	if code != 200 || body != `[{"keyword":"갤럭시","exclude":""}]` {
 		t.Errorf("list-1: got %d %q", code, body)
 	}
 
@@ -147,15 +145,13 @@ func TestKeywordANDNormalization(t *testing.T) {
 	defer srv.Close()
 	defer store.Close()
 
-	// 1) 입력 "삼다수, 500ML" → 응답 "500ml,삼다수"
+	// 1) 입력 "삼다수, 500ML" → 응답 {"keyword":"500ml,삼다수","exclude":""}
 	code, body := do(t, "POST", srv.URL+"/me/keywords", "nnt_x", `{"keyword":"삼다수, 500ML"}`)
 	if code != 200 {
 		t.Fatalf("add AND: want 200, got %d body=%q", code, body)
 	}
-	var added string
-	json.Unmarshal([]byte(body), &added)
-	if added != "500ml,삼다수" {
-		t.Errorf("normalized: want %q, got %q", "500ml,삼다수", added)
+	if body != `{"keyword":"500ml,삼다수","exclude":""}` {
+		t.Errorf("normalized add response: got %q", body)
 	}
 
 	// 2) 순서만 다른 입력 → 같은 키 (중복 row 생성 안 됨)
@@ -164,7 +160,7 @@ func TestKeywordANDNormalization(t *testing.T) {
 		t.Fatalf("add reorder: want 200, got %d", code)
 	}
 	code, body = do(t, "GET", srv.URL+"/me/keywords", "nnt_x", "")
-	if code != 200 || body != `["500ml,삼다수"]` {
+	if code != 200 || body != `[{"keyword":"500ml,삼다수","exclude":""}]` {
 		t.Errorf("list after reorder add: got %d %q (want one item)", code, body)
 	}
 
@@ -184,6 +180,46 @@ func TestKeywordANDNormalization(t *testing.T) {
 	code, body = do(t, "GET", srv.URL+"/me/keywords", "nnt_x", "")
 	if code != 200 || body != "[]" {
 		t.Errorf("after delete: got %d %q", code, body)
+	}
+}
+
+func TestKeywordExcludeUpsert(t *testing.T) {
+	srv, store := newTestServer(t)
+	defer srv.Close()
+	defer store.Close()
+
+	// 포함+제외 동시 등록. 제외도 정규화됨("중고, 판매" → "중고,판매").
+	code, body := do(t, "POST", srv.URL+"/me/keywords", "nnt_x",
+		`{"keyword":"갤럭시","exclude":"판매, 중고"}`)
+	if code != 200 {
+		t.Fatalf("add with exclude: want 200, got %d body=%q", code, body)
+	}
+	if body != `{"keyword":"갤럭시","exclude":"중고,판매"}` {
+		t.Errorf("exclude normalized response: got %q", body)
+	}
+
+	// 같은 keyword 로 재 POST → 제외만 갱신(행 중복 없이 upsert).
+	code, body = do(t, "POST", srv.URL+"/me/keywords", "nnt_x",
+		`{"keyword":"갤럭시","exclude":"리퍼"}`)
+	if code != 200 {
+		t.Fatalf("edit exclude: want 200, got %d", code)
+	}
+	if body != `{"keyword":"갤럭시","exclude":"리퍼"}` {
+		t.Errorf("edited exclude response: got %q", body)
+	}
+	code, body = do(t, "GET", srv.URL+"/me/keywords", "nnt_x", "")
+	if code != 200 || body != `[{"keyword":"갤럭시","exclude":"리퍼"}]` {
+		t.Errorf("list after exclude edit: got %d %q (want single upserted row)", code, body)
+	}
+
+	// 제외 생략 → "제외 없음"으로 갱신.
+	code, _ = do(t, "POST", srv.URL+"/me/keywords", "nnt_x", `{"keyword":"갤럭시"}`)
+	if code != 200 {
+		t.Fatalf("clear exclude: want 200, got %d", code)
+	}
+	code, body = do(t, "GET", srv.URL+"/me/keywords", "nnt_x", "")
+	if code != 200 || body != `[{"keyword":"갤럭시","exclude":""}]` {
+		t.Errorf("list after clearing exclude: got %d %q", code, body)
 	}
 }
 
