@@ -147,8 +147,8 @@ public struct PpomppuParser: BoardParser {
             firstHtml = try await fetcher(post.url)
         }
         let firstDoc = try SwiftSoup.parse(firstHtml)
-        let firstPage = try parseComments(in: firstDoc)
         let info = try commentPageInfo(in: firstDoc)
+        let firstPage = try parseComments(in: firstDoc, fallbackPage: info.current)
         if info.total <= 1 { return firstPage }
 
         // 모바일 detail 은 댓글 **마지막** 페이지를 inline 으로 렌더한다(page 1
@@ -156,29 +156,46 @@ public struct PpomppuParser: BoardParser {
         // 빠진 페이지(특히 1번)가 누락된다 — "스크롤하면 같은 댓글이 다시 나옴"
         // 의 원인. detail 댓글을 실제 인덱스(info.current)에 놓고 나머지 페이지만
         // 가져온다.
+        // 페이지 단위 실패는 흡수한다. throwing group 으로 하나라도 throw 하면
+        // 그룹 전체가 취소되고, 호출부(`PostDetailLoader`)의 `try?` 가 댓글을
+        // 통째로 nil 처리한다 — 페이지가 많을수록 단일 실패 확률이 누적돼
+        // 멀쩡한 페이지까지 통째로 사라진다. 실패한 페이지만 건너뛰고 나머지는
+        // 살린다.
         var pageMap: [Int: [PostComment]] = [info.current: firstPage]
-        try await withThrowingTaskGroup(of: (Int, [PostComment]).self) { group in
+        await withTaskGroup(of: (Int, [PostComment]?).self) { group in
             for page in 1...info.total where page != info.current {
                 guard let pageURL = appendingCommentPage(to: post.url, page: page) else { continue }
                 group.addTask {
-                    let html = try await fetcher(pageURL)
-                    let comments = try self.parseComments(html: html)
-                    return (page, comments)
+                    do {
+                        let html = try await fetcher(pageURL)
+                        let pageDoc = try SwiftSoup.parse(html)
+                        return (page, try self.parseComments(in: pageDoc, fallbackPage: page))
+                    } catch {
+                        return (page, nil)
+                    }
                 }
             }
-            for try await (page, comments) in group {
-                pageMap[page] = comments
+            for await (page, comments) in group {
+                if let comments { pageMap[page] = comments }
             }
         }
+        // 취소는 페이지 실패가 아니다 — child task 가 CancellationError 를
+        // (page, nil) 로 흡수했더라도, 취소된 로드가 부분 댓글을 정상 완료처럼
+        // 반환해 popped 뷰에 늦게 붙는 걸 막으려 여기서 다시 올린다.
+        try Task.checkCancellation()
         return (1...info.total).flatMap { pageMap[$0] ?? [] }
     }
 
     public nonisolated func parseComments(html: String) throws -> [PostComment] {
         let doc = try SwiftSoup.parse(html)
-        return try parseComments(in: doc)
+        return try parseComments(in: doc, fallbackPage: 1)
     }
 
-    nonisolated private func parseComments(in doc: Document) throws -> [PostComment] {
+    /// `fallbackPage` 는 id 없는 댓글의 synthetic id 에 섞어 페이지 간 충돌을
+    /// 막는다 — 페이지마다 `results.count` 가 0 부터 다시 시작하므로, page 를
+    /// 안 섞으면 서로 다른 페이지의 id 없는 두 댓글이 같은 id 를 받아 SwiftUI
+    /// ForEach 키가 충돌한다(멀티페이지 병합 후 발생).
+    nonisolated private func parseComments(in doc: Document, fallbackPage: Int) throws -> [PostComment] {
         let nodes = try doc.select("div.cmAr div[class*=sect-cmt]")
         var results: [PostComment] = []
         for node in nodes {
@@ -203,7 +220,7 @@ public struct PpomppuParser: BoardParser {
                     let raw = try ctx.attr("id")
                     return String(raw.dropFirst(4))
                 }
-                return "fallback-\(results.count)"
+                return "fallback-p\(fallbackPage)-\(results.count)"
             }()
 
             let writerEl = try node.select("h6.com_name span.com_name_writer").first()

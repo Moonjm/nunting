@@ -80,6 +80,27 @@ final class PpomppuCommentPaginationTests: XCTestCase {
         XCTAssertEqual(requested, ["2"], "detail=page1 이면 page2 만 가져옴")
     }
 
+    /// 한 페이지 fetch 가 throw 해도 나머지 페이지는 살아야 한다. throwing
+    /// task group 이던 시절엔 단일 실패가 그룹 전체를 취소시키고 호출부의
+    /// `try?` 가 댓글을 통째로 nil 처리했다(페이지 많을수록 누적 실패).
+    func testPageFetchFailureIsAbsorbedAndOtherPagesSurvive() async throws {
+        struct PageError: Error {}
+        let parser = PpomppuParser()
+        // detail = 마지막 페이지(3/3). 빠진 1·2 중 2 만 실패시킨다.
+        let detailHTML = page(current: 3, total: 3, ctxID: "30", content: "p3")
+
+        let comments = try await parser.fetchAllComments(for: post(no: 4), detailHTML: detailHTML) { url in
+            switch self.cpage(of: url) {
+            case "1": return self.page(current: 1, total: 3, ctxID: "10", content: "p1")
+            case "2": throw PageError()
+            default: return ""
+            }
+        }
+
+        // page2 만 빠지고 1·3 은 시간순으로 보존.
+        XCTAssertEqual(comments.map(\.content), ["p1", "p3"])
+    }
+
     func testSinglePageReusesDetailWithoutFetching() async throws {
         let parser = PpomppuParser()
         let detailHTML = page(current: 1, total: 1, ctxID: "5", content: "only")

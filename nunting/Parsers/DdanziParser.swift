@@ -109,19 +109,32 @@ public struct DdanziParser: BoardParser {
         let totalPages = min(decodeCommentPageCount(data: firstData), Self.maxCommentPages)
         if totalPages <= 1 { return firstPage }
 
+        // 페이지 단위 실패는 흡수한다. throwing group 으로 하나라도 throw 하면
+        // 그룹 전체가 취소되고, 호출부(`PostDetailLoader`)의 `try?` 가 댓글을
+        // 통째로 nil 처리한다 — 페이지가 많을수록 단일 실패 확률이 누적돼
+        // 멀쩡한 페이지까지 통째로 사라진다. 실패한 페이지만 건너뛰고 나머지는
+        // 살린다.
         var pageMap: [Int: [PostComment]] = [1: firstPage]
-        try await withThrowingTaskGroup(of: (Int, [PostComment]).self) { group in
+        await withTaskGroup(of: (Int, [PostComment]?).self) { group in
             for page in 2...totalPages {
                 group.addTask {
-                    let data = try await self.fetchCommentPage(
-                        params: params, cpage: page, referer: post.url)
-                    return (page, self.decodeComments(data: data))
+                    do {
+                        let data = try await self.fetchCommentPage(
+                            params: params, cpage: page, referer: post.url)
+                        return (page, self.decodeComments(data: data))
+                    } catch {
+                        return (page, nil)
+                    }
                 }
             }
-            for try await (page, comments) in group {
-                pageMap[page] = comments
+            for await (page, comments) in group {
+                if let comments { pageMap[page] = comments }
             }
         }
+        // 취소는 페이지 실패가 아니다 — child task 가 CancellationError 를
+        // (page, nil) 로 흡수했더라도, 취소된 로드가 부분 댓글을 정상 완료처럼
+        // 반환해 popped 뷰에 늦게 붙는 걸 막으려 여기서 다시 올린다.
+        try Task.checkCancellation()
         return (1...totalPages).flatMap { pageMap[$0] ?? [] }
     }
 
