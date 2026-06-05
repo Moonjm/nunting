@@ -329,7 +329,7 @@ func TestAlertHistoryEndpoint(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("mark read: want 200, got %d", code)
 	}
-	code, body = do(t, "GET", srv.URL+"/me/alert-history", "nnt_x", "")
+	_, body = do(t, "GET", srv.URL+"/me/alert-history", "nnt_x", "")
 	_ = json.Unmarshal([]byte(body), &items)
 	if !items[0].Read {
 		t.Errorf("want read=true after mark, got %+v", items[0])
