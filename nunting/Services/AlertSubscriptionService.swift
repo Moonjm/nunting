@@ -69,12 +69,30 @@ struct AlertHistoryItem: Decodable, Identifiable {
 }
 
 /// 한 구독 행: 포함 키워드(CSV AND 토큰)와 제외 단어(CSV OR 토큰). 서버 Go
-/// `KeywordSub` (keyword/exclude) 와 합의된 형태. `exclude == ""` 면 제외 없음.
+/// `KeywordSub` (keyword/exclude/enabled) 와 합의된 형태. `exclude == ""` 면
+/// 제외 없음. `enabled == false` 면 매칭돼도 푸시는 안 오고 "받은 알림"에만 쌓인다.
 /// `id` 는 포함 키워드(행 PK) — 같은 글에 대한 ForEach/upsert 식별자.
 struct KeywordSub: Codable, Hashable, Identifiable {
     let keyword: String
     let exclude: String
+    var enabled: Bool
     var id: String { keyword }
+
+    init(keyword: String, exclude: String, enabled: Bool = true) {
+        self.keyword = keyword
+        self.exclude = exclude
+        self.enabled = enabled
+    }
+
+    enum CodingKeys: String, CodingKey { case keyword, exclude, enabled }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        keyword = try c.decode(String.self, forKey: .keyword)
+        exclude = try c.decode(String.self, forKey: .exclude)
+        // enabled 없던 구버전 서버/캐시 응답은 "켜짐"으로 — 기능 도입 전과 동일 동작.
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+    }
 }
 
 // MARK: - Service
@@ -137,12 +155,23 @@ final class AlertSubscriptionService {
     }
 
     func removeKeyword(_ keyword: String) async throws {
-        // `/` 는 path-allowed 라 그대로 두면 "a/b" 키워드가 여러 세그먼트로
-        // 쪼개져 서버 `{keyword}` 라우트가 단일 키워드로 못 받는다. `/` 만
-        // 빼고 인코딩해 키워드 전체를 한 세그먼트로 보낸다.
+        _ = try await delete("/me/keywords/\(pathEncoded(keyword))")
+    }
+
+    /// 키워드 행의 알림 토글만 갱신(서버 enabled 컬럼). off 면 매칭돼도 푸시는
+    /// 안 가고 서버가 "받은 알림" 이력만 남긴다. exclude 편집과 분리된 통로라
+    /// 토글이 제외 단어를 건드리지 않는다.
+    func setKeywordEnabled(keyword: String, enabled: Bool) async throws {
+        let body = try JSONEncoder().encode(["enabled": enabled])
+        _ = try await post("/me/keywords/\(pathEncoded(keyword))/enabled", jsonBody: body)
+    }
+
+    /// 키워드를 단일 path 세그먼트로 인코딩. `/` 는 path-allowed 라 그대로 두면
+    /// "a/b" 키워드가 여러 세그먼트로 쪼개져 서버 `{keyword}` 라우트가 단일
+    /// 키워드로 못 받는다. `/` 만 빼고 인코딩해 키워드 전체를 한 세그먼트로.
+    private func pathEncoded(_ keyword: String) -> String {
         let allowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
-        let encoded = keyword.addingPercentEncoding(withAllowedCharacters: allowed) ?? keyword
-        _ = try await delete("/me/keywords/\(encoded)")
+        return keyword.addingPercentEncoding(withAllowedCharacters: allowed) ?? keyword
     }
 
     /// 서버가 기록한 키워드 매칭 이력을 최신순으로 가져온다. 매칭/푸시 발송은

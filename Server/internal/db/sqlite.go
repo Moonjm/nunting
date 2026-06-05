@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS keyword_subs (
     uuid    TEXT NOT NULL,
     keyword TEXT NOT NULL,
     exclude TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (uuid, keyword),
     FOREIGN KEY (uuid) REFERENCES users(uuid) ON DELETE CASCADE
 );
@@ -80,6 +81,14 @@ func Open(path string) (*Store, error) {
 			return nil, fmt.Errorf("migrate exclude: %w", err)
 		}
 	}
+	// keyword_subs.enabled 없던 시절(키워드별 토글 도입 전) 배포 DB 마이그레이션.
+	// 기존 행은 1(켜짐)이 되어 도입 전과 동일하게 모두 push 대상.
+	if _, err := db.Exec(`ALTER TABLE keyword_subs ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column name") {
+			db.Close()
+			return nil, fmt.Errorf("migrate enabled: %w", err)
+		}
+	}
 	return &Store{db: db}, nil
 }
 
@@ -126,23 +135,27 @@ func (s *Store) GetPushToken(ctx context.Context, uuid string) (*string, error) 
 }
 
 // Match 는 폴러가 한 번에 처리할 (uuid, push_token, matched_keyword) tuple.
+// Enabled 는 매칭된 키워드의 토글 상태 — false 면 폴러가 이력만 남기고 push 는 건너뛴다.
 type Match struct {
 	UUID      string
 	PushToken string
 	Keyword   string
+	Enabled   bool
 }
 
 // KeywordSub 한 구독 행: 포함 키워드(CSV AND 토큰)와 제외 단어(CSV OR 토큰).
 // 둘 다 정규화된 CSV(소문자/trim/dedup/정렬). exclude == "" 면 제외 없음.
+// Enabled 는 알림 토글 — false 면 매칭돼도 push 안 가고 이력만 쌓인다.
 // JSON 태그는 iOS KeywordSub 디코더와 합의된 형태.
 type KeywordSub struct {
 	Keyword string `json:"keyword"`
 	Exclude string `json:"exclude"`
+	Enabled bool   `json:"enabled"`
 }
 
 func (s *Store) ListKeywords(ctx context.Context, uuid string) ([]KeywordSub, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT keyword, exclude FROM keyword_subs WHERE uuid = ? ORDER BY keyword`, uuid)
+		`SELECT keyword, exclude, enabled FROM keyword_subs WHERE uuid = ? ORDER BY keyword`, uuid)
 	if err != nil {
 		return nil, err
 	}
@@ -150,9 +163,11 @@ func (s *Store) ListKeywords(ctx context.Context, uuid string) ([]KeywordSub, er
 	out := []KeywordSub{}
 	for rows.Next() {
 		var k KeywordSub
-		if err := rows.Scan(&k.Keyword, &k.Exclude); err != nil {
+		var enabled int
+		if err := rows.Scan(&k.Keyword, &k.Exclude, &enabled); err != nil {
 			return nil, err
 		}
+		k.Enabled = enabled != 0
 		out = append(out, k)
 	}
 	return out, rows.Err()
@@ -174,16 +189,23 @@ func (s *Store) AddKeyword(ctx context.Context, uuid, keyword string) error {
 
 // UpsertKeyword 포함 키워드 행을 추가하거나, 이미 있으면 그 행의 제외 단어를
 // 갱신한다. keyword 가 행 식별자(PK)이므로 같은 keyword 로 다시 호출하면
-// exclude 만 덮어쓴다 — 클라의 "행 편집(제외 수정)" 통로.
-func (s *Store) UpsertKeyword(ctx context.Context, uuid, keyword, exclude string) error {
+// exclude 만 덮어쓴다 — 클라의 "행 편집(제외 수정)" 통로. enabled 는 손대지
+// 않는다(신규 행은 DEFAULT 1, 기존 행은 토글 상태 보존). 반환된 enabled 로
+// 클라가 응답만으로 토글 상태를 정확히 반영한다(편집이 토글을 뒤집지 않음).
+func (s *Store) UpsertKeyword(ctx context.Context, uuid, keyword, exclude string) (bool, error) {
 	if keyword == "" {
-		return nil
+		return false, nil
 	}
-	_, err := s.db.ExecContext(ctx, `
+	var enabled int
+	err := s.db.QueryRowContext(ctx, `
 		INSERT INTO keyword_subs (uuid, keyword, exclude) VALUES (?, ?, ?)
-		ON CONFLICT(uuid, keyword) DO UPDATE SET exclude = excluded.exclude`,
-		uuid, keyword, exclude)
-	return err
+		ON CONFLICT(uuid, keyword) DO UPDATE SET exclude = excluded.exclude
+		RETURNING enabled`,
+		uuid, keyword, exclude).Scan(&enabled)
+	if err != nil {
+		return false, err
+	}
+	return enabled != 0, nil
 }
 
 func (s *Store) RemoveKeyword(ctx context.Context, uuid, keyword string) error {
@@ -192,18 +214,34 @@ func (s *Store) RemoveKeyword(ctx context.Context, uuid, keyword string) error {
 	return err
 }
 
+// SetKeywordEnabled 키워드 행의 알림 토글만 갱신(exclude 등은 그대로). 없는
+// keyword 면 no-op — uuid 스코프라 남의 행은 못 건드린다. exclude 편집(Upsert)과
+// 분리된 통로라, 토글이 제외 단어를 덮어쓰는 일이 없다.
+func (s *Store) SetKeywordEnabled(ctx context.Context, uuid, keyword string, enabled bool) error {
+	v := 0
+	if enabled {
+		v = 1
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE keyword_subs SET enabled = ? WHERE uuid = ? AND keyword = ?`, v, uuid, keyword)
+	return err
+}
+
 // MatchedUsersForTitle 글 제목에 user 의 키워드(CSV AND 토큰)가 모두 substring
 // 으로 포함되어 있고 그 user 에게 push_token 이 있으면 (uuid, token, keyword) 반환.
 // AND 매칭: keyword 가 "500ml,삼다수" 이면 두 토큰이 **모두** title 에 있어야 매칭.
 // case-insensitive: title 을 1회 ToLower. keyword 토큰은 이미 lowercase 저장.
 //
-// 한 user 가 같은 글에 두 개 이상 키워드로 매칭되어도 **한 번만 push**:
-// 첫 매칭(ORDER BY keyword 알파벳 첫 번째) 만 반환. iOS 사용자 입장에서
-// "삼성 갤럭시 핫딜" 글에 '삼성' + '갤럭시' 둘 다 구독해도 알림은 1건.
+// 한 user 가 같은 글에 두 개 이상 키워드로 매칭되어도 **한 번만 알림**:
+// user 당 한 행만 반환. 단, 토글(enabled) 우선 — enabled 키워드가 하나라도
+// 매칭되면 그 행을 반환(push 대상)하고, enabled 매칭이 전무하고 disabled 만
+// 매칭되면 disabled 행을 반환한다(폴러가 이력만 남기고 push 는 건너뜀).
+// 예: '삼성'(끔) + '갤럭시'(켬) 구독 → "삼성 갤럭시" 글은 갤럭시 행으로 push,
+// 둘 다 껐다면 한 행만 이력으로 남고 push 는 없음.
 func (s *Store) MatchedUsersForTitle(ctx context.Context, title string) ([]Match, error) {
 	lowerTitle := strings.ToLower(title)
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT u.uuid, u.push_token, k.keyword, k.exclude
+		SELECT u.uuid, u.push_token, k.keyword, k.exclude, k.enabled
 		FROM keyword_subs k
 		JOIN users u ON u.uuid = k.uuid
 		WHERE u.push_token IS NOT NULL
@@ -214,27 +252,37 @@ func (s *Store) MatchedUsersForTitle(ctx context.Context, title string) ([]Match
 	defer rows.Close()
 
 	var out []Match
-	seen := map[string]bool{} // user 당 첫 매칭 키워드만 (중복 push 방지)
+	idxByUser := map[string]int{} // user 당 현재까지의 대표 매칭 행 위치
 	for rows.Next() {
 		var m Match
 		var exclude string
-		if err := rows.Scan(&m.UUID, &m.PushToken, &m.Keyword, &exclude); err != nil {
+		var enabled int
+		if err := rows.Scan(&m.UUID, &m.PushToken, &m.Keyword, &exclude, &enabled); err != nil {
 			return nil, err
 		}
-		if seen[m.UUID] {
+		m.Enabled = enabled != 0
+		// 이미 enabled 매칭을 확보했으면 더 볼 필요 없음(최선).
+		if idx, ok := idxByUser[m.UUID]; ok && out[idx].Enabled {
 			continue
 		}
 		if !titleContainsAllTokens(lowerTitle, m.Keyword) {
 			continue
 		}
-		// 제외 단어가 하나라도 제목에 있으면 이 행은 탈락. seen 을 세우지
-		// 않고 continue 하므로 같은 user 의 다음 행(다른 포함 키워드)은 계속
-		// 평가된다 — 포함O·제외X 인 첫 행이 알림 대상.
+		// 제외 단어가 하나라도 제목에 있으면 이 행은 탈락. 같은 user 의 다음
+		// 행(다른 포함 키워드)은 계속 평가된다 — 포함O·제외X 인 행이 대상.
 		if excludeHitAnyToken(lowerTitle, exclude) {
 			continue
 		}
-		seen[m.UUID] = true
-		out = append(out, m)
+		idx, have := idxByUser[m.UUID]
+		if !have {
+			idxByUser[m.UUID] = len(out)
+			out = append(out, m)
+			continue
+		}
+		// 기존 대표는 disabled 매칭 — 이 행이 enabled 면 교체(push 우선).
+		if m.Enabled {
+			out[idx] = m
+		}
 	}
 	return out, rows.Err()
 }

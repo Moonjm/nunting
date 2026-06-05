@@ -157,12 +157,22 @@ struct KeywordListView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(keywords) { kw in
-                        TokenRow(
-                            includeTokens: tokens(of: kw.keyword),
-                            excludeTokens: tokens(of: kw.exclude)
-                        )
-                        .contentShape(Rectangle())
-                        .onTapGesture { beginEdit(kw) }
+                        HStack(spacing: 12) {
+                            TokenRow(
+                                includeTokens: tokens(of: kw.keyword),
+                                excludeTokens: tokens(of: kw.exclude)
+                            )
+                            // 꺼진 키워드는 흐리게 — 매칭은 되지만 푸시는 안 옴.
+                            .opacity(kw.enabled ? 1 : 0.4)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                            .onTapGesture { beginEdit(kw) }
+
+                            // 행별 알림 토글. off 면 푸시는 끊고 "받은 알림" 이력만 쌓인다.
+                            Toggle("", isOn: enabledBinding(for: kw))
+                                .labelsHidden()
+                                .accessibilityLabel("\(kw.keyword) 알림")
+                        }
                     }
                     .onDelete(perform: requestDeleteKeywords)
                 }
@@ -238,6 +248,34 @@ struct KeywordListView: View {
     private func refreshAuthStatus() async {
         let s = await UNUserNotificationCenter.current().notificationSettings()
         pushAuthStatus = s.authorizationStatus
+    }
+
+    /// 행 토글 바인딩 — get 은 항상 최신 keywords 배열에서 읽어 실패 시 복원도
+    /// 즉시 반영된다. set 은 optimistic 갱신 후 서버 호출(setEnabled).
+    private func enabledBinding(for kw: KeywordSub) -> Binding<Bool> {
+        Binding(
+            get: { keywords.first(where: { $0.id == kw.id })?.enabled ?? kw.enabled },
+            set: { newValue in Task { await setEnabled(kw, newValue) } }
+        )
+    }
+
+    /// 키워드 알림 토글. optimistic 으로 로컬을 먼저 바꾸고 서버에 반영, 실패하면
+    /// 원래 값으로 되돌리고 에러를 표시한다.
+    private func setEnabled(_ kw: KeywordSub, _ enabled: Bool) async {
+        guard let idx = keywords.firstIndex(where: { $0.id == kw.id }) else { return }
+        let previous = keywords[idx].enabled
+        guard previous != enabled else { return }
+        errorMessage = nil
+        keywords[idx].enabled = enabled
+        do {
+            try await AlertSubscriptionService.shared.setKeywordEnabled(
+                keyword: kw.keyword, enabled: enabled)
+        } catch {
+            if let i = keywords.firstIndex(where: { $0.id == kw.id }) {
+                keywords[i].enabled = previous
+            }
+            errorMessage = "알림 \(enabled ? "켜기" : "끄기") 실패: \(error.localizedDescription)"
+        }
     }
 
     /// 행을 탭하면 그 행을 단일 입력 문자열로 복원해 입력칸을 편집 모드로.

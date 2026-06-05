@@ -170,6 +170,11 @@ walk:
 				slog.Error("poller_history_error", "uuid", m.UUID, "post_id", post.ID, "err", err)
 				alertID = 0
 			}
+			// 토글이 꺼진 키워드면 이력만 남기고 push 는 건너뛴다(앱에서 "받은
+			// 알림"으로는 보이지만 푸시 배너/소리는 없음).
+			if !m.Enabled {
+				continue
+			}
 			if err := p.apns.Send(ctx, m.PushToken, m.Keyword, alertID, post); err != nil {
 				slog.Error("poller_apns_error", "uuid", m.UUID, "post_id", post.ID, "err", err)
 				continue

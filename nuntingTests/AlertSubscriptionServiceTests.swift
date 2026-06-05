@@ -77,6 +77,40 @@ final class AlertSubscriptionServiceTests: XCTestCase {
         XCTAssertFalse(urlStr.contains("/me/keywords/a/b"))
     }
 
+    /// listKeywords 가 enabled 를 파싱하고, 누락 시 true(켜짐)로 기본 처리.
+    func testListKeywordsParsesEnabledWithDefault() async throws {
+        let stub = StubHTTPRequester()
+        await stub.setNext(status: 200,
+            body: #"[{"keyword":"a","exclude":"","enabled":false},{"keyword":"b","exclude":""}]"#)
+        let service = AlertSubscriptionService(
+            baseURL: URL(string: "http://example.com")!,
+            requester: stub,
+            uuidStore: InMemoryUUIDStore(value: "nnt_test")
+        )
+        let listed = try await service.listKeywords()
+        XCTAssertEqual(listed.map(\.enabled), [false, true],
+                       "enabled 명시 false 는 false, 누락은 true(구버전 호환)")
+    }
+
+    /// setKeywordEnabled → POST /me/keywords/{encoded}/enabled, body {"enabled":bool}.
+    func testSetKeywordEnabledPostsToggle() async throws {
+        let stub = StubHTTPRequester()
+        await stub.setNext(status: 200, body: "")
+        let service = AlertSubscriptionService(
+            baseURL: URL(string: "http://example.com")!,
+            requester: stub,
+            uuidStore: InMemoryUUIDStore(value: "nnt_test")
+        )
+        try await service.setKeywordEnabled(keyword: "갤럭시", enabled: false)
+        let recorded = await stub.lastRequest()
+        XCTAssertEqual(recorded?.httpMethod, "POST")
+        let urlStr = recorded?.url?.absoluteString ?? ""
+        XCTAssertTrue(urlStr.contains("/me/keywords/%EA%B0%A4%EB%9F%AD%EC%8B%9C/enabled"),
+                      "한글 keyword segment percent-encoded + /enabled: \(urlStr)")
+        let body = String(data: recorded?.httpBody ?? Data(), encoding: .utf8) ?? ""
+        XCTAssertTrue(body.contains("\"enabled\":false"), "body: \(body)")
+    }
+
     /// registerPushToken → PUT body `{"token": "<hex>"}`.
     func testRegisterPushTokenSendsHexBody() async throws {
         let stub = StubHTTPRequester()

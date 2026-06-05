@@ -95,12 +95,12 @@ func TestKeywordsCRUD(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("add: want 200, got %d body=%q", code, body)
 	}
-	if body != `{"keyword":"갤럭시","exclude":""}` {
+	if body != `{"keyword":"갤럭시","exclude":"","enabled":true}` {
 		t.Errorf("add response: got %q", body)
 	}
 
 	code, body = do(t, "GET", srv.URL+"/me/keywords", "nnt_x", "")
-	if code != 200 || body != `[{"keyword":"갤럭시","exclude":""}]` {
+	if code != 200 || body != `[{"keyword":"갤럭시","exclude":"","enabled":true}]` {
 		t.Errorf("list-1: got %d %q", code, body)
 	}
 
@@ -150,7 +150,7 @@ func TestKeywordANDNormalization(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("add AND: want 200, got %d body=%q", code, body)
 	}
-	if body != `{"keyword":"500ml,삼다수","exclude":""}` {
+	if body != `{"keyword":"500ml,삼다수","exclude":"","enabled":true}` {
 		t.Errorf("normalized add response: got %q", body)
 	}
 
@@ -160,7 +160,7 @@ func TestKeywordANDNormalization(t *testing.T) {
 		t.Fatalf("add reorder: want 200, got %d", code)
 	}
 	code, body = do(t, "GET", srv.URL+"/me/keywords", "nnt_x", "")
-	if code != 200 || body != `[{"keyword":"500ml,삼다수","exclude":""}]` {
+	if code != 200 || body != `[{"keyword":"500ml,삼다수","exclude":"","enabled":true}]` {
 		t.Errorf("list after reorder add: got %d %q (want one item)", code, body)
 	}
 
@@ -194,7 +194,7 @@ func TestKeywordExcludeUpsert(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("add with exclude: want 200, got %d body=%q", code, body)
 	}
-	if body != `{"keyword":"갤럭시","exclude":"중고,판매"}` {
+	if body != `{"keyword":"갤럭시","exclude":"중고,판매","enabled":true}` {
 		t.Errorf("exclude normalized response: got %q", body)
 	}
 
@@ -204,11 +204,11 @@ func TestKeywordExcludeUpsert(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("edit exclude: want 200, got %d", code)
 	}
-	if body != `{"keyword":"갤럭시","exclude":"리퍼"}` {
+	if body != `{"keyword":"갤럭시","exclude":"리퍼","enabled":true}` {
 		t.Errorf("edited exclude response: got %q", body)
 	}
 	code, body = do(t, "GET", srv.URL+"/me/keywords", "nnt_x", "")
-	if code != 200 || body != `[{"keyword":"갤럭시","exclude":"리퍼"}]` {
+	if code != 200 || body != `[{"keyword":"갤럭시","exclude":"리퍼","enabled":true}]` {
 		t.Errorf("list after exclude edit: got %d %q (want single upserted row)", code, body)
 	}
 
@@ -218,8 +218,41 @@ func TestKeywordExcludeUpsert(t *testing.T) {
 		t.Fatalf("clear exclude: want 200, got %d", code)
 	}
 	code, body = do(t, "GET", srv.URL+"/me/keywords", "nnt_x", "")
-	if code != 200 || body != `[{"keyword":"갤럭시","exclude":""}]` {
+	if code != 200 || body != `[{"keyword":"갤럭시","exclude":"","enabled":true}]` {
 		t.Errorf("list after clearing exclude: got %d %q", code, body)
+	}
+}
+
+func TestKeywordEnabledToggle(t *testing.T) {
+	srv, store := newTestServer(t)
+	defer srv.Close()
+	defer store.Close()
+
+	// 제외 포함 등록 후 토글 off → 응답/리스트에 enabled=false, exclude 보존.
+	do(t, "POST", srv.URL+"/me/keywords", "nnt_x", `{"keyword":"갤럭시","exclude":"중고"}`)
+	code, _ := do(t, "POST", srv.URL+"/me/keywords/%EA%B0%A4%EB%9F%AD%EC%8B%9C/enabled", "nnt_x", `{"enabled":false}`)
+	if code != 200 {
+		t.Fatalf("toggle off: want 200, got %d", code)
+	}
+	code, body := do(t, "GET", srv.URL+"/me/keywords", "nnt_x", "")
+	if code != 200 || body != `[{"keyword":"갤럭시","exclude":"중고","enabled":false}]` {
+		t.Errorf("after toggle off: got %d %q", code, body)
+	}
+
+	// exclude 편집(upsert) 해도 토글 off 보존 — 응답 enabled=false.
+	code, body = do(t, "POST", srv.URL+"/me/keywords", "nnt_x", `{"keyword":"갤럭시","exclude":"리퍼"}`)
+	if code != 200 || body != `{"keyword":"갤럭시","exclude":"리퍼","enabled":false}` {
+		t.Errorf("upsert preserves toggle: got %d %q", code, body)
+	}
+
+	// 다시 on.
+	code, _ = do(t, "POST", srv.URL+"/me/keywords/%EA%B0%A4%EB%9F%AD%EC%8B%9C/enabled", "nnt_x", `{"enabled":true}`)
+	if code != 200 {
+		t.Fatalf("toggle on: want 200, got %d", code)
+	}
+	code, body = do(t, "GET", srv.URL+"/me/keywords", "nnt_x", "")
+	if code != 200 || body != `[{"keyword":"갤럭시","exclude":"리퍼","enabled":true}]` {
+		t.Errorf("after toggle on: got %d %q", code, body)
 	}
 }
 

@@ -36,6 +36,7 @@ func NewRouter(store *db.Store) http.Handler {
 		r.Put("/push-token", h.putPushToken)
 		r.Get("/keywords", h.listKeywords)
 		r.Post("/keywords", h.addKeyword)
+		r.Post("/keywords/{keyword}/enabled", h.setKeywordEnabled)
 		r.Delete("/keywords/{keyword}", h.removeKeyword)
 		r.Get("/alert-history", h.listAlertHistory)
 		r.Post("/alert-history/{id}/read", h.markAlertRead)
