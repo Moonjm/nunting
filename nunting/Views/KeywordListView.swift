@@ -30,6 +30,10 @@ struct KeywordListView: View {
     /// 확정 전까지 실제 삭제는 하지 않는다(취소 시 복원 로직 불필요).
     @State private var pendingDeletion: [KeywordSub] = []
 
+    /// 키워드별 진행 중 토글 요청. 다음 요청이 직전 요청 완료까지 대기하도록
+    /// 체이닝해, 빠른 연속 토글에도 서버 도달 순서를 보장한다(레이스 방지).
+    @State private var toggleTasks: [String: Task<Void, Never>] = [:]
+
     var body: some View {
         VStack(spacing: 0) {
             tabBar
@@ -251,30 +255,41 @@ struct KeywordListView: View {
     }
 
     /// 행 토글 바인딩 — get 은 항상 최신 keywords 배열에서 읽어 실패 시 복원도
-    /// 즉시 반영된다. set 은 optimistic 갱신 후 서버 호출(setEnabled).
+    /// 즉시 반영된다. set 은 optimistic 갱신 + 직렬화된 서버 호출(setEnabled).
     private func enabledBinding(for kw: KeywordSub) -> Binding<Bool> {
         Binding(
             get: { keywords.first(where: { $0.id == kw.id })?.enabled ?? kw.enabled },
-            set: { newValue in Task { await setEnabled(kw, newValue) } }
+            set: { newValue in setEnabled(kw, newValue) }
         )
     }
 
-    /// 키워드 알림 토글. optimistic 으로 로컬을 먼저 바꾸고 서버에 반영, 실패하면
-    /// 원래 값으로 되돌리고 에러를 표시한다.
-    private func setEnabled(_ kw: KeywordSub, _ enabled: Bool) async {
-        guard let idx = keywords.firstIndex(where: { $0.id == kw.id }) else { return }
-        let previous = keywords[idx].enabled
-        guard previous != enabled else { return }
+    /// 키워드 알림 토글. optimistic 으로 로컬을 즉시 바꾸고 서버에 반영한다.
+    ///
+    /// 빠르게 여러 번 토글하면 각 요청이 절대 상태(on/off)를 보내는데 HTTP 순서가
+    /// 보장되지 않아, 그냥 보내면 서버 최종 상태가 UI 와 갈라질 수 있다(off→on 을
+    /// 서버가 on→off 로 처리). 그래서 키워드별로 직전 요청이 끝난 뒤 다음 요청을
+    /// 보내 발행 순서대로 도달하게 한다 — 마지막 토글이 서버 최종 상태가 된다.
+    private func setEnabled(_ kw: KeywordSub, _ enabled: Bool) {
+        let id = kw.id
+        guard let idx = keywords.firstIndex(where: { $0.id == id }) else { return }
+        guard keywords[idx].enabled != enabled else { return }
         errorMessage = nil
-        keywords[idx].enabled = enabled
-        do {
-            try await AlertSubscriptionService.shared.setKeywordEnabled(
-                keyword: kw.keyword, enabled: enabled)
-        } catch {
-            if let i = keywords.firstIndex(where: { $0.id == kw.id }) {
-                keywords[i].enabled = previous
+        keywords[idx].enabled = enabled  // optimistic — 즉시 반영
+
+        let prior = toggleTasks[id]
+        toggleTasks[id] = Task { @MainActor in
+            await prior?.value  // 직전 토글 요청 완료까지 대기 → 서버 도달 순서 보장
+            do {
+                try await AlertSubscriptionService.shared.setKeywordEnabled(
+                    keyword: kw.keyword, enabled: enabled)
+            } catch {
+                // 이 요청이 만든 전이만 되돌린다. 그 사이 더 최신 토글이 값을
+                // 다시 바꿨으면(현재 값 ≠ 내가 쓴 값) 그쪽이 우선이라 건드리지 않는다.
+                if let i = keywords.firstIndex(where: { $0.id == id }), keywords[i].enabled == enabled {
+                    keywords[i].enabled = !enabled
+                }
+                errorMessage = "알림 \(enabled ? "켜기" : "끄기") 실패: \(error.localizedDescription)"
             }
-            errorMessage = "알림 \(enabled ? "켜기" : "끄기") 실패: \(error.localizedDescription)"
         }
     }
 
