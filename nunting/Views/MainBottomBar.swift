@@ -5,6 +5,10 @@ struct MainBottomBar: View {
     let onSearch: () -> Void
     let onPrev: () -> Void
     let onNext: () -> Void
+    /// 안 읽은 알림 수 — 종 아이콘 위 빨강 뱃지. 0 이면 뱃지 숨김.
+    let unreadCount: Int
+    /// 종 탭 → 키워드 알림 화면(KeywordListView) 진입.
+    let onAlerts: () -> Void
 
     var body: some View {
         HStack(spacing: 0) {
@@ -56,22 +60,29 @@ struct MainBottomBar: View {
                     }
             )
 
-            // Phantom right slot. The favorite-toggle (별 버튼) used
-            // to live here but was removed by user request —
-            // accidental taps during normal swipe-step / double-tap
-            // interaction on the board name were silently un-
-            // favoriting boards. Add/remove favorites is still
-            // available in the side drawer (사이트 카탈로그 섹션의
-            // 별 아이콘).
-            //
-            // The slot itself stays as an invisible flex spacer
-            // matching the search button's `.frame(maxWidth: .infinity)`
-            // claim — without it the HStack collapses to a 50/50 split
-            // and search-icon + board-name shift left, breaking muscle
-            // memory for swipe-step and double-tap-reload areas.
-            Color.clear
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .allowsHitTesting(false)
+            // Right slot: 키워드 알림(종) 버튼. 좌측 검색 버튼과 동일한
+            // `barButton`(maxWidth:.infinity) 라 [검색]·보드명·[종] 으로
+            // 대칭이 유지된다(예전 phantom spacer 가 잡던 폭을 그대로 차지).
+            // 안 읽은 알림이 있으면 종 위에 빨강 카운트 뱃지.
+            barButton {
+                Image(systemName: "bell")
+                    .font(.callout)
+                    .overlay(alignment: .topTrailing) {
+                        if unreadCount > 0 {
+                            Text(unreadCount > 99 ? "99+" : "\(unreadCount)")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(Color.red, in: Capsule())
+                                .fixedSize()
+                                .offset(x: 10, y: -7)
+                        }
+                    }
+            } action: {
+                onAlerts()
+            }
+            .accessibilityLabel(unreadCount > 0 ? "알림 \(unreadCount)건" : "알림")
         }
         .frame(height: 50)
         .background(.bar)

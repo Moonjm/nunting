@@ -32,6 +32,8 @@ struct ContentView: View {
 
     @State private var drawerSection: DrawerSection = .favorites
     @State private var searchSheetPresented = false
+    @State private var keywordListPresented = false
+    @State private var alertBadge = AlertBadge.shared
 
     init() {
         // Open the user's top favorite on launch so the first thing they see
@@ -180,6 +182,7 @@ struct ContentView: View {
             // long background otherwise).
             Networking.prewarmConnections()
             ImageWarmup.warm()
+            await alertBadge.refresh()
         }
         .onChange(of: scenePhase) { _, phase in
             // Re-warm on foreground re-entry: iOS may have torn down
@@ -193,6 +196,8 @@ struct ContentView: View {
                 Networking.prewarmConnections()
                 ImageWarmup.warm()
                 Task { await catalog.revalidateLoadedCatalogs() }
+                // background 동안 도착했을 수 있는 알림 반영.
+                Task { await alertBadge.refresh() }
             }
         }
     }
@@ -233,7 +238,9 @@ struct ContentView: View {
                     onBoardDoubleTap: { selection.requestReload() },
                     onSearch: { searchSheetPresented = true },
                     onPrev: { stepBoard(by: -1) },
-                    onNext: { stepBoard(by: 1) }
+                    onNext: { stepBoard(by: 1) },
+                    unreadCount: alertBadge.unread,
+                    onAlerts: { keywordListPresented = true }
                 )
             }
             .background(
@@ -254,6 +261,19 @@ struct ContentView: View {
             // Filter switches can swap the path entirely (BoardFilter.replacementPath),
             // so the prior search query may not be meaningful on the new endpoint.
             selection.searchQuery = nil
+        }
+        .sheet(isPresented: $keywordListPresented, onDismiss: {
+            // 시트에서 알림을 열어 읽었을 수 있으니 닫힐 때 뱃지 최신화.
+            Task { await alertBadge.refresh() }
+        }) {
+            NavigationStack {
+                KeywordListView()
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("닫기") { keywordListPresented = false }
+                        }
+                    }
+            }
         }
         .sheet(isPresented: $searchSheetPresented) {
             SearchSheet(
