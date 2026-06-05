@@ -390,16 +390,26 @@ private struct TokenRow: View {
     let excludeTokens: [String]
 
     var body: some View {
-        FlowLayout(hSpacing: 6, vSpacing: 6) {
-            ForEach(Array(includeTokens.enumerated()), id: \.offset) { _, token in
-                // 시각은 배경색으로만 구분(설계대로). 색을 못 보는 VoiceOver
-                // 사용자를 위해 포함/제외 역할은 접근성 레이블로만 덧붙인다.
-                chip(token, background: Color(.secondarySystemFill))
-                    .accessibilityLabel("포함 \(token)")
+        // 포함 칩과 제외 칩을 각각의 FlowLayout 으로 분리해 제외는 항상 다음 줄부터
+        // 시작하게 한다(같은 줄 이어 붙지 않음). 각 묶음 내부는 폭을 넘으면 wrap.
+        VStack(alignment: .leading, spacing: 6) {
+            if !includeTokens.isEmpty {
+                FlowLayout(hSpacing: 6, vSpacing: 6) {
+                    ForEach(Array(includeTokens.enumerated()), id: \.offset) { _, token in
+                        // 시각은 배경색으로만 구분(설계대로). 색을 못 보는 VoiceOver
+                        // 사용자를 위해 포함/제외 역할은 접근성 레이블로만 덧붙인다.
+                        chip(token, background: Color(.secondarySystemFill))
+                            .accessibilityLabel("포함 \(token)")
+                    }
+                }
             }
-            ForEach(Array(excludeTokens.enumerated()), id: \.offset) { _, token in
-                chip(token, background: Color.red.opacity(0.18))
-                    .accessibilityLabel("제외 \(token)")
+            if !excludeTokens.isEmpty {
+                FlowLayout(hSpacing: 6, vSpacing: 6) {
+                    ForEach(Array(excludeTokens.enumerated()), id: \.offset) { _, token in
+                        chip(token, background: Color.red.opacity(0.18))
+                            .accessibilityLabel("제외 \(token)")
+                    }
+                }
             }
         }
         .padding(.vertical, 2)
