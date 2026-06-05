@@ -1,0 +1,26 @@
+# golangci-lint v2 설정. 이 파일이 go.mod 와 같은 Server/ 에 있어, CodeRabbit 의
+# per-module scoping 이 루트가 아니라 이 모듈 디렉토리에서 linter 를 돌리게 한다
+# (루트 실행 시 "directory prefix . does not contain main module" 로 실패하던 문제 해결).
+version: "2"
+run:
+  timeout: 5m
+linters:
+  # standard = errcheck, govet, ineffassign, staticcheck, unused (golangci-lint 기본 세트).
+  default: standard
+  settings:
+    errcheck:
+      # http.ResponseWriter.Write 의 반환 에러는 관용적으로 확인하지 않는다
+      # (응답 도중 끊긴 연결 — 핸들러가 더 할 수 있는 게 없음).
+      exclude-functions:
+        - (net/http.ResponseWriter).Write
+  exclusions:
+    # 관용적으로 에러를 안 보는 표준 패턴(deferred Close, fmt.Print 류) 제외.
+    presets:
+      - std-error-handling
+    rules:
+      # 테스트 코드는 setup 헬퍼(Tick/WriteFile 등)의 반환 에러를 의도적으로
+      # 확인하지 않는 기존 관례를 따른다 — 테스트 파일에서만 errcheck/ineffassign 완화.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - ineffassign

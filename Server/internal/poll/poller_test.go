@@ -56,6 +56,44 @@ func TestPoller_FirstTickStoresSentinelOnly(t *testing.T) {
 	}
 }
 
+// 토글이 꺼진 키워드: 매칭되는 새 글이 와도 push 는 0건이고 alert_history 에는
+// 1건이 남아야 한다(history-only). poller 경계의 `if !m.Enabled { continue }` 검증.
+func TestPoller_DisabledKeywordRecordsHistoryButSkipsPush(t *testing.T) {
+	store, _ := db.Open(":memory:")
+	defer store.Close()
+	ctx := context.Background()
+	store.UpsertUser(ctx, "nnt_a")
+	store.SetPushToken(ctx, "nnt_a", "tok_a")
+	store.AddKeyword(ctx, "nnt_a", "갤럭시")
+	store.SetKeywordEnabled(ctx, "nnt_a", "갤럭시", false) // 알림 토글 off
+
+	fetcher := &stubFetcher{pages: map[int][]Post{
+		1: {{ID: "ppomppu-2", Title: "갤럭시 1", PostNo: "2", URL: "u2"}},
+	}}
+	apns := &recordedAPNs{}
+	p := New(store, fetcher, apns)
+	p.Tick(ctx) // 첫 tick = sentinel baseline (발송 안 함)
+
+	// 매칭되는 새 글 등장.
+	fetcher.pages[1] = []Post{
+		{ID: "ppomppu-4", Title: "신규 갤럭시 4", PostNo: "4", URL: "u4"},
+		{ID: "ppomppu-2", Title: "갤럭시 1", PostNo: "2", URL: "u2"},
+	}
+	if err := p.Tick(ctx); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	// push 0건 — 토글 off.
+	if len(apns.calls) != 0 {
+		t.Errorf("disabled keyword must not push, got %+v", apns.calls)
+	}
+	// 이력은 1건 남아야 한다 — history-only.
+	items, _ := store.ListAlertHistory(ctx, "nnt_a", 10)
+	if len(items) != 1 || items[0].PostNo != "4" || items[0].Keyword != "갤럭시" {
+		t.Errorf("want 1 history row for post 4/갤럭시, got %+v", items)
+	}
+}
+
 func TestPoller_SecondTickSendsNewPosts(t *testing.T) {
 	store, _ := db.Open(":memory:")
 	defer store.Close()

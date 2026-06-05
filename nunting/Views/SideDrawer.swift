@@ -19,12 +19,6 @@ struct SideDrawer: View {
 
     @State private var favoritesEditMode: EditMode = .inactive
 
-    /// Presents `KeywordListView` as a sheet. SideDrawer lives inside a
-    /// `ZStack` (no surrounding `NavigationStack`), so a sheet with its
-    /// own `NavigationStack` is the smallest-footprint way to host a
-    /// nav-titled detail screen without restructuring ContentView.
-    @State private var keywordListPresented: Bool = false
-
     var body: some View {
         HStack(spacing: 0) {
             siteRail
@@ -41,16 +35,6 @@ struct SideDrawer: View {
                 collapsedGroups = Set(decoded)
             }
             collapsedHydrated = true
-        }
-        .sheet(isPresented: $keywordListPresented) {
-            NavigationStack {
-                KeywordListView()
-                    .toolbar {
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button("닫기") { keywordListPresented = false }
-                        }
-                    }
-            }
         }
     }
 
@@ -147,15 +131,7 @@ struct SideDrawer: View {
                     .padding(.leading, 4)
             }
             Spacer()
-            Button {
-                keywordListPresented = true
-            } label: {
-                Image(systemName: "bell.badge")
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("알림 키워드")
-            .padding(.trailing, 12)
+            // 키워드 알림(종) 진입은 하단 바로 이동(MainBottomBar 우측).
             if case .favorites = selectedSection {
                 Button {
                     withAnimation {

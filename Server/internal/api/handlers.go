@@ -112,11 +112,12 @@ func (h *handlers) addKeyword(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "keyword too long", http.StatusBadRequest)
 		return
 	}
-	if err := h.store.UpsertKeyword(r.Context(), UUIDFrom(r.Context()), keyword, exclude); err != nil {
+	enabled, err := h.store.UpsertKeyword(r.Context(), UUIDFrom(r.Context()), keyword, exclude)
+	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
-	b, _ := json.Marshal(db.KeywordSub{Keyword: keyword, Exclude: exclude})
+	b, _ := json.Marshal(db.KeywordSub{Keyword: keyword, Exclude: exclude, Enabled: enabled})
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(b)
 }
@@ -184,6 +185,37 @@ func (h *handlers) removeKeyword(w http.ResponseWriter, r *http.Request) {
 	}
 	keyword := normalizeKeyword(decoded)
 	if err := h.store.RemoveKeyword(r.Context(), UUIDFrom(r.Context()), keyword); err != nil {
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// POST /me/keywords/{keyword}/enabled { "enabled": false }
+//   → 200. 키워드 행의 알림 토글만 갱신(exclude 등은 보존). 없는 keyword 면
+// no-op(여전히 200) — uuid 스코프라 남의 행은 못 건드린다. exclude 편집(addKeyword)
+// 과 분리된 통로라 토글이 제외 단어를 덮어쓰지 않는다.
+func (h *handlers) setKeywordEnabled(w http.ResponseWriter, r *http.Request) {
+	encoded := chi.URLParam(r, "keyword")
+	decoded, err := url.PathUnescape(encoded)
+	if err != nil {
+		http.Error(w, "invalid keyword path", http.StatusBadRequest)
+		return
+	}
+	if len(decoded) > maxRawKeywordLength {
+		http.Error(w, "keyword too long", http.StatusBadRequest)
+		return
+	}
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	// add/remove 와 동일 normalize — 같은 키로 저장된 행을 정확히 가리키게.
+	keyword := normalizeKeyword(decoded)
+	if err := h.store.SetKeywordEnabled(r.Context(), UUIDFrom(r.Context()), keyword, body.Enabled); err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}

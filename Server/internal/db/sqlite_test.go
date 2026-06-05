@@ -127,7 +127,7 @@ func TestUpsertKeywordAndExcludeMatching(t *testing.T) {
 	store.UpsertUser(ctx, "nnt_a")
 	store.SetPushToken(ctx, "nnt_a", "tok_a")
 	// 포함 "갤럭시", 제외 "중고,판매".
-	if err := store.UpsertKeyword(ctx, "nnt_a", "갤럭시", "중고,판매"); err != nil {
+	if _, err := store.UpsertKeyword(ctx, "nnt_a", "갤럭시", "중고,판매"); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 
@@ -155,7 +155,7 @@ func TestUpsertKeywordAndExcludeMatching(t *testing.T) {
 	}
 
 	// upsert 재호출로 제외 갱신(행 중복 없이 exclude 만 교체).
-	if err := store.UpsertKeyword(ctx, "nnt_a", "갤럭시", ""); err != nil {
+	if _, err := store.UpsertKeyword(ctx, "nnt_a", "갤럭시", ""); err != nil {
 		t.Fatalf("re-upsert: %v", err)
 	}
 	keys, _ = store.ListKeywords(ctx, "nnt_a")
@@ -208,7 +208,7 @@ func TestExcludeColumnMigrationOnLegacyDB(t *testing.T) {
 	}
 
 	// 추가된 컬럼이 정상 동작하는지: upsert 로 제외 갱신 후 매칭에 반영.
-	if err := store.UpsertKeyword(ctx, "nnt_a", "갤럭시", "중고"); err != nil {
+	if _, err := store.UpsertKeyword(ctx, "nnt_a", "갤럭시", "중고"); err != nil {
 		t.Fatalf("upsert after migrate: %v", err)
 	}
 	keys, _ = store.ListKeywords(ctx, "nnt_a")
@@ -276,6 +276,135 @@ func TestMatchedUsersForTitle_ANDTokens(t *testing.T) {
 	matches, _ = store.MatchedUsersForTitle(ctx, "코카콜라 1+1 행사")
 	if len(matches) != 1 || matches[0].UUID != "nnt_b" {
 		t.Errorf("single-token regression: want [nnt_b], got %+v", matches)
+	}
+}
+
+func TestKeywordEnabledDefaultAndToggle(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	store.UpsertUser(ctx, "nnt_a")
+
+	// 새 키워드는 기본 켜짐(enabled=true).
+	store.AddKeyword(ctx, "nnt_a", "갤럭시")
+	if _, err := store.UpsertKeyword(ctx, "nnt_a", "삼성", "중고"); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	keys, _ := store.ListKeywords(ctx, "nnt_a")
+	if len(keys) != 2 {
+		t.Fatalf("want 2 keys, got %+v", keys)
+	}
+	for _, k := range keys {
+		if !k.Enabled {
+			t.Errorf("new keyword %q should default enabled, got %+v", k.Keyword, k)
+		}
+	}
+
+	// 토글 끄기 — exclude 는 보존돼야 한다(분리된 통로).
+	if err := store.SetKeywordEnabled(ctx, "nnt_a", "삼성", false); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	keys, _ = store.ListKeywords(ctx, "nnt_a")
+	for _, k := range keys {
+		if k.Keyword == "삼성" {
+			if k.Enabled {
+				t.Errorf("삼성 should be disabled, got %+v", k)
+			}
+			if k.Exclude != "중고" {
+				t.Errorf("toggle must preserve exclude, got %q", k.Exclude)
+			}
+		}
+		if k.Keyword == "갤럭시" && !k.Enabled {
+			t.Errorf("갤럭시 should stay enabled, got %+v", k)
+		}
+	}
+
+	// exclude 편집(upsert) 후에도 토글(off) 보존 — 반환 enabled 도 false.
+	on, err := store.UpsertKeyword(ctx, "nnt_a", "삼성", "판매")
+	if err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+	if on {
+		t.Errorf("upsert must preserve disabled state, returned enabled=true")
+	}
+
+	// 다시 켜기.
+	if err := store.SetKeywordEnabled(ctx, "nnt_a", "삼성", true); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	keys, _ = store.ListKeywords(ctx, "nnt_a")
+	for _, k := range keys {
+		if k.Keyword == "삼성" && !k.Enabled {
+			t.Errorf("삼성 should be re-enabled, got %+v", k)
+		}
+	}
+
+	// 없는 keyword 토글은 no-op(에러 없음).
+	if err := store.SetKeywordEnabled(ctx, "nnt_a", "없음", false); err != nil {
+		t.Errorf("toggle missing keyword should be no-op, got %v", err)
+	}
+}
+
+func TestMatchedUsersCarriesEnabledAndSuppressesPush(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	store.UpsertUser(ctx, "nnt_a")
+	store.SetPushToken(ctx, "nnt_a", "tok_a")
+	store.AddKeyword(ctx, "nnt_a", "갤럭시")
+
+	// 토글 켜진 키워드: 매칭 + Enabled=true(폴러가 push).
+	m, _ := store.MatchedUsersForTitle(ctx, "갤럭시 S25")
+	if len(m) != 1 || !m[0].Enabled {
+		t.Fatalf("enabled keyword: want 1 match Enabled=true, got %+v", m)
+	}
+
+	// 토글 끄면: 여전히 매칭되어 1건 반환되지만 Enabled=false
+	// (폴러가 이력만 남기고 push 는 건너뛴다).
+	store.SetKeywordEnabled(ctx, "nnt_a", "갤럭시", false)
+	m, _ = store.MatchedUsersForTitle(ctx, "갤럭시 S25")
+	if len(m) != 1 {
+		t.Fatalf("disabled keyword still matches (history-only): want 1, got %+v", m)
+	}
+	if m[0].Enabled {
+		t.Errorf("disabled keyword: want Enabled=false, got %+v", m[0])
+	}
+}
+
+func TestMatchedUsersPrefersEnabledKeyword(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	store.UpsertUser(ctx, "nnt_a")
+	store.SetPushToken(ctx, "nnt_a", "tok_a")
+	// "갤럭시"(끔, 알파벳상 먼저) + "삼성"(켬). 한 글이 둘 다 매칭될 때
+	// enabled 행(삼성)이 선택돼야 push 가 간다.
+	store.AddKeyword(ctx, "nnt_a", "갤럭시")
+	store.AddKeyword(ctx, "nnt_a", "삼성")
+	store.SetKeywordEnabled(ctx, "nnt_a", "갤럭시", false)
+
+	m, _ := store.MatchedUsersForTitle(ctx, "삼성 갤럭시 핫딜")
+	if len(m) != 1 {
+		t.Fatalf("want 1 match (deduped), got %+v", m)
+	}
+	if m[0].Keyword != "삼성" || !m[0].Enabled {
+		t.Errorf("want enabled '삼성' preferred, got %+v", m[0])
+	}
+
+	// 둘 다 끄면 한 행만(어느 쪽이든) Enabled=false 로 반환 — history-only.
+	store.SetKeywordEnabled(ctx, "nnt_a", "삼성", false)
+	m, _ = store.MatchedUsersForTitle(ctx, "삼성 갤럭시 핫딜")
+	if len(m) != 1 || m[0].Enabled {
+		t.Errorf("both disabled: want 1 match Enabled=false, got %+v", m)
 	}
 }
 
