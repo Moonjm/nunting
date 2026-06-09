@@ -19,8 +19,16 @@ struct nuntingApp: App {
         // outputting sound). `.playback` lets the user toggle volume via the
         // system video controls and actually hear it, without needing to
         // reload the player. AVAudioSession is iOS-only.
+        //
+        // `.mixWithOthers`: without it, activating a `.playback` session is
+        // exclusive and interrupts any audio already playing from another
+        // app (Spotify, Apple Music, podcasts). Since the inline body videos
+        // are all muted autoplay, they have no reason to silence the user's
+        // background music just by scrolling into view — mixing keeps that
+        // music going. A fullscreen video the user explicitly opened still
+        // outputs sound (it just plays over the music rather than killing it).
         #if os(iOS)
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: [])
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
         try? AVAudioSession.sharedInstance().setActive(true)
         #endif
 
