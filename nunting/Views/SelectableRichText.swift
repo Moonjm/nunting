@@ -14,8 +14,9 @@ import UIKit
 /// still wins.
 ///
 /// Coordinates with `ContentView.panGesture` purely via the host's
-/// `touchStartedNearSelectionHandle` proximity check (44pt around each
-/// visible selection handle) — no shared gate needed. Every other
+/// `touchStartedNearSelectionHandle` proximity check (±28pt × ±16pt
+/// box around each visible selection handle — see that doccomment for
+/// why not a 44pt circle) — no shared gate needed. Every other
 /// touch on this view falls through to the host pan gesture exactly
 /// as before, including loupe / long-press / menu interactions: the
 /// user explicitly opted into the simpler "only handle drags block

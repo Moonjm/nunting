@@ -100,30 +100,14 @@ public struct BobaeParser: BoardParser {
               let params = Self.commentCallParams(in: html)
         else { return inlinePage }
 
-        var pageMap: [Int: [PostComment]] = [info.current: inlinePage]
-        // 페이지 단위 실패는 흡수한다(호출부 `try?` 가 throw 시 댓글을 통째로
-        // nil 처리하므로). 실패한 페이지만 건너뛰고 나머지는 살린다.
-        await withTaskGroup(of: (Int, [PostComment]?).self) { group in
-            for page in 1...info.total where page != info.current {
-                guard let url = commentPageURL(params: params, page: page) else { continue }
-                group.addTask {
-                    do {
-                        let pageHTML = try await fetcher(url)
-                        return (page, try self.parseCommentFragment(html: pageHTML, page: page))
-                    } catch {
-                        return (page, nil)
-                    }
-                }
-            }
-            for await (page, comments) in group {
-                if let comments { pageMap[page] = comments }
-            }
+        // 병렬 fetch + 페이지 단위 실패 흡수 골격은 `mergeCommentPages` 참조.
+        return try await mergeCommentPages(
+            total: info.total, inlinePage: info.current, inline: inlinePage
+        ) { page in
+            guard let url = self.commentPageURL(params: params, page: page) else { return [] }
+            let pageHTML = try await fetcher(url)
+            return try self.parseCommentFragment(html: pageHTML, page: page)
         }
-        // 취소는 페이지 실패가 아니다 — child task 가 CancellationError 를
-        // (page, nil) 로 흡수했더라도, 취소된 로드가 부분 댓글을 정상 완료처럼
-        // 반환해 popped 뷰에 늦게 붙는 걸 막으려 여기서 다시 올린다.
-        try Task.checkCancellation()
-        return (1...info.total).flatMap { pageMap[$0] ?? [] }
     }
 
     /// `comment_call('uni_cmt_2606','strange','6925135','strange','6925135',...)`

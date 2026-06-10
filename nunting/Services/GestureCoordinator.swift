@@ -59,6 +59,18 @@ final class GestureCoordinator {
     /// flips to horizontal would jump the drawer by the diagonal
     /// pre-lock distance the moment the axis lock engaged.
     @ObservationIgnored private var dragLockBaseline: CGFloat = 0
+    /// 선택 핸들/스크럽바 제외 분류의 드래그당 1회 메모이즈. 분류 입력
+    /// (`value.startLocation`)이 드래그 내내 불변인데 분류 비용(뷰 트리
+    /// 재귀 + hitTest)은 크므로, 매 틱 재실행 대신 시작점 키로 캐시 —
+    /// 자세한 staleness 계약은 `DragExclusionCache` doccomment 참조.
+    /// `lazy` + `[weak self]`: 프로브가 coordinator 의 분류 메서드를 쓰되
+    /// self → cache → closure → self 순환을 피한다.
+    @ObservationIgnored private lazy var dragExclusion = DragExclusionCache { [weak self] start in
+        guard let self else { return .none }
+        if self.touchStartedNearSelectionHandle(at: start) { return .selectionHandle }
+        if self.touchStartedOnScrubBar(at: start) { return .scrubBar }
+        return .none
+    }
 
     // MARK: - Tap gates exposed to subviews
 
@@ -136,25 +148,19 @@ final class GestureCoordinator {
     }
 
     private func onPanChanged(_ value: DragGesture.Value) {
-        // If the touch started near a visible selection
-        // handle (see `touchStartedNearSelectionHandle` for
-        // the exact hit-box dimensions and rationale), the
-        // user is grabbing it — bail so UITextView's handle
-        // pan can run without our back-drag sliding the
-        // overlay out underneath it. `value.startLocation`
-        // is stable across ticks so the check is consistent
-        // for the whole drag.
-        if touchStartedNearSelectionHandle(at: value.startLocation) {
-            return
-        }
-        // Scrub strip drags route through the inline player's
-        // own UIKit pan — slipping past here would race the
-        // back-drag against the scrubber.
-        if touchStartedOnScrubBar(at: value.startLocation) {
+        // Touch started on a selection handle (UITextView's handle pan
+        // must run without our back-drag sliding the overlay out under
+        // it) or an inline video's scrub strip (the player's own UIKit
+        // pan owns the drag) — bail. Classified once per drag and
+        // memoised on `value.startLocation`, which is stable across
+        // ticks; see `touchStartedNearSelectionHandle` /
+        // `touchStartedOnScrubBar` for the hit-box rationale.
+        if dragExclusion.kind(at: value.startLocation) != .none {
             return
         }
         // Don't fight the bottom-bar swipe (board step) when the drag
-        // started inside the bar's hit area.
+        // started inside the bar's hit area. (Pure geometry — cheap
+        // enough to stay per-tick.)
         if startedInBottomBar(value) { return }
         let absW = abs(value.translation.width)
         let absH = abs(value.translation.height)
@@ -210,11 +216,7 @@ final class GestureCoordinator {
         // TTL deadline that lapses on its own (see the class
         // doccomment for why this matters when `.onEnded` is
         // skipped entirely).
-        if touchStartedNearSelectionHandle(at: value.startLocation) {
-            resetDragState()
-            return
-        }
-        if touchStartedOnScrubBar(at: value.startLocation) {
+        if dragExclusion.kind(at: value.startLocation) != .none {
             resetDragState()
             return
         }
@@ -329,6 +331,9 @@ final class GestureCoordinator {
         dragDirection = nil
         dragLockBaseline = 0
         scrollLocked = false
+        // 드래그 종료 — 같은 좌표에서 새 드래그가 시작돼도 뷰 계층이
+        // 바뀌었을 수 있으니(선택 해제, 플레이어 회수) 재분류시킨다.
+        dragExclusion.reset()
     }
 
     private func startedInBottomBar(_ value: DragGesture.Value) -> Bool {
@@ -342,181 +347,12 @@ final class GestureCoordinator {
         return value.startLocation.y > containerHeight - bottomGestureExclusion
     }
 
-    /// Walk the key window's view hierarchy to find the (at most one)
-    /// UITextView that currently has a non-empty selection, then
-    /// return `true` if `point` lies within an asymmetric box around
-    /// either of its selection-handle anchors. UITextView's own
-    /// handle hit-area is tight (~22pt), so a touch landing slightly
-    /// off the visible blue circle isn't recognized as a handle drag
-    /// and falls into back-swipe classification. Inflate the
-    /// effective hit zone — but as a wide-but-short box, not a
-    /// 44pt-radius circle:
-    ///   * Horizontal `±28pt`: generous slop for users aiming
-    ///     sideways of the handle.
-    ///   * Vertical `±16pt`: tight enough that handles on adjacent
-    ///     text lines don't bleed into each other across every
-    ///     Dynamic Type size. The smallest body line height (xSmall,
-    ///     ~18pt) puts the adjacent line's top 18pt from the anchor —
-    ///     just outside 16pt — so an above-line back-swipe still
-    ///     routes to back-drag, not to a phantom handle grab. (A
-    ///     circular 44pt radius reached up to 2 lines above/below at
-    ///     default line height, which produced the "3-line body,
-    ///     bottom-line selection, back-drag from line 1 freezes" bug.
-    ///     A tighter 15pt extent worked too but barely covers the
-    ///     handle dot's center; 16pt picks up a touch more handle
-    ///     slop while still excluding xSmall's adjacent line.)
-    ///
-    /// `point` is in key-window coordinates (panGesture uses
-    /// `coordinateSpace: .global`).
-    private func touchStartedNearSelectionHandle(at point: CGPoint) -> Bool {
-        guard let window = UIApplication.shared
-            .connectedScenes
-            .compactMap({ ($0 as? UIWindowScene)?.keyWindow })
-            .first
-        else { return false }
-        guard let tv = findTextViewWithActiveSelection(in: window) else { return false }
-        return tv.selectionHandleAnchorsInWindow().contains { anchor in
-            abs(point.x - anchor.x) <= 28 && abs(point.y - anchor.y) <= 16
-        }
-    }
-
-    /// True when the back-drag's starting touch landed inside an
-    /// inline video's scrub strip. `VideoScrubBarView` conforms to
-    /// `InlineVideoScrubBarMarking`; hit-testing the key window at
-    /// `point` and walking the superview chain catches every active
-    /// strip without exposing the otherwise-private class. Bailing
-    /// here keeps a rightward scrub drag from also driving the
-    /// detail-screen back-slide: the scrub UIKit pan starts at 10pt
-    /// of horizontal motion while this SwiftUI DragGesture begins
-    /// at 6pt, so without the skip the back-drag would have a 4pt
-    /// head start and lock direction to horizontal before the scrub
-    /// had a chance to take over.
-    private func touchStartedOnScrubBar(at point: CGPoint) -> Bool {
-        guard let window = UIApplication.shared
-            .connectedScenes
-            .compactMap({ ($0 as? UIWindowScene)?.keyWindow })
-            .first
-        else { return false }
-        var view = window.hitTest(point, with: nil)
-        while let v = view {
-            if v is InlineVideoScrubBarMarking { return true }
-            view = v.superview
-        }
-        return false
-    }
-
-    /// Resign first responder ONLY on the UITextView that currently
-    /// holds a non-empty selection — leaving any other editable
-    /// view in the hierarchy (search bar, future comment compose
-    /// field) untouched. Used at detail-dismissal time so the iOS
-    /// edit menu (Copy / Look Up / Translate) doesn't strand on top
-    /// of the list after the overlay slides off-screen. The detail
-    /// view is kept mounted on dismiss (it's a `.offset()` slide-
-    /// out, not a SwiftUI removal), so without explicit teardown
-    /// the text view stays first responder forever and UIKit keeps
-    /// its menu visible.
-    ///
-    /// Scoped to foreground-active scenes only — background scenes
-    /// on iPad multi-window may legitimately hold their own
-    /// selections that an unrelated dismiss shouldn't clear.
-    private func resignSelectedTextResponder() {
-        for scene in UIApplication.shared.connectedScenes where scene.activationState == .foregroundActive {
-            guard let windowScene = scene as? UIWindowScene else { continue }
-            for window in windowScene.windows {
-                if let tv = findTextViewWithActiveSelection(in: window) {
-                    tv.resignFirstResponder()
-                }
-            }
-        }
-    }
-
-    /// Recurse the view tree and stop at the first UITextView with a
-    /// non-empty selection. Across the app at most one text view can
-    /// hold the system selection at any moment (selecting in one
-    /// clears the prior selection), so we don't have to enumerate the
-    /// entire tree — first match wins.
-    private func findTextViewWithActiveSelection(in view: UIView) -> UITextView? {
-        if let tv = view as? UITextView,
-           let range = tv.selectedTextRange,
-           !range.isEmpty {
-            return tv
-        }
-        for sub in view.subviews {
-            if let hit = findTextViewWithActiveSelection(in: sub) {
-                return hit
-            }
-        }
-        return nil
-    }
+    // 키 윈도우 계층을 직접 들여다보는 프로브들(touchStartedNearSelectionHandle /
+    // touchStartedOnScrubBar / resignSelectedTextResponder)은
+    // GestureExclusions.swift 의 extension 으로 분리 — 이 파일은 팬 상태기계만.
 }
 
 private enum DragDirection {
     case horizontal
     case vertical
-}
-
-/// Reference-typed gate that gestures use to tell child taps
-/// "you just saw a horizontal drag — don't fire on release". A class
-/// (not @State value type) so that mutating the deadline from a gesture
-/// closure doesn't invalidate the SwiftUI body. Both drivers — the list-
-/// row drag-vs-tap discriminator and the detail overlay back-drag
-/// suppressor for embedded image / video taps — live inside
-/// `GestureCoordinator`.
-///
-/// Stored as an absolute deadline (`suppressedUntil`) instead of a flat
-/// `Bool` so a missed reset (drag interrupted by a system alert / app
-/// backgrounding mid-gesture / SwiftUI gesture cancellation that doesn't
-/// fire `.onEnded`) can't strand the gate `true` and silently kill all
-/// future taps. The 250ms TTL covers the longest plausible gap between
-/// the last `onChanged` tick and the SwiftUI tap closure firing on the
-/// same touch-up — so nothing has to schedule an explicit unblock.
-///
-/// `@MainActor` is explicit (rather than relying on
-/// `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`) so the gate's contract
-/// — only-touched-on-main-actor — survives an isolation-default flip and
-/// is locally inspectable for the external readers in `PostDetailView` /
-/// `PostDetailComments` / `InlineVideoPlayer`.
-@MainActor
-final class TapSuppressionGate {
-    var suppressedUntil: Date = .distantPast
-    var suppressed: Bool { Date() < suppressedUntil }
-
-    func suppress(for duration: TimeInterval = 0.25) {
-        suppressedUntil = Date().addingTimeInterval(duration)
-    }
-}
-
-private extension UITextView {
-    /// Window-coordinate positions of the two selection handles for
-    /// the current `selectedTextRange`. Uses `selectionRects(for:)`
-    /// (rather than `caretRect(for:)` of the range endpoints) so
-    /// selections ending on a soft line-wrap return the visual end
-    /// of the previous line rather than a zero-width rect at x=0 on
-    /// the next line — handles sit at the trailing glyph position,
-    /// not at the start of the next line. Returns `[]` when no
-    /// selection rects are available.
-    func selectionHandleAnchorsInWindow() -> [CGPoint] {
-        guard let range = selectedTextRange, !range.isEmpty else { return [] }
-        let rects = selectionRects(for: range)
-        guard !rects.isEmpty else { return [] }
-        // Start handle sits at the top-left of the rect that contains
-        // the selection start; end handle at the bottom-right of the
-        // rect that contains the selection end (assumes LTR layout —
-        // for RTL the visual-left/right relationship to start/end
-        // flips; the parsers in this app only emit Korean / Latin
-        // text so LTR is safe). `containsStart` / `containsEnd` flag
-        // those rects directly.
-        let startRect = rects.first(where: { $0.containsStart })?.rect
-            ?? rects.first?.rect
-        let endRect = rects.first(where: { $0.containsEnd })?.rect
-            ?? rects.last?.rect
-        var anchors: [CGPoint] = []
-        if let r = startRect {
-            anchors.append(convert(CGPoint(x: r.minX, y: r.minY), to: nil))
-        }
-        if let r = endRect {
-            anchors.append(convert(CGPoint(x: r.maxX, y: r.maxY), to: nil))
-        }
-        return anchors
-    }
 }
