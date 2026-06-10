@@ -209,6 +209,34 @@ final class ParserListTests: XCTestCase {
         XCTAssertEqual(posts[1].url.path, "/mirror/re", "'./re?...' 도 동일하게 정규화")
     }
 
+    func testAagagListWithoutSSAttrKeepsStableUniqueIDs() throws {
+        // `ss` 속성이 빈 항목이 UUID 기반 id 를 받으면 새로고침마다 identity 가
+        // 바뀌어 List diffing 전체 재생성 + 읽음 표시 무효화. URL 기반으로
+        // 파싱마다 동일해야 하고, 항목 간에는 고유해야 한다.
+        let html = """
+        <html><body>
+        <table class="aalist">
+        <tr><td>
+            <a class="article" href="re?idx=111">
+                <span class="title">ss 없는 글 하나</span>
+            </a>
+        </td></tr>
+        <tr><td>
+            <a class="article" href="re?idx=222">
+                <span class="title">ss 없는 글 둘</span>
+            </a>
+        </td></tr>
+        </table>
+        </body></html>
+        """
+        let parser = AagagParser()
+        let first = try parser.parseList(html: html, board: .aagag)
+        let second = try parser.parseList(html: html, board: .aagag)
+        XCTAssertEqual(first.count, 2)
+        XCTAssertEqual(Set(first.map(\.id)).count, first.count, "항목 간 id 고유해야 함")
+        XCTAssertEqual(first.map(\.id), second.map(\.id), "같은 목록 재파싱 시 id 가 흔들리면 안 됨")
+    }
+
     // MARK: - Title cleanup (broken HTML entity from server-side truncation)
 
     func testCleanTitleStripsBrokenTrailingEntityFragment() {

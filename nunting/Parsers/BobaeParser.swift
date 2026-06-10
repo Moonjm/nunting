@@ -337,16 +337,12 @@ public struct BobaeParser: BoardParser {
     nonisolated private func extractCommentContent(_ replyEl: Element) throws -> String {
         guard let copy = replyEl.copy() as? Element else { return "" }
         // Strip the "베플" (best comment) badge and any inline images so the
-        // text reads cleanly. Line breaks in the DOM come from <br>, which
-        // SwiftSoup's .text() collapses — convert them to newlines first.
+        // text reads cleanly, then flatten through the shared pipeline.
+        // `<br>` line breaks must go through the blockMarker sentinel —
+        // inserting a literal "\n" TextNode doesn't survive `.text()`'s
+        // whitespace collapse (newlines flattened to a single space).
         try copy.select(".ico3, img, script, style").remove()
-        try copy.select("br").forEach { br in
-            try br.before(TextNode("\n", ""))
-        }
-        // Preserve anchors as tappable markdown links — `.text()` below
-        // would otherwise drop the href.
-        convertAnchorsToMarkdown(in: copy)
-        return try copy.text().trimmingCharacters(in: .whitespacesAndNewlines)
+        return renderCommentText(from: copy)
     }
 
     nonisolated private func extractCommentDate(_ util: Element?) throws -> String {
