@@ -261,10 +261,6 @@ struct NetworkImage: View {
     }
 
     private func handleLoadFailure(_ error: Error) {
-        // 실패 원인을 버리지 않는다 — "다시 시도" 류 버그는 에러 종류
-        // (타임아웃/취소/디코드/블랙리스트)에 따라 원인이 완전히 갈리는데,
-        // 로그가 없으면 디바이스 재현에서도 진단 불가.
-        print("[NetworkImage] load failed url=\(url) error=\((error as NSError).domain)#\((error as NSError).code) \(error.localizedDescription)")
         // 취소는 실패가 아니다 — failed 로 승격하면 retry UI 전환으로
         // AnimatedImage 가 뷰에서 제거되며 후속 로드까지 dismantle-취소돼
         // "다시 시도" 가 고착된다 (실측: aagag 첫 진입, SD 2002 "cancelled
