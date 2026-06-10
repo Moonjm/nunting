@@ -404,17 +404,22 @@ struct PostDetailView: View, Equatable {
                         // `CachedAsyncImage(visibilityGated: true,
                         // clampsToNaturalWidth: true)` form had.
                         //
-                        // No `thumbnailMaxPointSize` — body images can
-                        // be either short-and-wide (normal photos) or
-                        // tall-and-narrow (aagag long-form panels). SD's
-                        // thumbnail caps the LONG edge of a single
-                        // bounding box, so a 1000pt cap shrinks an
-                        // 800×6000 panel to 400×3000 and the result
-                        // renders blurry on the column. Decoding at
-                        // native resolution costs more memory but
-                        // `SDImageCache`'s 200MB cap evicts older
-                        // entries to keep total residency bounded.
+                        // 비정방 다운샘플 박스(`thumbnailMaxPointWidth`):
+                        // 정사각 캡은 긴 변을 깎아 aagag 세로 패널
+                        // (800×6000)을 뭉개지만, 폭만 화면폭으로 캡하고
+                        // 높이를 무제한으로 주면 세로 패널은 무손실
+                        // 통과하고 일반 대형 사진(4000×3000)만 화면폭
+                        // 으로 다운샘플된다 — 디코드 시간·비트맵 메모리
+                        // 절감 + 직렬 디코드 큐 점유 완화. 컨테이너 폭이
+                        // 아직 측정 전(0)이면 native 디코드로 폴백.
+                        // `clampsToNaturalWidth` 와의 상호작용: 다운샘플
+                        // 된 이미지의 naturalPointWidth 는 화면폭 근사로
+                        // 보고되는데, 그 clamp 상한은 어차피 컨테이너
+                        // 폭 이상이라 시각 결과가 동일하다. 박스보다
+                        // 작은 이미지는 SD 가 업스케일하지 않으므로
+                        // 소형 첨부의 natural-width clamp 도 그대로.
                         let imageIndex = imageIndexByID[block.id]
+                        let containerWidth = DetailOverlayController.shared.containerWidth
                         NetworkImage(
                             url: url,
                             aspectRatio: aspectRatio,
@@ -436,6 +441,7 @@ struct PostDetailView: View, Equatable {
                             // if it surfaces, decouple first-frame-only from
                             // poster availability (its own block flag).
                             decodesFirstFrameOnly: posterURL != nil,
+                            thumbnailMaxPointWidth: containerWidth > 0 ? containerWidth : nil,
                             // Eager-load the first body image: it's above the
                             // fold on open, so skip the viewport gate and let
                             // its fetch start at commit instead of waiting for
