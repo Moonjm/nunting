@@ -59,6 +59,18 @@ final class GestureCoordinator {
     /// flips to horizontal would jump the drawer by the diagonal
     /// pre-lock distance the moment the axis lock engaged.
     @ObservationIgnored private var dragLockBaseline: CGFloat = 0
+    /// 선택 핸들/스크럽바 제외 분류의 드래그당 1회 메모이즈. 분류 입력
+    /// (`value.startLocation`)이 드래그 내내 불변인데 분류 비용(뷰 트리
+    /// 재귀 + hitTest)은 크므로, 매 틱 재실행 대신 시작점 키로 캐시 —
+    /// 자세한 staleness 계약은 `DragExclusionCache` doccomment 참조.
+    /// `lazy` + `[weak self]`: 프로브가 coordinator 의 분류 메서드를 쓰되
+    /// self → cache → closure → self 순환을 피한다.
+    @ObservationIgnored private lazy var dragExclusion = DragExclusionCache { [weak self] start in
+        guard let self else { return .none }
+        if self.touchStartedNearSelectionHandle(at: start) { return .selectionHandle }
+        if self.touchStartedOnScrubBar(at: start) { return .scrubBar }
+        return .none
+    }
 
     // MARK: - Tap gates exposed to subviews
 
@@ -136,25 +148,19 @@ final class GestureCoordinator {
     }
 
     private func onPanChanged(_ value: DragGesture.Value) {
-        // If the touch started near a visible selection
-        // handle (see `touchStartedNearSelectionHandle` for
-        // the exact hit-box dimensions and rationale), the
-        // user is grabbing it — bail so UITextView's handle
-        // pan can run without our back-drag sliding the
-        // overlay out underneath it. `value.startLocation`
-        // is stable across ticks so the check is consistent
-        // for the whole drag.
-        if touchStartedNearSelectionHandle(at: value.startLocation) {
-            return
-        }
-        // Scrub strip drags route through the inline player's
-        // own UIKit pan — slipping past here would race the
-        // back-drag against the scrubber.
-        if touchStartedOnScrubBar(at: value.startLocation) {
+        // Touch started on a selection handle (UITextView's handle pan
+        // must run without our back-drag sliding the overlay out under
+        // it) or an inline video's scrub strip (the player's own UIKit
+        // pan owns the drag) — bail. Classified once per drag and
+        // memoised on `value.startLocation`, which is stable across
+        // ticks; see `touchStartedNearSelectionHandle` /
+        // `touchStartedOnScrubBar` for the hit-box rationale.
+        if dragExclusion.kind(at: value.startLocation) != .none {
             return
         }
         // Don't fight the bottom-bar swipe (board step) when the drag
-        // started inside the bar's hit area.
+        // started inside the bar's hit area. (Pure geometry — cheap
+        // enough to stay per-tick.)
         if startedInBottomBar(value) { return }
         let absW = abs(value.translation.width)
         let absH = abs(value.translation.height)
@@ -210,11 +216,7 @@ final class GestureCoordinator {
         // TTL deadline that lapses on its own (see the class
         // doccomment for why this matters when `.onEnded` is
         // skipped entirely).
-        if touchStartedNearSelectionHandle(at: value.startLocation) {
-            resetDragState()
-            return
-        }
-        if touchStartedOnScrubBar(at: value.startLocation) {
+        if dragExclusion.kind(at: value.startLocation) != .none {
             resetDragState()
             return
         }
@@ -329,6 +331,9 @@ final class GestureCoordinator {
         dragDirection = nil
         dragLockBaseline = 0
         scrollLocked = false
+        // 드래그 종료 — 같은 좌표에서 새 드래그가 시작돼도 뷰 계층이
+        // 바뀌었을 수 있으니(선택 해제, 플레이어 회수) 재분류시킨다.
+        dragExclusion.reset()
     }
 
     private func startedInBottomBar(_ value: DragGesture.Value) -> Bool {
