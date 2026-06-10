@@ -211,7 +211,7 @@ struct NetworkImage: View {
             loadingPlaceholder
         }
         .onSuccess { image, _, _ in handleLoadSuccess(image) }
-        .onFailure { _ in handleLoadFailure() }
+        .onFailure { error in handleLoadFailure(error) }
         // Cap decoded-frame memory for animated WebP/GIF (짤방 are 100-300
         // frames; SDAnimatedImageView's default `maxBufferSize = 0` decodes
         // all frames upfront → 60-100 MB per long animation, a jetsam driver).
@@ -238,7 +238,7 @@ struct NetworkImage: View {
             loadingPlaceholder
         }
         .onSuccess { image, _, _ in handleLoadSuccess(image) }
-        .onFailure { _ in handleLoadFailure() }
+        .onFailure { error in handleLoadFailure(error) }
     }
 
     /// Shared `.onSuccess` handler for both body-image paths.
@@ -260,7 +260,11 @@ struct NetworkImage: View {
         }
     }
 
-    private func handleLoadFailure() {
+    private func handleLoadFailure(_ error: Error) {
+        // 실패 원인을 버리지 않는다 — "다시 시도" 류 버그는 에러 종류
+        // (타임아웃/취소/디코드/블랙리스트)에 따라 원인이 완전히 갈리는데,
+        // 로그가 없으면 디바이스 재현에서도 진단 불가.
+        print("[NetworkImage] load failed url=\(url) error=\((error as NSError).domain)#\((error as NSError).code) \(error.localizedDescription)")
         DispatchQueue.main.async { failed = true }
     }
 
