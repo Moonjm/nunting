@@ -1,3 +1,4 @@
+import SDWebImage
 import XCTest
 @testable import nunting
 
@@ -6,6 +7,21 @@ final class BodyImagePrefetcherTests: XCTestCase {
 
     private func url(_ i: Int) -> URL { URL(string: "https://cdn.example.com/\(i).webp")! }
     private func urls(_ n: Int) -> [URL] { (0..<n).map(url) }
+
+    func testPrefetchContextMatchesNetworkImageThumbnailKey() {
+        // 워밍과 표시 로드의 SD 캐시 키 일치 계약 — thumbnail 컨텍스트는
+        // 캐시 키를 `URL-Thumbnail({w,h},1)` 로 변형하므로, 프리페처가
+        // 컨텍스트 없이 워밍하면 표시 로드가 그 결과를 못 찾아 프리페치가
+        // 통째로 무효가 된다 (실측: aagag 첫 진입 "다시 시도" 버그의 창을
+        // 연 회귀). atsSafe URL 일치와 같은 결의 불변식.
+        let ctx = NetworkImage.thumbnailContext(maxPointSize: nil, maxPointWidth: 393, scale: 3)
+        let p = BodyImagePrefetcher(urls: urls(3), window: 3, thumbnailContext: ctx)
+        let stored = (p.prefetchContext?[.imageThumbnailPixelSize] as? NSValue)?.cgSizeValue
+        XCTAssertEqual(stored, CGSize(width: 1179, height: 65535))
+
+        let bare = BodyImagePrefetcher(urls: urls(3), window: 3)
+        XCTAssertNil(bare.prefetchContext, "컨텍스트 없는 호출부(구형)는 평범한 키 워밍 유지")
+    }
 
     func testClaimsWindowAheadOfVisibleIndex() {
         let p = BodyImagePrefetcher(urls: urls(10), window: 3)

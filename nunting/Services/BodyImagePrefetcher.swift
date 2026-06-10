@@ -42,10 +42,23 @@ final class BodyImagePrefetcher {
     /// URLs already handed to the prefetcher — never re-issued.
     private var requested = Set<URL>()
 
-    init(urls: [URL], window: Int = 3, skipPrefetch: Set<URL> = []) {
+    /// 표시 로드(`NetworkImage`)와 동일한 thumbnail 컨텍스트. thumbnail
+    /// 컨텍스트는 SD 캐시 키를 `URL-Thumbnail({w,h},1)` 로 변형하므로,
+    /// 여기와 표시 로드의 컨텍스트가 다르면 워밍이 엉뚱한 키에 저장돼
+    /// 프리페치 전체가 무효가 된다 — `atsSafe` URL 일치(아래 doccomment)와
+    /// 같은 결의 키-일치 불변식. internal 인 이유: 테스트가 이 불변식을 핀.
+    let prefetchContext: [SDWebImageContextOption: Any]?
+
+    init(
+        urls: [URL],
+        window: Int = 3,
+        skipPrefetch: Set<URL> = [],
+        thumbnailContext: [SDWebImageContextOption: Any]? = nil
+    ) {
         self.urls = urls
         self.window = window
         self.skipPrefetch = skipPrefetch
+        self.prefetchContext = thumbnailContext
     }
 
     /// The image at `index` became visible — warm the next `window` URLs that
@@ -57,7 +70,7 @@ final class BodyImagePrefetcher {
         guard !fresh.isEmpty else { return }
         // `.lowPriority` yields the 4 downloader slots to on-screen loads;
         // prefetch only consumes otherwise-idle capacity.
-        _ = prefetcher.prefetchURLs(fresh, options: .lowPriority, context: nil, progress: nil, completed: nil)
+        _ = prefetcher.prefetchURLs(fresh, options: .lowPriority, context: prefetchContext, progress: nil, completed: nil)
     }
 
     /// The not-yet-requested `atsSafe` URLs in the `window` ahead of

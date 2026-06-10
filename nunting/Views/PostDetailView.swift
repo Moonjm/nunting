@@ -59,6 +59,10 @@ struct PostDetailView: View, Equatable {
             && lhs.isScrollingBlocked == rhs.isScrollingBlocked
     }
 
+    /// 프리페처 thumbnail 컨텍스트 구성용 — `NetworkImage` 가 내부에서 읽는
+    /// 것과 같은 환경값이라 양쪽 캐시 키가 일치한다.
+    @Environment(\.displayScale) private var displayScale
+
     @State private var loader = PostDetailLoader()
     @State private var selectedImage: ImageViewerItem?
     @State private var webItem: WebBrowserItem?
@@ -235,7 +239,21 @@ struct PostDetailView: View, Equatable {
         .onChange(of: bodyImageURLs) { _, urls in
             imagePrefetcher?.cancel()
             guard !urls.isEmpty else { imagePrefetcher = nil; return }
-            let prefetcher = BodyImagePrefetcher(urls: urls, skipPrefetch: prefetchSkipURLs)
+            // thumbnail 컨텍스트는 본문 NetworkImage 호출부와 *반드시* 동일
+            // 해야 한다 — 컨텍스트가 SD 캐시 키를 변형하므로, 다르면 워밍이
+            // 엉뚱한 키로 가서 프리페치가 통째로 무효 (aagag 첫 진입 retry
+            // 버그의 창을 연 회귀). 입력(containerWidth/displayScale)을 같은
+            // 소스에서 가져와 같은 함수로 만든다.
+            let containerWidth = DetailOverlayController.shared.containerWidth
+            let prefetcher = BodyImagePrefetcher(
+                urls: urls,
+                skipPrefetch: prefetchSkipURLs,
+                thumbnailContext: NetworkImage.thumbnailContext(
+                    maxPointSize: nil,
+                    maxPointWidth: containerWidth > 0 ? containerWidth : nil,
+                    scale: displayScale
+                )
+            )
             // Warm the head right away. The first image is eager (above the
             // fold), so its look-ahead shouldn't depend on whether its
             // `onAppear` fires before or after this `onChange`.
