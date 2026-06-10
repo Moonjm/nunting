@@ -317,6 +317,138 @@ final class ParserDetailTests: XCTestCase {
         )
     }
 
+    func testAagagStillImageWithoutOptimizedVariantUsesBucketRootNotOFolder() throws {
+        // Real shape from aagag.com/issue/?idx=1633288: a still `m == "img"`
+        // payload carries an `o` map describing the byte size of each
+        // available encoding (ori / webp / jpg). aagag's own renderer
+        // (AAGAG_AA.js) only points at the `/o/{q}.{type}` optimized folder
+        // when a *smaller* webp/jpg variant exists; when the original is
+        // already the smallest it serves the bucket root `i.aagag.com/{q}.jpg`.
+        // The previous parser hard-coded `/o/{q}.jpg`, which 520s for these
+        // posts and surfaced as the endless "다시 시도" placeholder while the
+        // mp4-backed (animated) block above it played fine.
+        //
+        // Here ori (25108) ties jpg and beats webp only if webp were larger —
+        // but webp (15354) is smaller, so the renderer picks `/o/{q}.webp`.
+        let html = #"""
+        <html><body>
+        <h1 class="title">still image</h1>
+        <script>
+        AAGAG_AA.content = "<p>[sTag]{\"m\":\"img\",\"q\":\"KeW2Q\",\"width\":421,\"height\":586,\"byte\":25108,\"o\":{\"ori\":{\"byte\":25108},\"webp\":{\"byte\":15354},\"jpg\":{\"byte\":25108}},\"max_size\":25108}[/sTag]</p>";
+        </script>
+        </body></html>
+        """#
+        let parser = AagagParser()
+        let post = Post.fixture(
+            id: "aagag-1633288",
+            site: .aagag,
+            boardID: "aagag-issue",
+            url: URL(string: "https://aagag.com/issue/?idx=1633288")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+        XCTAssertEqual(
+            detail.blocks.imageURLs.map(\.absoluteString),
+            ["https://i.aagag.com/o/KeW2Q.webp"],
+            "smaller webp variant present → /o/{q}.webp, matching aagag's renderer"
+        )
+    }
+
+    func testAagagStillImageWhereOriginalIsSmallestServesBucketRootJpg() throws {
+        // `o` present but the original is the smallest encoding (no webp, jpg
+        // == ori): aagag's renderer leaves `/o/` untouched and serves the
+        // bucket root. Hard-coding `/o/{q}.jpg` would 520 here.
+        let html = #"""
+        <html><body>
+        <h1 class="title">smallest original</h1>
+        <script>
+        AAGAG_AA.content = "[sTag]{\"m\":\"img\",\"q\":\"OnlyOri\",\"byte\":900,\"o\":{\"ori\":{\"byte\":900},\"jpg\":{\"byte\":900}}}[/sTag]";
+        </script>
+        </body></html>
+        """#
+        let parser = AagagParser()
+        let post = Post.fixture(site: .aagag, url: URL(string: "https://aagag.com/issue/?idx=1")!)
+
+        let detail = try parser.parseDetail(html: html, post: post)
+        XCTAssertEqual(
+            detail.blocks.imageURLs.map(\.absoluteString),
+            ["https://i.aagag.com/OnlyOri.jpg"],
+            "original is smallest → bucket root, no /o/ prefix"
+        )
+    }
+
+    func testAagagStillImageWithoutOptimizationMapUsesBucketRootJpg() throws {
+        // Legacy payloads ship no `o` map at all and no explicit `url`. The
+        // renderer's final fallback is the bucket root `i.aagag.com/{q}.jpg`,
+        // never the `/o/` folder.
+        let html = #"""
+        <html><body>
+        <h1 class="title">no o map</h1>
+        <script>
+        AAGAG_AA.content = "[sTag]{\"m\":\"img\",\"q\":\"BareImg\"}[/sTag]";
+        </script>
+        </body></html>
+        """#
+        let parser = AagagParser()
+        let post = Post.fixture(site: .aagag, url: URL(string: "https://aagag.com/issue/?idx=2")!)
+
+        let detail = try parser.parseDetail(html: html, post: post)
+        XCTAssertEqual(
+            detail.blocks.imageURLs.map(\.absoluteString),
+            ["https://i.aagag.com/BareImg.jpg"],
+            "no optimization map → bucket root jpg fallback"
+        )
+    }
+
+    func testAagagStillImagePicksOptimizedJpgWhenWebpIsLarger() throws {
+        // webp present but *larger* than the original (poor webp encoding of an
+        // already-compressed source) while the optimized jpg is smaller: the
+        // renderer rejects webp and serves `/o/{q}.jpg`. Locks the jpg-wins
+        // branch that the webp-smaller cases never exercise.
+        let html = #"""
+        <html><body>
+        <h1 class="title">jpg wins</h1>
+        <script>
+        AAGAG_AA.content = "[sTag]{\"m\":\"img\",\"q\":\"JpgWin\",\"byte\":5000,\"o\":{\"ori\":{\"byte\":5000},\"webp\":{\"byte\":6000},\"jpg\":{\"byte\":4000}}}[/sTag]";
+        </script>
+        </body></html>
+        """#
+        let parser = AagagParser()
+        let post = Post.fixture(site: .aagag, url: URL(string: "https://aagag.com/issue/?idx=3")!)
+
+        let detail = try parser.parseDetail(html: html, post: post)
+        XCTAssertEqual(
+            detail.blocks.imageURLs.map(\.absoluteString),
+            ["https://i.aagag.com/o/JpgWin.jpg"],
+            "webp larger than original is rejected; smaller jpg → /o/{q}.jpg"
+        )
+    }
+
+    func testAagagStillImageWithExplicitURLAndAllOriginalMapFallsThroughToURL() throws {
+        // An explicit `url` (external-hosted image) alongside an `o` map whose
+        // original is smallest: aagag's renderer evaluates optimized → url →
+        // bucket root sequentially, so the all-original `o` map falls through
+        // to `url`. Mirrors that fall-through rather than short-circuiting to
+        // the bucket root.
+        let html = #"""
+        <html><body>
+        <h1 class="title">external url</h1>
+        <script>
+        AAGAG_AA.content = "[sTag]{\"m\":\"img\",\"q\":\"ExtImg\",\"byte\":700,\"url\":\"https:\/\/cdn.example.com\/pic.png\",\"o\":{\"ori\":{\"byte\":700},\"jpg\":{\"byte\":700}}}[/sTag]";
+        </script>
+        </body></html>
+        """#
+        let parser = AagagParser()
+        let post = Post.fixture(site: .aagag, url: URL(string: "https://aagag.com/issue/?idx=4")!)
+
+        let detail = try parser.parseDetail(html: html, post: post)
+        XCTAssertEqual(
+            detail.blocks.imageURLs.map(\.absoluteString),
+            ["https://cdn.example.com/pic.png"],
+            "all-original o map falls through to explicit url, matching renderer order"
+        )
+    }
+
     // MARK: - Etoland
 
     func testEtolandDetailExtractsTitleMetaAndImageBody() throws {

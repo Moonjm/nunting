@@ -348,7 +348,9 @@ public struct AagagParser: BoardParser {
 
     /// Decode a single sTag payload into a ContentBlock. Aagag's renderer treats
     /// any payload with `mp4_seq` (or related mp4_* fields) as a video, regardless
-    /// of `m`. Image URL has `/o/` prefix, video URL does not.
+    /// of `m`. Still-image URL resolution mirrors the renderer too — see
+    /// `imageURL(q:json:)` (the `/o/` folder is only used for an optimized
+    /// variant, not every image).
     /// External embeds (`ytb`, `insta`) become tappable deal-link banners.
     nonisolated private func stagBlock(from payload: String) -> ContentBlock? {
         guard let data = payload.data(using: .utf8),
@@ -407,10 +409,56 @@ public struct AagagParser: BoardParser {
             return nil
         }
 
-        let imageURLString: String = (json["url"] as? String).map { absolutize($0) }
-            ?? "https://i.aagag.com/o/\(q).jpg"
-        guard let url = URL(string: imageURLString) else { return nil }
+        guard let url = URL(string: imageURL(q: q, json: json)) else { return nil }
         return .image(url)
+    }
+
+    /// Resolve a still-image URL the same way aagag's own renderer
+    /// (`AAGAG_AA.js`) does. The `/o/` "optimized" folder only holds a file
+    /// when aagag generated a *smaller* webp/jpg encoding; when the original
+    /// is already the smallest, the image lives at the bucket root
+    /// (`i.aagag.com/{q}.jpg`). The old unconditional `/o/{q}.jpg` 520'd for
+    /// every still image whose original was smallest — the endless "다시 시도"
+    /// placeholder on posts like aagag.com/issue/?idx=1633288.
+    ///
+    /// The `o` map carries each encoding's byte size; the renderer picks the
+    /// smallest among the original and the candidate types. We treat webp as a
+    /// candidate (the app registers `SDImageWebPCoder`, so `AAGAG.webp == 1`
+    /// holds). Only when a candidate beats the original do we point at `/o/`.
+    ///
+    /// The renderer evaluates the three sources in order — optimized variant,
+    /// then explicit `url`, then bucket root — and they are *sequential*, not
+    /// exclusive: an `o` map whose original is already smallest still falls
+    /// through to the `url` field. We mirror that fall-through so a payload
+    /// carrying both an all-original `o` map and an external `url` resolves the
+    /// same way aagag does. (On a webp==jpg tie both beat the original, the
+    /// renderer keeps payload order; we deterministically prefer webp — the
+    /// registered, smaller, confirmed-present coder — which only sharpens the
+    /// choice it would already make.)
+    nonisolated private func imageURL(q: String, json: [String: Any]) -> String {
+        if let o = json["o"] as? [String: Any],
+           let oriByte = byteCount(o["ori"]) {
+            var bestType: String? = nil
+            var bestByte = oriByte
+            for type in ["webp", "jpg"] {
+                guard let byte = byteCount(o[type]), byte < bestByte else { continue }
+                bestType = type
+                bestByte = byte
+            }
+            if let bestType {
+                return "https://i.aagag.com/o/\(q).\(bestType)"
+            }
+            // original is smallest — fall through to `url`, then bucket root
+        }
+        if let urlString = json["url"] as? String {
+            return absolutize(urlString)
+        }
+        return "https://i.aagag.com/\(q).jpg"
+    }
+
+    /// `byte` field from an `o`-map encoding entry (`{"byte": 15354}`).
+    nonisolated private func byteCount(_ entry: Any?) -> Int? {
+        (entry as? [String: Any]).flatMap { ($0["byte"] as? NSNumber)?.intValue }
     }
 
     nonisolated private func absolutize(_ s: String) -> String {
