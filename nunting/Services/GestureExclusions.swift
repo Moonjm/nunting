@@ -13,6 +13,11 @@ import UIKit
 /// 다음 드래그는 (서브픽셀 정밀도의) 다른 시작점으로 들어와 재분류된다.
 /// 정상 종료 경로는 `GestureCoordinator.resetDragState()` 가 `reset()` 을
 /// 불러, 같은 좌표의 새 드래그도 바뀐 뷰 계층(선택 해제 등)을 다시 본다.
+///
+/// 의도된 의미론 변화: `onPanEnded` 도 캐시된 분류를 본다. 구 코드는 end
+/// 시점에 프로브를 재실행해서, 드래그 도중 뷰 계층이 바뀌면 onChanged 와
+/// 다른 판정 → 조기 return 으로 `dragOffset`/`detail.offset` 이 중간 위치에
+/// 방치될 수 있었다. 한 드래그 = 한 분류가 맞다.
 @MainActor
 final class DragExclusionCache {
     enum Kind {

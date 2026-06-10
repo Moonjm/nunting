@@ -47,6 +47,17 @@ final class CommentPageMergeTests: XCTestCase {
         XCTAssertEqual(merged.map(\.content), ["p1", "p2", "p4"])
     }
 
+    func testEmptyPageBehavesLikeMissingPage() async throws {
+        // 페이지 URL 을 만들 수 없는 경우(뽐뿌/보배 클로저의 `return []`)는
+        // fetch 실패로 누락된 페이지와 동일하게 — 그 페이지만 비고 병합 유지.
+        let merged = try await parser.mergeCommentPages(
+            total: 3, inlinePage: 1, inline: [comment("p1")]
+        ) { page in
+            page == 2 ? [] : [self.comment("p\(page)")]
+        }
+        XCTAssertEqual(merged.map(\.content), ["p1", "p3"])
+    }
+
     func testCancellationRethrowsInsteadOfReturningPartial() async {
         // 페이지 실패 흡수(do/catch)가 CancellationError 까지 삼켜 부분 댓글이
         // 정상 완료처럼 popped 뷰에 붙으면 안 됨 — 취소는 다시 던져야 한다.
