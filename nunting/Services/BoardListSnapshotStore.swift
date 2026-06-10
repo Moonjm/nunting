@@ -23,7 +23,11 @@ actor BoardListSnapshotStore {
         if let fileURL {
             self.fileURL = fileURL
         } else {
-            let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            // Application Support 는 표준 디렉토리라 사실상 항상 존재하지만,
+            // 스냅샷은 순수 최적화 계층이라 디렉토리 조회 실패로 앱이 죽으면
+            // 안 된다 — 빈 결과면 temp 로 폴백(다음 기동에 다시 시도).
+            let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                ?? FileManager.default.temporaryDirectory
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             self.fileURL = dir.appendingPathComponent("list-snapshot.json")
         }

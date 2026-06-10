@@ -160,12 +160,10 @@ final class BoardListLoaderTests: XCTestCase {
         await loader.refresh(board: .clienJirum, filter: nil, searchQuery: nil)  // B
 
         let revisit = Task { await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil) }
-        var fetchStarted = false
-        for _ in 0..<500 where !fetchStarted {
-            await Task.yield()
-            if calls.value == 3 { fetchStarted = true }
-        }
-        XCTAssertTrue(fetchStarted)
+        // 재방문 fetch 가 게이트에 도달 = cold path 의 posts=[] / isLoading=true
+        // 가 이미 적용된 시점. 폴링 없이 그 시점을 결정적으로 잡는다.
+        await gate.waitUntilEntered()
+        XCTAssertEqual(calls.value, 3)
         XCTAssertTrue(loader.posts.isEmpty, "재방문은 이전 목록 복원 없이 cold path (스피너 + 최신글)")
         XCTAssertTrue(loader.isLoading)
 
@@ -198,12 +196,11 @@ final class BoardListLoaderTests: XCTestCase {
         )
 
         let task = Task { await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil) }
-        var restored = false
-        for _ in 0..<500 where !restored {
-            await Task.yield()
-            if loader.posts.first?.title == "디스크 글" { restored = true }
-        }
-        XCTAssertTrue(restored, "세션 첫 refresh 는 디스크 스냅샷을 fetch 완료 전에 복원해야 함")
+        // fetch 가 게이트에 도달 = 디스크 복원(snapshotStore.load → posts)이
+        // 끝나고 재검증 fetch 로 진입한 시점. 폴링 없이 그 시점을 잡는다.
+        await gate.waitUntilEntered()
+        XCTAssertEqual(loader.posts.first?.title, "디스크 글",
+                       "세션 첫 refresh 는 디스크 스냅샷을 fetch 완료 전에 복원해야 함")
 
         await gate.open()
         await task.value
@@ -313,11 +310,25 @@ final class BoardListLoaderTests: XCTestCase {
 /// 재검증 fetch 완료보다 먼저"를 결정적으로 검증하는 데 쓴다.
 private actor TestGate {
     private var isOpen = false
+    private var hasEntered = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var entryWaiters: [CheckedContinuation<Void, Never>] = []
 
     func wait() async {
+        // 진입 신호 — `waitUntilEntered()` 가 폴링 없이 깨어나도록.
+        hasEntered = true
+        for w in entryWaiters { w.resume() }
+        entryWaiters = []
         if isOpen { return }
         await withCheckedContinuation { waiters.append($0) }
+    }
+
+    /// 누군가 `wait()` 에 진입할 때까지 결정적으로 대기. fetch 가 게이트에
+    /// 걸린(=로딩 상태가 관찰 가능해진) 시점을 `Task.yield()` 폴링 없이
+    /// 잡는다.
+    func waitUntilEntered() async {
+        if hasEntered { return }
+        await withCheckedContinuation { entryWaiters.append($0) }
     }
 
     func open() {
