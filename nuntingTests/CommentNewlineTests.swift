@@ -58,6 +58,31 @@ final class CommentNewlineTests: XCTestCase {
         XCTAssertEqual(detail.comments[0].content, "첫째 줄\n둘째 줄")
     }
 
+    /// 파이프라인 계약 고정 — `<br>` 단일 케이스 외에 renderCommentText 가
+    /// 보장하는 나머지 동작까지: 중첩 블록 태그(`<div>`) 줄바꿈, 연속 `<br>`
+    /// 의 빈 줄, inline 경계 `&nbsp;` 보존(없으면 `.text()` leading-strip 이
+    /// 통째로 삼켜 인접 단어가 붙음). 파서가 bare `.text()` 로 되돌아가는
+    /// 회귀가 어느 축에서든 잡히게.
+    func testClienCommentFlattensBlockTagsBlankLinesAndNbsp() throws {
+        let parser = ClienParser()
+        let html = """
+        <html><body>
+        <div class="post_article"><p>본문</p></div>
+        <div class="comment_row" data-role="comment-row" data-comment-sn="43" data-author-id="u2">
+          <span class="nickname">닉네임</span>
+          <span class="timestamp">2026-06-10 12:02</span>
+          <div class="comment_view"><b>@글쓴이</b>&nbsp;멘션 답글<div>블록 줄</div><br><br>마지막</div>
+        </div>
+        </body></html>
+        """
+        let post = Post.fixture(
+            site: .clien,
+            url: URL(string: "https://m.clien.net/service/board/park/2")!)
+        let detail = try parser.parseDetail(html: html, post: post)
+        XCTAssertEqual(detail.comments.count, 1)
+        XCTAssertEqual(detail.comments[0].content, "@글쓴이 멘션 답글\n블록 줄\n\n마지막")
+    }
+
     // MARK: - Humor
 
     func testHumorCommentPreservesBRLineBreaks() throws {
