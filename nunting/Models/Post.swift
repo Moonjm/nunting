@@ -1,7 +1,9 @@
 import Foundation
 import CoreGraphics
 
-public struct Post: Identifiable, Hashable {
+/// `Codable`: 목록 디스크 스냅샷(`BoardListSnapshotStore`)용 — 모든 필드가
+/// 텍스트 메타데이터라 합성 인코딩으로 충분하다.
+public struct Post: Identifiable, Hashable, Codable {
     public let id: String
     public let site: Site
     public let boardID: String
