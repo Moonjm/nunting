@@ -492,7 +492,19 @@ struct PostDetailView: View, Equatable {
         return map
     }
 
+    /// 블록별 메모이즈 — 댓글 `styledCache` 와 같은 역할. body 는 이미지
+    /// 뷰어 열기/닫기(`selectedImage`+`dismissCovering`+`coverGeneration`),
+    /// 백 드래그의 `isScrollingBlocked` 플립(Equatable 통과) 등으로 수시로
+    /// 재평가되는데, 그때마다 전 블록의 NSDataDetector 매칭 + AttributedString
+    /// 조립을 다시 돌릴 이유가 없다. 출력이 segments 의 순수 함수이므로 내용
+    /// 키로 캐시 — 같은 글 재파싱(pull-to-refresh)도 자연 재사용.
+    private static let richTextCache = MemoCache<[InlineSegment], AttributedString>(countLimit: 200)
+
     private func attributedString(from segments: [InlineSegment]) -> AttributedString {
+        Self.richTextCache.value(for: segments) { Self.buildAttributedString(from: $0) }
+    }
+
+    private static func buildAttributedString(from segments: [InlineSegment]) -> AttributedString {
         var result = AttributedString()
         for segment in segments {
             switch segment {
