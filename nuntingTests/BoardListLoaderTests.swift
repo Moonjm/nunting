@@ -139,84 +139,38 @@ final class BoardListLoaderTests: XCTestCase {
                        "pull-to-refresh 는 loadedKey 가드 우회 — 같은 key 라도 재페치")
     }
 
-    // MARK: - SWR (보드 재방문 캐시)
+    // MARK: - 보드 재방문 = 항상 fresh (사용자 선호: 최신글 우선)
 
-    // 갱신본 — 재검증 완료 후 fresh 교체를 식별하기 위한 다른 제목.
-    private var clienHTMLUpdated: String {
-        clienHTML.replacingOccurrences(of: "첫번째 글", with: "갱신된 글")
-    }
-
-    func testRevisitShowsCachedPostsInstantlyThenRevalidates() async {
+    func testRevisitGoesColdAndShowsFreshPosts() async {
+        // A→B→A 왕복: 재방문도 cold path 로 새로 불러온다. 한때 SWR 캐시
+        // (이전 목록 즉시 표시 + 백그라운드 재검증)를 넣었다가, "전환 시
+        // 이전 목록 유지보다 최신글을 새로 뿌리는 게 좋다"는 피드백으로
+        // 의도적으로 되돌림 — 이 테스트가 그 결정을 핀한다. 판별 기준은
+        // fetch 수가 아니라(SWR 도 재검증 fetch 를 돌림) "재방문 fetch 가
+        // 진행되는 동안 이전 목록이 복원돼 있지 않은가".
         let gate = TestGate()
         let calls = TestCounter()
-        let loader = makeLoader(fetcher: { [clienHTML, clienHTMLUpdated] _, _, _, _ in
+        let loader = makeLoader(fetcher: { [clienHTML] _, _, _, _ in
             calls.increment()
-            if calls.value >= 3 {
-                // A 재방문의 백그라운드 재검증 — gate 가 열릴 때까지 대기.
-                await gate.wait()
-                return clienHTMLUpdated
-            }
+            if calls.value >= 3 { await gate.wait() }
             return clienHTML
         })
 
-        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil)   // A cold
-        await loader.refresh(board: .clienJirum, filter: nil, searchQuery: nil)  // B cold
-        XCTAssertEqual(calls.value, 2)
+        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil)   // A
+        await loader.refresh(board: .clienJirum, filter: nil, searchQuery: nil)  // B
 
         let revisit = Task { await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil) }
-        // 캐시 복원은 재검증 fetch 완료 *전*(gate 닫힘 동안)에 일어나야 한다.
-        var restored = false
-        for _ in 0..<500 where !restored {
+        var fetchStarted = false
+        for _ in 0..<500 where !fetchStarted {
             await Task.yield()
-            if loader.posts.first?.title == "첫번째 글", calls.value == 3 { restored = true }
+            if calls.value == 3 { fetchStarted = true }
         }
-        XCTAssertTrue(restored, "재방문 즉시 캐시본 표시 + 백그라운드 재검증 시작 (스피너 없이)")
+        XCTAssertTrue(fetchStarted)
+        XCTAssertTrue(loader.posts.isEmpty, "재방문은 이전 목록 복원 없이 cold path (스피너 + 최신글)")
+        XCTAssertTrue(loader.isLoading)
 
         await gate.open()
         await revisit.value
-        XCTAssertEqual(loader.posts.first?.title, "갱신된 글", "재검증 완료 후 fresh 로 교체")
-        XCTAssertNil(loader.errorMessage)
-    }
-
-    func testRevalidateFailureKeepsStalePosts() async {
-        struct StubError: Error {}
-        let calls = TestCounter()
-        let loader = makeLoader(fetcher: { [clienHTML] _, _, _, _ in
-            calls.increment()
-            if calls.value >= 3 { throw StubError() }
-            return clienHTML
-        })
-
-        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil)
-        await loader.refresh(board: .clienJirum, filter: nil, searchQuery: nil)
-        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil)  // 재검증 실패
-
-        XCTAssertEqual(loader.posts.count, 2, "재검증 실패 시 stale 캐시본 유지 — 빈 화면 금지")
-        XCTAssertEqual(loader.posts.first?.title, "첫번째 글")
-        XCTAssertFalse(loader.isLoading)
-    }
-
-    func testCacheEvictsOldestBeyondCapacity() async {
-        // 캐시 cap(6) 을 넘기면 가장 오래된 key 는 cold path 로 돌아간다 —
-        // 무한 증가 방지의 행동 계약.
-        let calls = TestCounter()
-        let loader = makeLoader(fetcher: { [clienHTML] _, _, _, _ in
-            calls.increment()
-            return clienHTML
-        })
-
-        // 7개 distinct key (searchQuery 변주).
-        for q in 1...7 {
-            await loader.refresh(board: .clienNews, filter: nil, searchQuery: "q\(q)")
-        }
-        XCTAssertEqual(calls.value, 7)
-
-        // 첫 key 는 evict 됐어야 — 재방문이 fetch 를 다시 유발 (SWR 복원이
-        // 아니라 cold). fetch 수로 판별: 캐시 히트(SWR)여도 재검증 fetch 가
-        // 돌므로, 복원 여부는 posts 가 fetch 완료 전에 차는지로 가려야 하지만
-        // 여기선 단순화해 "evict 된 key 도 정상 로드"만 핀한다.
-        await loader.refresh(board: .clienNews, filter: nil, searchQuery: "q1")
-        XCTAssertEqual(calls.value, 8)
         XCTAssertEqual(loader.posts.count, 2)
     }
 

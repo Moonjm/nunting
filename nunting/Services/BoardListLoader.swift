@@ -15,14 +15,15 @@ import Observation
 /// re-entry, same Clien-search HTTP 400 fallback to a cookieless
 /// re-fetch.
 ///
-/// SWR cache: key 별 마지막 성공 상태(posts + 페이징 상태)를 LRU 로 보관.
-/// 재방문(드로어 탭, 하단바 좌우 스텝의 A→B→A)은 캐시본을 즉시 표시하고
-/// 백그라운드 재검증으로 교체한다 — 매 전환이 콜드 스피너였던 것 제거.
-/// 재검증 실패 시 stale 본이 그대로 남는다(뷰는 posts 가 비었을 때만
-/// 에러 화면을 보여주므로). SwiftUI's view identity already preserves
-/// `posts` across structural re-renders (e.g. dismissing the detail
-/// overlay), so transparent continuity for non-navigation paths needs
-/// no separate cache.
+/// 보드 전환(드로어 탭, 하단바 좌우 스텝, 필터/검색)은 **의도적으로 cold
+/// path** — 한때 key 별 SWR 캐시(이전 목록 즉시 표시 + 백그라운드 재검증)
+/// 를 넣었다가, "전환 시 이전 목록 유지보다 최신글을 새로 뿌리는 게 좋다"
+/// 는 피드백으로 되돌렸다. 유일한 SWR 은 콜드 스타트 디스크 스냅샷(세션
+/// 첫 refresh 한정, 아래 snapshotStore) — 기동 스피너만 제거하고 이후
+/// 전환은 전부 fresh. SwiftUI's view identity already preserves `posts`
+/// across structural re-renders (e.g. dismissing the detail overlay), so
+/// transparent continuity for non-navigation paths needs no separate
+/// cache.
 @Observable
 @MainActor
 final class BoardListLoader {
@@ -63,22 +64,6 @@ final class BoardListLoader {
     /// by `refresh` to short-circuit re-entry on the same request.
     private var loadedKey: String?
 
-    /// key 별 마지막 성공 상태 스냅샷. `posts` 만이 아니라 페이징 상태까지
-    /// 통째로 — 재방문 복원 직후 loadMore 가 이어져도 중복/누락이 없도록.
-    private struct CachedList {
-        var posts: [Post]
-        var seenIDs: Set<String>
-        var currentPage: Int
-        var hasMorePages: Bool
-        var nextSearchURL: URL?
-    }
-
-    /// LRU: `cacheOrder` 뒤가 최신. 보드 6개면 하단바 좌우 순회 한 바퀴를
-    /// 커버하고도 수 MB 미만 (Post 는 텍스트 메타데이터뿐).
-    private var listCache: [String: CachedList] = [:]
-    private var cacheOrder: [String] = []
-    private let cacheCapacity = 6
-
     private let fetcher: Fetcher
     /// 콜드 스타트용 디스크 스냅샷. 세션 첫 refresh(인메모리 캐시가 빈
     /// 상태)에서 key 일치 시 복원, 첫 페이지 성공마다 갱신.
@@ -115,28 +100,12 @@ final class BoardListLoader {
         currentKey = key
         guard loadedKey != key else { return }
 
-        // SWR: 재방문 key 는 캐시본(페이징 상태 포함)을 즉시 복원해 스피너
-        // 없이 표시하고, 그대로 load() 로 백그라운드 재검증 — 성공하면
-        // fresh 첫 페이지로 교체되고, 실패하면 stale 본이 남는다.
-        if let entry = cachedList(for: key) {
-            posts = entry.posts
-            seenIDs = entry.seenIDs
-            currentPage = entry.currentPage
-            hasMorePages = entry.hasMorePages
-            nextSearchURL = entry.nextSearchURL
-            isLoadingMore = false
-            loadMoreError = false
-            errorMessage = nil
-            loadedKey = key
-            await load(board: board, filter: filter, searchQuery: searchQuery)
-            return
-        }
-
-        // 콜드 스타트 SWR: 세션 첫 refresh(인메모리 캐시가 빈 상태)에서
+        // 콜드 스타트 SWR: 세션 첫 refresh(아직 아무 key 도 로드 전)에서
         // 디스크 스냅샷의 key 가 일치하면 복원 — 기동 시 "스피너 1~3초"가
         // "목록 즉시 + 조용한 재검증"이 된다. 페이징 상태는 디스크에 안
-        // 실으므로 첫 페이지 기준으로 초기화.
-        if listCache.isEmpty,
+        // 실으므로 첫 페이지 기준으로 초기화. 이후의 보드 전환은 전부
+        // cold path (class doccomment 의 fresh-우선 결정 참조).
+        if loadedKey == nil,
            let snap = await snapshotStore.load(),
            snap.key == key, !snap.posts.isEmpty {
             // 디스크 await 사이 보드가 바뀌었으면 이 요청은 stale.
@@ -225,7 +194,6 @@ final class BoardListLoader {
             } else {
                 board.supportsPaging && (nextSearchURL != nil || !fresh.isEmpty)
             }
-            storeCache(for: key)
         } catch is CancellationError {
             return
         } catch let urlError as URLError where urlError.code == .cancelled {
@@ -240,32 +208,6 @@ final class BoardListLoader {
     }
 
     // MARK: - Private
-
-    /// LRU touch 포함 — 조회된 key 를 최신으로 올린다.
-    private func cachedList(for key: String) -> CachedList? {
-        guard let entry = listCache[key] else { return nil }
-        cacheOrder.removeAll { $0 == key }
-        cacheOrder.append(key)
-        return entry
-    }
-
-    /// 현재 관찰 상태를 key 스냅샷으로 저장. cap 초과 시 가장 오래된 key 부터
-    /// evict. 첫 페이지 성공과 loadMore 성공 양쪽에서 호출돼 항상 최신 상태.
-    private func storeCache(for key: String) {
-        listCache[key] = CachedList(
-            posts: posts,
-            seenIDs: seenIDs,
-            currentPage: currentPage,
-            hasMorePages: hasMorePages,
-            nextSearchURL: nextSearchURL
-        )
-        cacheOrder.removeAll { $0 == key }
-        cacheOrder.append(key)
-        while cacheOrder.count > cacheCapacity, let oldest = cacheOrder.first {
-            cacheOrder.removeFirst()
-            listCache[oldest] = nil
-        }
-    }
 
     private func load(board: Board, filter: BoardFilter?, searchQuery: String?) async {
         guard !Task.isCancelled else { return }
@@ -289,7 +231,6 @@ final class BoardListLoader {
             nextSearchURL = Self.nextSearchPageURL(from: html, board: board, searchQuery: searchQuery)
             hasMorePages = board.supportsPaging && (!parsed.isEmpty || nextSearchURL != nil)
             loadedKey = key
-            storeCache(for: key)
             // 다음 콜드 스타트 재료. posts commit 이후라 UI 는 이미 갱신됐고,
             // actor 파일 쓰기는 main 밖에서 직렬화되므로 await 비용은 hop 뿐.
             await snapshotStore.save(key: key, posts: parsed)
