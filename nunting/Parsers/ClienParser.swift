@@ -250,12 +250,11 @@ public struct ClienParser: BoardParser {
                   let copy = viewEl.copy() as? Element
             else { continue }
             try copy.select("input").remove()
-            // Preserve anchors as tappable markdown links before `.text()`
-            // flattens the subtree and drops their hrefs. Done on a copy
-            // so later reads of the original `doc` aren't corrupted —
-            // matches the pattern every other parser in this patch uses.
-            convertAnchorsToMarkdown(in: copy)
-            let content = try copy.text().trimmingCharacters(in: .whitespacesAndNewlines)
+            // Shared flatten pipeline: anchors → markdown links, `<br>`/block
+            // tags → preserved line breaks (bare `.text()` collapses them to
+            // a space). Done on a copy so later reads of the original `doc`
+            // aren't corrupted.
+            let content = renderCommentText(from: copy)
 
             // Comment-level image attachments live in a sibling
             // `div.comment-img` *outside* `comment_view`, so the text
