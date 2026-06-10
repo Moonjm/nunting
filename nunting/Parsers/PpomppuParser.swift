@@ -155,35 +155,15 @@ public struct PpomppuParser: BoardParser {
         // 아님). 그 댓글을 무조건 page 1 로 놓으면 `current` 페이지가 중복되고
         // 빠진 페이지(특히 1번)가 누락된다 — "스크롤하면 같은 댓글이 다시 나옴"
         // 의 원인. detail 댓글을 실제 인덱스(info.current)에 놓고 나머지 페이지만
-        // 가져온다.
-        // 페이지 단위 실패는 흡수한다. throwing group 으로 하나라도 throw 하면
-        // 그룹 전체가 취소되고, 호출부(`PostDetailLoader`)의 `try?` 가 댓글을
-        // 통째로 nil 처리한다 — 페이지가 많을수록 단일 실패 확률이 누적돼
-        // 멀쩡한 페이지까지 통째로 사라진다. 실패한 페이지만 건너뛰고 나머지는
-        // 살린다.
-        var pageMap: [Int: [PostComment]] = [info.current: firstPage]
-        await withTaskGroup(of: (Int, [PostComment]?).self) { group in
-            for page in 1...info.total where page != info.current {
-                guard let pageURL = appendingCommentPage(to: post.url, page: page) else { continue }
-                group.addTask {
-                    do {
-                        let html = try await fetcher(pageURL)
-                        let pageDoc = try SwiftSoup.parse(html)
-                        return (page, try self.parseComments(in: pageDoc, fallbackPage: page))
-                    } catch {
-                        return (page, nil)
-                    }
-                }
-            }
-            for await (page, comments) in group {
-                if let comments { pageMap[page] = comments }
-            }
+        // 가져온다. 병렬 fetch + 실패 흡수 골격은 `mergeCommentPages` 참조.
+        return try await mergeCommentPages(
+            total: info.total, inlinePage: info.current, inline: firstPage
+        ) { page in
+            guard let pageURL = self.appendingCommentPage(to: post.url, page: page) else { return [] }
+            let html = try await fetcher(pageURL)
+            let pageDoc = try SwiftSoup.parse(html)
+            return try self.parseComments(in: pageDoc, fallbackPage: page)
         }
-        // 취소는 페이지 실패가 아니다 — child task 가 CancellationError 를
-        // (page, nil) 로 흡수했더라도, 취소된 로드가 부분 댓글을 정상 완료처럼
-        // 반환해 popped 뷰에 늦게 붙는 걸 막으려 여기서 다시 올린다.
-        try Task.checkCancellation()
-        return (1...info.total).flatMap { pageMap[$0] ?? [] }
     }
 
     public nonisolated func parseComments(html: String) throws -> [PostComment] {
