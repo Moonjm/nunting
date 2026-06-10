@@ -59,6 +59,17 @@ struct NetworkImage: View {
     /// know the source is already small).
     var thumbnailMaxPointSize: CGFloat? = nil
 
+    /// 비정방 다운샘플 박스의 *폭* 캡(포인트). 본문 사진용 — 정사각 캡
+    /// (`thumbnailMaxPointSize`)은 긴 변을 깎으므로 aagag 세로 패널
+    /// (800×6000)이 뭉개지지만, `imageThumbnailPixelSize` 는 aspect 유지
+    /// bounding box 라 폭만 캡하고 높이를 사실상 무제한으로 주면 세로
+    /// 패널은 박스 안에 들어가 무손실 통과하고 일반 대형 사진(4000×3000)
+    /// 만 화면폭으로 다운샘플된다 — 디코드 시간과 비트맵 메모리(48MB→
+    /// ~4MB)가 줄고, 직렬 디코드 큐에서 대형 사진이 뒤 이미지를 막는
+    /// 효과도 완화. `thumbnailMaxPointSize` 가 있으면 그쪽이 우선(기존
+    /// 아이콘/스티커/포스터 호출부 보호).
+    var thumbnailMaxPointWidth: CGFloat? = nil
+
     /// When `true`, defers the SDWebImage fetch until this image's
     /// frame intersects the enclosing ScrollView's viewport. Used by
     /// body images so a 30-image post doesn't queue 30 fetches at the
@@ -200,7 +211,7 @@ struct NetworkImage: View {
             loadingPlaceholder
         }
         .onSuccess { image, _, _ in handleLoadSuccess(image) }
-        .onFailure { _ in handleLoadFailure() }
+        .onFailure { error in handleLoadFailure(error) }
         // Cap decoded-frame memory for animated WebP/GIF (짤방 are 100-300
         // frames; SDAnimatedImageView's default `maxBufferSize = 0` decodes
         // all frames upfront → 60-100 MB per long animation, a jetsam driver).
@@ -227,7 +238,7 @@ struct NetworkImage: View {
             loadingPlaceholder
         }
         .onSuccess { image, _, _ in handleLoadSuccess(image) }
-        .onFailure { _ in handleLoadFailure() }
+        .onFailure { error in handleLoadFailure(error) }
     }
 
     /// Shared `.onSuccess` handler for both body-image paths.
@@ -249,8 +260,27 @@ struct NetworkImage: View {
         }
     }
 
-    private func handleLoadFailure() {
+    private func handleLoadFailure(_ error: Error) {
+        // 취소는 실패가 아니다 — failed 로 승격하면 retry UI 전환으로
+        // AnimatedImage 가 뷰에서 제거되며 후속 로드까지 dismantle-취소돼
+        // "다시 시도" 가 고착된다 (실측: aagag 첫 진입, SD 2002 "cancelled
+        // during querying the cache"). 무시하면 뷰가 살아 있는 한 다음
+        // updateUIView 가 same-URL/no-image 경로로 자동 재로드한다.
+        guard !Self.isCancellation(error) else { return }
         DispatchQueue.main.async { failed = true }
+    }
+
+    /// SD/URLSession 의 취소 신호 판별 — 뷰 교체·identity 변경·로드 경합에서
+    /// 이전 오퍼레이션이 취소될 때 onFailure 로 전달되는 에러들.
+    static func isCancellation(_ error: Error) -> Bool {
+        let ns = error as NSError
+        if ns.domain == SDWebImageErrorDomain && ns.code == SDWebImageError.cancelled.rawValue {
+            return true
+        }
+        if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled {
+            return true
+        }
+        return false
     }
 
     /// Fire `onBecameVisible` at most once. Called from the gate-open path
@@ -325,12 +355,35 @@ struct NetworkImage: View {
     }
 
     private var thumbnailContext: [SDWebImageContextOption: Any]? {
-        guard let pointSize = thumbnailMaxPointSize else { return nil }
+        Self.thumbnailContext(
+            maxPointSize: thumbnailMaxPointSize,
+            maxPointWidth: thumbnailMaxPointWidth,
+            scale: displayScale
+        )
+    }
+
+    /// 다운샘플 박스 매핑 — internal static 이라 박스 모양 계약(정사각 우선,
+    /// 비정방은 높이 무제한)을 단위 테스트로 고정할 수 있다.
+    static func thumbnailContext(
+        maxPointSize: CGFloat?,
+        maxPointWidth: CGFloat?,
+        scale: CGFloat
+    ) -> [SDWebImageContextOption: Any]? {
         // Pixel cap on the long edge — square `CGSize` because SD treats
         // the value as a max-bounding-box, not a per-axis cap, so the
         // shorter edge naturally scales down with the longer.
-        let pixels = pointSize * displayScale
-        return [.imageThumbnailPixelSize: NSValue(cgSize: CGSize(width: pixels, height: pixels))]
+        if let pointSize = maxPointSize {
+            let pixels = pointSize * scale
+            return [.imageThumbnailPixelSize: NSValue(cgSize: CGSize(width: pixels, height: pixels))]
+        }
+        if let pointWidth = maxPointWidth {
+            // 높이 65535px: 사실상 무제한이되 ImageIO 가 안전하게 받는 값.
+            // 세로 패널이 높이 캡에 걸리면 비율 유지 축소로 폭까지 깎여
+            // 화면폭 미만이 되므로(=블러), 높이는 절대 실효 캡이 되면 안 됨.
+            let pixels = pointWidth * scale
+            return [.imageThumbnailPixelSize: NSValue(cgSize: CGSize(width: pixels, height: 65535))]
+        }
+        return nil
     }
 }
 

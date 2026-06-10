@@ -1,11 +1,26 @@
 import SwiftUI
-struct SideDrawer: View {
+struct SideDrawer: View, Equatable {
     let favorites: FavoritesStore
     let catalog: BoardCatalogStore
     let currentBoardID: String?
     @Binding var selectedSection: DrawerSection
     let onSelectBoard: (Board) -> Void
     let onClose: () -> Void
+
+    // PostDetailView/BoardListView 와 동일한 패턴 — 드로어 드래그 중
+    // ContentView 가 매 프레임 재평가되며 새 closure 를 만들어 넘기고,
+    // SwiftUI 는 closure 를 비교할 수 없어 매 프레임 이 뷰의 body
+    // (`favorites.favoriteBoards()` compactMap 포함)를 재평가한다.
+    // diffable 입력만 비교해 `.equatable()` 이 churn 을 끊는다.
+    //
+    // `==` 에서 의도적으로 제외:
+    // - closures: 탭 시점 호출, out-of-line @State mutation — 첫 평가본으로 충분.
+    // - `favorites`/`catalog`: @Observable — body 읽기가 property 단위로
+    //   추적되므로 즐겨찾기 토글/카탈로그 로드는 `==` 와 무관하게 전파됨.
+    static func == (lhs: SideDrawer, rhs: SideDrawer) -> Bool {
+        lhs.currentBoardID == rhs.currentBoardID
+            && lhs.selectedSection == rhs.selectedSection
+    }
 
     /// Per-section persistent expand/collapse state. Keyed by
     /// `"<section.id>|<group.id>"`. JSON-encoded Set on disk; we keep an

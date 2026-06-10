@@ -236,6 +236,88 @@ final class PostDetailLoaderTests: XCTestCase {
         XCTAssertFalse(loader.isLoading)
     }
 
+    // MARK: - Render gate (텍스트 전용 글 면제)
+
+    /// 400ms 렌더 게이트는 푸시 애니메이션 중 이미지 서브트리 빌드를 막는
+    /// 장치 — 보호할 미디어가 없는 텍스트 전용 글은 게이트 없이 즉시 commit.
+    func testTextOnlyDetailSkipsRenderGate() async {
+        let loader = PostDetailLoader(
+            fetcher: { [bobaeDeletedHTML] _, _ in bobaeDeletedHTML },
+            resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) }
+        )
+        let cache = PostDetailCache(capacity: 4)
+        let start = ContinuousClock.now
+        // 게이트가 무시되지 않으면 5초를 통째로 기다린다.
+        await loader.load(post: bobaePost(), cache: cache, renderReadyAt: now() + .seconds(5))
+        let elapsed = ContinuousClock.now - start
+        XCTAssertNotNil(loader.detail)
+        XCTAssertLessThan(elapsed, .seconds(2), "텍스트 전용 글은 렌더 게이트를 기다리면 안 됨")
+    }
+
+    func testNeedsRenderGatePredicate() {
+        func detail(_ blocks: [ContentBlock], comments: [PostComment] = []) -> PostDetail {
+            PostDetail(post: bobaePost(), blocks: blocks, fullDateText: nil,
+                       viewCount: nil, source: nil, comments: comments)
+        }
+        func comment(sticker: URL? = nil, video: URL? = nil) -> PostComment {
+            PostComment(id: "c", author: "a", dateText: "", content: "텍스트",
+                        likeCount: 0, isReply: false, stickerURL: sticker, videoURL: video)
+        }
+        let img = URL(string: "https://e.com/a.png")!
+
+        XCTAssertFalse(PostDetailLoader.needsRenderGate(detail([.text("본문")])))
+        XCTAssertFalse(PostDetailLoader.needsRenderGate(
+            detail([.text("a"), .dealLink(img, label: "링크")], comments: [comment()])),
+            "텍스트+링크 본문, 미디어 없는 댓글 — 게이트 불필요")
+
+        XCTAssertTrue(PostDetailLoader.needsRenderGate(detail([.image(img)])))
+        XCTAssertTrue(PostDetailLoader.needsRenderGate(detail([.video(img)])))
+        XCTAssertTrue(PostDetailLoader.needsRenderGate(detail([.embed(.youtube, id: "abc")])),
+                      "embed 배너는 썸네일 이미지를 로드함")
+        XCTAssertTrue(PostDetailLoader.needsRenderGate(
+            detail([.text("본문")], comments: [comment(sticker: img)])),
+            "짧은 텍스트 본문이면 commit 시점에 댓글이 화면에 보임 — 스티커 댓글도 게이트 대상")
+        XCTAssertTrue(PostDetailLoader.needsRenderGate(
+            detail([.text("본문")], comments: [comment(video: img)])))
+    }
+
+    // MARK: - Warm HTML (DetailPrefetcher 소비)
+
+    func testWarmHTMLSkipsNetworkFetch() async {
+        let loader = PostDetailLoader(
+            fetcher: { _, _ in
+                XCTFail("warm HTML 이 있으면 detail fetch 는 생략돼야 함")
+                return ""
+            },
+            resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) },
+            warmHTML: { [bobaeDeletedHTML] id in id == "bobae-1" ? bobaeDeletedHTML : nil }
+        )
+        let cache = PostDetailCache(capacity: 4)
+
+        await loader.load(post: bobaePost(), cache: cache, renderReadyAt: now())
+
+        XCTAssertNotNil(loader.detail, "prefetch 본으로 파싱 완료")
+        XCTAssertNil(loader.errorMessage)
+    }
+
+    func testForceFreshIgnoresWarmHTML() async {
+        let fetchCount = TestCounter()
+        let loader = PostDetailLoader(
+            fetcher: { [bobaeDeletedHTML] _, _ in
+                fetchCount.increment()
+                return bobaeDeletedHTML
+            },
+            resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) },
+            warmHTML: { [bobaeDeletedHTML] _ in bobaeDeletedHTML }
+        )
+        let cache = PostDetailCache(capacity: 4)
+
+        await loader.load(post: bobaePost(), cache: cache, renderReadyAt: now(), forceFresh: true)
+
+        XCTAssertEqual(fetchCount.value, 1,
+                       "pull-to-refresh 는 prefetch 본 무시하고 재페치 (신선도 보장)")
+    }
+
     // MARK: - Initial state
 
     func testInitialIsLoadingTrueBeforeFirstLoadCall() {

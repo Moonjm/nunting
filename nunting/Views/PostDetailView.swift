@@ -59,6 +59,10 @@ struct PostDetailView: View, Equatable {
             && lhs.isScrollingBlocked == rhs.isScrollingBlocked
     }
 
+    /// 프리페처 thumbnail 컨텍스트 구성용 — `NetworkImage` 가 내부에서 읽는
+    /// 것과 같은 환경값이라 양쪽 캐시 키가 일치한다.
+    @Environment(\.displayScale) private var displayScale
+
     @State private var loader = PostDetailLoader()
     @State private var selectedImage: ImageViewerItem?
     @State private var webItem: WebBrowserItem?
@@ -235,7 +239,21 @@ struct PostDetailView: View, Equatable {
         .onChange(of: bodyImageURLs) { _, urls in
             imagePrefetcher?.cancel()
             guard !urls.isEmpty else { imagePrefetcher = nil; return }
-            let prefetcher = BodyImagePrefetcher(urls: urls, skipPrefetch: prefetchSkipURLs)
+            // thumbnail 컨텍스트는 본문 NetworkImage 호출부와 *반드시* 동일
+            // 해야 한다 — 컨텍스트가 SD 캐시 키를 변형하므로, 다르면 워밍이
+            // 엉뚱한 키로 가서 프리페치가 통째로 무효 (aagag 첫 진입 retry
+            // 버그의 창을 연 회귀). 입력(containerWidth/displayScale)을 같은
+            // 소스에서 가져와 같은 함수로 만든다.
+            let containerWidth = DetailOverlayController.shared.containerWidth
+            let prefetcher = BodyImagePrefetcher(
+                urls: urls,
+                skipPrefetch: prefetchSkipURLs,
+                thumbnailContext: NetworkImage.thumbnailContext(
+                    maxPointSize: nil,
+                    maxPointWidth: containerWidth > 0 ? containerWidth : nil,
+                    scale: displayScale
+                )
+            )
             // Warm the head right away. The first image is eager (above the
             // fold), so its look-ahead shouldn't depend on whether its
             // `onAppear` fires before or after this `onChange`.
@@ -404,17 +422,22 @@ struct PostDetailView: View, Equatable {
                         // `CachedAsyncImage(visibilityGated: true,
                         // clampsToNaturalWidth: true)` form had.
                         //
-                        // No `thumbnailMaxPointSize` — body images can
-                        // be either short-and-wide (normal photos) or
-                        // tall-and-narrow (aagag long-form panels). SD's
-                        // thumbnail caps the LONG edge of a single
-                        // bounding box, so a 1000pt cap shrinks an
-                        // 800×6000 panel to 400×3000 and the result
-                        // renders blurry on the column. Decoding at
-                        // native resolution costs more memory but
-                        // `SDImageCache`'s 200MB cap evicts older
-                        // entries to keep total residency bounded.
+                        // 비정방 다운샘플 박스(`thumbnailMaxPointWidth`):
+                        // 정사각 캡은 긴 변을 깎아 aagag 세로 패널
+                        // (800×6000)을 뭉개지만, 폭만 화면폭으로 캡하고
+                        // 높이를 무제한으로 주면 세로 패널은 무손실
+                        // 통과하고 일반 대형 사진(4000×3000)만 화면폭
+                        // 으로 다운샘플된다 — 디코드 시간·비트맵 메모리
+                        // 절감 + 직렬 디코드 큐 점유 완화. 컨테이너 폭이
+                        // 아직 측정 전(0)이면 native 디코드로 폴백.
+                        // `clampsToNaturalWidth` 와의 상호작용: 다운샘플
+                        // 된 이미지의 naturalPointWidth 는 화면폭 근사로
+                        // 보고되는데, 그 clamp 상한은 어차피 컨테이너
+                        // 폭 이상이라 시각 결과가 동일하다. 박스보다
+                        // 작은 이미지는 SD 가 업스케일하지 않으므로
+                        // 소형 첨부의 natural-width clamp 도 그대로.
                         let imageIndex = imageIndexByID[block.id]
+                        let containerWidth = DetailOverlayController.shared.containerWidth
                         NetworkImage(
                             url: url,
                             aspectRatio: aspectRatio,
@@ -436,6 +459,7 @@ struct PostDetailView: View, Equatable {
                             // if it surfaces, decouple first-frame-only from
                             // poster availability (its own block flag).
                             decodesFirstFrameOnly: posterURL != nil,
+                            thumbnailMaxPointWidth: containerWidth > 0 ? containerWidth : nil,
                             // Eager-load the first body image: it's above the
                             // fold on open, so skip the viewport gate and let
                             // its fetch start at commit instead of waiting for
@@ -492,7 +516,19 @@ struct PostDetailView: View, Equatable {
         return map
     }
 
+    /// 블록별 메모이즈 — 댓글 `styledCache` 와 같은 역할. body 는 이미지
+    /// 뷰어 열기/닫기(`selectedImage`+`dismissCovering`+`coverGeneration`),
+    /// 백 드래그의 `isScrollingBlocked` 플립(Equatable 통과) 등으로 수시로
+    /// 재평가되는데, 그때마다 전 블록의 NSDataDetector 매칭 + AttributedString
+    /// 조립을 다시 돌릴 이유가 없다. 출력이 segments 의 순수 함수이므로 내용
+    /// 키로 캐시 — 같은 글 재파싱(pull-to-refresh)도 자연 재사용.
+    private static let richTextCache = MemoCache<[InlineSegment], AttributedString>(countLimit: 200)
+
     private func attributedString(from segments: [InlineSegment]) -> AttributedString {
+        Self.richTextCache.value(for: segments) { Self.buildAttributedString(from: $0) }
+    }
+
+    private static func buildAttributedString(from segments: [InlineSegment]) -> AttributedString {
         var result = AttributedString()
         for segment in segments {
             switch segment {

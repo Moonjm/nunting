@@ -28,6 +28,13 @@ final class BoardListLoaderTests: XCTestCase {
     </body></html>
     """
 
+    /// 테스트 로더는 전부 temp 디스크 스냅샷 스토어를 쓴다 — 기본 init 의
+    /// 실제 앱 컨테이너 파일을 읽고 쓰면 테스트 실행 간 오염이 생긴다
+    /// (이전 실행이 남긴 스냅샷이 다음 실행의 cold-path 단언을 깨뜨림).
+    private func makeLoader(fetcher: @escaping BoardListLoader.Fetcher) -> BoardListLoader {
+        BoardListLoader(fetcher: fetcher, snapshotStore: tempSnapshotStore())
+    }
+
     // MARK: - taskKey
 
     func testTaskKeyShape() {
@@ -49,7 +56,7 @@ final class BoardListLoaderTests: XCTestCase {
 
     func testRefreshFetchesAndPopulatesPosts() async {
         let fetchCount = TestCounter()
-        let loader = BoardListLoader(fetcher: { [clienHTML] _, _, _, _ in
+        let loader = makeLoader(fetcher: { [clienHTML] _, _, _, _ in
             fetchCount.increment()
             return clienHTML
         })
@@ -67,7 +74,7 @@ final class BoardListLoaderTests: XCTestCase {
         struct StubError: Error, LocalizedError {
             var errorDescription: String? { "network down" }
         }
-        let loader = BoardListLoader(fetcher: { _, _, _, _ in
+        let loader = makeLoader(fetcher: { _, _, _, _ in
             throw StubError()
         })
 
@@ -82,7 +89,7 @@ final class BoardListLoaderTests: XCTestCase {
 
     func testRefreshRefireWithSameKeyIsNoOp() async {
         let fetchCount = TestCounter()
-        let loader = BoardListLoader(fetcher: { [clienHTML] _, _, _, _ in
+        let loader = makeLoader(fetcher: { [clienHTML] _, _, _, _ in
             fetchCount.increment()
             return clienHTML
         })
@@ -100,7 +107,7 @@ final class BoardListLoaderTests: XCTestCase {
         // 보드 전환 path: 다른 key 로 refresh → 새로 fetch.
         // 드로어 탭과 swipe-step 양쪽 시나리오 모두 이 path 통과.
         let fetchCount = TestCounter()
-        let loader = BoardListLoader(fetcher: { [clienHTML] _, _, _, _ in
+        let loader = makeLoader(fetcher: { [clienHTML] _, _, _, _ in
             fetchCount.increment()
             return clienHTML
         })
@@ -118,7 +125,7 @@ final class BoardListLoaderTests: XCTestCase {
 
     func testReloadBypassesLoadedKeyShortCircuit() async {
         let fetchCount = TestCounter()
-        let loader = BoardListLoader(fetcher: { [clienHTML] _, _, _, _ in
+        let loader = makeLoader(fetcher: { [clienHTML] _, _, _, _ in
             fetchCount.increment()
             return clienHTML
         })
@@ -132,13 +139,111 @@ final class BoardListLoaderTests: XCTestCase {
                        "pull-to-refresh 는 loadedKey 가드 우회 — 같은 key 라도 재페치")
     }
 
+    // MARK: - 보드 재방문 = 항상 fresh (사용자 선호: 최신글 우선)
+
+    func testRevisitGoesColdAndShowsFreshPosts() async {
+        // A→B→A 왕복: 재방문도 cold path 로 새로 불러온다. 한때 SWR 캐시
+        // (이전 목록 즉시 표시 + 백그라운드 재검증)를 넣었다가, "전환 시
+        // 이전 목록 유지보다 최신글을 새로 뿌리는 게 좋다"는 피드백으로
+        // 의도적으로 되돌림 — 이 테스트가 그 결정을 핀한다. 판별 기준은
+        // fetch 수가 아니라(SWR 도 재검증 fetch 를 돌림) "재방문 fetch 가
+        // 진행되는 동안 이전 목록이 복원돼 있지 않은가".
+        let gate = TestGate()
+        let calls = TestCounter()
+        let loader = makeLoader(fetcher: { [clienHTML] _, _, _, _ in
+            calls.increment()
+            if calls.value >= 3 { await gate.wait() }
+            return clienHTML
+        })
+
+        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil)   // A
+        await loader.refresh(board: .clienJirum, filter: nil, searchQuery: nil)  // B
+
+        let revisit = Task { await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil) }
+        // 재방문 fetch 가 게이트에 도달 = cold path 의 posts=[] / isLoading=true
+        // 가 이미 적용된 시점. 폴링 없이 그 시점을 결정적으로 잡는다.
+        await gate.waitUntilEntered()
+        XCTAssertEqual(calls.value, 3)
+        XCTAssertTrue(loader.posts.isEmpty, "재방문은 이전 목록 복원 없이 cold path (스피너 + 최신글)")
+        XCTAssertTrue(loader.isLoading)
+
+        await gate.open()
+        await revisit.value
+        XCTAssertEqual(loader.posts.count, 2)
+    }
+
+    // MARK: - 디스크 스냅샷 (콜드 스타트 SWR)
+
+    private func tempSnapshotStore() -> BoardListSnapshotStore {
+        BoardListSnapshotStore(fileURL: FileManager.default.temporaryDirectory
+            .appendingPathComponent("loader-snap-\(UUID().uuidString).json"))
+    }
+
+    func testSessionFirstRefreshRestoresDiskSnapshotBeforeRevalidate() async {
+        let store = tempSnapshotStore()
+        let key = BoardListLoader.taskKey(board: .clienNews, filter: nil, searchQuery: nil)
+        await store.save(key: key, posts: [
+            Post.fixture(id: "disk-1", site: .clien, boardID: "clien-news", title: "디스크 글"),
+        ])
+
+        let gate = TestGate()
+        let loader = BoardListLoader(
+            fetcher: { [clienHTML] _, _, _, _ in
+                await gate.wait()
+                return clienHTML
+            },
+            snapshotStore: store
+        )
+
+        let task = Task { await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil) }
+        // fetch 가 게이트에 도달 = 디스크 복원(snapshotStore.load → posts)이
+        // 끝나고 재검증 fetch 로 진입한 시점. 폴링 없이 그 시점을 잡는다.
+        await gate.waitUntilEntered()
+        XCTAssertEqual(loader.posts.first?.title, "디스크 글",
+                       "세션 첫 refresh 는 디스크 스냅샷을 fetch 완료 전에 복원해야 함")
+
+        await gate.open()
+        await task.value
+        XCTAssertEqual(loader.posts.first?.title, "첫번째 글", "재검증 완료 후 fresh 로 교체")
+    }
+
+    func testDiskSnapshotWithDifferentKeyIsIgnored() async {
+        let store = tempSnapshotStore()
+        await store.save(key: "다른|보드|키", posts: [
+            Post.fixture(id: "disk-1", site: .clien, boardID: "other", title: "다른 보드 글"),
+        ])
+        let loader = BoardListLoader(
+            fetcher: { [clienHTML] _, _, _, _ in clienHTML },
+            snapshotStore: store
+        )
+
+        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil)
+
+        XCTAssertEqual(loader.posts.first?.title, "첫번째 글",
+                       "key 불일치 스냅샷은 무시하고 cold path")
+    }
+
+    func testFirstPageSuccessPersistsSnapshot() async {
+        let store = tempSnapshotStore()
+        let loader = BoardListLoader(
+            fetcher: { [clienHTML] _, _, _, _ in clienHTML },
+            snapshotStore: store
+        )
+
+        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil)
+
+        let snap = await store.load()
+        XCTAssertEqual(snap?.key, BoardListLoader.taskKey(board: .clienNews, filter: nil, searchQuery: nil))
+        XCTAssertEqual(snap?.posts.count, 2, "첫 페이지 성공 시 스냅샷 저장")
+    }
+
     // MARK: - Clien search 400 fallback
 
     func testClienSearch400FallbackRetriesWithCookielessRequest() async {
         // 첫 호출: 400 throw. 두번째 호출: 정상 HTML. 두 호출 다 fetcher
         // 통과해야 (test fake intercept 보장).
         let attempts = TestRecorder<(String?, Bool)>()
-        let loader = BoardListLoader(fetcher: { [clienHTML] _, _, ua, cookies in
+        let loader = makeLoader(fetcher: { [clienHTML] _, _, ua, cookies in
             attempts.append((ua, cookies))
             if attempts.count == 1 {
                 throw NetworkError.badResponse(400)
@@ -165,7 +270,7 @@ final class BoardListLoaderTests: XCTestCase {
 
     func testNonClien400DoesNotRetry() async {
         let attempts = TestCounter()
-        let loader = BoardListLoader(fetcher: { _, _, _, _ in
+        let loader = makeLoader(fetcher: { _, _, _, _ in
             attempts.increment()
             throw NetworkError.badResponse(400)
         })
@@ -183,7 +288,7 @@ final class BoardListLoaderTests: XCTestCase {
 
     func testClien400WithoutSearchDoesNotRetry() async {
         let attempts = TestCounter()
-        let loader = BoardListLoader(fetcher: { _, _, _, _ in
+        let loader = makeLoader(fetcher: { _, _, _, _ in
             attempts.increment()
             throw NetworkError.badResponse(400)
         })
@@ -200,6 +305,38 @@ final class BoardListLoaderTests: XCTestCase {
 }
 
 // MARK: - Test helpers (shared shapes)
+
+/// fetcher 를 임의 시점까지 멈춰 세우는 게이트 — SWR 의 "캐시 복원이
+/// 재검증 fetch 완료보다 먼저"를 결정적으로 검증하는 데 쓴다.
+private actor TestGate {
+    private var isOpen = false
+    private var hasEntered = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var entryWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        // 진입 신호 — `waitUntilEntered()` 가 폴링 없이 깨어나도록.
+        hasEntered = true
+        for w in entryWaiters { w.resume() }
+        entryWaiters = []
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    /// 누군가 `wait()` 에 진입할 때까지 결정적으로 대기. fetch 가 게이트에
+    /// 걸린(=로딩 상태가 관찰 가능해진) 시점을 `Task.yield()` 폴링 없이
+    /// 잡는다.
+    func waitUntilEntered() async {
+        if hasEntered { return }
+        await withCheckedContinuation { entryWaiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        for w in waiters { w.resume() }
+        waiters = []
+    }
+}
 
 private final class TestCounter: @unchecked Sendable {
     private var n = 0

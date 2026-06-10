@@ -15,11 +15,15 @@ import Observation
 /// re-entry, same Clien-search HTTP 400 fallback to a cookieless
 /// re-fetch.
 ///
-/// No SWR cache — board transitions (drawer tap, swipe-step, filter
-/// change, search) all go through the cold path with a visible spinner.
-/// SwiftUI's view identity already preserves `posts` across structural
-/// re-renders (e.g. dismissing the detail overlay), so transparent
-/// continuity for non-navigation paths needs no separate cache.
+/// 보드 전환(드로어 탭, 하단바 좌우 스텝, 필터/검색)은 **의도적으로 cold
+/// path** — 한때 key 별 SWR 캐시(이전 목록 즉시 표시 + 백그라운드 재검증)
+/// 를 넣었다가, "전환 시 이전 목록 유지보다 최신글을 새로 뿌리는 게 좋다"
+/// 는 피드백으로 되돌렸다. 유일한 SWR 은 콜드 스타트 디스크 스냅샷(세션
+/// 첫 refresh 한정, 아래 snapshotStore) — 기동 스피너만 제거하고 이후
+/// 전환은 전부 fresh. SwiftUI's view identity already preserves `posts`
+/// across structural re-renders (e.g. dismissing the detail overlay), so
+/// transparent continuity for non-navigation paths needs no separate
+/// cache.
 @Observable
 @MainActor
 final class BoardListLoader {
@@ -61,16 +65,23 @@ final class BoardListLoader {
     private var loadedKey: String?
 
     private let fetcher: Fetcher
+    /// 콜드 스타트용 디스크 스냅샷. 세션 첫 refresh(인메모리 캐시가 빈
+    /// 상태)에서 key 일치 시 복원, 첫 페이지 성공마다 갱신.
+    private let snapshotStore: BoardListSnapshotStore
 
-    init(fetcher: @escaping Fetcher = { url, encoding, userAgent, handlesCookies in
-        try await Networking.fetchHTML(
-            url: url,
-            encoding: encoding,
-            userAgent: userAgent,
-            handlesCookies: handlesCookies
-        )
-    }) {
+    init(
+        fetcher: @escaping Fetcher = { url, encoding, userAgent, handlesCookies in
+            try await Networking.fetchHTML(
+                url: url,
+                encoding: encoding,
+                userAgent: userAgent,
+                handlesCookies: handlesCookies
+            )
+        },
+        snapshotStore: BoardListSnapshotStore = BoardListSnapshotStore()
+    ) {
         self.fetcher = fetcher
+        self.snapshotStore = snapshotStore
     }
 
     // MARK: - Public API
@@ -88,6 +99,30 @@ final class BoardListLoader {
         let key = Self.taskKey(board: board, filter: filter, searchQuery: searchQuery)
         currentKey = key
         guard loadedKey != key else { return }
+
+        // 콜드 스타트 SWR: 세션 첫 refresh(아직 아무 key 도 로드 전)에서
+        // 디스크 스냅샷의 key 가 일치하면 복원 — 기동 시 "스피너 1~3초"가
+        // "목록 즉시 + 조용한 재검증"이 된다. 페이징 상태는 디스크에 안
+        // 실으므로 첫 페이지 기준으로 초기화. 이후의 보드 전환은 전부
+        // cold path (class doccomment 의 fresh-우선 결정 참조).
+        if loadedKey == nil,
+           let snap = await snapshotStore.load(),
+           snap.key == key, !snap.posts.isEmpty {
+            // 디스크 await 사이 보드가 바뀌었으면 이 요청은 stale.
+            guard key == currentKey else { return }
+            posts = snap.posts
+            seenIDs = Set(snap.posts.map(\.id))
+            currentPage = 1
+            hasMorePages = board.supportsPaging
+            nextSearchURL = nil
+            isLoadingMore = false
+            loadMoreError = false
+            errorMessage = nil
+            loadedKey = key
+            await load(board: board, filter: filter, searchQuery: searchQuery)
+            return
+        }
+        guard key == currentKey else { return }
 
         posts = []
         seenIDs = []
@@ -196,6 +231,9 @@ final class BoardListLoader {
             nextSearchURL = Self.nextSearchPageURL(from: html, board: board, searchQuery: searchQuery)
             hasMorePages = board.supportsPaging && (!parsed.isEmpty || nextSearchURL != nil)
             loadedKey = key
+            // 다음 콜드 스타트 재료. posts commit 이후라 UI 는 이미 갱신됐고,
+            // actor 파일 쓰기는 main 밖에서 직렬화되므로 await 비용은 hop 뿐.
+            await snapshotStore.save(key: key, posts: parsed)
         } catch is CancellationError {
             return
         } catch let urlError as URLError where urlError.code == .cancelled {

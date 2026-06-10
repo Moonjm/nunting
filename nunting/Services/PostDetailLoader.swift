@@ -32,6 +32,11 @@ final class PostDetailLoader {
     /// tests inject canned redirects without an HTTP stack.
     typealias Resolver = @Sendable (URL) async -> Networking.ResolvedRedirect
 
+    /// `DetailPrefetcher` 가 미리 받아 둔 detail HTML 의 1회 소비 시임.
+    /// post.id 를 받아 신선한 warm 본이 있으면 반환 — fetch 를 통째로
+    /// 건너뛴다. 테스트는 canned HTML 주입.
+    typealias WarmHTML = @MainActor (String) -> String?
+
     // MARK: - Observed state
 
     private(set) var detail: PostDetail?
@@ -45,6 +50,7 @@ final class PostDetailLoader {
 
     private let fetcher: Fetcher
     private let resolver: Resolver
+    private let warmHTML: WarmHTML
 
     init(
         fetcher: @escaping Fetcher = { url, encoding in
@@ -52,10 +58,14 @@ final class PostDetailLoader {
         },
         resolver: @escaping Resolver = { url in
             await Networking.resolveFinalURL(url)
+        },
+        warmHTML: @escaping WarmHTML = { id in
+            DetailPrefetcher.shared.consume(id: id)
         }
     ) {
         self.fetcher = fetcher
         self.resolver = resolver
+        self.warmHTML = warmHTML
     }
 
     // MARK: - Public API
@@ -102,7 +112,8 @@ final class PostDetailLoader {
                     source: nil,
                     comments: []
                 )
-                await Self.awaitRenderReady(renderReadyAt)
+                // dealLink 배너뿐이라 needsRenderGate 는 항상 false — 게이트
+                // 없이 즉시 commit (parser 경로의 텍스트 전용 면제와 동일 규칙).
                 try Task.checkCancellation()
                 // Toggle isLoading in the same runloop as the detail write so
                 // `articleContent`'s `if isLoading` branch doesn't keep the
@@ -132,6 +143,12 @@ final class PostDetailLoader {
                     html = try await Networking.applyBotCheckGuard(url: resolvedURL, body: decoded) {
                         try await captureFetcher(resolvedURL, resolvedEncoding)
                     }
+                } else if !forceFresh, let warm = warmHTML(post.id) {
+                    // 목록에서 미리 받아 둔 본 — fetch 생략 (RTT 제거).
+                    // warm 본은 `Networking.fetchHTML` 경유로 받은 것이라
+                    // 봇체크 가드를 이미 통과했다. pull-to-refresh 는 신선도
+                    // 보장을 위해 무시.
+                    html = warm
                 } else {
                     html = try await fetcher(resolved.url, resolved.site.encoding)
                 }
@@ -169,7 +186,12 @@ final class PostDetailLoader {
                 // Gate the first render commit so SwiftUI isn't building an
                 // image-heavy subtree during the first animation frames.
                 // When parse is slower than the gate this is a no-op.
-                await Self.awaitRenderReady(renderReadyAt)
+                // 보호할 미디어가 없는 텍스트 전용 글(본문·댓글 모두)은 게이트
+                // 를 건너뛰고 즉시 commit — 빠른 회선에서 고정 400ms 를 매번
+                // 지불하지 않게.
+                if Self.needsRenderGate(parsed) {
+                    await Self.awaitRenderReady(renderReadyAt)
+                }
                 isLoading = false
                 detail = parsed
 
@@ -254,6 +276,23 @@ final class PostDetailLoader {
             hasAuthIcon: post.hasAuthIcon
         )
         return .parser(dispatched, prefetched: resolved.prefetchedBody)
+    }
+
+    /// 첫 commit 이 렌더 게이트를 기다려야 하는가 — 푸시 애니메이션 프레임을
+    /// 위협하는 "무거운 서브트리"가 있는 경우만. 본문의 image/video/embed
+    /// (embed 배너도 썸네일 이미지를 로드) 또는 댓글의 sticker/video 가
+    /// 해당한다. 댓글까지 보는 이유: 본문이 짧은 텍스트면 commit 시점에
+    /// 댓글 첫 행들이 이미 화면 안이라 LazyVStack 이 즉시 실현된다.
+    /// richText/dealLink/텍스트 댓글은 싸므로 게이트 불필요.
+    nonisolated static func needsRenderGate(_ detail: PostDetail) -> Bool {
+        let blocksHaveMedia = detail.blocks.contains { block in
+            switch block.kind {
+            case .image, .video, .embed: true
+            case .richText, .dealLink: false
+            }
+        }
+        if blocksHaveMedia { return true }
+        return detail.comments.contains { $0.stickerURL != nil || $0.videoURL != nil }
     }
 
     /// Sleep until `deadline` if it's in the future; no-op otherwise.

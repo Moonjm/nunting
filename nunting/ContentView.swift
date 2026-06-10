@@ -86,6 +86,10 @@ struct ContentView: View {
                 },
                 onClose: coord.closeDrawer
             )
+            // SideDrawer 의 custom `==` 와 한 쌍 — 드래그 매 프레임 재평가가
+            // closure 필드 때문에 드로어 body 까지 전파되는 것을 차단.
+            // offset 애니메이션은 이 뷰 바깥(.offset)에서 일어나므로 영향 없음.
+            .equatable()
             .frame(width: coord.drawerWidth)
             .offset(x: coord.drawerXOffset)
 
@@ -228,6 +232,9 @@ struct ContentView: View {
                 detail.show(post)
             }
         )
+        // BoardListView 의 custom `==` 와 한 쌍 — 백 드래그 중 뒤에 보이는
+        // 목록(수백 행 ForEach diff)이 매 프레임 재평가되는 것을 차단.
+        .equatable()
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 if !selection.board.filters.isEmpty {
