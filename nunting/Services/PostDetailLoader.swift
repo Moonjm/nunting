@@ -32,6 +32,11 @@ final class PostDetailLoader {
     /// tests inject canned redirects without an HTTP stack.
     typealias Resolver = @Sendable (URL) async -> Networking.ResolvedRedirect
 
+    /// `DetailPrefetcher` 가 미리 받아 둔 detail HTML 의 1회 소비 시임.
+    /// post.id 를 받아 신선한 warm 본이 있으면 반환 — fetch 를 통째로
+    /// 건너뛴다. 테스트는 canned HTML 주입.
+    typealias WarmHTML = @MainActor (String) -> String?
+
     // MARK: - Observed state
 
     private(set) var detail: PostDetail?
@@ -45,6 +50,7 @@ final class PostDetailLoader {
 
     private let fetcher: Fetcher
     private let resolver: Resolver
+    private let warmHTML: WarmHTML
 
     init(
         fetcher: @escaping Fetcher = { url, encoding in
@@ -52,10 +58,14 @@ final class PostDetailLoader {
         },
         resolver: @escaping Resolver = { url in
             await Networking.resolveFinalURL(url)
+        },
+        warmHTML: @escaping WarmHTML = { id in
+            DetailPrefetcher.shared.consume(id: id)
         }
     ) {
         self.fetcher = fetcher
         self.resolver = resolver
+        self.warmHTML = warmHTML
     }
 
     // MARK: - Public API
@@ -133,6 +143,12 @@ final class PostDetailLoader {
                     html = try await Networking.applyBotCheckGuard(url: resolvedURL, body: decoded) {
                         try await captureFetcher(resolvedURL, resolvedEncoding)
                     }
+                } else if !forceFresh, let warm = warmHTML(post.id) {
+                    // 목록에서 미리 받아 둔 본 — fetch 생략 (RTT 제거).
+                    // warm 본은 `Networking.fetchHTML` 경유로 받은 것이라
+                    // 봇체크 가드를 이미 통과했다. pull-to-refresh 는 신선도
+                    // 보장을 위해 무시.
+                    html = warm
                 } else {
                     html = try await fetcher(resolved.url, resolved.site.encoding)
                 }

@@ -281,6 +281,43 @@ final class PostDetailLoaderTests: XCTestCase {
             detail([.text("본문")], comments: [comment(video: img)])))
     }
 
+    // MARK: - Warm HTML (DetailPrefetcher 소비)
+
+    func testWarmHTMLSkipsNetworkFetch() async {
+        let loader = PostDetailLoader(
+            fetcher: { _, _ in
+                XCTFail("warm HTML 이 있으면 detail fetch 는 생략돼야 함")
+                return ""
+            },
+            resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) },
+            warmHTML: { [bobaeDeletedHTML] id in id == "bobae-1" ? bobaeDeletedHTML : nil }
+        )
+        let cache = PostDetailCache(capacity: 4)
+
+        await loader.load(post: bobaePost(), cache: cache, renderReadyAt: now())
+
+        XCTAssertNotNil(loader.detail, "prefetch 본으로 파싱 완료")
+        XCTAssertNil(loader.errorMessage)
+    }
+
+    func testForceFreshIgnoresWarmHTML() async {
+        let fetchCount = TestCounter()
+        let loader = PostDetailLoader(
+            fetcher: { [bobaeDeletedHTML] _, _ in
+                fetchCount.increment()
+                return bobaeDeletedHTML
+            },
+            resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) },
+            warmHTML: { [bobaeDeletedHTML] _ in bobaeDeletedHTML }
+        )
+        let cache = PostDetailCache(capacity: 4)
+
+        await loader.load(post: bobaePost(), cache: cache, renderReadyAt: now(), forceFresh: true)
+
+        XCTAssertEqual(fetchCount.value, 1,
+                       "pull-to-refresh 는 prefetch 본 무시하고 재페치 (신선도 보장)")
+    }
+
     // MARK: - Initial state
 
     func testInitialIsLoadingTrueBeforeFirstLoadCall() {

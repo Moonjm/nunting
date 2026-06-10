@@ -48,6 +48,10 @@ struct BoardListView: View, Equatable {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task(id: BoardListLoader.taskKey(board: board, filter: filter, searchQuery: searchQuery)) {
             await loader.refresh(board: board, filter: filter, searchQuery: searchQuery)
+            // 목록이 자리잡은 뒤 상위 글 detail HTML 을 .utility 로 워밍 —
+            // 탭 시 RTT 제거. 보드 전환 시 .task(id:) 취소가 그대로 전파돼
+            // 이전 보드 prefetch 는 중단된다.
+            await DetailPrefetcher.shared.prefetch(posts: Array(loader.posts.prefix(3)))
         }
     }
 
