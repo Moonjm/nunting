@@ -1,5 +1,5 @@
 import SwiftUI
-struct BoardListView: View {
+struct BoardListView: View, Equatable {
     let board: Board
     var filter: BoardFilter? = nil
     var searchQuery: String? = nil
@@ -11,6 +11,25 @@ struct BoardListView: View {
     var shouldSuppressRowTap: () -> Bool = { false }
     let readStore: ReadStore
     let onSelectPost: (Post) -> Void
+
+    // PostDetailView 와 동일한 패턴 — ContentView 는 드로어/백 드래그 중
+    // 매 프레임 재평가되고(drawerProgress / detail.offset 읽기) 그때마다 새
+    // closure(shouldSuppressRowTap / onSelectPost)를 만들어 넘긴다. SwiftUI
+    // 는 closure 동등성을 판단할 수 없어 매 프레임 이 뷰의 body — 페이징으로
+    // 수백 행 쌓인 ForEach diff — 를 재평가한다. diffable 입력만 비교해
+    // `.equatable()` 이 그 churn 을 끊는다.
+    //
+    // `==` 에서 의도적으로 제외:
+    // - closures: 탭 시점에만 호출되고 ContentView 의 @State 를 out-of-line
+    //   storage 로 mutate 하므로 첫 평가본을 계속 써도 동작 동일.
+    // - `readStore`: @Observable — body 의 `isRead` 읽기는 property 단위
+    //   추적으로 무효화되므로 `==` 가 true 여도 변경이 전파됨.
+    static func == (lhs: BoardListView, rhs: BoardListView) -> Bool {
+        lhs.board == rhs.board
+            && lhs.filter == rhs.filter
+            && lhs.searchQuery == rhs.searchQuery
+            && lhs.scrollLocked == rhs.scrollLocked
+    }
 
     @State private var loader = BoardListLoader()
 
