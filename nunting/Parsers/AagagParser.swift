@@ -120,7 +120,10 @@ public struct AagagParser: BoardParser {
                 return String(token.dropFirst(3))
             }()
 
-            let postID = ss.isEmpty ? UUID().uuidString : ss
+            // `ss` 없는 항목은 dedupKey(URL 기반)를 그대로 id 로 사용 —
+            // UUID 를 쓰면 재파싱마다 identity 가 바뀌어 List diffing 전체
+            // 재생성 + id 기반 읽음 상태 무효화.
+            let postID = dedupKey
 
             results.append(Post(
                 id: "\(board.id)-\(postID)",
