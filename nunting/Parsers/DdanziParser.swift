@@ -166,15 +166,13 @@ public struct DdanziParser: BoardParser {
 
     nonisolated private func extractViewCount(in doc: Document) throws -> Int? {
         guard let el = try doc.select(".boardR .meta .sum .read").first() else { return nil }
-        let raw = try el.text().filter(\.isNumber)
-        return raw.isEmpty ? nil : Int(raw)
+        return ParserText.integerFromDigits(in: try el.text())
     }
 
     nonisolated private func extractRecommend(in doc: Document) throws -> Int? {
         // `.sum .voteWrap .vote` contains the `icon_good.png` img plus count.
         guard let el = try doc.select(".boardR .meta .voteWrap .vote").first() else { return nil }
-        let raw = try el.text().filter(\.isNumber)
-        return raw.isEmpty ? nil : Int(raw)
+        return ParserText.integerFromDigits(in: try el.text())
     }
 
     // MARK: - Body blocks

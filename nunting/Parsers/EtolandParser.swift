@@ -198,11 +198,11 @@ public struct EtolandParser: BoardParser {
         for span in try article.select("h1 ~ div .caption-s span, h1 ~ div div span") {
             let text = try span.text().trimmingCharacters(in: .whitespacesAndNewlines)
             if text.hasPrefix("조회") {
-                view = Int(text.dropFirst("조회".count).filter(\.isNumber))
+                view = ParserText.integerFromDigits(in: text.dropFirst("조회".count))
             } else if text.hasPrefix("추천") {
-                recommend = Int(text.dropFirst("추천".count).filter(\.isNumber))
+                recommend = ParserText.integerFromDigits(in: text.dropFirst("추천".count))
             } else if text.hasPrefix("댓글") {
-                comments = Int(text.dropFirst("댓글".count).filter(\.isNumber))
+                comments = ParserText.integerFromDigits(in: text.dropFirst("댓글".count))
             }
         }
         let normalizedDate = dateText?.isEmpty == false ? dateText : nil

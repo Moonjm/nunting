@@ -40,17 +40,17 @@ public struct PpomppuParser: BoardParser {
             guard !title.isEmpty else { return nil }
 
             let commentText = try row.select("span.rp").first()?.text() ?? ""
-            let commentCount = Int(commentText.filter(\.isNumber)) ?? 0
+            let commentCount = ParserText.integerFromDigits(in: commentText) ?? 0
 
             let dateText = try row.select("time").first()?.text()
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
             let viewText = try row.select(".view, span.view").first()?.text() ?? ""
-            let viewCount = viewText.isEmpty ? nil : Int(viewText.filter(\.isNumber))
+            let viewCount = ParserText.integerFromDigits(in: viewText)
 
             let recoEl = try row.select("span.recs.blue, span.rec.blue").first()
             let recoText = try recoEl?.text() ?? ""
-            let recommendCount = recoText.isEmpty ? nil : Int(recoText.filter(\.isNumber))
+            let recommendCount = ParserText.integerFromDigits(in: recoText)
 
             let namesText = try row.select("li.names, span.names").first()?.text() ?? ""
             let (category, author) = splitCategoryAuthor(namesText)
@@ -108,11 +108,10 @@ public struct PpomppuParser: BoardParser {
         let viewCount: Int? = try {
             guard let header else { return nil }
             let headerText = try header.text()
-            // Header text contains "조회 : 15016".
+            // Header text contains "조회 : 15016" followed by other h4 text
+            // (date span), so stop at the first run — not all digits.
             guard let range = headerText.range(of: "조회") else { return nil }
-            let tail = headerText[range.upperBound...]
-            let digits = tail.drop(while: { !$0.isNumber }).prefix(while: { $0.isNumber || $0 == "," })
-            return Int(digits.filter(\.isNumber))
+            return ParserText.firstInteger(in: String(headerText[range.upperBound...]))
         }()
 
         // Comments are deferred to fetchAllComments so multi-page (`c_page`) threads work.
@@ -214,7 +213,7 @@ public struct PpomppuParser: BoardParser {
             let levelIconURL = Self.levelIconURL(level: levelClass)
 
             let likeText = try node.select("[id^=vote_cnt_]").first()?.text() ?? "0"
-            let likeCount = Int(likeText.filter(\.isNumber)) ?? 0
+            let likeCount = ParserText.integerFromDigits(in: likeText) ?? 0
 
             let dateText = try node.select("div.cin_02 time").first()?.text()
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -252,8 +251,8 @@ public struct PpomppuParser: BoardParser {
         // Format: "3 / 3" (prevPage/nextPage 앵커는 텍스트 없음).
         let parts = text.split(separator: "/").map { $0.trimmingCharacters(in: .whitespaces) }
         guard parts.count == 2,
-              let current = Int(parts[0].filter(\.isNumber)),
-              let total = Int(parts[1].filter(\.isNumber)), total >= 1
+              let current = ParserText.integerFromDigits(in: parts[0]),
+              let total = ParserText.integerFromDigits(in: parts[1]), total >= 1
         else { return (1, 1) }
         return (min(max(1, current), total), total)
     }

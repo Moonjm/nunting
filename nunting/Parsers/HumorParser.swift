@@ -125,8 +125,7 @@ public struct HumorParser: BoardParser {
 
     nonisolated private func extractRecommend(in doc: Document) throws -> Int? {
         guard let el = try doc.select("#ok_div").first() else { return nil }
-        let raw = try el.text().filter(\.isNumber)
-        return raw.isEmpty ? nil : Int(raw)
+        return ParserText.integerFromDigits(in: try el.text())
     }
 
     nonisolated private func extractViewCount(in doc: Document) throws -> Int? {
@@ -135,8 +134,7 @@ public struct HumorParser: BoardParser {
         guard let img = try doc.select("#read_profile_desc img[src*=ic_view]").first(),
               let parent = img.parent()
         else { return nil }
-        let raw = try parent.text().filter(\.isNumber)
-        return raw.isEmpty ? nil : Int(raw)
+        return ParserText.integerFromDigits(in: try parent.text())
     }
 
     nonisolated private func extractSource(in doc: Document) throws -> PostSource? {
@@ -284,7 +282,7 @@ public struct HumorParser: BoardParser {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
 
             let likeText = try li.select("[id^=comm_ok_div_]").first()?.text() ?? "0"
-            let likeCount = Int(likeText.filter(\.isNumber)) ?? 0
+            let likeCount = ParserText.integerFromDigits(in: likeText) ?? 0
 
             // Top-level comments put content inside .comment_text, but
             // sub_comm_block replies put it in a plain <span style="">

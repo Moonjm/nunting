@@ -216,9 +216,7 @@ public struct CoolenjoyParser: BoardParser {
 
     nonisolated private func commentCountValue(from row: Element) throws -> Int {
         guard let countEl = try row.select("span.count-plus").first() else { return 0 }
-        let raw = try countEl.text()
-        let digits = raw.filter(\.isNumber)
-        return Int(digits) ?? 0
+        return ParserText.integerFromDigits(in: try countEl.text()) ?? 0
     }
 
     nonisolated private func metaValueInArticle(article: Element, label: String) throws -> String? {

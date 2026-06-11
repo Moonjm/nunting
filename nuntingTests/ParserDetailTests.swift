@@ -1058,6 +1058,23 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertEqual(links.first?.1, "참고 링크")
     }
 
+    func testInvenFullyDecodeHTMLEntitiesConvergesBeyondThreeLayers() {
+        // Inven 은 엔티티를 여러 겹 인코딩해 보낸다. 디코더는 한 겹씩 벗기되
+        // (`&amp;` 를 마지막에 처리해 `&amp;lt;` → `&lt;` → `<` 식으로 한 겹씩),
+        // 더 못 벗길 때까지 수렴해야 한다. 고정 3회 cap 이면 깊게 인코딩된
+        // 입력의 마지막 겹이 남는다.
+        XCTAssertEqual(InvenParser.fullyDecodeHTMLEntities("&lt;"), "<")
+        // 4겹(=디코드 6패스 필요) — cap 3 이면 `&amp;lt;` 가 남아 실패.
+        XCTAssertEqual(
+            InvenParser.fullyDecodeHTMLEntities("&amp;amp;amp;amp;lt;"),
+            "<"
+        )
+        // `&` 없는 평문은 그대로.
+        XCTAssertEqual(InvenParser.fullyDecodeHTMLEntities("평문"), "평문")
+        // 수렴하면 멈춘다 — 더 못 벗기는 단일 겹.
+        XCTAssertEqual(InvenParser.fullyDecodeHTMLEntities("a&lt;b&gt;c"), "a<b>c")
+    }
+
     // MARK: - Humor
 
     func testHumorBodyImageFileURLPriorityAndSkipMarkers() throws {

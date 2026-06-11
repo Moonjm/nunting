@@ -461,6 +461,25 @@ public enum ParserText {
         return digits.isEmpty ? nil : Int(digits)
     }
 
+    /// All digit characters of `text` concatenated as an `Int`; nil when the
+    /// text has no digit (or overflows `Int` — degenerate input). The shared
+    /// home for the `Int(text.filter(\.isNumber))` pattern every parser used
+    /// to hand-roll for count fields ("1,234", "조회수 567", "[12]").
+    ///
+    /// vs `firstInteger(in:)`: this joins digit runs across any separator
+    /// ("1a2" → 12), so it's only safe on text known to contain a single
+    /// number. Label-prefixed prose with several numbers ("조회 1 추천 2")
+    /// needs `firstInteger` semantics instead.
+    ///
+    /// Takes `some StringProtocol` so `Substring` slices (`text.dropFirst(n)`)
+    /// pass through without a `String(...)` round-trip.
+    public nonisolated static func integerFromDigits(in text: some StringProtocol) -> Int? {
+        // `StringProtocol` doesn't refine `RangeReplaceableCollection`, so
+        // `filter` yields `[Character]` here (not `String`); wrap explicitly.
+        let digits = String(text.filter(\.isNumber))
+        return digits.isEmpty ? nil : Int(digits)
+    }
+
     /// Decode JS-string escapes (`\"`, `\\`, `\/`, `\n`, `\t`, `\r`,
     /// `\uXXXX`) into their literal characters so a JS-string payload becomes
     /// valid JSON / plain text. Other backslash sequences pass the second
