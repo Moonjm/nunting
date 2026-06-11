@@ -173,6 +173,16 @@ struct PostDetailView: View, Equatable {
                         )
                             .padding(.top, 8)
                     }
+
+                    // 본문은 받았지만 댓글 leg 만 실패 — "원래 댓글 없는 글"과
+                    // 구분되는 재시도 배너. 댓글만 다시 받으므로 풀 리로드인
+                    // pull-to-refresh 보다 싸고 스크롤 위치도 유지된다.
+                    if loader.commentsFailed {
+                        CommentsRetryBanner(isRetrying: loader.isRetryingComments) {
+                            Task { await loader.retryComments(cache: cache) }
+                        }
+                        .padding(.top, 8)
+                    }
                 }
                 .padding()
             }
@@ -578,4 +588,31 @@ struct PostDetailView: View, Equatable {
         return attr
     }
 
+}
+
+/// 댓글 fetch 실패 시 댓글 영역 자리에 뜨는 한 줄 배너. 재시도는 댓글
+/// leg 만 다시 받는다(`PostDetailLoader.retryComments`).
+private struct CommentsRetryBanner: View {
+    let isRetrying: Bool
+    let onRetry: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text("댓글을 불러오지 못했어요")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            if isRetrying {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Button("다시 시도", action: onRetry)
+                    .font(.footnote.weight(.semibold))
+                    .buttonStyle(.borderless)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 10)
+        .padding(.horizontal, 12)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+    }
 }

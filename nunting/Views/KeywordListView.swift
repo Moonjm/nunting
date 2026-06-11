@@ -30,9 +30,9 @@ struct KeywordListView: View {
     /// 확정 전까지 실제 삭제는 하지 않는다(취소 시 복원 로직 불필요).
     @State private var pendingDeletion: [KeywordSub] = []
 
-    /// 키워드별 진행 중 토글 요청. 다음 요청이 직전 요청 완료까지 대기하도록
-    /// 체이닝해, 빠른 연속 토글에도 서버 도달 순서를 보장한다(레이스 방지).
-    @State private var toggleTasks: [String: Task<Void, Never>] = [:]
+    /// 키워드별 토글 요청 직렬화 + "최신 요청만 복원" 판정. 동작 근거는
+    /// `KeywordToggleSequencer` 문서 참조.
+    @State private var toggleSequencer = KeywordToggleSequencer()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -264,11 +264,7 @@ struct KeywordListView: View {
     }
 
     /// 키워드 알림 토글. optimistic 으로 로컬을 즉시 바꾸고 서버에 반영한다.
-    ///
-    /// 빠르게 여러 번 토글하면 각 요청이 절대 상태(on/off)를 보내는데 HTTP 순서가
-    /// 보장되지 않아, 그냥 보내면 서버 최종 상태가 UI 와 갈라질 수 있다(off→on 을
-    /// 서버가 on→off 로 처리). 그래서 키워드별로 직전 요청이 끝난 뒤 다음 요청을
-    /// 보내 발행 순서대로 도달하게 한다 — 마지막 토글이 서버 최종 상태가 된다.
+    /// 직렬화·복원 판정(연타 레이스 방지)은 `KeywordToggleSequencer` 가 담당.
     private func setEnabled(_ kw: KeywordSub, _ enabled: Bool) {
         let id = kw.id
         guard let idx = keywords.firstIndex(where: { $0.id == id }) else { return }
@@ -276,21 +272,23 @@ struct KeywordListView: View {
         errorMessage = nil
         keywords[idx].enabled = enabled  // optimistic — 즉시 반영
 
-        let prior = toggleTasks[id]
-        toggleTasks[id] = Task { @MainActor in
-            await prior?.value  // 직전 토글 요청 완료까지 대기 → 서버 도달 순서 보장
-            do {
+        toggleSequencer.submit(
+            id: id,
+            value: enabled,
+            send: {
                 try await AlertSubscriptionService.shared.setKeywordEnabled(
                     keyword: kw.keyword, enabled: enabled)
-            } catch {
-                // 이 요청이 만든 전이만 되돌린다. 그 사이 더 최신 토글이 값을
-                // 다시 바꿨으면(현재 값 ≠ 내가 쓴 값) 그쪽이 우선이라 건드리지 않는다.
-                if let i = keywords.firstIndex(where: { $0.id == id }), keywords[i].enabled == enabled {
-                    keywords[i].enabled = !enabled
+            },
+            onFailure: { error, restoreTo in
+                // restoreTo nil = 더 새 토글이 상태의 주인 — 복원도, 이미
+                // 해소됐을 수 있는 에러 표시도 하지 않는다(그쪽 실패가 띄움).
+                guard let restoreTo else { return }
+                if let i = keywords.firstIndex(where: { $0.id == id }) {
+                    keywords[i].enabled = restoreTo
                 }
                 errorMessage = "알림 \(enabled ? "켜기" : "끄기") 실패: \(error.localizedDescription)"
             }
-        }
+        )
     }
 
     /// 행을 탭하면 그 행을 단일 입력 문자열로 복원해 입력칸을 편집 모드로.
