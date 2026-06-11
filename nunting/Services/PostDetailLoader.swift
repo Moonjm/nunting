@@ -45,12 +45,21 @@ final class PostDetailLoader {
     /// `@State private var isLoading = true` default in the view.
     private(set) var isLoading: Bool = true
     private(set) var errorMessage: String?
+    /// 본문은 받았지만 댓글 leg 만 실패한 상태. "원래 댓글 없는 글"과
+    /// "로드 실패"를 뷰에서 구분해 재시도 배너를 띄우기 위한 플래그 —
+    /// 본문 에러(`errorMessage`)로 승격하지 않는다.
+    private(set) var commentsFailed: Bool = false
+    /// `retryComments` 진행 중 — 재시도 버튼의 스피너 표시용.
+    private(set) var isRetryingComments: Bool = false
 
     // MARK: - Private state
 
     private let fetcher: Fetcher
     private let resolver: Resolver
     private let warmHTML: WarmHTML
+    /// 댓글 재시도에 필요한 입력(디스패치 후 resolved Post + 이미 받아 둔
+    /// detail HTML). 댓글 실패 시에만 채워진다.
+    private var commentRetryContext: (post: Post, detailHTML: String)?
 
     init(
         fetcher: @escaping Fetcher = { url, encoding in
@@ -92,11 +101,17 @@ final class PostDetailLoader {
         } else if let entry = cache.get(id: post.id) {
             detail = entry.detail
             isLoading = false
+            // 댓글 실패 본은 캐시에 안 넣지만, 다른 화면의 loader 가 같은
+            // 글을 성공적으로 캐시했을 수 있다 — 히트 복원 시 배너는 내린다.
+            commentsFailed = false
+            commentRetryContext = nil
             return
         }
         guard !Task.isCancelled else { return }
         isLoading = true
         errorMessage = nil
+        commentsFailed = false
+        commentRetryContext = nil
         defer { isLoading = false }
         do {
             let dispatch = try await resolveDispatchedPost(post)
@@ -170,13 +185,19 @@ final class PostDetailLoader {
                 async let parsedTask: PostDetail = Task.detached(priority: .userInitiated) {
                     try parser.parseDetail(html: parsedHTML, post: parsedPost)
                 }.value
-                async let commentsTask: [PostComment]? = {
+                // Result 로 받아 실패를 분류한다 — `try?` 는 "댓글 없는 글"과
+                // "로드 실패"를 구분 불가능하게 뭉갰고, 취소 전파까지 삼켰다.
+                async let commentsTask: Result<[PostComment], Error>? = {
                     guard parser.commentsURL(for: resolved) != nil else { return nil }
-                    return try? await parser.fetchAllComments(
-                        for: resolved,
-                        detailHTML: parsedHTML
-                    ) { url in
-                        try await fetcher(url, postSite.encoding)
+                    do {
+                        return .success(try await parser.fetchAllComments(
+                            for: resolved,
+                            detailHTML: parsedHTML
+                        ) { url in
+                            try await fetcher(url, postSite.encoding)
+                        })
+                    } catch {
+                        return .failure(error)
                     }
                 }()
 
@@ -195,24 +216,41 @@ final class PostDetailLoader {
                 isLoading = false
                 detail = parsed
 
-                if let extras = await commentsTask, !extras.isEmpty {
-                    parsed = PostDetail(
-                        post: parsed.post,
-                        blocks: parsed.blocks,
-                        fullDateText: parsed.fullDateText,
-                        viewCount: parsed.viewCount,
-                        source: parsed.source,
-                        comments: extras
-                    )
-                    detail = parsed
+                switch await commentsTask {
+                case .success(let extras):
+                    if !extras.isEmpty {
+                        parsed = PostDetail(
+                            post: parsed.post,
+                            blocks: parsed.blocks,
+                            fullDateText: parsed.fullDateText,
+                            viewCount: parsed.viewCount,
+                            source: parsed.source,
+                            comments: extras
+                        )
+                        detail = parsed
+                    }
+                case .failure(let error):
+                    // 취소 계열은 부모 task 취소가 댓글 leg 로 전파된 것 —
+                    // 실패 배너 대상이 아니고, 아래 checkCancellation 이 끊는다.
+                    if !Self.isCancellation(error) {
+                        commentsFailed = true
+                        commentRetryContext = (resolved, parsedHTML)
+                    }
+                case nil:
+                    break
                 }
                 // Stale-load guard: a popped-and-re-entered view triggers
-                // `.task` cancellation, but `await commentsTask` above sits
-                // on `try?` so a cancelled parent task silently falls
+                // `.task` cancellation, but the comment leg above catches
+                // its own errors so a cancelled parent task silently falls
                 // through. Re-check before the cache write so an in-flight
                 // old load can't clobber a newer cache entry.
                 try Task.checkCancellation()
-                cache.put(id: post.id, detail: parsed)
+                // 댓글이 빠진 본은 캐시에 남기지 않는다 — 캐시 히트는 실패
+                // 플래그 없이 복원되므로, 남기면 재진입마다 "댓글 없는 글"로
+                // 보인다. 재진입 풀 리로드가 재시도 기회를 겸한다.
+                if !commentsFailed {
+                    cache.put(id: post.id, detail: parsed)
+                }
             }
         } catch is CancellationError {
             return
@@ -223,7 +261,54 @@ final class PostDetailLoader {
         }
     }
 
+    /// 댓글 leg 만 다시 시도 — 본문 refetch/reparse 없이 실패 시점에 저장해
+    /// 둔 (resolved post, detail HTML) 로 `fetchAllComments` 만 재실행한다.
+    /// 성공하면 배너를 내리고 완전해진 본을 그제서야 캐시에 넣는다.
+    func retryComments(cache: PostDetailCache) async {
+        guard commentsFailed, !isRetryingComments,
+              let context = commentRetryContext,
+              let current = detail,
+              let parser = try? ParserFactory.parser(for: context.post.site)
+        else { return }
+        isRetryingComments = true
+        defer { isRetryingComments = false }
+
+        let fetcher = self.fetcher
+        let encoding = context.post.site.encoding
+        do {
+            let extras = try await parser.fetchAllComments(
+                for: context.post,
+                detailHTML: context.detailHTML
+            ) { url in
+                try await fetcher(url, encoding)
+            }
+            commentsFailed = false
+            commentRetryContext = nil
+            var updated = current
+            if !extras.isEmpty {
+                updated = PostDetail(
+                    post: current.post,
+                    blocks: current.blocks,
+                    fullDateText: current.fullDateText,
+                    viewCount: current.viewCount,
+                    source: current.source,
+                    comments: extras
+                )
+                detail = updated
+            }
+            cache.put(id: context.post.id, detail: updated)
+        } catch {
+            // 취소면 조용히 끝, 그 외 재실패면 배너 유지 — 둘 다 상태 변화 없음.
+            return
+        }
+    }
+
     // MARK: - Private
+
+    /// 취소 전파로 생긴 에러인가 — 실패 배너(`commentsFailed`) 대상에서 제외.
+    private nonisolated static func isCancellation(_ error: Error) -> Bool {
+        error is CancellationError || (error as? URLError)?.code == .cancelled
+    }
 
     private enum Dispatch {
         /// Use the given Post with its site's parser. Optional prefetched
