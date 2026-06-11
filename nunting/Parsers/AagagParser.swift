@@ -101,10 +101,10 @@ public struct AagagParser: BoardParser {
             ).trimmingCharacters(in: .whitespacesAndNewlines)
 
             let viewText = try el.select("span.hit u").first()?.text() ?? ""
-            let viewCount = viewText.isEmpty ? nil : Int(viewText.filter(\.isNumber))
+            let viewCount = ParserText.integerFromDigits(in: viewText)
 
             let cmtText = try el.select("span.cmt").first()?.text() ?? ""
-            let commentCount = Int(cmtText.filter(\.isNumber)) ?? 0
+            let commentCount = ParserText.integerFromDigits(in: cmtText) ?? 0
 
             let author = try el.select("span.nick u").first()?.text()
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

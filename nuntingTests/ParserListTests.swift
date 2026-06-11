@@ -285,6 +285,21 @@ final class ParserListTests: XCTestCase {
         XCTAssertEqual(ParserText.cleanTitle("일반 제목"), "일반 제목")
     }
 
+    func testIntegerFromDigitsConcatenatesAllDigitRuns() {
+        // 단일 카운트 텍스트("조회 1,234")용 — 모든 숫자 문자를 이어 붙인다.
+        XCTAssertEqual(ParserText.integerFromDigits(in: "1,234"), 1234)
+        XCTAssertEqual(ParserText.integerFromDigits(in: "조회수 567"), 567)
+        XCTAssertEqual(ParserText.integerFromDigits(in: "[12]"), 12)
+        // firstInteger 와의 차이: 떨어진 숫자 무리도 합친다(호출부가
+        // 단일 수 텍스트임을 보장해야 하는 이유).
+        XCTAssertEqual(ParserText.integerFromDigits(in: "1a2"), 12)
+        // 숫자가 없으면 nil — 기존 `Int(text.filter(\.isNumber))` 와 동일.
+        XCTAssertNil(ParserText.integerFromDigits(in: "새 글"))
+        XCTAssertNil(ParserText.integerFromDigits(in: ""))
+        // Int 범위 초과(비정상 입력)도 기존과 동일하게 nil.
+        XCTAssertNil(ParserText.integerFromDigits(in: String(repeating: "9", count: 25)))
+    }
+
     func testUnescapeJSStringDecodesEscapesAndSurrogatePairs() {
         // Basic escapes.
         XCTAssertEqual(ParserText.unescapeJSString(#"a\nb\tc\\d\/e\"f"#), "a\nb\tc\\d/e\"f")

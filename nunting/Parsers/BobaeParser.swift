@@ -204,15 +204,13 @@ public struct BobaeParser: BoardParser {
     nonisolated private func extractRecommend(in doc: Document) throws -> Int? {
         // `<span class="data3">추천 183</span>`
         guard let el = try doc.select("article.article .util .data3").first() else { return nil }
-        let raw = try el.text().filter(\.isNumber)
-        return raw.isEmpty ? nil : Int(raw)
+        return ParserText.integerFromDigits(in: try el.text())
     }
 
     nonisolated private func extractViewCount(in doc: Document) throws -> Int? {
         // `<span class="data4">조회 10639</span>`
         guard let el = try doc.select("article.article .util .data4").first() else { return nil }
-        let raw = try el.text().filter(\.isNumber)
-        return raw.isEmpty ? nil : Int(raw)
+        return ParserText.integerFromDigits(in: try el.text())
     }
 
     // MARK: - Body blocks
@@ -355,8 +353,7 @@ public struct BobaeParser: BoardParser {
     nonisolated private func extractCommentLikes(in li: Element) throws -> Int {
         // `<div class="util3"><button class="good">37</button><button class="bad">1</button>`
         guard let good = try li.select(".util3 .good").first() else { return 0 }
-        let raw = try good.text().filter(\.isNumber)
-        return Int(raw) ?? 0
+        return ParserText.integerFromDigits(in: try good.text()) ?? 0
     }
 
     /// Comment images — bobaedream renders attached images inline within the

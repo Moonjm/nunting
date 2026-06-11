@@ -142,9 +142,9 @@ public struct SLRParser: BoardParser {
         var recommend: Int?
         for part in parts {
             if part.hasPrefix("조회") {
-                view = Int(part.dropFirst("조회".count).filter(\.isNumber))
+                view = ParserText.integerFromDigits(in: part.dropFirst("조회".count))
             } else if part.hasPrefix("추천") {
-                recommend = Int(part.dropFirst("추천".count).filter(\.isNumber))
+                recommend = ParserText.integerFromDigits(in: part.dropFirst("추천".count))
             } else if !part.isEmpty, date == nil {
                 // First unlabelled segment is the posting time (`14:18` for
                 // same-day, `YYYY.MM.DD` for older posts).

@@ -44,9 +44,9 @@ public struct InvenParser: BoardParser {
             let levelText = try row.select("span.lv").first()?.text()
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let viewText = try row.select("span.view").first()?.text() ?? ""
-            let viewCount = viewText.isEmpty ? nil : Int(viewText.filter(\.isNumber))
+            let viewCount = ParserText.integerFromDigits(in: viewText)
             let recoText = try row.select("span.reco").first()?.text() ?? ""
-            let recommendCount = recoText.isEmpty ? nil : Int(recoText.filter(\.isNumber))
+            let recommendCount = ParserText.integerFromDigits(in: recoText)
             let hasAuthIcon = try !row.select("span.layerNickName .maple").isEmpty()
 
             let postID = url.pathComponents.last ?? url.absoluteString
@@ -87,7 +87,7 @@ public struct InvenParser: BoardParser {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let viewText = try section.select("div.hit span").first()?.text()
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let viewCount = Int(viewText.filter(\.isNumber))
+        let viewCount = ParserText.integerFromDigits(in: viewText)
 
         return PostDetail(
             post: post,
@@ -187,13 +187,7 @@ public struct InvenParser: BoardParser {
         // payload sees no img tag and returns nil. Peel the entity layers
         // with the same cheap decoder `cleanCommentText` uses before looking
         // for an image.
-        var working = rawHTML
-        for _ in 0..<3 {
-            guard working.contains("&") else { break }
-            let decoded = Self.decodeHTMLEntities(working)
-            if decoded == working { break }
-            working = decoded
-        }
+        let working = Self.fullyDecodeHTMLEntities(rawHTML)
 
         guard let doc = try? SwiftSoup.parseBodyFragment(working),
               let img = try? doc.select("img").first(),
@@ -209,20 +203,30 @@ public struct InvenParser: BoardParser {
     nonisolated private func cleanCommentText(_ raw: String) -> String {
         // Inven sometimes ships HTML that's been entity-encoded one or more
         // times (e.g. sticker comments come back as `&lt;div class=...&gt;`).
-        // Peel layers with a cheap string-level entity decoder so we avoid
-        // running a full SwiftSoup parse per layer (each pass used to dominate
-        // long-thread CPU profiles). Capped at 3 to bound worst case.
-        var working = raw
-        for _ in 0..<3 {
-            guard working.contains("&") else { break }
-            let decoded = Self.decodeHTMLEntities(working)
-            if decoded == working { break }
-            working = decoded
-        }
+        // Peel every layer with a cheap string-level entity decoder so we
+        // avoid running a full SwiftSoup parse per layer (each pass used to
+        // dominate long-thread CPU profiles).
+        let working = Self.fullyDecodeHTMLEntities(raw)
 
         // Final pass: parse as HTML so block tags get the newline marker
         // treatment (shared BoardParser comment-flatten pipeline).
         return renderCommentText(fromHTML: working)
+    }
+
+    /// Peel HTML character-reference layers until the string stops changing.
+    /// `decodeHTMLEntities` is strictly reductive — it shortens or leaves the
+    /// string unchanged each pass (and `&amp;` is decoded last so multiply
+    /// encoded refs unwrap one layer at a time) — so the fixpoint loop always
+    /// terminates without an arbitrary iteration cap. Internal (not private)
+    /// so the convergence behaviour can be unit-tested directly.
+    nonisolated static func fullyDecodeHTMLEntities(_ raw: String) -> String {
+        var working = raw
+        while working.contains("&") {
+            let decoded = decodeHTMLEntities(working)
+            if decoded == working { break }
+            working = decoded
+        }
+        return working
     }
 
     /// Decodes one layer of HTML character references without invoking a

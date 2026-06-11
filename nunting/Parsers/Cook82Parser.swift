@@ -94,9 +94,7 @@ public struct Cook82Parser: BoardParser {
         let fullText = try left.text()
         var view: Int?
         if let range = fullText.range(of: "조회수") {
-            let tail = fullText[range.upperBound...]
-            let digits = tail.filter(\.isNumber)
-            if !digits.isEmpty { view = Int(digits) }
+            view = ParserText.integerFromDigits(in: fullText[range.upperBound...])
         }
         return (author, view)
     }
