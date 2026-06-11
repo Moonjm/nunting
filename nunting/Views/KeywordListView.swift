@@ -274,15 +274,17 @@ struct KeywordListView: View {
 
         toggleSequencer.submit(
             id: id,
+            value: enabled,
             send: {
                 try await AlertSubscriptionService.shared.setKeywordEnabled(
                     keyword: kw.keyword, enabled: enabled)
             },
-            onFailure: { error, isLatest in
-                // 이 요청이 여전히 최신일 때만 전이를 되돌린다. 옛 요청의
-                // 실패는 더 새 토글이 상태의 주인이라 건드리지 않는다.
-                if isLatest, let i = keywords.firstIndex(where: { $0.id == id }) {
-                    keywords[i].enabled = !enabled
+            onFailure: { error, restoreTo in
+                // restoreTo nil = 더 새 토글이 상태의 주인 — 복원도, 이미
+                // 해소됐을 수 있는 에러 표시도 하지 않는다(그쪽 실패가 띄움).
+                guard let restoreTo else { return }
+                if let i = keywords.firstIndex(where: { $0.id == id }) {
+                    keywords[i].enabled = restoreTo
                 }
                 errorMessage = "알림 \(enabled ? "켜기" : "끄기") 실패: \(error.localizedDescription)"
             }

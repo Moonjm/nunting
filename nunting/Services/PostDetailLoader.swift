@@ -60,6 +60,10 @@ final class PostDetailLoader {
     /// 댓글 재시도에 필요한 입력(디스패치 후 resolved Post + 이미 받아 둔
     /// detail HTML). 댓글 실패 시에만 채워진다.
     private var commentRetryContext: (post: Post, detailHTML: String)?
+    /// `load()` 진입마다 증가. in-flight `retryComments` 가 fetch 후 자신이
+    /// 본 세대와 비교해, 그 사이 새 로드(pull-to-refresh 등)가 커밋한 더
+    /// 신선한 본을 stale 본 + 댓글로 되돌리는 레이스를 차단한다.
+    private var loadGeneration = 0
 
     init(
         fetcher: @escaping Fetcher = { url, encoding in
@@ -92,6 +96,7 @@ final class PostDetailLoader {
         renderReadyAt: ContinuousClock.Instant,
         forceFresh: Bool = false
     ) async {
+        loadGeneration += 1
         // Pull-to-refresh path: drop the in-memory cache entry so the
         // load below goes back to the network. URLSession may still serve
         // a cached HTTP response; that's a separate layer to revisit if
@@ -232,7 +237,10 @@ final class PostDetailLoader {
                 case .failure(let error):
                     // 취소 계열은 부모 task 취소가 댓글 leg 로 전파된 것 —
                     // 실패 배너 대상이 아니고, 아래 checkCancellation 이 끊는다.
-                    if !Self.isCancellation(error) {
+                    // `!Task.isCancelled` 는 "댓글 leg 가 실 에러로 먼저 끝난
+                    // 뒤 부모가 취소된" 죽어가는 로드가 플래그/컨텍스트를
+                    // 남기지 않게 — 캐시 쓰기 가드와 같은 규율.
+                    if !Task.isCancelled, !Self.isCancellation(error) {
                         commentsFailed = true
                         commentRetryContext = (resolved, parsedHTML)
                     }
@@ -275,6 +283,7 @@ final class PostDetailLoader {
 
         let fetcher = self.fetcher
         let encoding = context.post.site.encoding
+        let generation = loadGeneration
         do {
             let extras = try await parser.fetchAllComments(
                 for: context.post,
@@ -282,6 +291,9 @@ final class PostDetailLoader {
             ) { url in
                 try await fetcher(url, encoding)
             }
+            // fetch 사이 새 로드가 더 신선한 본을 커밋했으면(세대 변화) 이
+            // 결과는 stale — `current` 로 되돌리지 말고 조용히 버린다.
+            guard generation == loadGeneration else { return }
             commentsFailed = false
             commentRetryContext = nil
             var updated = current

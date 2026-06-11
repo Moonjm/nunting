@@ -1,14 +1,15 @@
 import XCTest
 @testable import nunting
 
-/// `KeywordToggleSequencer` — 키워드별 토글 요청의 직렬화 + "최신 요청만
-/// 복원" 판정 테스트.
+/// `KeywordToggleSequencer` — 키워드별 토글 요청의 직렬화 + 실패 복원 판정.
 ///
-/// 배경: KeywordListView 의 낙관적 토글은 실패 시 전이를 되돌리는데, 복원
-/// 조건을 "현재 값 == 내가 쓴 값" 으로 비교하면 ON(A)→OFF(B)→ON(C) 연타에서
-/// A 의 실패가 같은 값(true)인 C 의 낙관적 상태를 잘못 되돌린다. 이후 C 가
-/// 성공해도 UI 를 다시 세우는 코드가 없어 서버=ON·UI=OFF 로 영구 불일치.
-/// 그래서 복원 판정은 값이 아니라 세대(이 요청이 여전히 최신인가)로 한다.
+/// 배경: KeywordListView 의 낙관적 토글은 실패 시 전이를 되돌리는데,
+/// (1) "현재 값 == 내가 쓴 값" 비교는 ON(A)→OFF(B)→ON(C) 연타에서 A 의
+/// 실패가 같은 값(true)인 C 의 낙관적 상태를 잘못 되돌리고, (2) `!enabled`
+/// 고정 복원은 직전 요청도 실패한 경우(연속 실패) 서버에 없는 값으로
+/// 되돌린다. 그래서 복원은 "이 요청이 여전히 최신일 때만", 값은 "마지막
+/// ack(성공)된 서버 값"으로 한다 — onFailure 의 restoreTo 가 그 값이고,
+/// nil 이면 더 새 submit 이 상태의 주인이라 복원하지 않는다.
 @MainActor
 final class KeywordToggleSequencerTests: XCTestCase {
 
@@ -16,8 +17,7 @@ final class KeywordToggleSequencerTests: XCTestCase {
 
     /// onFailure 캡처용 — escaping @MainActor 클로저에서 지역 var 캡처 대신.
     private final class Capture {
-        var isLatest: Bool?
-        var failureCount = 0
+        var restores: [Bool?] = []
     }
 
     func testSendsRunSeriallyPerID() async {
@@ -27,6 +27,7 @@ final class KeywordToggleSequencerTests: XCTestCase {
 
         let first = seq.submit(
             id: "k",
+            value: true,
             send: {
                 await log.append("first:start")
                 await gate.wait()
@@ -36,6 +37,7 @@ final class KeywordToggleSequencerTests: XCTestCase {
         )
         let second = seq.submit(
             id: "k",
+            value: false,
             send: { await log.append("second:start") },
             onFailure: { _, _ in XCTFail("실패 경로 아님") }
         )
@@ -55,26 +57,24 @@ final class KeywordToggleSequencerTests: XCTestCase {
                        "send 는 제출 순서대로 직렬 실행")
     }
 
-    func testFailureWhenStillLatestReportsIsLatestTrue() async {
+    func testLatestFailureRestoresPreToggleServerValue() async {
+        // 서버 false 동기 상태에서 ON 토글이 실패 → 복원값은 서버 값 false.
         let seq = KeywordToggleSequencer()
         let capture = Capture()
 
         let task = seq.submit(
             id: "k",
+            value: true,
             send: { throw StubError() },
-            onFailure: { _, isLatest in
-                capture.isLatest = isLatest
-                capture.failureCount += 1
-            }
+            onFailure: { _, restoreTo in capture.restores.append(restoreTo) }
         )
         await task.value
 
-        XCTAssertEqual(capture.failureCount, 1)
-        XCTAssertEqual(capture.isLatest, true,
-                       "더 새 토글이 없으면 이 실패가 복원 주체")
+        XCTAssertEqual(capture.restores, [false],
+                       "최신 실패의 복원값은 첫 토글 직전(=서버 동기) 값")
     }
 
-    func testFailureSupersededByNewerSubmitReportsIsLatestFalse() async {
+    func testSupersededFailureReportsNilRestore() async {
         let seq = KeywordToggleSequencer()
         let gate = AsyncGate()
         let capture = Capture()
@@ -82,15 +82,17 @@ final class KeywordToggleSequencerTests: XCTestCase {
         // 첫 요청은 gate 에 매달렸다가 실패한다.
         let first = seq.submit(
             id: "k",
+            value: true,
             send: {
                 await gate.wait()
                 throw StubError()
             },
-            onFailure: { _, isLatest in capture.isLatest = isLatest }
+            onFailure: { _, restoreTo in capture.restores.append(restoreTo) }
         )
         // 매달린 사이 더 새 토글 제출 → 첫 실패는 더 이상 복원 주체가 아니다.
         let second = seq.submit(
             id: "k",
+            value: false,
             send: {},
             onFailure: { _, _ in XCTFail("두 번째 send 는 성공해야 함") }
         )
@@ -99,8 +101,67 @@ final class KeywordToggleSequencerTests: XCTestCase {
         await first.value
         await second.value
 
-        XCTAssertEqual(capture.isLatest, false,
-                       "더 새 submit 이 있으면 옛 실패는 낙관적 상태를 건드리면 안 됨")
+        XCTAssertEqual(capture.restores, [nil],
+                       "더 새 submit 이 있으면 옛 실패는 낙관적 상태를 건드리면 안 됨 (restoreTo nil)")
+    }
+
+    func testConsecutiveFailuresRestoreToLastAcknowledgedValue() async {
+        // 서버 ON 동기 상태에서 OFF(gen1)→ON(gen2) 연타, 둘 다 실패.
+        // gen2 의 복원값이 `!value = false` 면 서버(ON)와 갈라진다 —
+        // ack 된 적 없는 전이는 건너뛰고 서버 값 ON 으로 복원해야 한다.
+        let seq = KeywordToggleSequencer()
+        let gate = AsyncGate()
+        let firstCapture = Capture()
+        let secondCapture = Capture()
+
+        let first = seq.submit(
+            id: "k",
+            value: false,
+            send: {
+                await gate.wait()
+                throw StubError()
+            },
+            onFailure: { _, restoreTo in firstCapture.restores.append(restoreTo) }
+        )
+        let second = seq.submit(
+            id: "k",
+            value: true,
+            send: { throw StubError() },
+            onFailure: { _, restoreTo in secondCapture.restores.append(restoreTo) }
+        )
+
+        await gate.signal()
+        await first.value
+        await second.value
+
+        XCTAssertEqual(firstCapture.restores, [nil], "옛 실패는 no-op")
+        XCTAssertEqual(secondCapture.restores, [true],
+                       "최신 실패는 마지막 ack 된 서버 값(초기 동기값 ON)으로 복원")
+    }
+
+    func testSuccessUpdatesAcknowledgedValue() async {
+        // OFF 성공으로 서버가 false 가 된 뒤 ON 이 실패하면 복원값은 false.
+        let seq = KeywordToggleSequencer()
+        let capture = Capture()
+
+        let first = seq.submit(
+            id: "k",
+            value: false,
+            send: {},
+            onFailure: { _, _ in XCTFail("첫 send 는 성공해야 함") }
+        )
+        await first.value
+
+        let second = seq.submit(
+            id: "k",
+            value: true,
+            send: { throw StubError() },
+            onFailure: { _, restoreTo in capture.restores.append(restoreTo) }
+        )
+        await second.value
+
+        XCTAssertEqual(capture.restores, [false],
+                       "성공한 전이가 ack 값을 갱신 — 이후 실패는 거기로 복원")
     }
 
     func testIndependentIDsDoNotChain() async {
@@ -110,11 +171,13 @@ final class KeywordToggleSequencerTests: XCTestCase {
 
         let blocked = seq.submit(
             id: "a",
+            value: true,
             send: { await gate.wait() },
             onFailure: { _, _ in }
         )
         let other = seq.submit(
             id: "b",
+            value: true,
             send: { await log.append("b:done") },
             onFailure: { _, _ in }
         )

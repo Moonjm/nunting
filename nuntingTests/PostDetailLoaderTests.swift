@@ -343,6 +343,19 @@ final class PostDetailLoaderTests: XCTestCase {
         """
     }
 
+    /// `<time>` 마커로 본 버전(v1/v2)을 구분할 수 있는 변형 — CoolenjoyParser 가
+    /// `fullDateText` 로 읽어 주므로 어느 본이 살아남았는지 단언 가능.
+    private nonisolated static func coolenjoyDetailHTML(dateMarker: String) -> String {
+        """
+        <html><body>
+        <article id="bo_v">
+          <time>\(dateMarker)</time>
+          <div class="view-content"><p>본문 텍스트</p></div>
+        </article>
+        </body></html>
+        """
+    }
+
     private func coolenjoyPost() -> Post {
         Post.fixture(
             id: "cool-1",
@@ -423,6 +436,56 @@ final class PostDetailLoaderTests: XCTestCase {
                         "완전해진 본은 캐시에 저장")
     }
 
+    func testRetryCommentsDoesNotOverwriteFresherForceFreshLoad() async {
+        // 배너가 떠 있는 동안 pull-to-refresh 가 끼어드는 레이스:
+        // retry 의 댓글 fetch 가 매달린 사이 forceFresh 로드가 더 신선한
+        // 본(v2)을 커밋하면, 늦게 끝난 retry 가 stale 본(v1)으로 detail/캐시를
+        // 되돌리면 안 된다.
+        let detailCalls = TestCounter()
+        let commentCalls = TestCounter()
+        let gate = AsyncGate()
+        let loader = PostDetailLoader(
+            fetcher: { [coolenjoyCommentHTML] url, _ in
+                if url.absoluteString.contains("comment_view") {
+                    switch commentCalls.incrementAndGet() {
+                    case 1: throw CommentStubError()    // 첫 로드: 댓글 실패 → 배너
+                    case 2:                              // retry: gate 에 매달림
+                        await gate.wait()
+                        return coolenjoyCommentHTML
+                    default:                             // forceFresh 로드: 즉시 성공
+                        return coolenjoyCommentHTML
+                    }
+                }
+                let version = detailCalls.incrementAndGet() == 1 ? "v1" : "v2"
+                return Self.coolenjoyDetailHTML(dateMarker: version)
+            },
+            resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) }
+        )
+        let cache = PostDetailCache(capacity: 4)
+        let post = coolenjoyPost()
+
+        await loader.load(post: post, cache: cache, renderReadyAt: now())
+        XCTAssertTrue(loader.commentsFailed, "전제: 첫 로드에서 댓글 실패")
+        XCTAssertEqual(loader.detail?.fullDateText, "v1")
+
+        let retryTask = Task { await loader.retryComments(cache: cache) }
+        // retry 의 댓글 fetch 가 gate 에 매달릴 때까지 대기.
+        for _ in 0..<500 where commentCalls.value < 2 { await Task.yield() }
+        XCTAssertEqual(commentCalls.value, 2, "전제: retry 가 댓글 fetch 에 진입")
+
+        await loader.load(post: post, cache: cache, renderReadyAt: now(), forceFresh: true)
+        XCTAssertEqual(loader.detail?.fullDateText, "v2", "전제: refresh 가 신선한 본 커밋")
+
+        await gate.signal()
+        await retryTask.value
+
+        XCTAssertEqual(loader.detail?.fullDateText, "v2",
+                       "늦게 끝난 retry 가 stale 본으로 덮어쓰면 안 됨")
+        XCTAssertEqual(cache.get(id: post.id)?.detail.fullDateText, "v2",
+                       "캐시도 신선한 본 유지")
+        XCTAssertFalse(loader.commentsFailed)
+    }
+
     func testRetryCommentsFailureKeepsFlag() async {
         let loader = PostDetailLoader(
             fetcher: { [coolenjoyDetailHTML] url, _ in
@@ -441,6 +504,54 @@ final class PostDetailLoaderTests: XCTestCase {
 
         XCTAssertTrue(loader.commentsFailed, "재실패 시 배너 유지")
         XCTAssertNil(cache.get(id: post.id))
+    }
+
+    func testCommentFetchCancellationDoesNotSetCommentsFailed() async {
+        // 취소 계열(URLError.cancelled / CancellationError)은 부모 취소의
+        // 전파이지 "댓글 로드 실패"가 아니다 — 배너 대상에서 제외.
+        for cancellation in [URLError(.cancelled) as Error, CancellationError()] {
+            let loader = PostDetailLoader(
+                fetcher: { [coolenjoyDetailHTML] url, _ in
+                    if url.absoluteString.contains("comment_view") { throw cancellation }
+                    return coolenjoyDetailHTML
+                },
+                resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) }
+            )
+            let cache = PostDetailCache(capacity: 4)
+
+            await loader.load(post: coolenjoyPost(), cache: cache, renderReadyAt: now())
+
+            XCTAssertFalse(loader.commentsFailed,
+                           "취소(\(type(of: cancellation)))는 실패 배너로 승격하면 안 됨")
+        }
+    }
+
+    func testCacheHitResetsCommentsFailed() async {
+        // 댓글 실패 본은 캐시에 안 들어가지만, 다른 화면의 loader 가 같은
+        // 글을 성공적으로 캐시했을 수 있다 — 히트 복원 시 배너는 내려간다.
+        let loader = PostDetailLoader(
+            fetcher: { [coolenjoyDetailHTML] url, _ in
+                if url.absoluteString.contains("comment_view") { throw CommentStubError() }
+                return coolenjoyDetailHTML
+            },
+            resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) }
+        )
+        let cache = PostDetailCache(capacity: 4)
+        let post = coolenjoyPost()
+
+        await loader.load(post: post, cache: cache, renderReadyAt: now())
+        XCTAssertTrue(loader.commentsFailed, "전제: 첫 로드에서 댓글 실패")
+
+        // 다른 loader 가 완전한 본을 캐시에 넣었다고 가정.
+        let complete = PostDetail(
+            post: post, blocks: [.text("완전본")], fullDateText: nil,
+            viewCount: nil, source: nil, comments: []
+        )
+        cache.put(id: post.id, detail: complete)
+
+        await loader.load(post: post, cache: cache, renderReadyAt: now())
+
+        XCTAssertFalse(loader.commentsFailed, "캐시 히트 복원 시 실패 배너 해제")
     }
 
     // MARK: - Initial state
@@ -489,9 +600,34 @@ private final class TestCounter: @unchecked Sendable {
         n += 1
     }
 
+    @discardableResult
+    func incrementAndGet() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        n += 1
+        return n
+    }
+
     var value: Int {
         lock.lock()
         defer { lock.unlock() }
         return n
+    }
+}
+
+/// signal 전까지 wait 호출자를 매달아 두는 1회용 게이트 — 레이스 choreography 용.
+private actor AsyncGate {
+    private var open = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if open { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func signal() {
+        open = true
+        for waiter in waiters { waiter.resume() }
+        waiters = []
     }
 }
