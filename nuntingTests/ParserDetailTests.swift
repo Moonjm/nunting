@@ -242,6 +242,31 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertTrue(videos.isEmpty)
     }
 
+    func testPpomppuDetailViewCountStopsBeforeTrailingDateDigits() throws {
+        // h4 헤더는 "조회 : 15016" 뒤에 등록일(span.hi)이 이어진다. 조회수는
+        // 첫 숫자 run 에서 끊어야 한다 — 전체 숫자를 합치면 날짜 숫자까지
+        // 섞여 거대한 오답이 된다(firstInteger 시맨틱을 지켜야 하는 이유).
+        let html = """
+        <html><body>
+        <div class="bbs view">
+            <div class="cont" id="KH_Content"><p>본문</p></div>
+            <h4>작성자 | 조회 : 15016 | 추천 3 | <span class="hi">2026-06-12 14:18:30</span></h4>
+        </div>
+        </body></html>
+        """
+        let parser = PpomppuParser()
+        let post = Post.fixture(
+            id: "ppomppu-viewcount",
+            site: .ppomppu,
+            boardID: "ppomppu-car",
+            url: URL(string: "https://m.ppomppu.co.kr/new/bbs_view.php?id=car&no=1")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+        XCTAssertEqual(detail.viewCount, 15016,
+                       "조회수는 첫 숫자 run(15016)에서 멈춰야 함 — 뒤따르는 날짜 숫자와 합쳐지면 안 됨")
+    }
+
     // MARK: - Aagag
 
     func testAagagMp4SeqPayloadRoutesToOwnMirrorNotGfycat() throws {
@@ -1069,6 +1094,10 @@ final class ParserDetailTests: XCTestCase {
             InvenParser.fullyDecodeHTMLEntities("&amp;amp;amp;amp;lt;"),
             "<"
         )
+        // numeric ref 가 `&` 를 재도입하는 종료-위험 케이스: `&#38;` → `&`
+        // 에서 더 못 벗기므로 fixpoint 가드로 멈춰야 한다(무한 루프 금지).
+        XCTAssertEqual(InvenParser.fullyDecodeHTMLEntities("&#38;"), "&")
+        XCTAssertEqual(InvenParser.fullyDecodeHTMLEntities("&amp;#38;"), "&")
         // `&` 없는 평문은 그대로.
         XCTAssertEqual(InvenParser.fullyDecodeHTMLEntities("평문"), "평문")
         // 수렴하면 멈춘다 — 더 못 벗기는 단일 겹.
