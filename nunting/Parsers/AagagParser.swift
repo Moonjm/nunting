@@ -294,18 +294,45 @@ public struct AagagParser: BoardParser {
         let response = try JSONDecoder().decode(AagagCommentResponse.self, from: data)
         guard response.mode == "success" else { return [] }
         return response.comment.map { raw in
-            PostComment(
+            let attachment = commentAttachmentURLs(fromHTML: raw.w_content)
+            return PostComment(
                 id: "\(site.rawValue)-c-\(raw.w_idx)",
                 author: raw.w_nick,
                 dateText: raw.stime,
                 content: renderCommentText(fromHTML: raw.w_content),
                 likeCount: raw.w_good,
                 isReply: (raw.w_cmt_reply ?? "").isEmpty == false,
-                stickerURL: extractCommentImageURL(from: raw.w_content),
+                stickerURL: attachment.sticker,
+                videoURL: attachment.video,
                 authIconURL: nil,
                 levelIconURL: nil
             )
         }
+    }
+
+    /// Video file extensions AVPlayer can actually play — aagag serves
+    /// comment "gif" attachments as `i.aagag.com/{q}.mp4` behind an
+    /// `<img>` tag, so the extension (not the tag) decides the pipeline.
+    /// `webm` is deliberately absent: AVPlayer can't play it, so routing
+    /// it to videoURL would just move the failure from the image
+    /// placeholder to the player.
+    nonisolated private static let videoExtensions: Set<String> = ["mp4", "m4v", "mov"]
+
+    /// Classify a comment's inline attachment as still image vs video.
+    /// Like `extractCommentImageURL`, only the FIRST `<img>` is considered —
+    /// `PostComment` models a single attachment slot.
+    /// Aagag wraps video/gif attachments in `<img>` markup too
+    /// (`<img src=https://i.aagag.com/IZbvG.mp4?v=1>`, seen on
+    /// issue/?idx=1633837); routing that src to the image pipeline can
+    /// never decode and leaves the endless "다시 시도" placeholder, so
+    /// mp4-family srcs go to `PostComment.videoURL` (InlineVideoPlayer)
+    /// instead.
+    nonisolated func commentAttachmentURLs(fromHTML rawHTML: String) -> (sticker: URL?, video: URL?) {
+        guard let url = extractCommentImageURL(from: rawHTML) else { return (nil, nil) }
+        if Self.videoExtensions.contains(url.pathExtension.lowercased()) {
+            return (nil, url)
+        }
+        return (url, nil)
     }
 
     /// Aagag comment HTML can include inline `<img>` attachments (e.g.
