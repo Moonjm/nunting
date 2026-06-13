@@ -130,24 +130,34 @@ public struct InvenParser: BoardParser {
         ]
 
         let firstData = try await Networking.postForm(url: apiURL, parameters: baseParams, referer: post.url)
-        let firstResponse = try JSONDecoder().decode(InvenCommentResponse.self, from: firstData)
+        let firstResponse = try Self.decodeResponse(firstData)
 
         let collapsed = firstResponse.commentlist
             .filter { $0.attr.titlenum > 0 && $0.list.isEmpty }
             .map { $0.attr.titlenum }
 
-        let blocks: [InvenCommentBlock]
-        if collapsed.isEmpty {
-            blocks = firstResponse.commentlist
-        } else {
-            var paramsWithTitles = baseParams
-            paramsWithTitles["titles"] = collapsed.map(String.init).joined(separator: "|")
-            let extraData = try await Networking.postForm(url: apiURL, parameters: paramsWithTitles, referer: post.url)
-            let extraResponse = try JSONDecoder().decode(InvenCommentResponse.self, from: extraData)
-            blocks = extraResponse.commentlist
+        guard !collapsed.isEmpty else {
+            return convertToComments(blocks: firstResponse.commentlist)
         }
 
-        return convertToComments(blocks: blocks)
+        var paramsWithTitles = baseParams
+        paramsWithTitles["titles"] = collapsed.map(String.init).joined(separator: "|")
+        let extraData = try await Networking.postForm(url: apiURL, parameters: paramsWithTitles, referer: post.url)
+        return try comments(fromResponseData: extraData)
+    }
+
+    /// Decode one `comment.json.php` envelope and flatten it to comments.
+    /// Internal so the empty-thread contract is unit-testable without a live
+    /// POST: a 0-comment post returns an envelope with NO `commentlist` key
+    /// (`{"message":1,"cmtcount":0,…}`), and decoding it must yield [] rather
+    /// than throw — a throw here surfaces in the UI as a false
+    /// "댓글 로드 실패 · 다시 시도" banner on a perfectly-loaded empty thread.
+    nonisolated func comments(fromResponseData data: Data) throws -> [PostComment] {
+        convertToComments(blocks: try Self.decodeResponse(data).commentlist)
+    }
+
+    nonisolated private static func decodeResponse(_ data: Data) throws -> InvenCommentResponse {
+        try JSONDecoder().decode(InvenCommentResponse.self, from: data)
     }
 
     nonisolated private func convertToComments(blocks: [InvenCommentBlock]) -> [PostComment] {
@@ -272,6 +282,19 @@ public struct InvenParser: BoardParser {
 
     nonisolated private struct InvenCommentResponse: Decodable {
         let commentlist: [InvenCommentBlock]
+
+        // Inven omits `commentlist` entirely on a 0-comment post
+        // (`{"message":1,"cmtcount":0,…}`), so the synthesized decoder would
+        // throw keyNotFound and PostDetailLoader would render a false
+        // "댓글 로드 실패 · 다시 시도" banner. Default the missing key to [].
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            commentlist = try container.decodeIfPresent([InvenCommentBlock].self, forKey: .commentlist) ?? []
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case commentlist
+        }
     }
 
     nonisolated private struct InvenCommentBlock: Decodable {
