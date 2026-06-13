@@ -291,6 +291,15 @@ public struct AagagParser: BoardParser {
             parameters: ["idx": idx],
             referer: post.url
         )
+        return try comments(fromResponseData: data)
+    }
+
+    /// Decode one `/api/cmt` envelope and flatten it to comments. Internal so
+    /// the non-success contract is unit-testable without a live POST: aagag
+    /// returns `{"mode":"error","msg":…}` (no `comment` key) for threads older
+    /// than a week, so decoding must yield [] rather than throw — a throw here
+    /// surfaces in the UI as a false "댓글 로드 실패 · 다시 시도" banner.
+    nonisolated func comments(fromResponseData data: Data) throws -> [PostComment] {
         let response = try JSONDecoder().decode(AagagCommentResponse.self, from: data)
         guard response.mode == "success" else { return [] }
         return response.comment.map { raw in
@@ -365,6 +374,21 @@ public struct AagagParser: BoardParser {
     nonisolated private struct AagagCommentResponse: Decodable {
         let mode: String
         let comment: [AagagComment]
+
+        // aagag returns `{"mode":"error","msg":…}` with NO `comment` key for
+        // threads older than a week, so the synthesized decoder would throw
+        // keyNotFound before the `mode == "success"` guard could run — a false
+        // "댓글 로드 실패 · 다시 시도" banner. Default the missing key to [].
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            mode = try container.decode(String.self, forKey: .mode)
+            comment = try container.decodeIfPresent([AagagComment].self, forKey: .comment) ?? []
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case mode
+            case comment
+        }
     }
 
     nonisolated private struct AagagComment: Decodable {

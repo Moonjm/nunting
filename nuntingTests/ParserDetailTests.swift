@@ -269,6 +269,29 @@ final class ParserDetailTests: XCTestCase {
 
     // MARK: - Aagag
 
+    func testAagagErrorModeResponseDecodesToEmptyNotThrow() throws {
+        // Real shape from /api/cmt for a thread older than a week: aagag
+        // returns `{"mode":"error","msg":…}` with NO `comment` key. A required
+        // `comment` field threw keyNotFound before the `mode` guard could run,
+        // surfacing a false "댓글 로드 실패 · 다시 시도" banner. Must yield [].
+        let parser = AagagParser()
+        let json = #"{"mode":"error","msg":"일주일 지난 댓글은 회원만 보실 수 있습니다."}"#
+        let comments = try parser.comments(fromResponseData: Data(json.utf8))
+        XCTAssertTrue(comments.isEmpty)
+    }
+
+    func testAagagSuccessResponseStillParses() throws {
+        // Guard the normal path against the error-mode tolerance: a
+        // success envelope with a `comment` array must still flatten.
+        let parser = AagagParser()
+        let json = #"{"mode":"success","total":1,"comment":[{"w_idx":7,"w_cmt_id":1,"w_cmt_reply":null,"w_nick":"길동","w_content":"반가워요","w_good":2,"stime":"방금"}]}"#
+        let comments = try parser.comments(fromResponseData: Data(json.utf8))
+        XCTAssertEqual(comments.count, 1)
+        XCTAssertEqual(comments[0].author, "길동")
+        XCTAssertEqual(comments[0].content, "반가워요")
+        XCTAssertEqual(comments[0].likeCount, 2)
+    }
+
     func testAagagMp4SeqPayloadRoutesToOwnMirrorNotGfycat() throws {
         // Real shape from aagag.com/issue/?idx=1065713 (and most pre-2024
         // GIF-as-video posts): the sTag JSON ships `mp4_url` pointing at
@@ -941,6 +964,43 @@ final class ParserDetailTests: XCTestCase {
     }
 
     // MARK: - Inven
+
+    func testInvenZeroCommentResponseDecodesToEmptyNotThrow() throws {
+        // Real shape from comment.json.php for a 0-comment post
+        // (board/maple/5974/6673736): the envelope omits `commentlist`
+        // entirely. Decoding must yield [] — a throw is surfaced by
+        // PostDetailLoader as a false "댓글 로드 실패 · 다시 시도" banner on a
+        // perfectly-loaded empty thread.
+        let parser = InvenParser()
+        let json = #"{"message":1,"cmtcount":0,"pagecount":100,"lastblock":0,"anonymous":0,"addcomment":0,"authicon":"https://static.inven.co.kr/x.png"}"#
+        let comments = try parser.comments(fromResponseData: Data(json.utf8))
+        XCTAssertTrue(comments.isEmpty)
+    }
+
+    func testInvenPresentButEmptyCommentlistYieldsEmpty() throws {
+        // The collapsed-titles second leg (`titles=` POST) routes through the
+        // same `comments(fromResponseData:)` decoder, so an explicitly-empty
+        // `commentlist` must also flatten to [] — locks the shared-decoder
+        // contract against a future strict re-decode of that path.
+        let parser = InvenParser()
+        let json = #"{"message":1,"cmtcount":0,"commentlist":[]}"#
+        let comments = try parser.comments(fromResponseData: Data(json.utf8))
+        XCTAssertTrue(comments.isEmpty)
+    }
+
+    func testInvenPopulatedCommentlistStillParses() throws {
+        // Guard against the empty-thread tolerance regressing the normal
+        // path: a present `commentlist` must still flatten to comments.
+        let parser = InvenParser()
+        let json = #"""
+        {"message":1,"cmtcount":1,"commentlist":[{"__attr__":{"titlenum":0},"list":[{"__attr__":{"cmtidx":42,"cmtpidx":42},"o_date":"2026-06-13","o_name":"홍길동","o_comment":"안녕하세요","o_recommend":3}]}]}
+        """#
+        let comments = try parser.comments(fromResponseData: Data(json.utf8))
+        XCTAssertEqual(comments.count, 1)
+        XCTAssertEqual(comments[0].author, "홍길동")
+        XCTAssertEqual(comments[0].content, "안녕하세요")
+        XCTAssertEqual(comments[0].likeCount, 3)
+    }
 
     func testInvenYoutubeIframePromotedToEmbedBlock() throws {
         // Real shape from inven.co.kr/board/maple/5974/6548994 — Inven's
