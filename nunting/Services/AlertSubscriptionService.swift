@@ -190,6 +190,13 @@ final class AlertSubscriptionService {
         _ = try await post("/me/alert-history/\(id)/read", jsonBody: Data())
     }
 
+    /// MetricKit payload(raw JSON)를 서버로 전송. `kind` 는 "metric"(MXMetricPayload)
+    /// | "diagnostic"(MXDiagnosticPayload). 서버는 그대로 저장하고 admin 뷰에서 해석한다.
+    /// MXMetricManager 콜백(백그라운드)에서 호출되며, 실패는 caller 가 로그만 남긴다.
+    func reportMetricPayload(_ json: Data, kind: String) async throws {
+        _ = try await post("/me/metrics?kind=\(kind)", jsonBody: json)
+    }
+
     // MARK: - HTTP helpers
 
     private func get(_ path: String) async throws -> (Data, HTTPURLResponse) {

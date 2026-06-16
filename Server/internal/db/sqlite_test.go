@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"strconv"
 	"testing"
 )
 
@@ -571,5 +572,41 @@ func TestAlertHistoryCascadesOnUserDelete(t *testing.T) {
 	store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM alert_history").Scan(&n)
 	if n != 0 {
 		t.Errorf("want cascade delete, %d rows remain", n)
+	}
+}
+
+func TestMetricPayloadAccumulates(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := store.UpsertUser(ctx, "nnt_x"); err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+
+	// 보관 제한 없이 전부 누적 — prune 으로 사라지는 행이 없어야 함.
+	const total = 520
+	for i := 0; i < total; i++ {
+		payload := `{"i":` + strconv.Itoa(i) + `}`
+		if err := store.InsertMetricPayload(ctx, "nnt_x", "metric", payload); err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+	}
+
+	rows, err := store.ListMetricPayloads(ctx, total+10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != total {
+		t.Fatalf("want all %d rows kept, got %d", total, len(rows))
+	}
+	// 최신순 — 첫 행이 마지막 삽입분, 마지막 행이 최초 삽입분.
+	if rows[0].Payload != `{"i":`+strconv.Itoa(total-1)+`}` {
+		t.Errorf("newest wrong: got %q", rows[0].Payload)
+	}
+	if rows[total-1].Payload != `{"i":0}` {
+		t.Errorf("oldest pruned: got %q", rows[total-1].Payload)
 	}
 }

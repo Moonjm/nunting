@@ -341,3 +341,159 @@ func TestAlertHistoryEndpoint(t *testing.T) {
 		t.Errorf("invalid id: want 400, got %d", code)
 	}
 }
+
+func TestPostMetricsStoresPayload(t *testing.T) {
+	srv, store := newTestServer(t)
+	defer srv.Close()
+	defer store.Close()
+
+	body := `{"applicationExitMetric":{"foregroundExitData":{"cumulativeMemoryResourceLimitExitCount":3}}}`
+	code, resp := do(t, "POST", srv.URL+"/me/metrics?kind=metric", "nnt_x", body)
+	if code != 200 {
+		t.Fatalf("post metrics: want 200, got %d body=%q", code, resp)
+	}
+
+	rows, err := store.ListMetricPayloads(t.Context(), 10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Kind != "metric" || rows[0].UUID != "nnt_x" {
+		t.Fatalf("unexpected rows: %+v", rows)
+	}
+	if rows[0].Payload != body {
+		t.Errorf("payload not stored verbatim: %q", rows[0].Payload)
+	}
+}
+
+func TestPostMetricsRejectsBadKindAndJSON(t *testing.T) {
+	srv, store := newTestServer(t)
+	defer srv.Close()
+	defer store.Close()
+
+	// kind 누락/오타 → 400.
+	if code, _ := do(t, "POST", srv.URL+"/me/metrics", "nnt_x", `{}`); code != 400 {
+		t.Errorf("missing kind: want 400, got %d", code)
+	}
+	if code, _ := do(t, "POST", srv.URL+"/me/metrics?kind=bogus", "nnt_x", `{}`); code != 400 {
+		t.Errorf("bad kind: want 400, got %d", code)
+	}
+	// 깨진 JSON → 400.
+	if code, _ := do(t, "POST", srv.URL+"/me/metrics?kind=metric", "nnt_x", `{not json`); code != 400 {
+		t.Errorf("bad json: want 400, got %d", code)
+	}
+	// 인증 없음 → 401 (/me 그룹).
+	if code, _ := do(t, "POST", srv.URL+"/me/metrics?kind=metric", "", `{}`); code != 401 {
+		t.Errorf("no auth: want 401, got %d", code)
+	}
+}
+
+func TestPostMetricsAcceptsLargeBody(t *testing.T) {
+	srv, store := newTestServer(t)
+	defer srv.Close()
+	defer store.Close()
+
+	// 일반 라우트 4KB 상한을 넘는 페이로드도 metrics 는 받아야 한다(크래시 콜스택).
+	big := `{"crashDiagnostics":[{"diagnosticMetaData":{"terminationReason":"` +
+		strings.Repeat("X", 20000) + `"}}]}`
+	code, resp := do(t, "POST", srv.URL+"/me/metrics?kind=diagnostic", "nnt_x", big)
+	if code != 200 {
+		t.Fatalf("large body: want 200, got %d body=%q", code, resp)
+	}
+}
+
+func TestAdminMetricsRequiresKey(t *testing.T) {
+	t.Setenv("NUNTING_ADMIN_KEY", "s3cret")
+	store, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("db: %v", err)
+	}
+	defer store.Close()
+	srv := httptest.NewServer(NewRouter(store))
+	defer srv.Close()
+
+	// payload 하나 넣어두고(FK 충족 위해 user 먼저).
+	if err := store.UpsertUser(t.Context(), "nnt_x"); err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+	if err := store.InsertMetricPayload(t.Context(), "nnt_x", "metric",
+		`{"applicationExitMetric":{"foregroundExitData":{"cumulativeMemoryResourceLimitExitCount":5}}}`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// key 없음/오답 → 404.
+	if code, _ := do(t, "GET", srv.URL+"/admin/metrics", "", ""); code != 404 {
+		t.Errorf("no key: want 404, got %d", code)
+	}
+	if code, _ := do(t, "GET", srv.URL+"/admin/metrics?key=wrong", "", ""); code != 404 {
+		t.Errorf("wrong key: want 404, got %d", code)
+	}
+
+	// 정답 → 200 + 요약에 fg OOM 카운트 노출.
+	code, body := do(t, "GET", srv.URL+"/admin/metrics?key=s3cret", "", "")
+	if code != 200 {
+		t.Fatalf("right key: want 200, got %d", code)
+	}
+	if !strings.Contains(body, "fg OOM") || !strings.Contains(body, ">5<") {
+		t.Errorf("summary missing fg OOM count, body=%q", body)
+	}
+}
+
+func TestAdminMetricsDisabledWithoutEnv(t *testing.T) {
+	t.Setenv("NUNTING_ADMIN_KEY", "")
+	store, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("db: %v", err)
+	}
+	defer store.Close()
+	srv := httptest.NewServer(NewRouter(store))
+	defer srv.Close()
+
+	// adminKey 빈 값이면 어떤 key 로도 404(기능 비활성).
+	if code, _ := do(t, "GET", srv.URL+"/admin/metrics?key=anything", "", ""); code != 404 {
+		t.Errorf("disabled admin: want 404, got %d", code)
+	}
+}
+
+func TestPostMetricsRejectsOversizeBody(t *testing.T) {
+	srv, store := newTestServer(t)
+	defer srv.Close()
+	defer store.Close()
+
+	// maxMetricBodyBytes(1MB)를 넘는 본문은 413 으로 거부돼야 한다.
+	big := `{"x":"` + strings.Repeat("Z", (1<<20)+1000) + `"}`
+	code, _ := do(t, "POST", srv.URL+"/me/metrics?kind=diagnostic", "nnt_x", big)
+	if code != 413 {
+		t.Errorf("oversize body: want 413, got %d", code)
+	}
+}
+
+func TestAdminMetricsSummarizesDiagnostic(t *testing.T) {
+	t.Setenv("NUNTING_ADMIN_KEY", "s3cret")
+	store, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("db: %v", err)
+	}
+	defer store.Close()
+	srv := httptest.NewServer(NewRouter(store))
+	defer srv.Close()
+
+	if err := store.UpsertUser(t.Context(), "nnt_x"); err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+	diag := `{"crashDiagnostics":[{"diagnosticMetaData":{"terminationReason":"per-process-limit"}}],"hangDiagnostics":[{}]}`
+	if err := store.InsertMetricPayload(t.Context(), "nnt_x", "diagnostic", diag); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	code, body := do(t, "GET", srv.URL+"/admin/metrics?key=s3cret", "", "")
+	if code != 200 {
+		t.Fatalf("admin: want 200, got %d", code)
+	}
+	// crash 카운트 카드(1)와 요약의 terminationReason 이 노출돼야 한다.
+	if !strings.Contains(body, "crashes") || !strings.Contains(body, ">1<") {
+		t.Errorf("crash count card missing, body=%q", body)
+	}
+	if !strings.Contains(body, "per-process-limit") {
+		t.Errorf("termination reason missing from summary, body=%q", body)
+	}
+}

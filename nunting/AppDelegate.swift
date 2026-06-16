@@ -28,6 +28,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         MemoryPressureResponder.shared.installDefaultHandlers()
         MemoryPressureResponder.shared.start()
 
+        // MetricKit 구독 — OS 가 집계한 종료 사유(특히 foreground OOM)와 크래시
+        // payload 를 받아 서버로 올린다. "앱이 그냥 꺼지는" 원인 진단용. 등록만
+        // 하면 나머지는 OS 가 하루 1회가량 콜백으로 전달.
+        MetricsReporter.shared.start()
+
         return true
     }
 

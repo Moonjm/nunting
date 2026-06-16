@@ -42,6 +42,16 @@ CREATE TABLE IF NOT EXISTS alert_history (
 );
 CREATE INDEX IF NOT EXISTS idx_alert_history_uuid_id
     ON alert_history(uuid, id DESC);
+CREATE TABLE IF NOT EXISTS metric_payloads (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    uuid        TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    received_at INTEGER NOT NULL,
+    payload     TEXT NOT NULL,
+    FOREIGN KEY (uuid) REFERENCES users(uuid) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_metric_payloads_id
+    ON metric_payloads(id DESC);
 `
 
 // Store 는 *sql.DB 래퍼. 모든 query method 가 context-aware.
@@ -174,7 +184,7 @@ func (s *Store) ListKeywords(ctx context.Context, uuid string) ([]KeywordSub, er
 }
 
 // AddKeyword 제외 없는 포함 키워드만 추가(중복은 PK 충돌 무시). exclude 컬럼은
-// DEFAULT '' 로 채워진다. 제외까지 다루는 경로는 UpsertKeyword 를 쓴다.
+// DEFAULT ” 로 채워진다. 제외까지 다루는 경로는 UpsertKeyword 를 쓴다.
 func (s *Store) AddKeyword(ctx context.Context, uuid, keyword string) error {
 	// 빈 키워드는 silent reject — INSTR(LOWER(title), "") 는 모든 글에 매칭되어
 	// 사용자에게 폴 사이클마다 push 폭격이 됨. API 계층(Task 5)도 trim 후
@@ -392,6 +402,45 @@ func (s *Store) ClearPushTokenByValue(ctx context.Context, token string) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE users SET push_token = NULL WHERE push_token = ?`, token)
 	return err
+}
+
+// MetricPayloadRow 저장된 MetricKit payload 한 건. Payload 는 가공 안 한 raw JSON
+// (MXMetricPayload / MXDiagnosticPayload 의 jsonRepresentation). 해석은 admin 뷰에서.
+type MetricPayloadRow struct {
+	ID         int64
+	UUID       string
+	Kind       string // "metric" | "diagnostic"
+	ReceivedAt int64  // Unix seconds
+	Payload    string
+}
+
+// InsertMetricPayload raw payload 를 저장한다. 보관 개수 제한 없음 — 전부 누적
+// (alert_history 와 동일 방침). MetricKit 은 하루 1건가량이라 비대해지지 않는다.
+func (s *Store) InsertMetricPayload(ctx context.Context, uuid, kind, payload string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO metric_payloads (uuid, kind, received_at, payload) VALUES (?, ?, ?, ?)`,
+		uuid, kind, time.Now().Unix(), payload)
+	return err
+}
+
+// ListMetricPayloads 전 사용자의 payload 를 최신순으로 limit 건 반환(admin 뷰용).
+func (s *Store) ListMetricPayloads(ctx context.Context, limit int) ([]MetricPayloadRow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, uuid, kind, received_at, payload
+		 FROM metric_payloads ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []MetricPayloadRow{}
+	for rows.Next() {
+		var r MetricPayloadRow
+		if err := rows.Scan(&r.ID, &r.UUID, &r.Kind, &r.ReceivedAt, &r.Payload); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // UserExists 테스트용 헬퍼. UpsertUser 가 실제로 row 를 만들었는지 검증.
