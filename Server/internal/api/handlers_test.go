@@ -393,6 +393,7 @@ func TestPostMetricsAcceptsLargeBody(t *testing.T) {
 	defer store.Close()
 
 	// 일반 라우트 4KB 상한을 넘는 페이로드도 metrics 는 받아야 한다(크래시 콜스택).
+	// ~20KB 본문 — 일반 라우트 maxBodyBytes(4KB)는 넘고 metrics 1MB 상한 안.
 	big := `{"crashDiagnostics":[{"diagnosticMetaData":{"terminationReason":"` +
 		strings.Repeat("X", 20000) + `"}}]}`
 	code, resp := do(t, "POST", srv.URL+"/me/metrics?kind=diagnostic", "nnt_x", big)
@@ -459,7 +460,8 @@ func TestPostMetricsRejectsOversizeBody(t *testing.T) {
 	defer srv.Close()
 	defer store.Close()
 
-	// maxMetricBodyBytes(1MB)를 넘는 본문은 413 으로 거부돼야 한다.
+	// maxMetricBodyBytes(1<<20 = 1MB)를 넘는 본문은 413 으로 거부돼야 한다.
+	// +1000 으로 상한을 확실히 초과시킨다(본문 ≈ 1,049,584 bytes > 1MB).
 	big := `{"x":"` + strings.Repeat("Z", (1<<20)+1000) + `"}`
 	code, _ := do(t, "POST", srv.URL+"/me/metrics?kind=diagnostic", "nnt_x", big)
 	if code != 413 {
