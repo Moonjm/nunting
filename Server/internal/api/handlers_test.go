@@ -499,3 +499,121 @@ func TestAdminMetricsSummarizesDiagnostic(t *testing.T) {
 		t.Errorf("termination reason missing from summary, body=%q", body)
 	}
 }
+
+func TestPostFootprintStoresBatch(t *testing.T) {
+	srv, store := newTestServer(t)
+	defer srv.Close()
+	defer store.Close()
+
+	body := `{"samples":[{"ts":1718541600,"label":"board:뽐뿌","mb":312,"avail":1800},` +
+		`{"ts":1718541605,"label":"post-open","mb":540,"avail":1500}]}`
+	code, resp := do(t, "POST", srv.URL+"/me/footprint", "nnt_x", body)
+	if code != 200 {
+		t.Fatalf("post footprint: want 200, got %d body=%q", code, resp)
+	}
+
+	rows, err := store.ListFootprintSamples(t.Context(), 10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("want 2 rows, got %d", len(rows))
+	}
+	// 최신순(id DESC) — post-open 이 먼저.
+	if rows[0].Label != "post-open" || rows[0].MB != 540 || rows[1].Label != "board:뽐뿌" {
+		t.Errorf("unexpected rows: %+v", rows)
+	}
+}
+
+func TestPostFootprintRejectsBad(t *testing.T) {
+	srv, store := newTestServer(t)
+	defer srv.Close()
+	defer store.Close()
+
+	// 깨진 JSON → 400.
+	if code, _ := do(t, "POST", srv.URL+"/me/footprint", "nnt_x", `{bad`); code != 400 {
+		t.Errorf("bad json: want 400, got %d", code)
+	}
+	// 빈 배치 → 200 (멱등 no-op).
+	if code, _ := do(t, "POST", srv.URL+"/me/footprint", "nnt_x", `{"samples":[]}`); code != 200 {
+		t.Errorf("empty batch: want 200, got %d", code)
+	}
+	// 인증 없음 → 401.
+	if code, _ := do(t, "POST", srv.URL+"/me/footprint", "", `{"samples":[]}`); code != 401 {
+		t.Errorf("no auth: want 401, got %d", code)
+	}
+}
+
+func TestAdminMetricsRendersFootprint(t *testing.T) {
+	t.Setenv("NUNTING_ADMIN_KEY", "s3cret")
+	store, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("db: %v", err)
+	}
+	defer store.Close()
+	srv := httptest.NewServer(NewRouter(store))
+	defer srv.Close()
+
+	if err := store.UpsertUser(t.Context(), "nnt_x"); err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+	samples := []db.FootprintSample{
+		{ClientTS: 1718541600, Label: "board:뽐뿌", MB: 300, AvailMB: 1800},
+		{ClientTS: 1718541605, Label: "post-open", MB: 540, AvailMB: 1500},
+	}
+	if err := store.InsertFootprintSamples(t.Context(), "nnt_x", samples); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	code, body := do(t, "GET", srv.URL+"/admin/metrics?key=s3cret", "", "")
+	if code != 200 {
+		t.Fatalf("admin: want 200, got %d", code)
+	}
+	// footprint 섹션 + 피크(540) + Δ(+240) 노출.
+	if !strings.Contains(body, "memory footprint") || !strings.Contains(body, "peak 540 MB") {
+		t.Errorf("footprint section/peak missing, body=%q", body)
+	}
+	if !strings.Contains(body, "+240") {
+		t.Errorf("delta missing, body=%q", body)
+	}
+}
+
+func TestAdminMetricsFootprintDeltaPerDevice(t *testing.T) {
+	t.Setenv("NUNTING_ADMIN_KEY", "s3cret")
+	store, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("db: %v", err)
+	}
+	defer store.Close()
+	srv := httptest.NewServer(NewRouter(store))
+	defer srv.Close()
+
+	for _, u := range []string{"nnt_a", "nnt_b"} {
+		if err := store.UpsertUser(t.Context(), u); err != nil {
+			t.Fatalf("upsert %s: %v", u, err)
+		}
+	}
+	// 두 기기를 시간상 교차로 삽입. b 의 첫 샘플(900)이 a 의 직전값(310)을
+	// 기준으로 Δ 계산되면 +590 오탐이 난다 — UUID별 추적이면 b 첫 샘플 Δ=0.
+	if err := store.InsertFootprintSamples(t.Context(), "nnt_a",
+		[]db.FootprintSample{{ClientTS: 1, Label: "a1", MB: 300, AvailMB: 100}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InsertFootprintSamples(t.Context(), "nnt_a",
+		[]db.FootprintSample{{ClientTS: 2, Label: "a2", MB: 310, AvailMB: 100}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InsertFootprintSamples(t.Context(), "nnt_b",
+		[]db.FootprintSample{{ClientTS: 3, Label: "b1", MB: 900, AvailMB: 100}}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, body := do(t, "GET", srv.URL+"/admin/metrics?key=s3cret", "", "")
+	// a2 는 a1 대비 +10, b1 은 기기 첫 샘플이라 0 — 590 오탐이 없어야 한다.
+	if !strings.Contains(body, "+10") {
+		t.Errorf("expected a-device delta +10, body=%q", body)
+	}
+	if strings.Contains(body, "590") {
+		t.Errorf("cross-device delta leaked (+590), body=%q", body)
+	}
+}

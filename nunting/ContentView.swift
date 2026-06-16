@@ -202,7 +202,23 @@ struct ContentView: View {
                 Task { await catalog.revalidateLoadedCatalogs() }
                 // background 동안 도착했을 수 있는 알림 반영.
                 Task { await alertBadge.refresh() }
+                FootprintLogger.shared.record("scenePhase:active")
+            } else if phase == .background {
+                // 백그라운드 진입 시 in-memory 캐시 해제. 지금까진 메모리 경고
+                // 때만 비웠는데, 백그라운드 전환엔 안 비워 ~1GB 쥔 채 suspend →
+                // jetsam 이 "제일 큰 백그라운드 앱"인 우리를 먼저 kill 했다(확인된
+                // JetsamEvent 2건). 백그라운드에도 같은 flush 를 적용해 막는다.
+                MemoryPressureResponder.shared.respond()
+                FootprintLogger.shared.onBackground()
             }
+        }
+        // 메모리 footprint 계측 — 보드 전환/글 열기 순간을 타임라인에 태깅해,
+        // 어느 동작에서 메모리가 치솟거나 안 풀리는지 서버 admin 뷰에서 본다.
+        .onChange(of: selection.board) { _, board in
+            FootprintLogger.shared.record("board:\(board.name)")
+        }
+        .onChange(of: detail.activePost?.id) { _, id in
+            if id != nil { FootprintLogger.shared.record("post-open") }
         }
     }
 

@@ -33,6 +33,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // 하면 나머지는 OS 가 하루 1회가량 콜백으로 전달.
         MetricsReporter.shared.start()
 
+        // 메모리 footprint 로깅 — MetricKit 의 하루 배치를 기다리지 않고, 사용 중
+        // 어느 동작에서 메모리가 치솟는지 실시간 타임라인을 서버로 모은다.
+        FootprintLogger.shared.start()
+
         return true
     }
 
