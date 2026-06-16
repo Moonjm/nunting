@@ -2,7 +2,7 @@
 
 # ====== Stage 1: builder ======
 # Go 공식 alpine 이미지는 amd64 + arm64 multi-arch — Pi 에서 자동 arm64.
-# 1.25 사용: modernc.org/sqlite 가 Go 1.25+ 요구.
+# pgx(pure Go) 라 CGO 불필요 — Pi arm64 cross-compile 자명.
 FROM golang:1.25-alpine AS builder
 
 # git 은 일부 go mod download 가 필요로 함. ca-cert 는 빌드 시 go proxy 호출용.

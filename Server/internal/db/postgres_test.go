@@ -3,22 +3,22 @@ package db
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"os"
 	"strconv"
+	"sync/atomic"
 	"testing"
 )
 
 func TestOpenAppliesSchema(t *testing.T) {
-	store, err := Open(":memory:")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer store.Close()
+	store := newStore(t)
 
-	// users / keyword_subs 테이블이 존재해야 함.
-	for _, table := range []string{"users", "keyword_subs"} {
+	// 모든 테이블이 현재 schema 에 존재해야 함.
+	for _, table := range []string{"users", "keyword_subs", "alert_history", "metric_payloads", "footprint_samples"} {
 		var name string
 		err := store.db.QueryRowContext(context.Background(),
-			"SELECT name FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&name)
+			`SELECT table_name FROM information_schema.tables
+			 WHERE table_schema = current_schema() AND table_name = $1`, table).Scan(&name)
 		if err != nil {
 			t.Errorf("table %q not found: %v", table, err)
 		}
@@ -26,11 +26,7 @@ func TestOpenAppliesSchema(t *testing.T) {
 }
 
 func TestUpsertUserIdempotent(t *testing.T) {
-	store, err := Open(":memory:")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer store.Close()
+	store := newStore(t)
 	ctx := context.Background()
 
 	if err := store.UpsertUser(ctx, "nnt_a"); err != nil {
@@ -51,11 +47,7 @@ func TestUpsertUserIdempotent(t *testing.T) {
 }
 
 func TestSetPushTokenRoundTrip(t *testing.T) {
-	store, err := Open(":memory:")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer store.Close()
+	store := newStore(t)
 	ctx := context.Background()
 
 	if err := store.UpsertUser(ctx, "nnt_a"); err != nil {
@@ -82,11 +74,7 @@ func TestSetPushTokenRoundTrip(t *testing.T) {
 }
 
 func TestKeywordCRUD(t *testing.T) {
-	store, err := Open(":memory:")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer store.Close()
+	store := newStore(t)
 	ctx := context.Background()
 
 	if err := store.UpsertUser(ctx, "nnt_a"); err != nil {
@@ -118,11 +106,7 @@ func TestKeywordCRUD(t *testing.T) {
 }
 
 func TestUpsertKeywordAndExcludeMatching(t *testing.T) {
-	store, err := Open(":memory:")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer store.Close()
+	store := newStore(t)
 	ctx := context.Background()
 
 	store.UpsertUser(ctx, "nnt_a")
@@ -170,60 +154,8 @@ func TestUpsertKeywordAndExcludeMatching(t *testing.T) {
 	}
 }
 
-// 레거시 DB(exclude 컬럼 없던 시절) 를 Open 이 ALTER 로 마이그레이션하는 경로.
-// :memory: 테스트는 항상 exclude 포함 CREATE 라 ADD COLUMN 분기를 안 타므로,
-// 디스크에 옛 스키마를 만들어 실제 backfill 을 검증한다.
-func TestExcludeColumnMigrationOnLegacyDB(t *testing.T) {
-	path := t.TempDir() + "/legacy.db"
-
-	// exclude 없던 keyword_subs + 기존 행 수동 생성. 드라이버 "sqlite" 는
-	// sqlite.go 의 blank import 로 (같은 패키지라) 이미 등록돼 있다.
-	raw, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatalf("open raw: %v", err)
-	}
-	_, err = raw.Exec(`
-		CREATE TABLE users (uuid TEXT PRIMARY KEY, push_token TEXT, created_at INTEGER NOT NULL);
-		CREATE TABLE keyword_subs (uuid TEXT NOT NULL, keyword TEXT NOT NULL, PRIMARY KEY (uuid, keyword));
-		INSERT INTO users (uuid, push_token, created_at) VALUES ('nnt_a', NULL, 0);
-		INSERT INTO keyword_subs (uuid, keyword) VALUES ('nnt_a', '갤럭시');`)
-	if err != nil {
-		t.Fatalf("legacy schema: %v", err)
-	}
-	raw.Close()
-
-	// Open 이 CREATE TABLE IF NOT EXISTS(no-op) 후 ALTER 로 exclude 추가 + backfill.
-	store, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open(migrate): %v", err)
-	}
-	defer store.Close()
-	ctx := context.Background()
-
-	keys, err := store.ListKeywords(ctx, "nnt_a")
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(keys) != 1 || keys[0].Keyword != "갤럭시" || keys[0].Exclude != "" {
-		t.Fatalf("legacy row after migration: want 갤럭시/'', got %+v", keys)
-	}
-
-	// 추가된 컬럼이 정상 동작하는지: upsert 로 제외 갱신 후 매칭에 반영.
-	if _, err := store.UpsertKeyword(ctx, "nnt_a", "갤럭시", "중고"); err != nil {
-		t.Fatalf("upsert after migrate: %v", err)
-	}
-	keys, _ = store.ListKeywords(ctx, "nnt_a")
-	if len(keys) != 1 || keys[0].Exclude != "중고" {
-		t.Errorf("exclude after upsert: want 중고, got %+v", keys)
-	}
-}
-
 func TestMatchedUsersExcludeFallsThroughToNextRow(t *testing.T) {
-	store, err := Open(":memory:")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer store.Close()
+	store := newStore(t)
 	ctx := context.Background()
 
 	store.UpsertUser(ctx, "nnt_a")
@@ -241,11 +173,7 @@ func TestMatchedUsersExcludeFallsThroughToNextRow(t *testing.T) {
 }
 
 func TestMatchedUsersForTitle_ANDTokens(t *testing.T) {
-	store, err := Open(":memory:")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer store.Close()
+	store := newStore(t)
 	ctx := context.Background()
 
 	// nnt_a 는 AND 키워드 "500ml,삼다수" (정규화된 CSV 형태로 직접 저장)
@@ -281,11 +209,7 @@ func TestMatchedUsersForTitle_ANDTokens(t *testing.T) {
 }
 
 func TestKeywordEnabledDefaultAndToggle(t *testing.T) {
-	store, err := Open(":memory:")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer store.Close()
+	store := newStore(t)
 	ctx := context.Background()
 	store.UpsertUser(ctx, "nnt_a")
 
@@ -350,11 +274,7 @@ func TestKeywordEnabledDefaultAndToggle(t *testing.T) {
 }
 
 func TestMatchedUsersCarriesEnabledAndSuppressesPush(t *testing.T) {
-	store, err := Open(":memory:")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer store.Close()
+	store := newStore(t)
 	ctx := context.Background()
 	store.UpsertUser(ctx, "nnt_a")
 	store.SetPushToken(ctx, "nnt_a", "tok_a")
@@ -379,11 +299,7 @@ func TestMatchedUsersCarriesEnabledAndSuppressesPush(t *testing.T) {
 }
 
 func TestMatchedUsersPrefersEnabledKeyword(t *testing.T) {
-	store, err := Open(":memory:")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer store.Close()
+	store := newStore(t)
 	ctx := context.Background()
 	store.UpsertUser(ctx, "nnt_a")
 	store.SetPushToken(ctx, "nnt_a", "tok_a")
@@ -410,11 +326,7 @@ func TestMatchedUsersPrefersEnabledKeyword(t *testing.T) {
 }
 
 func TestMatchedUsersForTitle(t *testing.T) {
-	store, err := Open(":memory:")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer store.Close()
+	store := newStore(t)
 	ctx := context.Background()
 
 	store.UpsertUser(ctx, "nnt_a")
@@ -445,11 +357,7 @@ func TestMatchedUsersForTitle(t *testing.T) {
 }
 
 func TestRecordAndListAlertHistory(t *testing.T) {
-	store, err := Open(":memory:")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer store.Close()
+	store := newStore(t)
 	ctx := context.Background()
 	if err := store.UpsertUser(ctx, "nnt_a"); err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -488,11 +396,7 @@ func TestRecordAndListAlertHistory(t *testing.T) {
 }
 
 func TestRecordAlertNoCap(t *testing.T) {
-	store, err := Open(":memory:")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer store.Close()
+	store := newStore(t)
 	ctx := context.Background()
 	if err := store.UpsertUser(ctx, "nnt_a"); err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -514,11 +418,7 @@ func TestRecordAlertNoCap(t *testing.T) {
 }
 
 func TestMarkAlertRead(t *testing.T) {
-	store, err := Open(":memory:")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer store.Close()
+	store := newStore(t)
 	ctx := context.Background()
 	if err := store.UpsertUser(ctx, "nnt_a"); err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -553,11 +453,7 @@ func TestMarkAlertRead(t *testing.T) {
 }
 
 func TestAlertHistoryCascadesOnUserDelete(t *testing.T) {
-	store, err := Open(":memory:")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer store.Close()
+	store := newStore(t)
 	ctx := context.Background()
 	if err := store.UpsertUser(ctx, "nnt_a"); err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -576,11 +472,7 @@ func TestAlertHistoryCascadesOnUserDelete(t *testing.T) {
 }
 
 func TestMetricPayloadAccumulates(t *testing.T) {
-	store, err := Open(":memory:")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer store.Close()
+	store := newStore(t)
 	ctx := context.Background()
 	if err := store.UpsertUser(ctx, "nnt_x"); err != nil {
 		t.Fatalf("upsert user: %v", err)
@@ -609,4 +501,43 @@ func TestMetricPayloadAccumulates(t *testing.T) {
 	if rows[total-1].Payload != `{"i":0}` {
 		t.Errorf("oldest pruned: got %q", rows[total-1].Payload)
 	}
+}
+
+// --- 테스트 격리 헬퍼 ---
+
+var schemaCounter int64
+
+// testBaseDSN 테스트가 붙을 로컬 Postgres. NUNTING_TEST_DATABASE_URL 로 덮어쓸 수 있고,
+// 기본은 로컬 nnt/nnt00. PG 가 없으면 newStore 가 t.Skip 한다.
+func testBaseDSN() string {
+	if v := os.Getenv("NUNTING_TEST_DATABASE_URL"); v != "" {
+		return v
+	}
+	return "postgres://nnt:nnt00@localhost:5432/nnt?sslmode=disable"
+}
+
+// uniqueSchema 테스트별/프로세스별 유일한 schema 명. [a-z0-9_] 만 써서 인용 불필요.
+func uniqueSchema() string {
+	return fmt.Sprintf("t_%d_%d", os.Getpid(), atomic.AddInt64(&schemaCounter, 1))
+}
+
+// newStore 격리된 schema 위에 Store 를 연다. :memory: 시절의 테스트별 격리를 대체.
+// PG 미연결이면 skip(테스트 머신에 로컬 PG 가 없을 수 있음). cleanup 은 별도 admin
+// connection 으로 schema 를 DROP 하므로, 테스트가 store 를 먼저 닫아도 누수 없다.
+func newStore(t *testing.T) *Store {
+	t.Helper()
+	base := testBaseDSN()
+	schema := uniqueSchema()
+	store, err := OpenSchema(base, schema)
+	if err != nil {
+		t.Skipf("postgres 미연결(%v) — NUNTING_TEST_DATABASE_URL 설정 또는 로컬 PG 필요", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+		if admin, err := sql.Open("pgx", base); err == nil {
+			_, _ = admin.Exec(`DROP SCHEMA IF EXISTS "` + schema + `" CASCADE`)
+			_ = admin.Close()
+		}
+	})
+	return store
 }

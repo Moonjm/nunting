@@ -11,14 +11,12 @@ import (
 	"testing"
 
 	"github.com/Moonjm/nunting/server/internal/db"
+	"github.com/Moonjm/nunting/server/internal/dbtest"
 )
 
 func newTestServer(t *testing.T) (*httptest.Server, *db.Store) {
 	t.Helper()
-	store, err := db.Open(":memory:")
-	if err != nil {
-		t.Fatalf("db: %v", err)
-	}
+	store := dbtest.New(t)
 	return httptest.NewServer(NewRouter(store)), store
 }
 
@@ -404,10 +402,7 @@ func TestPostMetricsAcceptsLargeBody(t *testing.T) {
 
 func TestAdminMetricsRequiresKey(t *testing.T) {
 	t.Setenv("NUNTING_ADMIN_KEY", "s3cret")
-	store, err := db.Open(":memory:")
-	if err != nil {
-		t.Fatalf("db: %v", err)
-	}
+	store := dbtest.New(t)
 	defer store.Close()
 	srv := httptest.NewServer(NewRouter(store))
 	defer srv.Close()
@@ -441,10 +436,7 @@ func TestAdminMetricsRequiresKey(t *testing.T) {
 
 func TestAdminMetricsDisabledWithoutEnv(t *testing.T) {
 	t.Setenv("NUNTING_ADMIN_KEY", "")
-	store, err := db.Open(":memory:")
-	if err != nil {
-		t.Fatalf("db: %v", err)
-	}
+	store := dbtest.New(t)
 	defer store.Close()
 	srv := httptest.NewServer(NewRouter(store))
 	defer srv.Close()
@@ -471,10 +463,7 @@ func TestPostMetricsRejectsOversizeBody(t *testing.T) {
 
 func TestAdminMetricsSummarizesDiagnostic(t *testing.T) {
 	t.Setenv("NUNTING_ADMIN_KEY", "s3cret")
-	store, err := db.Open(":memory:")
-	if err != nil {
-		t.Fatalf("db: %v", err)
-	}
+	store := dbtest.New(t)
 	defer store.Close()
 	srv := httptest.NewServer(NewRouter(store))
 	defer srv.Close()
@@ -546,10 +535,7 @@ func TestPostFootprintRejectsBad(t *testing.T) {
 
 func TestAdminMetricsRendersFootprint(t *testing.T) {
 	t.Setenv("NUNTING_ADMIN_KEY", "s3cret")
-	store, err := db.Open(":memory:")
-	if err != nil {
-		t.Fatalf("db: %v", err)
-	}
+	store := dbtest.New(t)
 	defer store.Close()
 	srv := httptest.NewServer(NewRouter(store))
 	defer srv.Close()
@@ -580,10 +566,7 @@ func TestAdminMetricsRendersFootprint(t *testing.T) {
 
 func TestAdminMetricsFootprintDeltaPerDevice(t *testing.T) {
 	t.Setenv("NUNTING_ADMIN_KEY", "s3cret")
-	store, err := db.Open(":memory:")
-	if err != nil {
-		t.Fatalf("db: %v", err)
-	}
+	store := dbtest.New(t)
 	defer store.Close()
 	srv := httptest.NewServer(NewRouter(store))
 	defer srv.Close()

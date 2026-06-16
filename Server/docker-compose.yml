@@ -12,9 +12,11 @@ services:
     ports:
       # 호스트 포트만 .env 로 가변. 컨테이너 내부 포트는 Dockerfile EXPOSE 와 동일.
       - "${NUNTING_HOST_PORT:-8080}:8080"
+    # DB 는 컨테이너 밖(Pi 호스트)의 Postgres. 컨테이너 안에서 호스트를 가리키려면
+    # .env 의 NUNTING_DB_HOST 를 host.docker.internal 로 두고 아래 매핑이 필요하다.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
-      # SQLite 파일 보존 — docker compose down/up 사이에 데이터 유지.
-      - ./data:/var/lib/nunting
       # APNs .p8 read-only mount. .env 의 APNS_KEY_PATH 는 컨테이너 내부 경로
       # (/run/secrets/AuthKey_XXX.p8) 를 가리켜야 한다.
       - ./secrets:/run/secrets:ro
@@ -24,4 +26,4 @@ services:
       # 컨테이너 안에서는 항상 0.0.0.0 으로 bind — 호스트 포트 매핑 동작 보장.
       NUNTING_BIND_HOST: "0.0.0.0"
       NUNTING_BIND_PORT: "8080"
-      NUNTING_DB_PATH: "/var/lib/nunting/state.db"
+      # DB 접속(host/port/password 등)은 .env 에서 주입 — env_file 로 전달된다.

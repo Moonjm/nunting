@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Moonjm/nunting/server/internal/db"
+	"github.com/Moonjm/nunting/server/internal/dbtest"
 )
 
 type stubFetcher struct {
@@ -32,7 +32,7 @@ func (a *recordedAPNs) Send(ctx context.Context, token, keyword string, alertID 
 }
 
 func TestPoller_FirstTickStoresSentinelOnly(t *testing.T) {
-	store, _ := db.Open(":memory:")
+	store := dbtest.New(t)
 	defer store.Close()
 	store.UpsertUser(context.Background(), "nnt_a")
 	store.SetPushToken(context.Background(), "nnt_a", "tok_a")
@@ -59,7 +59,7 @@ func TestPoller_FirstTickStoresSentinelOnly(t *testing.T) {
 // 토글이 꺼진 키워드: 매칭되는 새 글이 와도 push 는 0건이고 alert_history 에는
 // 1건이 남아야 한다(history-only). poller 경계의 `if !m.Enabled { continue }` 검증.
 func TestPoller_DisabledKeywordRecordsHistoryButSkipsPush(t *testing.T) {
-	store, _ := db.Open(":memory:")
+	store := dbtest.New(t)
 	defer store.Close()
 	ctx := context.Background()
 	store.UpsertUser(ctx, "nnt_a")
@@ -95,7 +95,7 @@ func TestPoller_DisabledKeywordRecordsHistoryButSkipsPush(t *testing.T) {
 }
 
 func TestPoller_SecondTickSendsNewPosts(t *testing.T) {
-	store, _ := db.Open(":memory:")
+	store := dbtest.New(t)
 	defer store.Close()
 	store.UpsertUser(context.Background(), "nnt_a")
 	store.SetPushToken(context.Background(), "nnt_a", "tok_a")
@@ -136,7 +136,7 @@ func TestPoller_SkipsPostsOlderThanSentinel(t *testing.T) {
 	// 수정 후 정책 — postNo numeric cutoff: 가지고 있는 lastPostNo
 	// 보다 큰 글만 push 대상. 같은 페이지에 옛/새 글이 섞여도 옛 글
 	// 은 skip.
-	store, _ := db.Open(":memory:")
+	store := dbtest.New(t)
 	defer store.Close()
 	store.UpsertUser(context.Background(), "nnt_a")
 	store.SetPushToken(context.Background(), "nnt_a", "tok_a")
@@ -167,7 +167,7 @@ func TestPoller_SkipsPostsOlderThanSentinel(t *testing.T) {
 func TestPoller_BreaksWalkOnceOlderPostSeen(t *testing.T) {
 	// page 1 의 모든 글이 sentinel 보다 옛 글이면 walk 가 page 2 이상
 	// 으로 더 깊이 들어가지 않아야 함 — newest-first 정렬 가정.
-	store, _ := db.Open(":memory:")
+	store := dbtest.New(t)
 	defer store.Close()
 	store.UpsertUser(context.Background(), "nnt_a")
 	store.SetPushToken(context.Background(), "nnt_a", "tok_a")
@@ -209,7 +209,7 @@ func TestPoller_DedupesSamePostNoAcrossPagesInSameTick(t *testing.T) {
 	// 페이지 fetch 사이에 새 글이 들어와서 page 1 끝의 글이 page 2
 	// top 으로 밀려 다시 보이는 케이스 — tick 내 dedupe 가 없으면
 	// 같은 글에 push 가 두 번 발송된다. 코드 리뷰 회귀 가드.
-	store, _ := db.Open(":memory:")
+	store := dbtest.New(t)
 	defer store.Close()
 	store.UpsertUser(context.Background(), "nnt_a")
 	store.SetPushToken(context.Background(), "nnt_a", "tok_a")
@@ -255,7 +255,7 @@ func TestPoller_FirstTickPicksPageMaxNotJustFirst(t *testing.T) {
 	// 최대 PostNo 가 아닐 수 있다. 첫 행만 보고 baseline 을 잡으면
 	// 그 위에 있는 더 큰 ID 들이 다음 tick 에서 '새 글' 로 발송될
 	// 위험이 있어, page 1 의 max 를 baseline 으로 사용한다.
-	store, _ := db.Open(":memory:")
+	store := dbtest.New(t)
 	defer store.Close()
 
 	fetcher := &stubFetcher{pages: map[int][]Post{
@@ -281,7 +281,7 @@ func TestPoller_FirstTickWithAllUnparseablePostNoLeavesBaselineZero(t *testing.T
 	// 가 0 인 채로 종료된다 — 다음 tick 도 다시 첫 tick 분기로 폴백.
 	// 안전한 동작이지만 운영상 원인을 알 수 있도록 warning 이 떠야
 	// 함 (parser 회귀나 사이트 포맷 변경 신호).
-	store, _ := db.Open(":memory:")
+	store := dbtest.New(t)
 	defer store.Close()
 
 	fetcher := &stubFetcher{pages: map[int][]Post{
@@ -309,7 +309,7 @@ func TestPoller_SkipsUnparseablePostNoWithoutBreakingWalk(t *testing.T) {
 	// PostNo 가 int 변환 실패하는 글이 page 안에 끼어 있어도 — 그 글
 	// 만 skip 하고 walk 자체는 계속. 파싱 회귀가 push 누락 으로 번지지
 	// 않게 보호.
-	store, _ := db.Open(":memory:")
+	store := dbtest.New(t)
 	defer store.Close()
 	store.UpsertUser(context.Background(), "nnt_a")
 	store.SetPushToken(context.Background(), "nnt_a", "tok_a")
@@ -335,7 +335,7 @@ func TestPoller_SkipsUnparseablePostNoWithoutBreakingWalk(t *testing.T) {
 }
 
 func TestPoller_SentinelWalk_StopsAtMaxPages(t *testing.T) {
-	store, _ := db.Open(":memory:")
+	store := dbtest.New(t)
 	defer store.Close()
 
 	// 매 페이지에 유일한 PostNo 를 가진 글을 둬서 cutoff 비교는 통과

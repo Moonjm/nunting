@@ -6,15 +6,13 @@ import (
 	"testing"
 
 	"github.com/Moonjm/nunting/server/internal/db"
+	"github.com/Moonjm/nunting/server/internal/dbtest"
 )
 
 // helper: 미들웨어로 감싼 echo 핸들러. 통과 시 context 의 uuid 를 body 로.
 func wrappedEcho(t *testing.T) (http.Handler, *db.Store) {
 	t.Helper()
-	store, err := db.Open(":memory:")
-	if err != nil {
-		t.Fatalf("db: %v", err)
-	}
+	store := dbtest.New(t)
 	echo := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(UUIDFrom(r.Context())))
 	})
