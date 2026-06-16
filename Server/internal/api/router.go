@@ -17,6 +17,10 @@ const maxBodyBytes = 4096
 // 로는 못 받는다. 1 MB 면 다중 진단 payload 도 여유.
 const maxMetricBodyBytes = 1 << 20
 
+// maxFootprintBodyBytes footprint 배치 전용 상한. 샘플 한 점이 ~60B 라
+// maxFootprintSamples(2000)건이라도 ~120KB. 256KB 면 여유.
+const maxFootprintBodyBytes = 256 << 10
+
 // maxBody r.Body 를 n 바이트 MaxBytesReader 로 감싸는 미들웨어 팩토리.
 // 초과 시 핸들러의 본문 read 가 limit 에러로 400/413 을 유발.
 func maxBody(n int64) func(http.Handler) http.Handler {
@@ -56,6 +60,8 @@ func NewRouter(store *db.Store) http.Handler {
 		})
 		// MetricKit payload — 크래시 콜스택 포함이라 큰 상한.
 		r.With(maxBody(maxMetricBodyBytes)).Post("/metrics", h.postMetrics)
+		// footprint 배치 — 일반 4KB 보단 크고 metric 보단 작은 256KB.
+		r.With(maxBody(maxFootprintBodyBytes)).Post("/footprint", h.postFootprint)
 	})
 
 	return r

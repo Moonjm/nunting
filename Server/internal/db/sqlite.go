@@ -52,6 +52,18 @@ CREATE TABLE IF NOT EXISTS metric_payloads (
 );
 CREATE INDEX IF NOT EXISTS idx_metric_payloads_id
     ON metric_payloads(id DESC);
+CREATE TABLE IF NOT EXISTS footprint_samples (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    uuid        TEXT NOT NULL,
+    client_ts   INTEGER NOT NULL,
+    label       TEXT NOT NULL,
+    mb          INTEGER NOT NULL,
+    avail_mb    INTEGER NOT NULL,
+    received_at INTEGER NOT NULL,
+    FOREIGN KEY (uuid) REFERENCES users(uuid) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_footprint_id
+    ON footprint_samples(id DESC);
 `
 
 // Store 는 *sql.DB 래퍼. 모든 query method 가 context-aware.
@@ -436,6 +448,72 @@ func (s *Store) ListMetricPayloads(ctx context.Context, limit int) ([]MetricPayl
 	for rows.Next() {
 		var r MetricPayloadRow
 		if err := rows.Scan(&r.ID, &r.UUID, &r.Kind, &r.ReceivedAt, &r.Payload); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// FootprintSample iOS 가 보낸 메모리 footprint 한 점. ClientTS 는 클라 epoch
+// seconds, MB 는 phys_footprint(jetsam 이 보는 값), AvailMB 는 한도까지 남은 여유.
+// Label 은 그 시점 이벤트("board:…", "post-open:…", "tick", "scenePhase:…" 등).
+type FootprintSample struct {
+	ClientTS int64  `json:"ts"`
+	Label    string `json:"label"`
+	MB       int    `json:"mb"`
+	AvailMB  int    `json:"avail"`
+}
+
+// InsertFootprintSamples 배치를 단일 트랜잭션으로 저장. 보관 제한 없이 누적
+// (footprint 는 변화량 기반 샘플링이라 평상시엔 거의 안 쌓인다). 빈 배치는 no-op.
+func (s *Store) InsertFootprintSamples(ctx context.Context, uuid string, samples []FootprintSample) error {
+	if len(samples) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // commit 성공 시 Rollback 은 no-op
+	stmt, err := tx.PrepareContext(ctx,
+		`INSERT INTO footprint_samples (uuid, client_ts, label, mb, avail_mb, received_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	now := time.Now().Unix()
+	for _, s := range samples {
+		if _, err := stmt.ExecContext(ctx, uuid, s.ClientTS, s.Label, s.MB, s.AvailMB, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// FootprintRow 저장된 샘플 한 줄(admin 뷰용).
+type FootprintRow struct {
+	UUID     string
+	ClientTS int64
+	Label    string
+	MB       int
+	AvailMB  int
+}
+
+// ListFootprintSamples 최신순으로 limit 건 반환(전 사용자).
+func (s *Store) ListFootprintSamples(ctx context.Context, limit int) ([]FootprintRow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT uuid, client_ts, label, mb, avail_mb
+		 FROM footprint_samples ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []FootprintRow{}
+	for rows.Next() {
+		var r FootprintRow
+		if err := rows.Scan(&r.UUID, &r.ClientTS, &r.Label, &r.MB, &r.AvailMB); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

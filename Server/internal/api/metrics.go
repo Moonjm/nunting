@@ -67,13 +67,23 @@ func (h *handlers) adminMetrics(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
+	fps, err := h.store.ListFootprintSamples(r.Context(), adminFootprintLimit)
+	if err != nil {
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
 
 	page := buildMetricsPage(rows)
+	addFootprint(&page, fps)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := metricsTemplate.Execute(w, page); err != nil {
 		http.Error(w, "render error", http.StatusInternalServerError)
 	}
 }
+
+// adminFootprintLimit admin 뷰가 렌더할 최신 footprint 샘플 수. 변화량 기반
+// 샘플링이라 평상시엔 거의 안 쌓이지만, 페이지 비대 방지용 상한.
+const adminFootprintLimit = 1500
 
 // --- payload 파싱 (MetricKit jsonRepresentation 의 관심 필드만 느슨하게 디코드) ---
 
@@ -137,10 +147,65 @@ type metricsRow struct {
 	Raw      string
 }
 
+type footprintRow struct {
+	Time  string
+	UUID  string
+	Label string
+	MB    int
+	Avail int
+	Delta int  // 직전(시간상 이전) 샘플 대비 MB 증감 — 누수 지점 가독성
+	Hot   bool // 큰 폭 상승(>=50MB) 강조
+}
+
 type metricsPage struct {
 	Summary metricsSummary
 	Rows    []metricsRow
 	Count   int
+
+	Footprint      []footprintRow
+	FootprintPeak  int
+	FootprintCount int
+}
+
+// addFootprint footprint 샘플을 시간순(오래된→최신)으로 정리해 페이지에 붙인다.
+// Delta 는 시간상 직전 샘플 대비 증감이라, 메모리가 치솟거나(상승) "뒤로 갔는데
+// 안 줄어든"(횡보) 지점을 표에서 바로 읽게 한다. 표시는 최신이 위로 가게 뒤집는다.
+func addFootprint(page *metricsPage, rows []db.FootprintRow) {
+	page.FootprintCount = len(rows)
+	if len(rows) == 0 {
+		return
+	}
+	// ListFootprintSamples 는 최신순(id DESC) → 시간순으로 뒤집어 delta 계산.
+	asc := make([]db.FootprintRow, len(rows))
+	for i, r := range rows {
+		asc[len(rows)-1-i] = r
+	}
+	prev := 0
+	built := make([]footprintRow, 0, len(asc))
+	for i, r := range asc {
+		delta := 0
+		if i > 0 {
+			delta = r.MB - prev
+		}
+		prev = r.MB
+		if r.MB > page.FootprintPeak {
+			page.FootprintPeak = r.MB
+		}
+		built = append(built, footprintRow{
+			Time:  time.Unix(r.ClientTS, 0).Format("01-02 15:04:05"),
+			UUID:  shortUUID(r.UUID),
+			Label: r.Label,
+			MB:    r.MB,
+			Avail: r.AvailMB,
+			Delta: delta,
+			Hot:   delta >= 50,
+		})
+	}
+	// 최신이 위로.
+	for i, j := 0, len(built)-1; i < j; i, j = i+1, j-1 {
+		built[i], built[j] = built[j], built[i]
+	}
+	page.Footprint = built
 }
 
 func buildMetricsPage(rows []db.MetricPayloadRow) metricsPage {
@@ -274,9 +339,14 @@ var metricsTemplate = template.Must(template.New("metrics").Parse(`<!doctype htm
  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #eee;vertical-align:top}
  th{font-size:11px;color:#777;text-transform:uppercase}
  td.sum{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+ td.mono{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+ td.up{color:#c0341d;font-weight:600}
+ td.down{color:#1a7f37}
+ tr.hot td{background:#fff4f2}
  pre{white-space:pre-wrap;word-break:break-word;background:#f6f6f6;padding:8px;border-radius:6px;max-height:340px;overflow:auto;font-size:11px}
  details summary{cursor:pointer;color:#06c;font-size:12px}
  .empty{color:#999;padding:24px 0}
+ h2{font-size:15px;margin-top:32px}
 </style></head><body>
 <h1>nunting metrics <span style="color:#999;font-weight:400">({{.Count}} payloads)</span></h1>
 <div class="cards">
@@ -303,5 +373,23 @@ var metricsTemplate = template.Must(template.New("metrics").Parse(`<!doctype htm
 </table>
 {{else}}
 <p class="empty">아직 수집된 payload 가 없어. MetricKit 은 하루 1회 전달이라 첫 데이터까지 시간이 걸려.</p>
+{{end}}
+
+<h2>memory footprint <span style="color:#999;font-weight:400">(peak {{.FootprintPeak}} MB · {{.FootprintCount}} samples)</span></h2>
+{{if .Footprint}}
+<p style="color:#777;font-size:12px">phys_footprint(=jetsam 이 보는 값). Δ 가 크게 +면 그 동작에서 메모리 급증, 뒤로 갔는데 안 줄면(Δ≈0 유지) 거기서 안 풀리는 것.</p>
+<table>
+ <tr><th>time</th><th>device</th><th>event</th><th>MB</th><th>Δ</th><th>avail</th></tr>
+ {{range .Footprint}}
+ <tr{{if .Hot}} class="hot"{{end}}>
+  <td class="mono">{{.Time}}</td><td>{{.UUID}}</td><td class="mono">{{.Label}}</td>
+  <td class="mono">{{.MB}}</td>
+  <td class="mono{{if gt .Delta 0}} up{{else if lt .Delta 0}} down{{end}}">{{if gt .Delta 0}}+{{end}}{{.Delta}}</td>
+  <td class="mono">{{.Avail}}</td>
+ </tr>
+ {{end}}
+</table>
+{{else}}
+<p class="empty">아직 footprint 샘플이 없어. 앱을 좀 쓰다 백그라운드로 보내면 배치 전송돼.</p>
 {{end}}
 </body></html>`))
