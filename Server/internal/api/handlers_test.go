@@ -577,3 +577,43 @@ func TestAdminMetricsRendersFootprint(t *testing.T) {
 		t.Errorf("delta missing, body=%q", body)
 	}
 }
+
+func TestAdminMetricsFootprintDeltaPerDevice(t *testing.T) {
+	t.Setenv("NUNTING_ADMIN_KEY", "s3cret")
+	store, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("db: %v", err)
+	}
+	defer store.Close()
+	srv := httptest.NewServer(NewRouter(store))
+	defer srv.Close()
+
+	for _, u := range []string{"nnt_a", "nnt_b"} {
+		if err := store.UpsertUser(t.Context(), u); err != nil {
+			t.Fatalf("upsert %s: %v", u, err)
+		}
+	}
+	// 두 기기를 시간상 교차로 삽입. b 의 첫 샘플(900)이 a 의 직전값(310)을
+	// 기준으로 Δ 계산되면 +590 오탐이 난다 — UUID별 추적이면 b 첫 샘플 Δ=0.
+	if err := store.InsertFootprintSamples(t.Context(), "nnt_a",
+		[]db.FootprintSample{{ClientTS: 1, Label: "a1", MB: 300, AvailMB: 100}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InsertFootprintSamples(t.Context(), "nnt_a",
+		[]db.FootprintSample{{ClientTS: 2, Label: "a2", MB: 310, AvailMB: 100}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InsertFootprintSamples(t.Context(), "nnt_b",
+		[]db.FootprintSample{{ClientTS: 3, Label: "b1", MB: 900, AvailMB: 100}}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, body := do(t, "GET", srv.URL+"/admin/metrics?key=s3cret", "", "")
+	// a2 는 a1 대비 +10, b1 은 기기 첫 샘플이라 0 — 590 오탐이 없어야 한다.
+	if !strings.Contains(body, "+10") {
+		t.Errorf("expected a-device delta +10, body=%q", body)
+	}
+	if strings.Contains(body, "590") {
+		t.Errorf("cross-device delta leaked (+590), body=%q", body)
+	}
+}

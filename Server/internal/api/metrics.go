@@ -168,8 +168,10 @@ type metricsPage struct {
 }
 
 // addFootprint footprint 샘플을 시간순(오래된→최신)으로 정리해 페이지에 붙인다.
-// Delta 는 시간상 직전 샘플 대비 증감이라, 메모리가 치솟거나(상승) "뒤로 갔는데
-// 안 줄어든"(횡보) 지점을 표에서 바로 읽게 한다. 표시는 최신이 위로 가게 뒤집는다.
+// Delta 는 **같은 기기(UUID)의** 시간상 직전 샘플 대비 증감이라, 메모리가 치솟거나
+// (상승) "뒤로 갔는데 안 줄어든"(횡보) 지점을 표에서 바로 읽게 한다. 여러 기기가
+// 섞여도 UUID 별로 직전값을 추적해 경계에서 Δ 가 오염되지 않는다(첫 샘플은 Δ=0).
+// 표시는 최신이 위로 가게 뒤집는다.
 func addFootprint(page *metricsPage, rows []db.FootprintRow) {
 	page.FootprintCount = len(rows)
 	if len(rows) == 0 {
@@ -180,14 +182,14 @@ func addFootprint(page *metricsPage, rows []db.FootprintRow) {
 	for i, r := range rows {
 		asc[len(rows)-1-i] = r
 	}
-	prev := 0
+	prevByUUID := make(map[string]int, 4) // UUID 별 직전 MB
 	built := make([]footprintRow, 0, len(asc))
-	for i, r := range asc {
+	for _, r := range asc {
 		delta := 0
-		if i > 0 {
-			delta = r.MB - prev
+		if p, ok := prevByUUID[r.UUID]; ok {
+			delta = r.MB - p
 		}
-		prev = r.MB
+		prevByUUID[r.UUID] = r.MB
 		if r.MB > page.FootprintPeak {
 			page.FootprintPeak = r.MB
 		}
