@@ -14,6 +14,8 @@ import (
 
 type handlers struct {
 	store *db.Store
+	// adminKey GET /admin/metrics 의 ?key= 검증용 약한 비밀. "" 면 admin 뷰 비활성(404).
+	adminKey string
 }
 
 func (h *handlers) health(w http.ResponseWriter, r *http.Request) {
@@ -81,7 +83,8 @@ func (h *handlers) listKeywords(w http.ResponseWriter, r *http.Request) {
 }
 
 // POST /me/keywords { "keyword": "<raw>", "exclude": "<raw>" }
-//   → 200 {"keyword":"<norm>","exclude":"<norm>"} (upsert)
+//
+//	→ 200 {"keyword":"<norm>","exclude":"<norm>"} (upsert)
 //
 // keyword 가 행 식별자(PK)이고 exclude 는 갱신 대상이라, 같은 keyword 로 다시
 // POST 하면 제외만 덮어쓴다(클라의 행 편집 통로). exclude 누락/빈값은 "제외
@@ -192,7 +195,9 @@ func (h *handlers) removeKeyword(w http.ResponseWriter, r *http.Request) {
 }
 
 // POST /me/keywords/{keyword}/enabled { "enabled": false }
-//   → 200. 키워드 행의 알림 토글만 갱신(exclude 등은 보존). 없는 keyword 면
+//
+//	→ 200. 키워드 행의 알림 토글만 갱신(exclude 등은 보존). 없는 keyword 면
+//
 // no-op(여전히 200) — uuid 스코프라 남의 행은 못 건드린다. exclude 편집(addKeyword)
 // 과 분리된 통로라 토글이 제외 단어를 덮어쓰지 않는다.
 func (h *handlers) setKeywordEnabled(w http.ResponseWriter, r *http.Request) {
