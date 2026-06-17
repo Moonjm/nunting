@@ -60,7 +60,12 @@ extension BoardParser {
     ) async throws -> [PostComment] {
         guard let url = commentsURL(for: post) else { return [] }
         let html = try await fetcher(url)
-        return try parseComments(html: html)
+        // autoreleasepool: 댓글 파싱도 nonisolated async(협력 풀) 컨텍스트라
+        // 런루프/배수 풀이 없어 SwiftSoup ObjC 임시객체가 Document 를 붙들어
+        // 누수된다(상세/리스트와 동일 메커니즘). parseComments 는 값 타입만
+        // 반환하므로 풀로 감싸 즉시 배수. fetchAllComments 를 override 해서
+        // 직접 SwiftSoup.parse 하는 파서는 각자 같은 처리 필요.
+        return try autoreleasepool { try parseComments(html: html) }
     }
 
     /// 멀티페이지 댓글 병합 골격 — 뽐뿌/보배/딴지/쿨엔조이 `fetchAllComments`
