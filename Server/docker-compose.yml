@@ -33,7 +33,6 @@ services:
       start_period: 10s
 
   nunting-server:
-    build: .
     image: nunting-server:latest
     container_name: nunting-server
     restart: unless-stopped
