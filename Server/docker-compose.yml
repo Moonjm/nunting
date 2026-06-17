@@ -1,5 +1,7 @@
-# `Server/` 디렉토리 안에서 `docker compose up -d --build` 한 줄로 시작.
-# Go 는 외부 의존(상위 Shared/) 가 없으므로 build context 는 . (현재 디렉토리).
+# 이미지는 compose 밖에서 따로 빌드한다(이 파일엔 build: 스탠자 없음 — `--build` 무효).
+# 코드가 바뀔 때마다:
+#   docker build -t nunting-server:latest .
+#   docker compose up -d
 #
 # 첫 부팅 전 `cp .env.example .env` — env_file 미존재 시 `up` 가 에러로 멈춤.
 #
