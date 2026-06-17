@@ -203,7 +203,20 @@ final class PostDetailLoader {
                 let postSite = resolved.site
                 let fetcher = self.fetcher
                 async let parsedTask: PostDetail = Task.detached(priority: .userInitiated) {
-                    try parser.parseDetail(html: parsedHTML, post: parsedPost)
+                    // autoreleasepool: 파싱은 detached(협력 풀) 스레드에서 도는데,
+                    // 그 스레드엔 런루프가 없어 ObjC autorelease 풀이 영영 배수되지
+                    // 않는다. SwiftSoup 은 NSCopying/NSString/NSRegularExpression 등
+                    // ObjC 브릿지로 autorelease 임시객체를 쏟아내고, 그게 안 빠지면
+                    // 파싱이 끝나 Document(값 아닌 노드 트리)가 스코프를 벗어나도
+                    // 그 노드/속성 그래프가 풀에 붙들려 해제가 무한 지연된다 —
+                    // 세션 내내 SwiftSoup.Element/TextNode/Attributes 가 단조 누적
+                    // (실측: 90초에 14만 노드, footprint 2.8GB ratchet 의 주범).
+                    // 풀로 감싸면 parseDetail 반환 즉시 임시객체가 배수돼 Document
+                    // 가 그 자리에서 해제된다. parseDetail 은 값 타입(PostDetail)만
+                    // 반환하므로 배수로 사라지는 것 중 이후 필요한 건 없다.
+                    try autoreleasepool {
+                        try parser.parseDetail(html: parsedHTML, post: parsedPost)
+                    }
                 }.value
                 // Result 로 받아 실패를 분류한다 — `try?` 는 "댓글 없는 글"과
                 // "로드 실패"를 구분 불가능하게 뭉갰고, 취소 전파까지 삼켰다.
