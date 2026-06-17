@@ -91,9 +91,11 @@ public struct BobaeParser: BoardParser {
         } else {
             html = try await fetcher(post.url)
         }
-        let doc = try SwiftSoup.parse(html)
-        let info = try commentPageInfo(in: doc)
-        let inlinePage = try extractComments(in: doc, page: info?.current ?? 1)
+        let (info, inlinePage) = try parsedDocument(html) { doc -> ((current: Int, total: Int)?, [PostComment]) in
+            let info = try commentPageInfo(in: doc)
+            let inlinePage = try extractComments(in: doc, page: info?.current ?? 1)
+            return (info, inlinePage)
+        }
 
         // 페이저(`.page span.num`)가 없거나 1페이지면 inline 이 전부.
         guard let info, info.total > 1,
@@ -258,8 +260,9 @@ public struct BobaeParser: BoardParser {
     /// (detail 페이지의 메뉴 등 다른 `ul.list` 와 섞일 일이 없는 fragment 이므로
     /// 셀렉터를 느슨하게 써도 안전하다.)
     nonisolated private func parseCommentFragment(html: String, page: Int) throws -> [PostComment] {
-        let doc = try SwiftSoup.parse(html)
-        return try parseCommentNodes(doc.select("ul.list > li"), page: page)
+        try parsedDocument(html) { doc in
+            try parseCommentNodes(doc.select("ul.list > li"), page: page)
+        }
     }
 
     /// `page` 는 id 없는 댓글의 synthetic id(`idx{n}`)에 섞어 페이지 간 충돌을

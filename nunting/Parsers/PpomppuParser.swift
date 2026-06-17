@@ -145,9 +145,11 @@ public struct PpomppuParser: BoardParser {
         } else {
             firstHtml = try await fetcher(post.url)
         }
-        let firstDoc = try SwiftSoup.parse(firstHtml)
-        let info = try commentPageInfo(in: firstDoc)
-        let firstPage = try parseComments(in: firstDoc, fallbackPage: info.current)
+        let (info, firstPage) = try parsedDocument(firstHtml) { firstDoc -> ((current: Int, total: Int), [PostComment]) in
+            let info = try commentPageInfo(in: firstDoc)
+            let firstPage = try parseComments(in: firstDoc, fallbackPage: info.current)
+            return (info, firstPage)
+        }
         if info.total <= 1 { return firstPage }
 
         // 모바일 detail 은 댓글 **마지막** 페이지를 inline 으로 렌더한다(page 1
@@ -160,14 +162,16 @@ public struct PpomppuParser: BoardParser {
         ) { page in
             guard let pageURL = self.appendingCommentPage(to: post.url, page: page) else { return [] }
             let html = try await fetcher(pageURL)
-            let pageDoc = try SwiftSoup.parse(html)
-            return try self.parseComments(in: pageDoc, fallbackPage: page)
+            return try self.parsedDocument(html) { pageDoc in
+                try self.parseComments(in: pageDoc, fallbackPage: page)
+            }
         }
     }
 
     public nonisolated func parseComments(html: String) throws -> [PostComment] {
-        let doc = try SwiftSoup.parse(html)
-        return try parseComments(in: doc, fallbackPage: 1)
+        try parsedDocument(html) { doc in
+            try parseComments(in: doc, fallbackPage: 1)
+        }
     }
 
     /// `fallbackPage` 는 id 없는 댓글의 synthetic id 에 섞어 페이지 간 충돌을

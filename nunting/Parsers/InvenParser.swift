@@ -199,15 +199,16 @@ public struct InvenParser: BoardParser {
         // for an image.
         let working = Self.fullyDecodeHTMLEntities(rawHTML)
 
-        guard let doc = try? SwiftSoup.parseBodyFragment(working),
-              let img = try? doc.select("img").first(),
-              let src = try? img.attr("src"),
-              !src.isEmpty,
-              let url = URL(string: src),
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https"
-        else { return nil }
-        return url
+        return (try? parsedBodyFragment(working) { doc -> URL? in
+            guard let img = try? doc.select("img").first(),
+                  let src = try? img.attr("src"),
+                  !src.isEmpty,
+                  let url = URL(string: src),
+                  let scheme = url.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https"
+            else { return nil }
+            return url
+        }) ?? nil
     }
 
     nonisolated private func cleanCommentText(_ raw: String) -> String {

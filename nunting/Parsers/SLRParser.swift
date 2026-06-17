@@ -84,7 +84,7 @@ public struct SLRParser: BoardParser {
         } else {
             html = try await fetcher(post.url)
         }
-        guard let params = try Self.extractCommentParams(html: html) else {
+        guard let params = try parsedDocument(html, Self.extractCommentParams(in:)) else {
             return []
         }
 
@@ -186,8 +186,7 @@ public struct SLRParser: BoardParser {
         let splno: String
     }
 
-    nonisolated private static func extractCommentParams(html: String) throws -> CommentParams? {
-        let doc = try SwiftSoup.parse(html)
+    nonisolated private static func extractCommentParams(in doc: Document) throws -> CommentParams? {
         guard let box = try doc.select("#comment_box").first() else { return nil }
         let bbsid = try box.attr("data-bbsid")
         let tos = try box.attr("data-tos")
@@ -299,7 +298,7 @@ public struct SLRParser: BoardParser {
         )
 
         do {
-            let doc = try SwiftSoup.parseBodyFragment(prepped)
+            return try parsedBodyFragment(prepped) { doc -> (text: String, sticker: URL?, video: URL?) in
             let body = doc.body() ?? doc
 
             var sticker: URL?
@@ -364,6 +363,7 @@ public struct SLRParser: BoardParser {
                 .replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             return (text, sticker, video)
+            }
         } catch {
             // Bad markup → strip obvious `<br>` tokens directly so the user
             // at least sees readable text instead of raw HTML.
