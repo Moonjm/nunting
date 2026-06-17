@@ -250,49 +250,49 @@ public struct DdanziParser: BoardParser {
 
         do {
             return try parsedBodyFragment(fragment) { doc -> [PostComment] in
-            let body = doc.body() ?? doc
-            let items = try body.select("li[id^=comment_]")
+                let body = doc.body() ?? doc
+                let items = try body.select("li[id^=comment_]")
 
-            var results: [PostComment] = []
-            for li in items {
-                let cmtID = try li.attr("id")
-                    .replacingOccurrences(of: "comment_", with: "")
-                // Exact token match via hasClass — substring `.contains`
-                // would false-positive on future adjacent class names that
-                // happen to carry "re_comment" as a prefix/suffix (e.g.
-                // `re_comment_deleted`) and render a normal comment as an
-                // indented reply.
-                let isReply = li.hasClass("re_comment")
+                var results: [PostComment] = []
+                for li in items {
+                    let cmtID = try li.attr("id")
+                        .replacingOccurrences(of: "comment_", with: "")
+                    // Exact token match via hasClass — substring `.contains`
+                    // would false-positive on future adjacent class names that
+                    // happen to carry "re_comment" as a prefix/suffix (e.g.
+                    // `re_comment_deleted`) and render a normal comment as an
+                    // indented reply.
+                    let isReply = li.hasClass("re_comment")
 
-                let author = try li.select(".fbMeta .author").first()?.text()
-                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                let dateText = try li.select(".fbMeta .time").first()?.text()
-                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    let author = try li.select(".fbMeta .author").first()?.text()
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    let dateText = try li.select(".fbMeta .time").first()?.text()
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-                // 답글 대상 닉네임은 `.re_com_nickname`("@대상") 에 있다. content
-                // 에서는 (중복 방지로) 떼어내지만, 구조화 필드로 넘겨 뷰가 뽐뿌·SLR
-                // 과 동일한 파란 @대상 으로 렌더한다. 앞의 "@" 는 뷰가 다시 붙이므로 제거.
-                let rawTarget = (try? li.select(".re_com_nickname").first()?.text())?
-                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                let target = rawTarget.hasPrefix("@") ? String(rawTarget.dropFirst()) : rawTarget
+                    // 답글 대상 닉네임은 `.re_com_nickname`("@대상") 에 있다. content
+                    // 에서는 (중복 방지로) 떼어내지만, 구조화 필드로 넘겨 뷰가 뽐뿌·SLR
+                    // 과 동일한 파란 @대상 으로 렌더한다. 앞의 "@" 는 뷰가 다시 붙이므로 제거.
+                    let rawTarget = (try? li.select(".re_com_nickname").first()?.text())?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    let target = rawTarget.hasPrefix("@") ? String(rawTarget.dropFirst()) : rawTarget
 
-                let content = try renderCommentContent(in: li)
-                let sticker = extractCommentSticker(in: li)
+                    let content = try renderCommentContent(in: li)
+                    let sticker = extractCommentSticker(in: li)
 
-                if author.isEmpty, content.isEmpty, sticker == nil, target.isEmpty { continue }
+                    if author.isEmpty, content.isEmpty, sticker == nil, target.isEmpty { continue }
 
-                results.append(PostComment(
-                    id: "ddanzi-c-\(cmtID)",
-                    author: author,
-                    dateText: dateText,
-                    content: content,
-                    likeCount: 0,
-                    isReply: isReply,
-                    replyTarget: target.isEmpty ? nil : target,
-                    stickerURL: sticker
-                ))
-            }
-            return results
+                    results.append(PostComment(
+                        id: "ddanzi-c-\(cmtID)",
+                        author: author,
+                        dateText: dateText,
+                        content: content,
+                        likeCount: 0,
+                        isReply: isReply,
+                        replyTarget: target.isEmpty ? nil : target,
+                        stickerURL: sticker
+                    ))
+                }
+                return results
             }
         } catch {
             return []

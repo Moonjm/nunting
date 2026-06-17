@@ -299,70 +299,70 @@ public struct SLRParser: BoardParser {
 
         do {
             return try parsedBodyFragment(prepped) { doc -> (text: String, sticker: URL?, video: URL?) in
-            let body = doc.body() ?? doc
+                let body = doc.body() ?? doc
 
-            var sticker: URL?
-            if sticker == nil, let img = try body.select("img").first() {
-                var src = try img.attr("src")
-                if src.isEmpty { src = try img.attr("data-src") }
-                if !src.isEmpty {
-                    let normalized = src.hasPrefix("//") ? "https:" + src : src
-                    if let url = URL(string: normalized, relativeTo: Site.slr.baseURL)?.absoluteURL,
-                       let scheme = url.scheme?.lowercased(),
-                       scheme == "http" || scheme == "https" {
-                        sticker = url
+                var sticker: URL?
+                if sticker == nil, let img = try body.select("img").first() {
+                    var src = try img.attr("src")
+                    if src.isEmpty { src = try img.attr("data-src") }
+                    if !src.isEmpty {
+                        let normalized = src.hasPrefix("//") ? "https:" + src : src
+                        if let url = URL(string: normalized, relativeTo: Site.slr.baseURL)?.absoluteURL,
+                           let scheme = url.scheme?.lowercased(),
+                           scheme == "http" || scheme == "https" {
+                            sticker = url
+                        }
                     }
                 }
-            }
 
-            // SLR ships GIF-heavy comments as inline `<video>` (often with an
-            // mp4 `<source>` child) so the detail view can replay them via
-            // `InlineVideoPlayer`. Mirror the body-level videoURL extraction
-            // shape here; without it, the video is invisible and its HTML
-            // fallback message ("Your browser does not support...") leaks
-            // into the comment text below.
-            var video: URL?
-            if let vid = try body.select("video").first() {
-                var vidSrc = try vid.attr("src")
-                if vidSrc.isEmpty, let source = try vid.select("source").first() {
-                    vidSrc = try source.attr("src")
-                }
-                if let hash = vidSrc.firstIndex(of: "#") {
-                    vidSrc = String(vidSrc[..<hash])
-                }
-                if !vidSrc.isEmpty {
-                    let normalized = vidSrc.hasPrefix("//") ? "https:" + vidSrc : vidSrc
-                    if let url = URL(string: normalized, relativeTo: Site.slr.baseURL)?.absoluteURL,
-                       let scheme = url.scheme?.lowercased(),
-                       scheme == "http" || scheme == "https" {
-                        video = url
+                // SLR ships GIF-heavy comments as inline `<video>` (often with an
+                // mp4 `<source>` child) so the detail view can replay them via
+                // `InlineVideoPlayer`. Mirror the body-level videoURL extraction
+                // shape here; without it, the video is invisible and its HTML
+                // fallback message ("Your browser does not support...") leaks
+                // into the comment text below.
+                var video: URL?
+                if let vid = try body.select("video").first() {
+                    var vidSrc = try vid.attr("src")
+                    if vidSrc.isEmpty, let source = try vid.select("source").first() {
+                        vidSrc = try source.attr("src")
+                    }
+                    if let hash = vidSrc.firstIndex(of: "#") {
+                        vidSrc = String(vidSrc[..<hash])
+                    }
+                    if !vidSrc.isEmpty {
+                        let normalized = vidSrc.hasPrefix("//") ? "https:" + vidSrc : vidSrc
+                        if let url = URL(string: normalized, relativeTo: Site.slr.baseURL)?.absoluteURL,
+                           let scheme = url.scheme?.lowercased(),
+                           scheme == "http" || scheme == "https" {
+                            video = url
+                        }
                     }
                 }
-            }
 
-            // Drop img/video/script/style — they're rendered separately
-            // (sticker/video URLs above) or irrelevant. Dropping <video> also
-            // prevents the browser-fallback text ("Your browser does not
-            // support the video tag.") from leaking into the comment body.
-            try body.select("img, video, source, script, style").remove()
-            // Preserve anchors as tappable markdown links — `.text()` below
-            // would otherwise drop the href.
-            convertAnchorsToMarkdown(in: body)
-            let collapsed = try body.text()
-            // After sentinel→newline, strip whitespace that SwiftSoup's
-            // `.text()` left on either side of the sentinel (it collapses
-            // `\n` / adjacent spaces to single spaces but keeps them). Without
-            // this, `좋아했는데<br />\n전기차로` becomes `좋아했는데\n 전기차로`
-            // — i.e. a visible leading space / indent on the new line.
-            let text = collapsed
-                .replacingOccurrences(
-                    of: "[ \t]*\(Self.brSentinel)[ \t]*",
-                    with: "\n",
-                    options: .regularExpression
-                )
-                .replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return (text, sticker, video)
+                // Drop img/video/script/style — they're rendered separately
+                // (sticker/video URLs above) or irrelevant. Dropping <video> also
+                // prevents the browser-fallback text ("Your browser does not
+                // support the video tag.") from leaking into the comment body.
+                try body.select("img, video, source, script, style").remove()
+                // Preserve anchors as tappable markdown links — `.text()` below
+                // would otherwise drop the href.
+                convertAnchorsToMarkdown(in: body)
+                let collapsed = try body.text()
+                // After sentinel→newline, strip whitespace that SwiftSoup's
+                // `.text()` left on either side of the sentinel (it collapses
+                // `\n` / adjacent spaces to single spaces but keeps them). Without
+                // this, `좋아했는데<br />\n전기차로` becomes `좋아했는데\n 전기차로`
+                // — i.e. a visible leading space / indent on the new line.
+                let text = collapsed
+                    .replacingOccurrences(
+                        of: "[ \t]*\(Self.brSentinel)[ \t]*",
+                        with: "\n",
+                        options: .regularExpression
+                    )
+                    .replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return (text, sticker, video)
             }
         } catch {
             // Bad markup → strip obvious `<br>` tokens directly so the user
