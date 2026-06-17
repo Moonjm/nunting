@@ -53,6 +53,34 @@ extension BoardParser {
     public nonisolated func commentsURL(for post: Post) -> URL? { nil }
     public nonisolated func parseComments(html: String) throws -> [PostComment] { [] }
 
+    /// SwiftSoup 파싱+추출을 한 `autoreleasepool` 스코프에 묶는다. 파싱이
+    /// nonisolated async/`Task.detached`(협력 풀) 컨텍스트에서 돌면 런루프가 없어
+    /// ObjC autorelease 임시객체가 영영 배수되지 않고, 그게 `Document` 노드 그래프
+    /// 를 붙들어 파싱이 끝나도 해제가 무한 지연된다(세션 내내 SwiftSoup.Element/
+    /// TextNode/Document 누적 → footprint ratchet). parse 와 추출(`body`)을 한 풀에
+    /// 묶어 `body` 반환 즉시 배수해야 Document 가 그 자리에서 해제된다.
+    ///
+    /// `body` 안에서 await 하지 말 것 — autoreleasepool 은 동기 스코프라 suspension
+    /// 을 못 넘는다. 멀티페이지 댓글은 페이지별 parse+추출을 각각 이 헬퍼로 감싸고,
+    /// 비동기 fetch/merge 는 바깥에서 한다.
+    public nonisolated func parsedDocument<T>(
+        _ html: String,
+        _ body: (Document) throws -> T
+    ) throws -> T {
+        try autoreleasepool { try body(try SwiftSoup.parse(html)) }
+    }
+
+    /// `parsedDocument` 의 `parseBodyFragment` 판 — 같은 autorelease 누수 차단.
+    /// `parseBodyFragment` 도 `Document` 를 만들므로 협력 풀 스레드에서 같은 누수가
+    /// 난다(댓글 본문/스티커 조각 파싱이 댓글 수만큼 반복돼 누적). parse+추출을
+    /// 한 풀에 묶는다. `body` 안에서 await 금지(동기 스코프).
+    public nonisolated func parsedBodyFragment<T>(
+        _ html: String,
+        _ body: (Document) throws -> T
+    ) throws -> T {
+        try autoreleasepool { try body(try SwiftSoup.parseBodyFragment(html)) }
+    }
+
     public nonisolated func fetchAllComments(
         for post: Post,
         detailHTML: String?,
@@ -60,7 +88,12 @@ extension BoardParser {
     ) async throws -> [PostComment] {
         guard let url = commentsURL(for: post) else { return [] }
         let html = try await fetcher(url)
-        return try parseComments(html: html)
+        // autoreleasepool: 댓글 파싱도 nonisolated async(협력 풀) 컨텍스트라
+        // 런루프/배수 풀이 없어 SwiftSoup ObjC 임시객체가 Document 를 붙들어
+        // 누수된다(상세/리스트와 동일 메커니즘). parseComments 는 값 타입만
+        // 반환하므로 풀로 감싸 즉시 배수. fetchAllComments 를 override 해서
+        // 직접 SwiftSoup.parse 하는 파서는 각자 같은 처리 필요.
+        return try autoreleasepool { try parseComments(html: html) }
     }
 
     /// 멀티페이지 댓글 병합 골격 — 뽐뿌/보배/딴지/쿨엔조이 `fetchAllComments`
@@ -286,8 +319,10 @@ extension BoardParser {
     /// fragment can't be parsed. Used by the Aagag `/api/cmt` and Inven JSON
     /// comment paths.
     public nonisolated func renderCommentText(fromHTML html: String) -> String {
-        guard let body = try? SwiftSoup.parseBodyFragment(html).body() else { return html }
-        return renderCommentText(from: body)
+        return (try? parsedBodyFragment(html) { doc -> String in
+            guard let body = doc.body() else { return html }
+            return renderCommentText(from: body)
+        }) ?? html
     }
 
     /// Resolve a raw URL string (attribute value, style `url(...)` payload,

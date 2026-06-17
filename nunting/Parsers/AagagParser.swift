@@ -353,15 +353,16 @@ public struct AagagParser: BoardParser {
         // even mention "<img", and spinning up SwiftSoup once per comment
         // dominates the parse budget on long threads otherwise.
         guard rawHTML.contains("<img") else { return nil }
-        guard let doc = try? SwiftSoup.parseBodyFragment(rawHTML),
-              let img = try? doc.select("img").first(),
-              let src = try? img.attr("src"),
-              !src.isEmpty,
-              let url = URL(string: src, relativeTo: site.baseURL)?.absoluteURL,
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https"
-        else { return nil }
-        return url
+        return (try? parsedBodyFragment(rawHTML) { doc -> URL? in
+            guard let img = try? doc.select("img").first(),
+                  let src = try? img.attr("src"),
+                  !src.isEmpty,
+                  let url = URL(string: src, relativeTo: site.baseURL)?.absoluteURL,
+                  let scheme = url.scheme?.lowercased(),
+                  scheme == "http" || scheme == "https"
+            else { return nil }
+            return url
+        }) ?? nil
     }
 
     nonisolated private func issueIdx(from post: Post) -> String? {

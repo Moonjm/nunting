@@ -95,7 +95,7 @@ public struct DdanziParser: BoardParser {
         } else {
             html = try await fetcher(post.url)
         }
-        guard let params = try Self.extractCommentParams(html: html) else {
+        guard let params = try parsedDocument(html, Self.extractCommentParams(in:)) else {
             return []
         }
 
@@ -195,8 +195,7 @@ public struct DdanziParser: BoardParser {
         let documentSrl: String
     }
 
-    nonisolated private static func extractCommentParams(html: String) throws -> CommentParams? {
-        let doc = try SwiftSoup.parse(html)
+    nonisolated private static func extractCommentParams(in doc: Document) throws -> CommentParams? {
         // Bail if the article body is missing — ddanzi's login-required /
         // private-post error pages still ship with widgets that include
         // a `#_document_srl` input and a `#cmt_list` target (for the login
@@ -250,50 +249,51 @@ public struct DdanziParser: BoardParser {
         else { return [] }
 
         do {
-            let doc = try SwiftSoup.parseBodyFragment(fragment)
-            let body = doc.body() ?? doc
-            let items = try body.select("li[id^=comment_]")
+            return try parsedBodyFragment(fragment) { doc -> [PostComment] in
+                let body = doc.body() ?? doc
+                let items = try body.select("li[id^=comment_]")
 
-            var results: [PostComment] = []
-            for li in items {
-                let cmtID = try li.attr("id")
-                    .replacingOccurrences(of: "comment_", with: "")
-                // Exact token match via hasClass — substring `.contains`
-                // would false-positive on future adjacent class names that
-                // happen to carry "re_comment" as a prefix/suffix (e.g.
-                // `re_comment_deleted`) and render a normal comment as an
-                // indented reply.
-                let isReply = li.hasClass("re_comment")
+                var results: [PostComment] = []
+                for li in items {
+                    let cmtID = try li.attr("id")
+                        .replacingOccurrences(of: "comment_", with: "")
+                    // Exact token match via hasClass — substring `.contains`
+                    // would false-positive on future adjacent class names that
+                    // happen to carry "re_comment" as a prefix/suffix (e.g.
+                    // `re_comment_deleted`) and render a normal comment as an
+                    // indented reply.
+                    let isReply = li.hasClass("re_comment")
 
-                let author = try li.select(".fbMeta .author").first()?.text()
-                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                let dateText = try li.select(".fbMeta .time").first()?.text()
-                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    let author = try li.select(".fbMeta .author").first()?.text()
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    let dateText = try li.select(".fbMeta .time").first()?.text()
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-                // 답글 대상 닉네임은 `.re_com_nickname`("@대상") 에 있다. content
-                // 에서는 (중복 방지로) 떼어내지만, 구조화 필드로 넘겨 뷰가 뽐뿌·SLR
-                // 과 동일한 파란 @대상 으로 렌더한다. 앞의 "@" 는 뷰가 다시 붙이므로 제거.
-                let rawTarget = (try? li.select(".re_com_nickname").first()?.text())?
-                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                let target = rawTarget.hasPrefix("@") ? String(rawTarget.dropFirst()) : rawTarget
+                    // 답글 대상 닉네임은 `.re_com_nickname`("@대상") 에 있다. content
+                    // 에서는 (중복 방지로) 떼어내지만, 구조화 필드로 넘겨 뷰가 뽐뿌·SLR
+                    // 과 동일한 파란 @대상 으로 렌더한다. 앞의 "@" 는 뷰가 다시 붙이므로 제거.
+                    let rawTarget = (try? li.select(".re_com_nickname").first()?.text())?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    let target = rawTarget.hasPrefix("@") ? String(rawTarget.dropFirst()) : rawTarget
 
-                let content = try renderCommentContent(in: li)
-                let sticker = extractCommentSticker(in: li)
+                    let content = try renderCommentContent(in: li)
+                    let sticker = extractCommentSticker(in: li)
 
-                if author.isEmpty, content.isEmpty, sticker == nil, target.isEmpty { continue }
+                    if author.isEmpty, content.isEmpty, sticker == nil, target.isEmpty { continue }
 
-                results.append(PostComment(
-                    id: "ddanzi-c-\(cmtID)",
-                    author: author,
-                    dateText: dateText,
-                    content: content,
-                    likeCount: 0,
-                    isReply: isReply,
-                    replyTarget: target.isEmpty ? nil : target,
-                    stickerURL: sticker
-                ))
+                    results.append(PostComment(
+                        id: "ddanzi-c-\(cmtID)",
+                        author: author,
+                        dateText: dateText,
+                        content: content,
+                        likeCount: 0,
+                        isReply: isReply,
+                        replyTarget: target.isEmpty ? nil : target,
+                        stickerURL: sticker
+                    ))
+                }
+                return results
             }
-            return results
         } catch {
             return []
         }
@@ -306,23 +306,25 @@ public struct DdanziParser: BoardParser {
     /// 폴백, 그마저 없으면 1(단일 페이지). internal: 테스트 접근용.
     nonisolated func decodeCommentPageCount(data: Data) -> Int {
         guard let payload = try? JSONDecoder().decode(CommentResponse.self, from: data),
-              let fragment = payload.commentHtml, !fragment.isEmpty,
-              let doc = try? SwiftSoup.parseBodyFragment(fragment)
+              let fragment = payload.commentHtml, !fragment.isEmpty
         else { return 1 }
-        let body = doc.body() ?? doc
 
-        if let raw = try? body.select("#_page_no").first()?.attr("value"),
-           let n = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)), n >= 1 {
-            return n
-        }
-        // 폴백: pagination 의 페이지 번호 앵커 최대값(active 도 `.number` 클래스를
-        // 같이 가져 함께 잡힌다). 윈도잉되면 과소집계될 수 있으나 _page_no 부재 시
-        // 차선책 — 그래도 "마지막 페이지만" 보다는 낫다.
-        if let anchors = try? body.select(".pagination a.number"),
-           let maxN = anchors.compactMap({ Int((try? $0.text()) ?? "") }).max(), maxN >= 1 {
-            return maxN
-        }
-        return 1
+        return (try? parsedBodyFragment(fragment) { doc -> Int in
+            let body = doc.body() ?? doc
+
+            if let raw = try? body.select("#_page_no").first()?.attr("value"),
+               let n = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)), n >= 1 {
+                return n
+            }
+            // 폴백: pagination 의 페이지 번호 앵커 최대값(active 도 `.number` 클래스를
+            // 같이 가져 함께 잡힌다). 윈도잉되면 과소집계될 수 있으나 _page_no 부재 시
+            // 차선책 — 그래도 "마지막 페이지만" 보다는 낫다.
+            if let anchors = try? body.select(".pagination a.number"),
+               let maxN = anchors.compactMap({ Int((try? $0.text()) ?? "") }).max(), maxN >= 1 {
+                return maxN
+            }
+            return 1
+        }) ?? 1
     }
 
     /// Pull the first inline image out as a sticker URL so the comment

@@ -83,49 +83,51 @@ public struct CoolenjoyParser: BoardParser {
     }
 
     nonisolated private func totalCommentPages(html: String) throws -> Int {
-        let doc = try SwiftSoup.parse(html)
-        let items = try doc.select("ul.pagination li.page-item:not(.page-first):not(.page-prev):not(.page-next):not(.page-last)")
-        var maxPage = 1
-        for item in items {
-            let text = try item.text().trimmingCharacters(in: .whitespacesAndNewlines)
-            let digits = String(text.prefix { $0.isNumber })
-            if let n = Int(digits), n > maxPage { maxPage = n }
+        try parsedDocument(html) { doc in
+            let items = try doc.select("ul.pagination li.page-item:not(.page-first):not(.page-prev):not(.page-next):not(.page-last)")
+            var maxPage = 1
+            for item in items {
+                let text = try item.text().trimmingCharacters(in: .whitespacesAndNewlines)
+                let digits = String(text.prefix { $0.isNumber })
+                if let n = Int(digits), n > maxPage { maxPage = n }
+            }
+            return maxPage
         }
-        return maxPage
     }
 
     public nonisolated func parseComments(html: String) throws -> [PostComment] {
-        let doc = try SwiftSoup.parse(html)
-        let articles = try doc.select("article[id^=c_]")
-        var results: [PostComment] = []
+        try parsedDocument(html) { doc in
+            let articles = try doc.select("article[id^=c_]")
+            var results: [PostComment] = []
 
-        for article in articles {
-            let articleID = try article.attr("id")
-            let snStart = articleID.index(articleID.startIndex, offsetBy: 2, limitedBy: articleID.endIndex)
-            guard let sn = snStart.map({ String(articleID[$0...]) }), !sn.isEmpty else { continue }
+            for article in articles {
+                let articleID = try article.attr("id")
+                let snStart = articleID.index(articleID.startIndex, offsetBy: 2, limitedBy: articleID.endIndex)
+                guard let sn = snStart.map({ String(articleID[$0...]) }), !sn.isEmpty else { continue }
 
-            let author = try authorName(from: article)
-            let dateText = try article.select("time").first()?.text()
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let author = try authorName(from: article)
+                let dateText = try article.select("time").first()?.text()
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-            let content = try article.select("textarea[id^=save_comment_]").first()?.text()
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !content.isEmpty else { continue }
+                let content = try article.select("textarea[id^=save_comment_]").first()?.text()
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                guard !content.isEmpty else { continue }
 
-            let likeText = try article.select("b[id^=c_g]").first()?.text()
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? "0"
-            let likeCount = Int(likeText) ?? 0
+                let likeText = try article.select("b[id^=c_g]").first()?.text()
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? "0"
+                let likeCount = Int(likeText) ?? 0
 
-            results.append(PostComment(
-                id: "\(site.rawValue)-c-\(sn)",
-                author: author,
-                dateText: dateText,
-                content: content,
-                likeCount: likeCount,
-                isReply: false
-            ))
+                results.append(PostComment(
+                    id: "\(site.rawValue)-c-\(sn)",
+                    author: author,
+                    dateText: dateText,
+                    content: content,
+                    likeCount: likeCount,
+                    isReply: false
+                ))
+            }
+            return results
         }
-        return results
     }
 
     public nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {

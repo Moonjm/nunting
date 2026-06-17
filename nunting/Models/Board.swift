@@ -220,6 +220,7 @@ extension Board {
         filters: [
             BoardFilter(id: "issue", name: "이슈모음", replacementPath: "/issue/"),
             BoardFilter(id: "src-etoland", name: "이토",  queryItems: ["site": "etoland", "select": "single"]),
+            BoardFilter(id: "src-inven",   name: "인벤",  queryItems: ["site": "inven",   "select": "single"]),
             BoardFilter(id: "src-clien",   name: "끌량",  queryItems: ["site": "clien",   "select": "single"]),
             BoardFilter(id: "src-ppomppu", name: "뽐뿌",  queryItems: ["site": "ppomppu", "select": "single"]),
             BoardFilter(id: "src-82cook",  name: "82쿡",  queryItems: ["site": "82cook",  "select": "single"]),
@@ -227,7 +228,6 @@ extension Board {
             BoardFilter(id: "src-humor",   name: "웃대",  queryItems: ["site": "humor",   "select": "single"]),
             BoardFilter(id: "src-ddanzi",  name: "딴지",  queryItems: ["site": "ddanzi",  "select": "single"]),
             BoardFilter(id: "src-slrclub", name: "SLR",   queryItems: ["site": "slrclub", "select": "single"]),
-            BoardFilter(id: "src-inven",   name: "인벤",  queryItems: ["site": "inven",   "select": "single"]),
         ],
         searchQueryName: "word",
         pageQueryName: "page"

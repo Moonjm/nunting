@@ -273,8 +273,16 @@ final class BoardListLoader {
 
     private nonisolated static func parseListOffMain(html: String, board: Board) async throws -> [Post] {
         try await Task.detached(priority: .userInitiated) {
-            let parser = try ParserFactory.parser(for: board.site)
-            return try parser.parseList(html: html, board: board)
+            // autoreleasepool: detached(협력 풀) 스레드엔 런루프가 없어 ObjC
+            // autorelease 풀이 안 배수된다. SwiftSoup 파싱이 쏟아내는 ObjC 임시
+            // 객체가 Document 노드 그래프를 붙들어, 파싱이 끝나도 해제가 무한
+            // 지연된다(보드 전환·스크롤마다 ~30글 DOM 누적). parseList 는 값 타입
+            // [Post] 만 반환하므로 풀로 감싸 반환 즉시 배수해도 안전.
+            // 같은 처리: 상세 파싱(PostDetailLoader)·댓글 파싱.
+            try autoreleasepool {
+                let parser = try ParserFactory.parser(for: board.site)
+                return try parser.parseList(html: html, board: board)
+            }
         }.value
     }
 
