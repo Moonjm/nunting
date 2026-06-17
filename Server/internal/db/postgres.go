@@ -1,5 +1,5 @@
-// Package db 는 SQLite 단일 진입점이다. 모든 query 가 여기를 통과.
-// modernc.org/sqlite 는 pure Go (CGO 없음) — Pi cross-compile 자명.
+// Package db 는 PostgreSQL 단일 진입점이다. 모든 query 가 여기를 통과.
+// 드라이버는 jackc/pgx/v5/stdlib (database/sql 호환, pure Go — Pi cross-compile 유지).
 package db
 
 import (
@@ -7,17 +7,18 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 const schemaSQL = `
 CREATE TABLE IF NOT EXISTS users (
     uuid       TEXT PRIMARY KEY,
     push_token TEXT,
-    created_at INTEGER NOT NULL
+    created_at BIGINT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS keyword_subs (
     uuid    TEXT NOT NULL,
@@ -30,36 +31,36 @@ CREATE TABLE IF NOT EXISTS keyword_subs (
 CREATE INDEX IF NOT EXISTS idx_users_with_token
     ON users(uuid) WHERE push_token IS NOT NULL;
 CREATE TABLE IF NOT EXISTS alert_history (
-    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    id      BIGSERIAL PRIMARY KEY,
     uuid    TEXT NOT NULL,
     keyword TEXT NOT NULL,
     post_no TEXT NOT NULL,
     title   TEXT NOT NULL,
     url     TEXT NOT NULL,
-    sent_at INTEGER NOT NULL,
-    read_at INTEGER,
+    sent_at BIGINT NOT NULL,
+    read_at BIGINT,
     FOREIGN KEY (uuid) REFERENCES users(uuid) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_alert_history_uuid_id
     ON alert_history(uuid, id DESC);
 CREATE TABLE IF NOT EXISTS metric_payloads (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          BIGSERIAL PRIMARY KEY,
     uuid        TEXT NOT NULL,
     kind        TEXT NOT NULL,
-    received_at INTEGER NOT NULL,
+    received_at BIGINT NOT NULL,
     payload     TEXT NOT NULL,
     FOREIGN KEY (uuid) REFERENCES users(uuid) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_metric_payloads_id
     ON metric_payloads(id DESC);
 CREATE TABLE IF NOT EXISTS footprint_samples (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          BIGSERIAL PRIMARY KEY,
     uuid        TEXT NOT NULL,
-    client_ts   INTEGER NOT NULL,
+    client_ts   BIGINT NOT NULL,
     label       TEXT NOT NULL,
     mb          INTEGER NOT NULL,
     avail_mb    INTEGER NOT NULL,
-    received_at INTEGER NOT NULL,
+    received_at BIGINT NOT NULL,
     FOREIGN KEY (uuid) REFERENCES users(uuid) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_footprint_id
@@ -71,59 +72,79 @@ type Store struct {
 	db *sql.DB
 }
 
-// Open path 가 ":memory:" 면 in-memory(테스트용). 그 외엔 디스크 파일.
-// WAL + foreign_keys 는 connection-scoped 라 _pragma URL 옵션으로 강제.
-func Open(path string) (*Store, error) {
-	// modernc.org/sqlite 는 ?_pragma=foo=bar 형태 query 옵션 지원.
-	dsn := path + "?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)"
-	db, err := sql.Open("sqlite", dsn)
+// Open 은 dsn(예: postgres://user:pass@host:5432/db?sslmode=disable)으로 연결하고
+// 스키마(CREATE TABLE IF NOT EXISTS)를 보장한다. 프로덕션 진입점.
+func Open(dsn string) (*Store, error) {
+	return openWithSchema(dsn, "")
+}
+
+// OpenSchema 는 테스트 격리용 — 지정한 Postgres schema 를 만들고 search_path 를
+// 그쪽으로 고정해 테이블을 그 안에 생성한다. 한 DB 안에서 테스트별로 namespace 를
+// 분리해 :memory: 시절의 격리를 대체한다. DropSchema 로 정리한다.
+func OpenSchema(dsn, schema string) (*Store, error) {
+	return openWithSchema(dsn, schema)
+}
+
+func openWithSchema(dsn, schema string) (*Store, error) {
+	if schema != "" {
+		dsn = withSearchPath(dsn, schema)
+	}
+	sqldb, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("sql.Open: %w", err)
 	}
-	// 단일 connection 강제 — SQLite single-writer 라 multi-conn 이 BUSY 만 늘림.
-	db.SetMaxOpenConns(1)
+	// Pi 자원 한도 내 적당한 풀. SQLite 와 달리 동시 reader/writer 가능.
+	sqldb.SetMaxOpenConns(10)
+	sqldb.SetMaxIdleConns(2)
+	sqldb.SetConnMaxIdleTime(5 * time.Minute)
 
-	if _, err := db.Exec(schemaSQL); err != nil {
-		db.Close()
+	if schema != "" {
+		if _, err := sqldb.Exec(`CREATE SCHEMA IF NOT EXISTS ` + quoteIdent(schema)); err != nil {
+			sqldb.Close()
+			return nil, fmt.Errorf("create schema: %w", err)
+		}
+	}
+	if _, err := sqldb.Exec(schemaSQL); err != nil {
+		sqldb.Close()
 		return nil, fmt.Errorf("schema: %w", err)
 	}
-	// read_at 없던 시절(초기 alert_history) 배포 DB 마이그레이션. 이미 컬럼이
-	// 있으면 "duplicate column name" 만 무시하고, 그 외 에러는 전파.
-	if _, err := db.Exec(`ALTER TABLE alert_history ADD COLUMN read_at INTEGER`); err != nil {
-		if !strings.Contains(err.Error(), "duplicate column name") {
-			db.Close()
-			return nil, fmt.Errorf("migrate read_at: %w", err)
-		}
-	}
-	// keyword_subs.exclude 없던 시절(제외 키워드 도입 전) 배포 DB 마이그레이션.
-	// 기존 행은 ''(제외 없음)이 되어 도입 전과 동일하게 동작.
-	if _, err := db.Exec(`ALTER TABLE keyword_subs ADD COLUMN exclude TEXT NOT NULL DEFAULT ''`); err != nil {
-		if !strings.Contains(err.Error(), "duplicate column name") {
-			db.Close()
-			return nil, fmt.Errorf("migrate exclude: %w", err)
-		}
-	}
-	// keyword_subs.enabled 없던 시절(키워드별 토글 도입 전) 배포 DB 마이그레이션.
-	// 기존 행은 1(켜짐)이 되어 도입 전과 동일하게 모두 push 대상.
-	if _, err := db.Exec(`ALTER TABLE keyword_subs ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`); err != nil {
-		if !strings.Contains(err.Error(), "duplicate column name") {
-			db.Close()
-			return nil, fmt.Errorf("migrate enabled: %w", err)
-		}
-	}
-	return &Store{db: db}, nil
+	return &Store{db: sqldb}, nil
+}
+
+// DropSchema 테스트 격리 schema 를 통째로 제거(CASCADE). 테스트 cleanup 용.
+func (s *Store) DropSchema(ctx context.Context, schema string) error {
+	_, err := s.db.ExecContext(ctx, `DROP SCHEMA IF EXISTS `+quoteIdent(schema)+` CASCADE`)
+	return err
 }
 
 func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// withSearchPath dsn 에 search_path 런타임 옵션을 얹는다(libpq options). pgx 가
+// 모든 풀 connection 에 적용하므로 unqualified 테이블 참조가 해당 schema 로 간다.
+func withSearchPath(dsn, schema string) string {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return dsn
+	}
+	q := u.Query()
+	q.Set("options", "-c search_path="+schema)
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+// quoteIdent SQL 식별자(schema 명)를 안전하게 따옴표 처리.
+func quoteIdent(s string) string {
+	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+}
+
 // UpsertUser 는 INSERT-or-nothing. created_at 은 첫 INSERT 시각으로 고정.
 // Bearer 미들웨어가 매 요청마다 호출해도 created_at 안 변함.
 func (s *Store) UpsertUser(ctx context.Context, uuid string) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO users (uuid, push_token, created_at) VALUES (?, NULL, ?)
-		 ON CONFLICT(uuid) DO NOTHING`,
+		`INSERT INTO users (uuid, push_token, created_at) VALUES ($1, NULL, $2)
+		 ON CONFLICT (uuid) DO NOTHING`,
 		uuid, time.Now().Unix())
 	return err
 }
@@ -131,17 +152,17 @@ func (s *Store) UpsertUser(ctx context.Context, uuid string) error {
 // SetPushToken token == "" 이면 NULL (clear).
 func (s *Store) SetPushToken(ctx context.Context, uuid, token string) error {
 	if token == "" {
-		_, err := s.db.ExecContext(ctx, `UPDATE users SET push_token = NULL WHERE uuid = ?`, uuid)
+		_, err := s.db.ExecContext(ctx, `UPDATE users SET push_token = NULL WHERE uuid = $1`, uuid)
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE users SET push_token = ? WHERE uuid = ?`, token, uuid)
+	_, err := s.db.ExecContext(ctx, `UPDATE users SET push_token = $1 WHERE uuid = $2`, token, uuid)
 	return err
 }
 
 // GetPushToken nil pointer 면 토큰 없음(또는 NULL). 토큰 있으면 *string.
 func (s *Store) GetPushToken(ctx context.Context, uuid string) (*string, error) {
 	var token sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT push_token FROM users WHERE uuid = ?`, uuid).Scan(&token)
+	err := s.db.QueryRowContext(ctx, `SELECT push_token FROM users WHERE uuid = $1`, uuid).Scan(&token)
 	if errors.Is(err, sql.ErrNoRows) {
 		// user 가 존재하지 않으면 "토큰 없음" 으로 동등 처리 — caller 가
 		// 별도 분기할 필요 없게. 진짜 DB 에러는 그대로 전파.
@@ -177,7 +198,7 @@ type KeywordSub struct {
 
 func (s *Store) ListKeywords(ctx context.Context, uuid string) ([]KeywordSub, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT keyword, exclude, enabled FROM keyword_subs WHERE uuid = ? ORDER BY keyword`, uuid)
+		`SELECT keyword, exclude, enabled FROM keyword_subs WHERE uuid = $1 ORDER BY keyword`, uuid)
 	if err != nil {
 		return nil, err
 	}
@@ -198,14 +219,13 @@ func (s *Store) ListKeywords(ctx context.Context, uuid string) ([]KeywordSub, er
 // AddKeyword 제외 없는 포함 키워드만 추가(중복은 PK 충돌 무시). exclude 컬럼은
 // DEFAULT ” 로 채워진다. 제외까지 다루는 경로는 UpsertKeyword 를 쓴다.
 func (s *Store) AddKeyword(ctx context.Context, uuid, keyword string) error {
-	// 빈 키워드는 silent reject — INSTR(LOWER(title), "") 는 모든 글에 매칭되어
-	// 사용자에게 폴 사이클마다 push 폭격이 됨. API 계층(Task 5)도 trim 후
-	// 거부하지만 DB 계층에서도 방어선 추가.
+	// 빈 키워드는 silent reject — 모든 글에 매칭되어 push 폭격이 됨. API 계층도
+	// trim 후 거부하지만 DB 계층에서도 방어선 추가.
 	if keyword == "" {
 		return nil
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO keyword_subs (uuid, keyword) VALUES (?, ?)`, uuid, keyword)
+		`INSERT INTO keyword_subs (uuid, keyword) VALUES ($1, $2) ON CONFLICT DO NOTHING`, uuid, keyword)
 	return err
 }
 
@@ -220,8 +240,8 @@ func (s *Store) UpsertKeyword(ctx context.Context, uuid, keyword, exclude string
 	}
 	var enabled int
 	err := s.db.QueryRowContext(ctx, `
-		INSERT INTO keyword_subs (uuid, keyword, exclude) VALUES (?, ?, ?)
-		ON CONFLICT(uuid, keyword) DO UPDATE SET exclude = excluded.exclude
+		INSERT INTO keyword_subs (uuid, keyword, exclude) VALUES ($1, $2, $3)
+		ON CONFLICT (uuid, keyword) DO UPDATE SET exclude = excluded.exclude
 		RETURNING enabled`,
 		uuid, keyword, exclude).Scan(&enabled)
 	if err != nil {
@@ -232,7 +252,7 @@ func (s *Store) UpsertKeyword(ctx context.Context, uuid, keyword, exclude string
 
 func (s *Store) RemoveKeyword(ctx context.Context, uuid, keyword string) error {
 	_, err := s.db.ExecContext(ctx,
-		`DELETE FROM keyword_subs WHERE uuid = ? AND keyword = ?`, uuid, keyword)
+		`DELETE FROM keyword_subs WHERE uuid = $1 AND keyword = $2`, uuid, keyword)
 	return err
 }
 
@@ -245,7 +265,7 @@ func (s *Store) SetKeywordEnabled(ctx context.Context, uuid, keyword string, ena
 		v = 1
 	}
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE keyword_subs SET enabled = ? WHERE uuid = ? AND keyword = ?`, v, uuid, keyword)
+		`UPDATE keyword_subs SET enabled = $1 WHERE uuid = $2 AND keyword = $3`, v, uuid, keyword)
 	return err
 }
 
@@ -364,21 +384,23 @@ type AlertHistoryItem struct {
 // 처리에 쓴다. 보관 개수 제한 없음 — 전부 누적. 푸시 발송 성공/실패와 무관하게
 // "매칭됨" 시점을 기록하며, 실패해도 폴 사이클을 막지 않게 caller 가 로그만 남김.
 func (s *Store) RecordAlert(ctx context.Context, uuid, keyword, postNo, title, url string) (int64, error) {
-	res, err := s.db.ExecContext(ctx,
+	// Postgres 드라이버는 LastInsertId 미지원 → RETURNING 으로 새 id 회수.
+	var id int64
+	err := s.db.QueryRowContext(ctx,
 		`INSERT INTO alert_history (uuid, keyword, post_no, title, url, sent_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		uuid, keyword, postNo, title, url, time.Now().Unix())
+		 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+		uuid, keyword, postNo, title, url, time.Now().Unix()).Scan(&id)
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	return id, nil
 }
 
 // ListAlertHistory 유저의 알림 이력을 최신순으로 limit 건 반환.
 func (s *Store) ListAlertHistory(ctx context.Context, uuid string, limit int) ([]AlertHistoryItem, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, keyword, post_no, title, url, sent_at, read_at
-		 FROM alert_history WHERE uuid = ? ORDER BY id DESC LIMIT ?`, uuid, limit)
+		 FROM alert_history WHERE uuid = $1 ORDER BY id DESC LIMIT $2`, uuid, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -402,8 +424,8 @@ func (s *Store) ListAlertHistory(ctx context.Context, uuid string, limit int) ([
 // 보호되고, 멱등 의도라 caller(핸들러)는 항상 200 을 돌려준다.
 func (s *Store) MarkAlertRead(ctx context.Context, uuid string, id int64) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE alert_history SET read_at = ?
-		 WHERE uuid = ? AND id = ? AND read_at IS NULL`,
+		`UPDATE alert_history SET read_at = $1
+		 WHERE uuid = $2 AND id = $3 AND read_at IS NULL`,
 		time.Now().Unix(), uuid, id)
 	return err
 }
@@ -412,7 +434,7 @@ func (s *Store) MarkAlertRead(ctx context.Context, uuid string, id int64) error 
 // 한 token 이 한 user 에게만 매핑된다는 invariant 가정.
 func (s *Store) ClearPushTokenByValue(ctx context.Context, token string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE users SET push_token = NULL WHERE push_token = ?`, token)
+		`UPDATE users SET push_token = NULL WHERE push_token = $1`, token)
 	return err
 }
 
@@ -430,7 +452,7 @@ type MetricPayloadRow struct {
 // (alert_history 와 동일 방침). MetricKit 은 하루 1건가량이라 비대해지지 않는다.
 func (s *Store) InsertMetricPayload(ctx context.Context, uuid, kind, payload string) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO metric_payloads (uuid, kind, received_at, payload) VALUES (?, ?, ?, ?)`,
+		`INSERT INTO metric_payloads (uuid, kind, received_at, payload) VALUES ($1, $2, $3, $4)`,
 		uuid, kind, time.Now().Unix(), payload)
 	return err
 }
@@ -439,7 +461,7 @@ func (s *Store) InsertMetricPayload(ctx context.Context, uuid, kind, payload str
 func (s *Store) ListMetricPayloads(ctx context.Context, limit int) ([]MetricPayloadRow, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, uuid, kind, received_at, payload
-		 FROM metric_payloads ORDER BY id DESC LIMIT ?`, limit)
+		 FROM metric_payloads ORDER BY id DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -478,7 +500,7 @@ func (s *Store) InsertFootprintSamples(ctx context.Context, uuid string, samples
 	defer tx.Rollback() //nolint:errcheck // commit 성공 시 Rollback 은 no-op
 	stmt, err := tx.PrepareContext(ctx,
 		`INSERT INTO footprint_samples (uuid, client_ts, label, mb, avail_mb, received_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`)
+		 VALUES ($1, $2, $3, $4, $5, $6)`)
 	if err != nil {
 		return err
 	}
@@ -505,7 +527,7 @@ type FootprintRow struct {
 func (s *Store) ListFootprintSamples(ctx context.Context, limit int) ([]FootprintRow, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT uuid, client_ts, label, mb, avail_mb
-		 FROM footprint_samples ORDER BY id DESC LIMIT ?`, limit)
+		 FROM footprint_samples ORDER BY id DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -524,7 +546,7 @@ func (s *Store) ListFootprintSamples(ctx context.Context, limit int) ([]Footprin
 // UserExists 테스트용 헬퍼. UpsertUser 가 실제로 row 를 만들었는지 검증.
 func (s *Store) UserExists(ctx context.Context, uuid string) (bool, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE uuid = ?`, uuid).Scan(&n)
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE uuid = $1`, uuid).Scan(&n)
 	if err != nil {
 		return false, err
 	}

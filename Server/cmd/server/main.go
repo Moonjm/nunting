@@ -1,11 +1,11 @@
 // nunting-server entry point.
 // 부팅 순서:
-//   1) env 읽기 (NUNTING_*, APNS_*)
-//   2) DB open (NUNTING_DB_PATH)
-//   3) APNs 클라이언트 (env 누락 시 stub 모드)
-//   4) HTTP 서버 (NUNTING_BIND_HOST:NUNTING_BIND_PORT)
-//   5) 폴러 goroutine (NUNTING_POLL_INTERVAL_SECONDS)
-//   6) SIGINT/SIGTERM 시 graceful: ctx cancel → 서버 Shutdown(5s) → db Close
+//  1. env 읽기 (NUNTING_*, APNS_*)
+//  2. DB open (NUNTING_DB_PATH)
+//  3. APNs 클라이언트 (env 누락 시 stub 모드)
+//  4. HTTP 서버 (NUNTING_BIND_HOST:NUNTING_BIND_PORT)
+//  5. 폴러 goroutine (NUNTING_POLL_INTERVAL_SECONDS)
+//  6. SIGINT/SIGTERM 시 graceful: ctx cancel → 서버 Shutdown(5s) → db Close
 package main
 
 import (
@@ -13,15 +13,17 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
 	"syscall"
 	"time"
 
-	"github.com/Moonjm/nunting/server/internal/apns"
 	"github.com/Moonjm/nunting/server/internal/api"
+	"github.com/Moonjm/nunting/server/internal/apns"
 	"github.com/Moonjm/nunting/server/internal/db"
 	"github.com/Moonjm/nunting/server/internal/logfile"
 	"github.com/Moonjm/nunting/server/internal/poll"
@@ -29,7 +31,7 @@ import (
 
 func main() {
 	// 1) env
-	dbPath := envOr("NUNTING_DB_PATH", "/var/lib/nunting/state.db")
+	dbDSN := postgresDSN()
 	bindHost := envOr("NUNTING_BIND_HOST", "127.0.0.1")
 	bindPort := envOr("NUNTING_BIND_PORT", "8080")
 	pollIntervalSec, _ := strconv.Atoi(envOr("NUNTING_POLL_INTERVAL_SECONDS", "180"))
@@ -62,10 +64,11 @@ func main() {
 		slog.Info("log_dir_enabled", "dir", logDir, "retain_days", retainDays)
 	}
 
-	// 2) DB
-	store, err := db.Open(dbPath)
+	// 2) DB (PostgreSQL)
+	store, err := db.Open(dbDSN)
 	if err != nil {
-		slog.Error("db_open_failed", "path", dbPath, "err", err)
+		// DSN 은 password 포함이라 로그에 그대로 안 남긴다.
+		slog.Error("db_open_failed", "host", envOr("NUNTING_DB_HOST", "localhost"), "err", err)
 		os.Exit(1)
 	}
 	defer store.Close()
@@ -106,7 +109,9 @@ func main() {
 	// 6) Run + graceful shutdown
 	serveErr := make(chan error, 1)
 	go func() {
-		slog.Info("http_serving", "addr", srv.Addr, "db_path", dbPath, "poll_sec", pollIntervalSec)
+		slog.Info("http_serving", "addr", srv.Addr,
+			"db_host", envOr("NUNTING_DB_HOST", "localhost"),
+			"db_name", envOr("NUNTING_DB_NAME", "nnt"), "poll_sec", pollIntervalSec)
 		serveErr <- srv.ListenAndServe()
 	}()
 
@@ -131,4 +136,25 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// postgresDSN NUNTING_DB_* env 로 Postgres DSN 을 조립한다. host/port/password 는
+// 환경별로 다르고(.env 로 주입), user/db 는 로컬·Pi 동일(기본 nnt). password 가
+// 특수문자를 포함해도 깨지지 않게 url.Userinfo 로 인코딩한다.
+func postgresDSN() string {
+	host := envOr("NUNTING_DB_HOST", "localhost")
+	port := envOr("NUNTING_DB_PORT", "5432")
+	name := envOr("NUNTING_DB_NAME", "nnt")
+	user := envOr("NUNTING_DB_USER", "nnt")
+	pass := os.Getenv("NUNTING_DB_PASSWORD")
+	sslmode := envOr("NUNTING_DB_SSLMODE", "disable")
+
+	u := url.URL{
+		Scheme:   "postgres",
+		User:     url.UserPassword(user, pass),
+		Host:     net.JoinHostPort(host, port),
+		Path:     "/" + name,
+		RawQuery: "sslmode=" + url.QueryEscape(sslmode),
+	}
+	return u.String()
 }
