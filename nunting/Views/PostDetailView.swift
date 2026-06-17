@@ -399,7 +399,11 @@ struct PostDetailView: View, Equatable {
             // screen". Concurrent fetches are now capped at 4 by
             // `SDWebImageDownloader.config.maxConcurrentDownloads`
             // (set in `SDWebImageSetup`), so dropping the lazy gate
-            // doesn't burst the downloader.
+            // doesn't burst the downloader. The memory cost of eager
+            // materialization (off-screen rows never derealize → every body
+            // image's decode stays resident) is paid back by
+            // `releasesWhenOffscreen` below: layout stays eager/pinned, but the
+            // decoded bitmap is dropped when a row scrolls away.
             //
             // Computed once per render: maps each image block's id to its
             // 0-based position among image blocks, so the case below can spot
@@ -475,6 +479,14 @@ struct PostDetailView: View, Equatable {
                             // its fetch start at commit instead of waiting for
                             // the first scroll-visibility callback.
                             visibilityGated: imageIndex != 0,
+                            // Eager VStack pins every block's height but never
+                            // derealizes off-screen rows — so without this each
+                            // body image's decoded bitmap (tall panels ~40 MB)
+                            // stays resident for the whole post (~640 MB on a
+                            // long webtoon → frontmost OOM). Drop the decode when
+                            // scrolled away (height stays pinned via aspect),
+                            // re-decode on return.
+                            releasesWhenOffscreen: true,
                             clampsToNaturalWidth: true,
                             // Each visible body image warms the next few below
                             // it so scrolling lands on cache hits.

@@ -85,6 +85,32 @@ struct NetworkImage: View {
     /// gate).
     var visibilityGated: Bool = false
 
+    /// When `true`, the decoded image is *dropped* (swapped back to a
+    /// frame-pinned placeholder) once the view scrolls fully off-screen, and
+    /// re-decoded on return. Bounds a long post's live decode to ~viewport
+    /// worth instead of holding every body image's bitmap for the whole post.
+    ///
+    /// Why body images need this: the article body is an **eager `VStack`**
+    /// (PostDetailView), chosen so every block's height stays pinned —
+    /// dropping that for a `LazyVStack` reintroduced the "back-drag from
+    /// comments → blank screen" collapse. But eager means SwiftUI never
+    /// derealizes off-screen rows, so each body image's `SDAnimatedImageView`
+    /// keeps its decoded bitmap (a tall aagag panel downsamples to width-only
+    /// → ~40 MB each) *and* its animation frame buffer alive for the whole
+    /// post. A 15-panel webtoon held ~640 MB of un-evictable view-owned decode
+    /// (confirmed: `SDImageCache.clearMemory()` recovered almost none of it) —
+    /// the frontmost-OOM driver.
+    ///
+    /// This flag keeps the layout eager (height stays pinned via
+    /// `effectiveAspect`, so the placeholder swap is invisible and can't
+    /// collapse the scroll position) while making the *decode* viewport-bound:
+    /// off-screen → placeholder → bitmap freed; on-screen → re-shown from cache.
+    /// Trades a re-decode (CPU, brief spinner if evicted past SD's memory
+    /// cache) for a hard ceiling on resident decode — the right trade when the
+    /// alternative is a jetsam kill. Release is debounced (`releaseDelayNanos`)
+    /// so a small scroll across the viewport edge doesn't thrash.
+    var releasesWhenOffscreen: Bool = false
+
     /// When `false`, the loading state and the failed state both
     /// render as `Color.clear` instead of the gray box / retry button.
     /// Used for inline icons (comment level / auth) where the
@@ -125,9 +151,34 @@ struct NetworkImage: View {
     @State private var measuredAspect: CGFloat?
     @State private var measuredNaturalPointWidth: CGFloat?
     @State private var failed = false
+    /// Current viewport intersection for `releasesWhenOffscreen` images.
+    /// Starts `true` so eager (image-0) and pre-gate images render without
+    /// waiting for a first visibility callback; gated images are still held
+    /// back by `hasBeenVisible`, so this defaulting to `true` never leaks an
+    /// off-screen gated image on-screen.
+    @State private var isOnscreen = true
+    /// Pending debounced release; cancelled if the view re-enters the viewport
+    /// before it fires.
+    @State private var releaseTask: Task<Void, Never>?
+
+    /// Off-screen dwell before a `releasesWhenOffscreen` image drops its
+    /// decode. Long enough that a small scroll wobble across the viewport edge
+    /// (or a fast fling that briefly uncovers a row) doesn't drop-and-redecode;
+    /// short enough that the resident decode set stays near viewport size.
+    private static let releaseDelayNanos: UInt64 = 500 * 1_000_000
 
     var body: some View {
         let effectiveAspect = aspectRatio ?? measuredAspect
+        // Load gate (gated images wait for the viewport) AND decode gate
+        // (`releasesWhenOffscreen` images drop their bitmap off-screen). Both
+        // fall through to `gatePlaceholder`, which is frame-pinned by
+        // `effectiveAspect` — so neither swap resizes the row.
+        let showsHeavyImage = Self.shouldShowHeavyImage(
+            visibilityGated: visibilityGated,
+            hasBeenVisible: hasBeenVisible,
+            releasesWhenOffscreen: releasesWhenOffscreen,
+            isOnscreen: isOnscreen
+        )
 
         Group {
             if failed {
@@ -139,7 +190,7 @@ struct NetworkImage: View {
                     // attention to the failure.
                     Color.clear
                 }
-            } else if !visibilityGated || hasBeenVisible {
+            } else if showsHeavyImage {
                 // Heavy animated WebP (humoruniv 짤방) renders through `WebImage`
                 // with first-frame-only decode; everything else animates inline
                 // via `AnimatedImage`. The split exists because
@@ -155,27 +206,52 @@ struct NetworkImage: View {
                     animatedBodyImage
                 }
             } else {
-                // Closed-gate placeholder — frame-identical to the loading
-                // placeholder's base so the swap when `hasBeenVisible` flips
-                // only *adds* the spinner / blurred poster (load starting)
-                // rather than resizing. Deliberately bare: a gated image that
-                // hasn't scrolled into view isn't loading yet, so no spinner
-                // and — crucially — no poster fetch.
+                // Placeholder for two cases, both frame-pinned by
+                // `effectiveAspect` so the swap never resizes the row:
+                //  1. gated image not yet scrolled into view (never loaded), and
+                //  2. `releasesWhenOffscreen` image scrolled away (decode dropped).
+                // Frame-identical to the loading placeholder's base, so the swap
+                // back to the heavy image only *adds* the spinner / blurred
+                // poster rather than resizing. Deliberately bare: not loading
+                // right now → no spinner and — crucially — no poster fetch.
                 gatePlaceholder
             }
         }
         .applyAspect(effectiveAspect)
         .frame(maxWidth: clampsToNaturalWidth ? (measuredNaturalPointWidth ?? .infinity) : .infinity)
-        .gateOnVisibility(enabled: visibilityGated) { visible in
+        .gateOnVisibility(enabled: visibilityGated || releasesWhenOffscreen) { visible in
             // visibility callback 자체는 SwiftUI 의 view-update 사이클
-            // 안에서 fire 될 수 있음. 검사(`!hasBeenVisible`)+쓰기 둘 다
-            // async block 안으로 묶어서 (a) view-update 중 @State 읽기
-            // 표면 0, (b) 빠른 두 번 fire 시 redundant write 차단.
-            guard visible else { return }
+            // 안에서 fire 될 수 있음 → 검사+쓰기 둘 다 async block 안으로
+            // 묶어 view-update 중 @State 읽기/쓰기 표면을 0 으로.
             DispatchQueue.main.async {
-                guard !hasBeenVisible else { return }
-                hasBeenVisible = true
-                reportVisibleIfNeeded()
+                if visible {
+                    // 화면 재진입: 대기 중인 release 취소 + 디코드 복귀, 그리고
+                    // (gated 라면) 최초 1회 로드 게이트 개방 + 프리페치 보고.
+                    releaseTask?.cancel()
+                    releaseTask = nil
+                    if !isOnscreen { isOnscreen = true }
+                    // 로드 게이트는 gated 이미지에만 의미 — non-gated(image-0)는
+                    // 이미 loadEligible 이므로 hasBeenVisible("게이트 열림")을
+                    // 건드리지 않는다(프리페치 보고는 onAppear 가 담당).
+                    if visibilityGated, !hasBeenVisible {
+                        hasBeenVisible = true
+                        reportVisibleIfNeeded()
+                    }
+                } else if releasesWhenOffscreen, isOnscreen, releaseTask == nil,
+                          effectiveAspect != nil {
+                    // 완전히 화면 밖(threshold 0): 디바운스 후 디코드 폐기. 이미
+                    // release 예약 중(releaseTask != nil)이거나 이미 해제됨
+                    // (!isOnscreen)이면 재예약 안 함 — onScrollVisibilityChange 가
+                    // invisible 을 중복 emit 해도 디바운스 타이머가 리셋돼 release
+                    // 가 무한 연기되는 것(starvation) 방지.
+                    //
+                    // effectiveAspect != nil 가드: aspect 가 아직 미측정
+                    // (parser 가 width 를 못 줬고 첫 디코드 전)인 이미지는 폐기하지
+                    // 않는다 — placeholder 를 핀할 aspect 가 없어 높이가 무너지면
+                    // eager VStack 의 스크롤 위치가 어긋난다(Req2). 디코드가 끝나면
+                    // measuredAspect 가 잡혀 다음 off-screen 부터 정상 폐기된다.
+                    scheduleRelease()
+                }
             }
         }
         .onAppear {
@@ -283,6 +359,23 @@ struct NetworkImage: View {
         return false
     }
 
+    /// 표시 게이트 진리표 — `static` 이라 4-corner 케이스를 단위 테스트로 핀
+    /// (`thumbnailContext`/`isCancellation` 과 같은 추출 패턴). 두 게이트의 AND:
+    /// - 로드 게이트: gated 이미지는 `hasBeenVisible`(뷰포트 진입) 전엔 안 뜸.
+    /// - 디코드 게이트: `releasesWhenOffscreen` 이미지는 off-screen(`!isOnscreen`)
+    ///   에서 비트맵을 폐기(placeholder 로). 둘 다 통과해야 heavy 이미지를 그린다.
+    /// gated + 미진입 이미지는 `isOnscreen` 기본값(true) 과 무관하게 항상 false
+    /// — off-screen gated 누출 불변식.
+    static func shouldShowHeavyImage(
+        visibilityGated: Bool,
+        hasBeenVisible: Bool,
+        releasesWhenOffscreen: Bool,
+        isOnscreen: Bool
+    ) -> Bool {
+        let loadEligible = !visibilityGated || hasBeenVisible
+        return loadEligible && (!releasesWhenOffscreen || isOnscreen)
+    }
+
     /// Fire `onBecameVisible` at most once. Called from the gate-open path
     /// (gated) and from `.onAppear` (eager); the `didReportVisible` latch
     /// makes repeated appears / callbacks idempotent.
@@ -290,6 +383,24 @@ struct NetworkImage: View {
         guard !didReportVisible else { return }
         didReportVisible = true
         onBecameVisible?()
+    }
+
+    /// Debounced off-screen release: after `releaseDelayNanos` of continuous
+    /// invisibility, flip `isOnscreen` so the heavy image view leaves the tree.
+    /// The new win is dropping the **static decoded bitmap** (the ~40 MB tall
+    /// panels) — the animation frame buffer was already released off-screen by
+    /// `.purgeable(true)`/`clearBufferWhenStopped`, but that did nothing for
+    /// still images, which is where the eager-VStack memory actually piled up.
+    /// A re-entry (`visible == true`) cancels the pending task before it fires;
+    /// re-scheduling cancels any prior pending release first.
+    private func scheduleRelease() {
+        releaseTask?.cancel()
+        releaseTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: Self.releaseDelayNanos)
+            guard !Task.isCancelled else { return }
+            isOnscreen = false
+            releaseTask = nil
+        }
     }
 
     /// Pre-load state for gated images that haven't scrolled into view:
