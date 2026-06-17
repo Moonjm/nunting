@@ -79,22 +79,7 @@ final class PostDetailLoader {
         self.fetcher = fetcher
         self.resolver = resolver
         self.warmHTML = warmHTML
-        #if DEBUG
-        Self.liveInstances += 1
-        print("🟢 [LEAK] PostDetailLoader init — live=\(Self.liveInstances)")
-        #endif
     }
-
-    #if DEBUG
-    /// 누수 진단용 라이브 인스턴스 카운터. 글 A→B→C 를 열 때 옛 loader 가
-    /// deinit 되면 live 가 1 로 안정, 안 되면(=서브트리 미해제 누수) 단조 증가.
-    /// 메인스레드(SwiftUI)에서만 만지므로 nonisolated(unsafe) 로 충분.
-    nonisolated(unsafe) static var liveInstances = 0
-    deinit {
-        Self.liveInstances -= 1
-        print("🔴 [LEAK] PostDetailLoader deinit — live=\(Self.liveInstances)")
-    }
-    #endif
 
     // MARK: - Public API
 

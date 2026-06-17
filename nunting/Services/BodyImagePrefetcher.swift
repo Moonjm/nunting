@@ -63,21 +63,7 @@ final class BodyImagePrefetcher {
         self.window = window
         self.skipPrefetch = skipPrefetch
         self.prefetchContext = thumbnailContext
-        #if DEBUG
-        Self.liveInstances += 1
-        print("🟢 [LEAK] BodyImagePrefetcher init — live=\(Self.liveInstances)")
-        #endif
     }
-
-    #if DEBUG
-    /// 누수 진단용 라이브 인스턴스 카운터 — [[PostDetailLoader]] 의 것과 짝.
-    /// 글 전환 시 옛 PostDetailView 서브트리가 풀리면 prefetcher 도 deinit 됨.
-    nonisolated(unsafe) static var liveInstances = 0
-    deinit {
-        Self.liveInstances -= 1
-        print("🔴 [LEAK] BodyImagePrefetcher deinit — live=\(Self.liveInstances)")
-    }
-    #endif
 
     /// The image at `index` became visible — warm the next `window` URLs that
     /// haven't been queued yet. No-op when `index` is out of range (e.g. a
