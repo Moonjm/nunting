@@ -50,8 +50,12 @@ final class BodyImagePrefetcher {
     let prefetchContext: [SDWebImageContextOption: Any]?
 
     init(
+        // 3 → 2: 룩어헤드를 한 장 줄여 동시에 살아있는 디코드 이미지/ahead-decode
+        // CPU 를 낮춘다(메모리 선형 증가 + CPU exception 완화). 스크롤 체감엔 거의
+        // 영향 없음 — 프리페치는 .lowPriority(아래 prefetchURLs)라 4개 다운로더
+        // 슬롯을 on-screen 로드에 양보하므로, 룩어헤드를 줄여도 표시 이미지는 안 굶는다.
         urls: [URL],
-        window: Int = 3,
+        window: Int = 2,
         skipPrefetch: Set<URL> = [],
         thumbnailContext: [SDWebImageContextOption: Any]? = nil
     ) {
