@@ -319,10 +319,46 @@ extension BoardParser {
     /// fragment can't be parsed. Used by the Aagag `/api/cmt` and Inven JSON
     /// comment paths.
     public nonisolated func renderCommentText(fromHTML html: String) -> String {
+        // Plain-text comments (no markup at all) are the common case on the
+        // JSON-string comment paths (Aagag/Inven) and don't need a DOM. Each
+        // one used to spin up a full `parseBodyFragment` Document
+        // (Document + Element/TextNode/Attribute per comment) — the dominant
+        // tiny-object churn behind the heap-fragmentation footprint ratchet on
+        // comment-heavy threads. Skip straight to the same whitespace/entity
+        // normalization the DOM path produces. Output is asserted byte-identical
+        // to the SwiftSoup path for the no-`<` case in
+        // `CommentPlainFastPathTests`.
+        guard html.contains("<") else { return renderPlainCommentText(html) }
+        return renderCommentTextViaSwiftSoup(fromHTML: html)
+    }
+
+    /// SwiftSoup-backed flatten — the original `renderCommentText(fromHTML:)`
+    /// body. Used for inputs that actually carry markup, and serves as the
+    /// equivalence oracle the plain-text fast path is tested against.
+    nonisolated func renderCommentTextViaSwiftSoup(fromHTML html: String) -> String {
         return (try? parsedBodyFragment(html) { doc -> String in
             guard let body = doc.body() else { return html }
             return renderCommentText(from: body)
         }) ?? html
+    }
+
+    /// DOM-free flatten for markup-less comment HTML. Replicates exactly what
+    /// the SwiftSoup path yields for the no-tag case: decode entities, collapse
+    /// every ASCII-whitespace run to a single space (as `Element.text()` does),
+    /// keep each `&nbsp;`/`\u{00A0}` as a single non-collapsing space (the
+    /// `normalizeNonBreakingSpaces` → marker → `normalizeCommentWhitespace`
+    /// round-trip the DOM path performs), then trim.
+    nonisolated func renderPlainCommentText(_ html: String) -> String {
+        // Inherits the DOM path's sentinel assumption: if real comment text
+        // literally contains `\u{0001}NL\u{0001}` / `\u{0001}SP\u{0001}` it is
+        // mistransformed — but identically to the SwiftSoup path, so the
+        // equivalence contract still holds (U+0001 in board text ~never).
+        let decoded = (try? Entities.unescape(html)) ?? html
+        let markered = decoded.replacingOccurrences(of: "\u{00A0}", with: Self.nbspMarker)
+        // SwiftSoup's `.text()` whitespace set: space, tab, newline, CR, form-feed.
+        let collapsed = markered.replacingOccurrences(
+            of: #"[ \t\n\r\f]+"#, with: " ", options: .regularExpression)
+        return normalizeCommentWhitespace(collapsed)
     }
 
     /// Resolve a raw URL string (attribute value, style `url(...)` payload,
