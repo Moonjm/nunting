@@ -349,6 +349,10 @@ extension BoardParser {
     /// `normalizeNonBreakingSpaces` → marker → `normalizeCommentWhitespace`
     /// round-trip the DOM path performs), then trim.
     nonisolated func renderPlainCommentText(_ html: String) -> String {
+        // Inherits the DOM path's sentinel assumption: if real comment text
+        // literally contains `\u{0001}NL\u{0001}` / `\u{0001}SP\u{0001}` it is
+        // mistransformed — but identically to the SwiftSoup path, so the
+        // equivalence contract still holds (U+0001 in board text ~never).
         let decoded = (try? Entities.unescape(html)) ?? html
         let markered = decoded.replacingOccurrences(of: "\u{00A0}", with: Self.nbspMarker)
         // SwiftSoup's `.text()` whitespace set: space, tab, newline, CR, form-feed.
