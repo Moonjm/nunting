@@ -329,6 +329,10 @@ extension BoardParser {
         // to the SwiftSoup path for the no-`<` case in
         // `CommentPlainFastPathTests`.
         guard html.contains("<") else { return renderPlainCommentText(html) }
+        // B2: 단순 마크업(블록 줄바꿈 / 인라인 강조 / img)만 있는 댓글은 DOM 없이
+        // 문자열 스캔으로 처리. 앵커·표·미지 태그·비정형은 nil → SwiftSoup fallback
+        // (아는 케이스만 가로채 출력 불변 보장).
+        if let lite = renderCommentTextLite(fromHTML: html) { return lite }
         return renderCommentTextViaSwiftSoup(fromHTML: html)
     }
 
@@ -353,12 +357,52 @@ extension BoardParser {
         // literally contains `\u{0001}NL\u{0001}` / `\u{0001}SP\u{0001}` it is
         // mistransformed — but identically to the SwiftSoup path, so the
         // equivalence contract still holds (U+0001 in board text ~never).
-        let decoded = (try? Entities.unescape(html)) ?? html
+        finishLiteRender(html)
+    }
+
+    /// 공통 꼬리 — `Element.text()` + `normalizeCommentWhitespace` 의 DOM-free 등가물.
+    /// 엔티티 디코드 → `&nbsp;`/`\u{00A0}` 를 비공백 sentinel 로 보존 → ASCII 공백 run
+    /// (space/tab/LF/CR/FF) 을 한 칸으로 collapse → `normalizeCommentWhitespace`.
+    /// 평문(B1)·단순마크업(B2) 경로가 같은 정규화를 타도록 공유한다.
+    nonisolated func finishLiteRender(_ raw: String) -> String {
+        let decoded = (try? Entities.unescape(raw)) ?? raw
         let markered = decoded.replacingOccurrences(of: "\u{00A0}", with: Self.nbspMarker)
-        // SwiftSoup's `.text()` whitespace set: space, tab, newline, CR, form-feed.
         let collapsed = markered.replacingOccurrences(
             of: #"[ \t\n\r\f]+"#, with: " ", options: .regularExpression)
         return normalizeCommentWhitespace(collapsed)
+    }
+
+    /// B2: 단순 마크업 댓글을 DOM 없이 단일 스캔으로 평탄화. `nil` = 처리 불가
+    /// (앵커/표/미지 태그/비정형 `<`) → 호출부가 SwiftSoup 으로 fallback.
+    ///
+    /// 동치 근거: `renderCommentText(from:)` = normalizeNonBreakingSpaces →
+    /// convertAnchorsToMarkdown(앵커 없으면 no-op) → stampBlockBreaks(블록 opening
+    /// 앞 blockMarker) → `.text()` → normalizeCommentWhitespace. `.text()` 가 블록/br
+    /// 앞에 넣는 공백은 바로 앞 blockMarker + normalize 의 `[ \t]*\n` 정리로 상쇄되어,
+    /// **"블록 opening → blockMarker, 인라인/img → 제거"** 만으로 출력이 일치한다.
+    /// (CommentMarkupFastPathTests 가 SwiftSoup oracle 로 핀.)
+    nonisolated func renderCommentTextLite(fromHTML html: String) -> String? {
+        var out = ""
+        out.reserveCapacity(html.count)
+        var i = html.startIndex
+        let end = html.endIndex
+        while i < end {
+            let ch = html[i]
+            if ch != "<" {
+                out.append(ch)
+                i = html.index(after: i)
+                continue
+            }
+            guard let gt = html[i...].firstIndex(of: ">") else { return nil }  // 비정형 `<`
+            let inner = html[html.index(after: i)..<gt]
+            switch CommentLiteScanner.tagAction(inner) {
+            case .block: out += Self.blockMarker
+            case .strip: break
+            case .fallback: return nil
+            }
+            i = html.index(after: gt)
+        }
+        return finishLiteRender(out)
     }
 
     /// Resolve a raw URL string (attribute value, style `url(...)` payload,
@@ -743,5 +787,34 @@ public enum ParserError: Error, LocalizedError {
         case .structureChanged(let detail): "사이트 구조가 바뀐 것 같아요 (\(detail))"
         case .unsupportedSite(let site): "\(site.displayName)은 아직 지원하지 않습니다"
         }
+    }
+}
+
+/// `renderCommentTextLite` 의 태그 분류 헬퍼. protocol extension 은 nested type /
+/// static stored property 를 못 가지므로 별도 타입으로 분리한다.
+enum CommentLiteScanner {
+    enum TagAction { case block, strip, fallback }
+
+    /// stampBlockBreaks 가 stamp 하는 정확한 블록 태그 — opening 시 blockMarker 1개.
+    static let blockTags: Set<String> = [
+        "br", "p", "div", "li", "blockquote", "tr"]
+
+    /// `.text()` 에 텍스트만 기여하는(앞에 공백을 안 넣는) **검증된 inline** + 미디어.
+    /// SwiftSoup 은 `<s>`/`<u>`/`<sup>` 등 일부 태그를 block 으로 취급해 `.text()` 가
+    /// 앞에 공백을 넣으므로(테스트로 발견), 동치가 깨진다 → 그런 태그는 여기 넣지
+    /// 않고 fallback 시킨다(드물어 손실 없음). `img` 는 스티커 경로가 별도 추출 → drop.
+    static let stripTags: Set<String> = [
+        "b", "i", "strong", "em", "span", "font", "img"]
+
+    /// `inner` = `<` 와 `>` 사이(예: `"br"`, `"/p"`, `"div class=x"`, `"a href=…"`).
+    static func tagAction(_ inner: Substring) -> TagAction {
+        var s = inner
+        while let f = s.first, f == " " || f == "\t" || f == "\n" || f == "/" { s = s.dropFirst() }
+        let name = String(s.prefix { $0.isLetter || $0.isNumber }).lowercased()
+        guard !name.isEmpty else { return .fallback }  // `<!-- -->`, `<!doctype>` 등
+        let isClosing = inner.drop(while: { $0 == " " || $0 == "\t" || $0 == "\n" }).first == "/"
+        if blockTags.contains(name) { return isClosing ? .strip : .block }
+        if stripTags.contains(name) { return .strip }
+        return .fallback  // a, table/td/ul/ol/pre/code/hN/iframe/video/unknown
     }
 }
