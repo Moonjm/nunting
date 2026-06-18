@@ -161,6 +161,11 @@ struct NetworkImage: View {
     /// before it fires.
     @State private var releaseTask: Task<Void, Never>?
 
+    /// Phase-3 teardown: drives the `appActive` decode gate so backgrounding
+    /// drops `releasesWhenOffscreen` body decodes (keep-alive detail's resident
+    /// bitmaps) without waiting for a scroll-driven release.
+    @Environment(\.scenePhase) private var scenePhase
+
     /// Off-screen dwell before a `releasesWhenOffscreen` image drops its
     /// decode. Long enough that a small scroll wobble across the viewport edge
     /// (or a fast fling that briefly uncovers a row) doesn't drop-and-redecode;
@@ -177,7 +182,11 @@ struct NetworkImage: View {
             visibilityGated: visibilityGated,
             hasBeenVisible: hasBeenVisible,
             releasesWhenOffscreen: releasesWhenOffscreen,
-            isOnscreen: isOnscreen
+            isOnscreen: isOnscreen,
+            // Drop `releasesWhenOffscreen` decodes while suspended; `.inactive`
+            // (app switcher / control center) keeps them so the snapshot looks
+            // right — only true `.background` tears down.
+            appActive: scenePhase != .background
         )
 
         Group {
@@ -366,14 +375,23 @@ struct NetworkImage: View {
     ///   에서 비트맵을 폐기(placeholder 로). 둘 다 통과해야 heavy 이미지를 그린다.
     /// gated + 미진입 이미지는 `isOnscreen` 기본값(true) 과 무관하게 항상 false
     /// — off-screen gated 누출 불변식.
+    /// `appActive` (scenePhase != .background) is the phase-3 background-teardown
+    /// gate: a keep-alive detail's body images sit on-screen with no scroll to
+    /// fire a visibility release, so they'd hold their decode the whole time the
+    /// app is suspended (a documented suspended-OOM contributor). Treating
+    /// background as "everything off-screen" drops every `releasesWhenOffscreen`
+    /// decode on suspend; on foreground `isOnscreen` (preserved @State, still the
+    /// last viewport value) re-shows only the visible ones. Non-releasing images
+    /// are unaffected — `appActive` only gates the release-eligible ones.
     static func shouldShowHeavyImage(
         visibilityGated: Bool,
         hasBeenVisible: Bool,
         releasesWhenOffscreen: Bool,
-        isOnscreen: Bool
+        isOnscreen: Bool,
+        appActive: Bool
     ) -> Bool {
         let loadEligible = !visibilityGated || hasBeenVisible
-        return loadEligible && (!releasesWhenOffscreen || isOnscreen)
+        return loadEligible && (!releasesWhenOffscreen || (isOnscreen && appActive))
     }
 
     /// Fire `onBecameVisible` at most once. Called from the gate-open path

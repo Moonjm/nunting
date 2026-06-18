@@ -209,6 +209,10 @@ struct ContentView: View {
                 // jetsam 이 "제일 큰 백그라운드 앱"인 우리를 먼저 kill 했다(확인된
                 // JetsamEvent 2건). 백그라운드에도 같은 flush 를 적용해 막는다.
                 MemoryPressureResponder.shared.respond()
+                // Phase-3: 세션 detail 캐시(최대 20글 파싱본)도 해제 — keep-alive
+                // 로 열려있는 현재 글은 loader 가 쥐고 있어 안전. 본문 이미지
+                // 디코드는 NetworkImage 가 scenePhase=.background 를 보고 스스로 떨군다.
+                detailCache.clear()
                 FootprintLogger.shared.onBackground()
             }
         }
