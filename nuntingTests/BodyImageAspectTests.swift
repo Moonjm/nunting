@@ -52,6 +52,13 @@ final class BodyImageAspectTests: XCTestCase {
                      "파싱 불가 → nil")
     }
 
+    func testIgnoresNonPixelStyleDimensions() {
+        // % / calc 등 px 아닌 width/height 는 무시(접미사 px 만 인정).
+        XCTAssertNil(ParserBlockWalker.declaredAspectRatio(
+            style: "width: 100%; height: calc(50vh - 10px);", width: "", height: ""
+        ), "px 아닌 치수 → nil (NetworkImage fallback 으로)")
+    }
+
     // MARK: - NetworkImage.effectiveAspect 우선순위
 
     func testEffectiveAspectPrefersParserValue() {

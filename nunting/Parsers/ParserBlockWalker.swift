@@ -297,10 +297,12 @@ public struct ParserBlockWalker: Sendable {
         return nil
     }
 
-    /// CSS px 치수(`800px` → 800). 단위 없는/파싱 불가 값은 nil.
+    /// CSS px 치수(`800px` → 800). `px` 는 접미사일 때만 제거하므로 `100%`·
+    /// `calc(...)` 등 px 아닌 값은 nil(중간에 px 가 박힌 병리적 값도 오인 안 함).
     private nonisolated static func cssPixels(_ name: String, in lowered: String) -> Double? {
         guard let raw = cssDeclaration(name, in: lowered) else { return nil }
-        let trimmed = raw.replacingOccurrences(of: "px", with: "").trimmingCharacters(in: .whitespaces)
-        return Double(trimmed)
+        var v = raw.trimmingCharacters(in: .whitespaces)
+        if v.hasSuffix("px") { v = String(v.dropLast(2)).trimmingCharacters(in: .whitespaces) }
+        return Double(v)
     }
 }

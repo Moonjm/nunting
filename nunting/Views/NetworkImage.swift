@@ -266,11 +266,13 @@ struct NetworkImage: View {
                     // invisible 을 중복 emit 해도 디바운스 타이머가 리셋돼 release
                     // 가 무한 연기되는 것(starvation) 방지.
                     //
-                    // effectiveAspect != nil 가드: aspect 가 아직 미측정
-                    // (parser 가 width 를 못 줬고 첫 디코드 전)인 이미지는 폐기하지
-                    // 않는다 — placeholder 를 핀할 aspect 가 없어 높이가 무너지면
-                    // eager VStack 의 스크롤 위치가 어긋난다(Req2). 디코드가 끝나면
-                    // measuredAspect 가 잡혀 다음 off-screen 부터 정상 폐기된다.
+                    // effectiveAspect != nil 가드: placeholder 를 핀할 aspect 가
+                    // 없으면 폐기 시 높이가 무너져 eager VStack 스크롤 위치가
+                    // 어긋난다(Req2). 본문 이미지는 `fallbackAspect: 1.0` 이 항상
+                    // 깔려 이 가드를 바로 통과 → 첫 디코드 전이라도 1:1 로 핀된 채
+                    // release 된다(재진입 시 1:1 → measuredAspect 로 보정). aspect
+                    // 를 안 주는 비-본문 release 호출부가 생기면 그땐 이 가드가
+                    // 종전처럼 미측정 이미지를 보호한다.
                     scheduleRelease()
                 }
             }
