@@ -202,11 +202,11 @@ public struct HumorParser: BoardParser {
         // 이걸 blur-up 포스터로 달아 즉시 저해상도 프리뷰를 띄운다. JPG 로
         // 갈아탄 이미지(=가벼움)는 webp 가 아니라 자연히 제외돼 불필요한
         // 썸네일 요청이 붙지 않는다.
-        rules.imageBlock = { url in
+        rules.imageBlock = { url, aspect in
             guard url.pathExtension.lowercased() == "webp",
                   let poster = Self.thumbnailProxyURL(for: url)
-            else { return .image(url) }
-            return .image(url, posterURL: poster)
+            else { return .image(url, aspectRatio: aspect) }
+            return .image(url, posterURL: poster, aspectRatio: aspect)
         }
         rules.customElement = { [self] el in
             // Humor 본문 비디오는 raw `<video>` 가 아니라

@@ -53,6 +53,26 @@ final class ParserBlockWalkerTests: XCTestCase {
         }, "뒷 텍스트")
     }
 
+    func testImageBlockCarriesDeclaredAspectRatio() throws {
+        // 인벤 본문 이미지 형식: style 에 aspect-ratio 선언. 워커가 이를
+        // image 블록에 실어야 placeholder 높이 핀 + off-screen release 가 산다.
+        let blocks = try walk("<img src='https://e.com/a.png' style='width: 800px; aspect-ratio: 1366 / 768; max-width: 100%;'>")
+        XCTAssertEqual(blocks.count, 1)
+        guard case .image(_, _, let aspect) = blocks[0].kind
+        else { return XCTFail("image 블록 기대") }
+        XCTAssertEqual(aspect ?? 0, 1366.0 / 768.0, accuracy: 0.001,
+                       "워커가 선언된 aspect-ratio 를 image 블록에 실어야 함")
+    }
+
+    func testImageBlockAspectNilWhenNoDimensions() throws {
+        // 크기 정보 없는 이미지는 aspect nil → NetworkImage fallback 이 처리.
+        let blocks = try walk("<img src='https://e.com/a.png'>")
+        XCTAssertEqual(blocks.count, 1)
+        guard case .image(_, _, let aspect) = blocks[0].kind
+        else { return XCTFail("image 블록 기대") }
+        XCTAssertNil(aspect, "크기 정보 없으면 aspect nil")
+    }
+
     func testVideoPromotedToVideoBlock() throws {
         let blocks = try walk("<video src='https://e.com/v.mp4'></video>")
         XCTAssertEqual(blocks.count, 1)
@@ -119,11 +139,11 @@ final class ParserBlockWalkerTests: XCTestCase {
         // Simulate Ppomppu's "video bytes shipped inside <img>" quirk:
         // when the image URL ends in `.mov`, route to a `.video` block.
         let blocks = try walk("<img src='https://e.com/clip.mov'>") { rules in
-            rules.imageBlock = { url in
+            rules.imageBlock = { url, aspect in
                 if url.pathExtension.lowercased() == "mov" {
                     return .video(url, posterURL: nil)
                 }
-                return .image(url)
+                return .image(url, aspectRatio: aspect)
             }
         }
         XCTAssertEqual(blocks.count, 1)
