@@ -284,10 +284,16 @@ struct ContentView: View {
                 }
             )
         }
-        .onChange(of: selection.filter) { _, _ in
+        .onChange(of: selection.filter) { _, filter in
             // Filter switches can swap the path entirely (BoardFilter.replacementPath),
             // so the prior search query may not be meaningful on the new endpoint.
             selection.searchQuery = nil
+            // 모음처럼 하단 탭(=BoardFilter)이 소스 사이트를 통째로 바꾸는 보드는
+            // board 라벨만으론 어느 탭에서 메모리가 솟는지 안 보인다. 탭 전환을
+            // `board:<보드>/<탭>` 으로 태깅해 서버 뷰에서 탭별 footprint 를 가른다.
+            if let filter, !selection.board.filters.isEmpty {
+                FootprintLogger.shared.record("board:\(selection.board.name)/\(filter.name)")
+            }
         }
         .sheet(isPresented: $keywordListPresented, onDismiss: {
             // 시트에서 알림을 열어 읽었을 수 있으니 닫힐 때 뱃지 최신화.
