@@ -23,10 +23,11 @@ public struct WalkerRules: Sendable {
     public var resolveVideoURL: @Sendable (Element) throws -> URL?
 
     /// How to materialise the resolved image URL into a `ContentBlock`.
-    /// Default returns `.image(url)`. Ppomppu overrides to route `.mov`/
-    /// `.mp4` URLs (mobile bug — video bytes shipped inside `<img>`) into
-    /// a `.video` block.
-    public var imageBlock: @Sendable (URL) -> ContentBlock
+    /// `aspect` is the `<img>`'s declared width/height ratio (nil when the
+    /// markup carried none). Default returns `.image(url, aspectRatio: aspect)`.
+    /// Ppomppu overrides to route `.mov`/`.mp4` URLs (mobile bug — video bytes
+    /// shipped inside `<img>`) into a `.video` block.
+    public var imageBlock: @Sendable (URL, CGFloat?) -> ContentBlock
 
     /// Whether the walker should emit an inline link for an `<a>` whose
     /// resolved URL is `url`. Default true. Ppomppu overrides to drop the
@@ -51,7 +52,7 @@ public struct WalkerRules: Sendable {
         mediaTags: Set<String>,
         resolveImageURL: @escaping @Sendable (Element) throws -> URL?,
         resolveVideoURL: @escaping @Sendable (Element) throws -> URL?,
-        imageBlock: @escaping @Sendable (URL) -> ContentBlock,
+        imageBlock: @escaping @Sendable (URL, CGFloat?) -> ContentBlock,
         shouldEmitAnchor: @escaping @Sendable (URL) -> Bool,
         customElement: @escaping @Sendable (Element) throws -> [ContentBlock]?
     ) {
@@ -98,7 +99,7 @@ extension WalkerRules {
                 }
                 return parser.resolveHTTPURL(raw)
             },
-            imageBlock: { url in .image(url) },
+            imageBlock: { url, aspect in .image(url, aspectRatio: aspect) },
             shouldEmitAnchor: { _ in true },
             customElement: { _ in nil }
         )
@@ -183,7 +184,15 @@ public struct ParserBlockWalker: Sendable {
         case "img":
             if let url = try rules.resolveImageURL(el) {
                 flushInline(into: &blocks, inline: &inline)
-                blocks.append(rules.imageBlock(url))
+                // 디코드 없이 마크업의 선언 치수로 aspect 를 뽑아 image 블록에
+                // 싣는다 — placeholder 높이 핀(동시 디코드 throttle) + off-screen
+                // release 가드 통과. el 은 이미 파싱된 노드라 새 parse 없음.
+                let aspect = Self.declaredAspectRatio(
+                    style: (try? el.attr("style")) ?? "",
+                    width: (try? el.attr("width")) ?? "",
+                    height: (try? el.attr("height")) ?? ""
+                )
+                blocks.append(rules.imageBlock(url, aspect))
             }
             return
         case "video":
@@ -236,5 +245,62 @@ public struct ParserBlockWalker: Sendable {
         if rules.blockTags.contains(tag) {
             inline.appendText("\n")
         }
+    }
+
+    /// Parse an `<img>`'s *declared* aspect ratio (width / height) from its
+    /// markup, without decoding the image. Priority:
+    ///   1. CSS `aspect-ratio: W / H` (what Inven emits)
+    ///   2. `width` / `height` attributes (older markup)
+    ///   3. CSS `width: Wpx; height: Hpx`
+    /// Returns nil when no usable positive dimensions are declared — the
+    /// caller then leaves `aspectRatio` nil and `NetworkImage` applies its
+    /// fallback. Pure string parsing (no SwiftSoup, no per-call regex alloc)
+    /// so it adds zero parse/leak surface to the existing detail walk.
+    nonisolated static func declaredAspectRatio(style: String, width: String, height: String) -> CGFloat? {
+        let lowered = style.lowercased()
+
+        // 1. CSS `aspect-ratio: W / H` — 인벤 본문 이미지가 주는 형식.
+        if let raw = cssDeclaration("aspect-ratio", in: lowered) {
+            let parts = raw.split(separator: "/")
+            if parts.count == 2,
+               let w = Double(parts[0].trimmingCharacters(in: .whitespaces)),
+               let h = Double(parts[1].trimmingCharacters(in: .whitespaces)),
+               w > 0, h > 0 {
+                return CGFloat(w / h)
+            }
+        }
+
+        // 2. `width` / `height` 속성 (예전 마크업).
+        if let w = Double(width), let h = Double(height), w > 0, h > 0 {
+            return CGFloat(w / h)
+        }
+
+        // 3. CSS `width: Wpx; height: Hpx`.
+        if let w = cssPixels("width", in: lowered), let h = cssPixels("height", in: lowered), w > 0, h > 0 {
+            return CGFloat(w / h)
+        }
+
+        return nil
+    }
+
+    /// `style` 문자열에서 정확히 `name` 인 선언의 값을 반환(`;` 로 split 후
+    /// 첫 `:` 기준 prop/value 분리). `;`-분리라 `max-width` 가 `width` 로
+    /// 오인되지 않는다. 입력은 호출부에서 lowercased 된 상태.
+    private nonisolated static func cssDeclaration(_ name: String, in lowered: String) -> String? {
+        for decl in lowered.split(separator: ";") {
+            guard let colon = decl.firstIndex(of: ":") else { continue }
+            let prop = decl[..<colon].trimmingCharacters(in: .whitespaces)
+            if prop == name {
+                return decl[decl.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            }
+        }
+        return nil
+    }
+
+    /// CSS px 치수(`800px` → 800). 단위 없는/파싱 불가 값은 nil.
+    private nonisolated static func cssPixels(_ name: String, in lowered: String) -> Double? {
+        guard let raw = cssDeclaration(name, in: lowered) else { return nil }
+        let trimmed = raw.replacingOccurrences(of: "px", with: "").trimmingCharacters(in: .whitespaces)
+        return Double(trimmed)
     }
 }

@@ -127,6 +127,14 @@ struct NetworkImage: View {
     /// upscaling 3× into a full-column white box.
     var clampsToNaturalWidth: Bool = false
 
+    /// 파서도, 디코드 실측도 종횡비를 못 줄 때 쓰는 최후의 예약 비율(폭/높이).
+    /// 본문 이미지 호출부만 설정한다(아이콘/스티커는 nil 유지). 크기 정보를
+    /// 안 주는 보드의 이미지 슬롯이 0 높이로 무너져 뷰포트에 수십 장이 겹쳐
+    /// 한꺼번에 디코드되는 것을 막고(throttle), `releasesWhenOffscreen` 의
+    /// `effectiveAspect != nil` 가드를 통과시켜 off-screen 디코드 폐기가 동작하게
+    /// 한다. 디코드되면 `measuredAspect` 가 이 값을 덮어써 실제 비율로 보정된다.
+    var fallbackAspect: CGFloat? = nil
+
     /// Fired once, the first time this image becomes eligible to load — for
     /// gated images that's when the viewport gate opens; for eager
     /// (`visibilityGated == false`) images it's on first appear. Body images
@@ -173,7 +181,11 @@ struct NetworkImage: View {
     private static let releaseDelayNanos: UInt64 = 500 * 1_000_000
 
     var body: some View {
-        let effectiveAspect = aspectRatio ?? measuredAspect
+        let effectiveAspect = Self.effectiveAspect(
+            aspectRatio: aspectRatio,
+            measuredAspect: measuredAspect,
+            fallbackAspect: fallbackAspect
+        )
         // Load gate (gated images wait for the viewport) AND decode gate
         // (`releasesWhenOffscreen` images drop their bitmap off-screen). Both
         // fall through to `gatePlaceholder`, which is frame-pinned by
@@ -383,6 +395,18 @@ struct NetworkImage: View {
     /// decode on suspend; on foreground `isOnscreen` (preserved @State, still the
     /// last viewport value) re-shows only the visible ones. Non-releasing images
     /// are unaffected — `appActive` only gates the release-eligible ones.
+    /// 표시/예약에 쓸 종횡비 결정 — 우선순위: 파서 선언값 > 디코드 실측값 >
+    /// fallback. `static` 이라 우선순위 계약을 단위테스트로 핀. fallback 이
+    /// nil 이면(아이콘/스티커 등 비-본문 호출부) 셋 다 없을 때 nil 을 반환해
+    /// 종전 `applyAspect(nil)` no-op 동작을 유지한다.
+    static func effectiveAspect(
+        aspectRatio: CGFloat?,
+        measuredAspect: CGFloat?,
+        fallbackAspect: CGFloat?
+    ) -> CGFloat? {
+        aspectRatio ?? measuredAspect ?? fallbackAspect
+    }
+
     static func shouldShowHeavyImage(
         visibilityGated: Bool,
         hasBeenVisible: Bool,

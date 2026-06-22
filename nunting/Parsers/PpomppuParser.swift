@@ -96,7 +96,7 @@ public struct PpomppuParser: BoardParser {
         let skipURL = dealAnchor?.url
         var rules = WalkerRules.standard(for: self)
         rules.resolveImageURL  = imageURL(from:)
-        rules.imageBlock       = imageOrVideoBlock(for:)
+        rules.imageBlock       = imageOrVideoBlock(for:aspect:)
         rules.shouldEmitAnchor = { url in url != skipURL }
         let body = try ParserBlockWalker(parser: self, rules: rules).walk(content)
         blocks.append(contentsOf: body)
@@ -283,12 +283,12 @@ public struct PpomppuParser: BoardParser {
         "mov", "mp4", "m4v", "webm",
     ]
 
-    nonisolated private func imageOrVideoBlock(for url: URL) -> ContentBlock {
+    nonisolated private func imageOrVideoBlock(for url: URL, aspect: CGFloat?) -> ContentBlock {
         let ext = url.pathExtension.lowercased()
         if Self.videoPathExtensions.contains(ext) {
             return .video(url, posterURL: nil)
         }
-        return .image(url)
+        return .image(url, aspectRatio: aspect)
     }
 
     nonisolated private func imageURL(from element: Element) throws -> URL? {

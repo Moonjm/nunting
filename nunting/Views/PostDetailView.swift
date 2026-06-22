@@ -488,6 +488,12 @@ struct PostDetailView: View, Equatable {
                             // re-decode on return.
                             releasesWhenOffscreen: true,
                             clampsToNaturalWidth: true,
+                            // 파서가 aspect 를 못 준 보드(인벤 외 기본 워커 다수)는
+                            // 슬롯이 0 높이로 겹쳐 동시 디코드 폭주 + off-screen
+                            // release 가 안 됐다. 1:1 로 임시 예약해 throttle/release
+                            // 를 살리고, 디코드되면 measuredAspect 가 실제 비율로
+                            // 보정한다(파서값이 있으면 그게 우선이라 무영향).
+                            fallbackAspect: 1.0,
                             // Each visible body image warms the next few below
                             // it so scrolling lands on cache hits.
                             onBecameVisible: {
