@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestOpenAppliesSchema(t *testing.T) {
@@ -500,6 +501,29 @@ func TestMetricPayloadAccumulates(t *testing.T) {
 	}
 	if rows[total-1].Payload != `{"i":0}` {
 		t.Errorf("oldest pruned: got %q", rows[total-1].Payload)
+	}
+}
+
+func TestMetricPayloadReceivedAtIsTimestamp(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	if err := store.UpsertUser(ctx, "nnt_x"); err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+	if err := store.InsertMetricPayload(ctx, "nnt_x", "metric", `{"a":1}`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	rows, err := store.ListMetricPayloads(ctx, 1)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("want 1 row, got %d", len(rows))
+	}
+	// received_at 은 timestamptz 로 저장되어 time.Time 으로 읽혀야 하고, DEFAULT
+	// now() 가 채우므로 방금 시각이어야 한다.
+	if d := time.Since(rows[0].ReceivedAt); d < 0 || d > time.Minute {
+		t.Errorf("received_at not a recent timestamp: %v (since=%v)", rows[0].ReceivedAt, d)
 	}
 }
 

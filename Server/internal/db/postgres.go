@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS metric_payloads (
     id          BIGSERIAL PRIMARY KEY,
     uuid        TEXT NOT NULL,
     kind        TEXT NOT NULL,
-    received_at BIGINT NOT NULL,
+    received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     payload     TEXT NOT NULL,
     FOREIGN KEY (uuid) REFERENCES users(uuid) ON DELETE CASCADE
 );
@@ -445,17 +445,18 @@ func (s *Store) ClearPushTokenByValue(ctx context.Context, token string) error {
 type MetricPayloadRow struct {
 	ID         int64
 	UUID       string
-	Kind       string // "metric" | "diagnostic"
-	ReceivedAt int64  // Unix seconds
+	Kind       string    // "metric" | "diagnostic"
+	ReceivedAt time.Time // 수신 시각(서버). 컬럼 DEFAULT now() 가 채운다.
 	Payload    string
 }
 
 // InsertMetricPayload raw payload 를 저장한다. 보관 개수 제한 없음 — 전부 누적
 // (alert_history 와 동일 방침). MetricKit 은 하루 1건가량이라 비대해지지 않는다.
+// received_at 은 컬럼 DEFAULT now() 가 채운다(timestamptz).
 func (s *Store) InsertMetricPayload(ctx context.Context, uuid, kind, payload string) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO metric_payloads (uuid, kind, received_at, payload) VALUES ($1, $2, $3, $4)`,
-		uuid, kind, time.Now().Unix(), payload)
+		`INSERT INTO metric_payloads (uuid, kind, payload) VALUES ($1, $2, $3)`,
+		uuid, kind, payload)
 	return err
 }
 

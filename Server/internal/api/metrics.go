@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/Moonjm/nunting/server/internal/db"
 )
@@ -220,7 +219,7 @@ func buildMetricsPage(rows []db.MetricPayloadRow) metricsPage {
 	page := metricsPage{Count: len(rows)}
 	for _, row := range rows {
 		vr := metricsRow{
-			Received: time.Unix(row.ReceivedAt, 0).Format("2006-01-02 15:04"),
+			Received: row.ReceivedAt.Local().Format("2006-01-02 15:04"),
 			Kind:     row.Kind,
 			UUID:     shortUUID(row.UUID),
 			Raw:      prettyJSON(row.Payload),
