@@ -153,6 +153,9 @@ type footprintRow struct {
 	Label string
 	MB    int
 	Avail int
+	Live  int  // malloc size_in_use
+	Alloc int  // malloc size_allocated
+	Gap   int  // alloc-live = 단편화로 묶인 빈 페이지
 	Delta int  // 직전(시간상 이전) 샘플 대비 MB 증감 — 누수 지점 가독성
 	Hot   bool // 큰 폭 상승(>=50MB) 강조
 }
@@ -194,11 +197,14 @@ func addFootprint(page *metricsPage, rows []db.FootprintRow) {
 			page.FootprintPeak = r.MB
 		}
 		built = append(built, footprintRow{
-			Time:  time.Unix(r.ClientTS, 0).Format("01-02 15:04:05"),
+			Time:  r.ClientTS.Local().Format("01-02 15:04:05"),
 			UUID:  shortUUID(r.UUID),
 			Label: r.Label,
 			MB:    r.MB,
 			Avail: r.AvailMB,
+			Live:  r.LiveMB,
+			Alloc: r.AllocMB,
+			Gap:   r.AllocMB - r.LiveMB,
 			Delta: delta,
 			Hot:   delta >= 50,
 		})
@@ -381,13 +387,16 @@ var metricsTemplate = template.Must(template.New("metrics").Parse(`<!doctype htm
 {{if .Footprint}}
 <p style="color:#777;font-size:12px">phys_footprint(=jetsam 이 보는 값). Δ 가 크게 +면 그 동작에서 메모리 급증, 뒤로 갔는데 안 줄면(Δ≈0 유지) 거기서 안 풀리는 것.</p>
 <table>
- <tr><th>time</th><th>device</th><th>event</th><th>MB</th><th>Δ</th><th>avail</th></tr>
+ <tr><th>time</th><th>device</th><th>event</th><th>MB</th><th>Δ</th><th>avail</th><th>live</th><th>alloc</th><th>gap</th></tr>
  {{range .Footprint}}
  <tr{{if .Hot}} class="hot"{{end}}>
   <td class="mono">{{.Time}}</td><td>{{.UUID}}</td><td class="mono">{{.Label}}</td>
   <td class="mono">{{.MB}}</td>
   <td class="mono{{if gt .Delta 0}} up{{else if lt .Delta 0}} down{{end}}">{{if gt .Delta 0}}+{{end}}{{.Delta}}</td>
   <td class="mono">{{.Avail}}</td>
+  <td class="mono">{{.Live}}</td>
+  <td class="mono">{{.Alloc}}</td>
+  <td class="mono">{{.Gap}}</td>
  </tr>
  {{end}}
 </table>

@@ -18,6 +18,18 @@ enum MemoryFootprint {
         return Int(info.phys_footprint / (1024 * 1024))
     }
 
+    /// 현재 프로세스 malloc 힙 통계 (MB). `live`=실제 사용중(size_in_use),
+    /// `alloc`=OS 에서 예약(size_allocated). **alloc − live = 단편화로 묶인 빈
+    /// 페이지** — SwiftSoup tiny-object churn 으로 small-region 이 잘게 단편화되면
+    /// live 는 평탄해도 alloc(=footprint 의 malloc 분)이 래칫된다. 이 gap 을 서버에
+    /// 같이 찍어 단편화 vs leak 을 원격으로 가른다. zone=nil → 전 zone 합산.
+    static func mallocMB() -> (live: Int, alloc: Int) {
+        var stats = malloc_statistics_t()
+        malloc_zone_statistics(nil, &stats)
+        return (Int(stats.size_in_use) / (1024 * 1024),
+                Int(stats.size_allocated) / (1024 * 1024))
+    }
+
     /// 앱 메모리 한도까지 남은 여유 (MB). iOS 13+. 0 이면 한도 임박/조회 실패.
     /// `os_proc_available_memory` 는 네이티브 macOS 엔 없다(iOS/visionOS/Catalyst만).
     /// 이 앱은 UIKit 기반이라 macOS 빌드 자체가 불가하지만, SUPPORTED_PLATFORMS 에

@@ -6,6 +6,8 @@ struct FootprintSampleDTO: Encodable {
     let label: String
     let mb: Int      // phys_footprint
     let avail: Int   // 한도까지 남은 여유
+    let live: Int    // malloc size_in_use(살아있는 힙)
+    let alloc: Int   // malloc size_allocated(OS 예약). alloc-live=단편화 진단
 }
 
 /// 메모리 footprint 를 이벤트 태깅 + 변화량 기반으로 샘플링해 서버로 배치 전송한다.
@@ -111,11 +113,14 @@ final class FootprintLogger {
 
     private func append(label: String, mb: Int) {
         lastSampledMB = mb
+        let malloc = MemoryFootprint.mallocMB()
         buffer.append(FootprintSampleDTO(
             ts: Int(Date().timeIntervalSince1970),
             label: label,
             mb: mb,
-            avail: MemoryFootprint.availableMB()
+            avail: MemoryFootprint.availableMB(),
+            live: malloc.live,
+            alloc: malloc.alloc
         ))
     }
 }
