@@ -514,6 +514,35 @@ func TestPostFootprintStoresBatch(t *testing.T) {
 	}
 }
 
+func TestPostFootprintStoresMallocStats(t *testing.T) {
+	srv, store := newTestServer(t)
+	defer srv.Close()
+	defer store.Close()
+
+	// 새 진단 필드: live(=malloc size_in_use), alloc(=size_allocated).
+	// gap(alloc-live)=단편화. client ts 는 timestamp 로 저장되어야 한다.
+	body := `{"samples":[{"ts":1718541600,"label":"post-open","mb":540,"avail":1500,"live":420,"alloc":900}]}`
+	code, resp := do(t, "POST", srv.URL+"/me/footprint", "nnt_x", body)
+	if code != 200 {
+		t.Fatalf("post footprint: want 200, got %d body=%q", code, resp)
+	}
+
+	rows, err := store.ListFootprintSamples(t.Context(), 10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("want 1 row, got %d", len(rows))
+	}
+	r := rows[0]
+	if r.LiveMB != 420 || r.AllocMB != 900 {
+		t.Errorf("malloc stats not stored: live=%d alloc=%d (want 420/900)", r.LiveMB, r.AllocMB)
+	}
+	if r.ClientTS.Unix() != 1718541600 {
+		t.Errorf("client_ts not stored as timestamp: %v (want unix 1718541600)", r.ClientTS)
+	}
+}
+
 func TestPostFootprintRejectsBad(t *testing.T) {
 	srv, store := newTestServer(t)
 	defer srv.Close()

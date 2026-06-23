@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS metric_payloads (
     id          BIGSERIAL PRIMARY KEY,
     uuid        TEXT NOT NULL,
     kind        TEXT NOT NULL,
-    received_at BIGINT NOT NULL,
+    received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     payload     TEXT NOT NULL,
     FOREIGN KEY (uuid) REFERENCES users(uuid) ON DELETE CASCADE
 );
@@ -56,11 +56,13 @@ CREATE INDEX IF NOT EXISTS idx_metric_payloads_id
 CREATE TABLE IF NOT EXISTS footprint_samples (
     id          BIGSERIAL PRIMARY KEY,
     uuid        TEXT NOT NULL,
-    client_ts   BIGINT NOT NULL,
+    client_ts   TIMESTAMPTZ NOT NULL,
     label       TEXT NOT NULL,
     mb          INTEGER NOT NULL,
     avail_mb    INTEGER NOT NULL,
-    received_at BIGINT NOT NULL,
+    live_mb     INTEGER NOT NULL DEFAULT 0,
+    alloc_mb    INTEGER NOT NULL DEFAULT 0,
+    received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     FOREIGN KEY (uuid) REFERENCES users(uuid) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_footprint_id
@@ -443,17 +445,18 @@ func (s *Store) ClearPushTokenByValue(ctx context.Context, token string) error {
 type MetricPayloadRow struct {
 	ID         int64
 	UUID       string
-	Kind       string // "metric" | "diagnostic"
-	ReceivedAt int64  // Unix seconds
+	Kind       string    // "metric" | "diagnostic"
+	ReceivedAt time.Time // 수신 시각(서버). 컬럼 DEFAULT now() 가 채운다.
 	Payload    string
 }
 
 // InsertMetricPayload raw payload 를 저장한다. 보관 개수 제한 없음 — 전부 누적
 // (alert_history 와 동일 방침). MetricKit 은 하루 1건가량이라 비대해지지 않는다.
+// received_at 은 컬럼 DEFAULT now() 가 채운다(timestamptz).
 func (s *Store) InsertMetricPayload(ctx context.Context, uuid, kind, payload string) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO metric_payloads (uuid, kind, received_at, payload) VALUES ($1, $2, $3, $4)`,
-		uuid, kind, time.Now().Unix(), payload)
+		`INSERT INTO metric_payloads (uuid, kind, payload) VALUES ($1, $2, $3)`,
+		uuid, kind, payload)
 	return err
 }
 
@@ -485,6 +488,8 @@ type FootprintSample struct {
 	Label    string `json:"label"`
 	MB       int    `json:"mb"`
 	AvailMB  int    `json:"avail"`
+	LiveMB   int    `json:"live"`  // malloc size_in_use(살아있는 힙). gap=단편화 진단용
+	AllocMB  int    `json:"alloc"` // malloc size_allocated(OS 에서 예약). alloc-live=단편화
 }
 
 // InsertFootprintSamples 배치를 단일 트랜잭션으로 저장. 보관 제한 없이 누적
@@ -498,16 +503,17 @@ func (s *Store) InsertFootprintSamples(ctx context.Context, uuid string, samples
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck // commit 성공 시 Rollback 은 no-op
+	// client_ts 는 클라 epoch seconds → to_timestamp 로 timestamptz 저장.
+	// received_at 은 컬럼 DEFAULT now() 가 채운다.
 	stmt, err := tx.PrepareContext(ctx,
-		`INSERT INTO footprint_samples (uuid, client_ts, label, mb, avail_mb, received_at)
-		 VALUES ($1, $2, $3, $4, $5, $6)`)
+		`INSERT INTO footprint_samples (uuid, client_ts, label, mb, avail_mb, live_mb, alloc_mb)
+		 VALUES ($1, to_timestamp($2), $3, $4, $5, $6, $7)`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
-	now := time.Now().Unix()
 	for _, s := range samples {
-		if _, err := stmt.ExecContext(ctx, uuid, s.ClientTS, s.Label, s.MB, s.AvailMB, now); err != nil {
+		if _, err := stmt.ExecContext(ctx, uuid, s.ClientTS, s.Label, s.MB, s.AvailMB, s.LiveMB, s.AllocMB); err != nil {
 			return err
 		}
 	}
@@ -517,16 +523,18 @@ func (s *Store) InsertFootprintSamples(ctx context.Context, uuid string, samples
 // FootprintRow 저장된 샘플 한 줄(admin 뷰용).
 type FootprintRow struct {
 	UUID     string
-	ClientTS int64
+	ClientTS time.Time
 	Label    string
 	MB       int
 	AvailMB  int
+	LiveMB   int
+	AllocMB  int
 }
 
 // ListFootprintSamples 최신순으로 limit 건 반환(전 사용자).
 func (s *Store) ListFootprintSamples(ctx context.Context, limit int) ([]FootprintRow, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT uuid, client_ts, label, mb, avail_mb
+		`SELECT uuid, client_ts, label, mb, avail_mb, live_mb, alloc_mb
 		 FROM footprint_samples ORDER BY id DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
@@ -535,7 +543,7 @@ func (s *Store) ListFootprintSamples(ctx context.Context, limit int) ([]Footprin
 	out := []FootprintRow{}
 	for rows.Next() {
 		var r FootprintRow
-		if err := rows.Scan(&r.UUID, &r.ClientTS, &r.Label, &r.MB, &r.AvailMB); err != nil {
+		if err := rows.Scan(&r.UUID, &r.ClientTS, &r.Label, &r.MB, &r.AvailMB, &r.LiveMB, &r.AllocMB); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
