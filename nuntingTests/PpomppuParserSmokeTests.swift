@@ -214,6 +214,21 @@ final class PpomppuParserSmokeTests: XCTestCase {
         XCTAssertFalse(detail.fullTitle?.contains("…") ?? true, "fullTitle 엔 잘림 표시(…)가 없어야 함")
     }
 
+    /// og:title 이 없으면(또는 비면) fullTitle 은 nil → 헤더가 post.title 로 폴백.
+    /// "다른 사이트/마크업 변형 시 동작 불변" 계약을 핀.
+    func testParseDetailFullTitleNilWhenNoOGTitle() throws {
+        let html = """
+        <html><head></head><body>
+            <div class="bbs view">
+                <h4><span class="hi">2026-06-24 15:34</span></h4>
+                <div class="cont"></div>
+            </div>
+        </body></html>
+        """
+        let detail = try PpomppuParser().parseDetail(html: html, post: Self.makeDetailPost(no: "714970"))
+        XCTAssertNil(detail.fullTitle, "og:title 부재 시 fullTitle 은 nil(헤더는 post.title 폴백)")
+    }
+
     private static func makeDetailPost(no: String) -> Post {
         Post(
             id: "ppomppu-\(no)",
