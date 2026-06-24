@@ -149,6 +149,12 @@ public struct PostDetail {
     public let viewCount: Int?
     public let source: PostSource?
     public let comments: [PostComment]
+    /// Detail-page canonical title. Lists on some sites (ppomppu mobile) emit
+    /// titles truncated with a literal "…", which the detail header would
+    /// otherwise reuse verbatim. When a parser extracts the full title from the
+    /// detail page, the header prefers it over the (possibly clipped)
+    /// `post.title`. `nil` → fall back to `post.title` (unchanged behaviour).
+    public let fullTitle: String?
 
     public nonisolated init(
         post: Post,
@@ -156,7 +162,8 @@ public struct PostDetail {
         fullDateText: String?,
         viewCount: Int?,
         source: PostSource?,
-        comments: [PostComment]
+        comments: [PostComment],
+        fullTitle: String? = nil
     ) {
         self.post = post
         self.blocks = blocks
@@ -164,6 +171,7 @@ public struct PostDetail {
         self.viewCount = viewCount
         self.source = source
         self.comments = comments
+        self.fullTitle = fullTitle
     }
 
     public var images: [URL] {

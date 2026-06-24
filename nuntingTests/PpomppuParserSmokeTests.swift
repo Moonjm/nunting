@@ -186,6 +186,49 @@ final class PpomppuParserSmokeTests: XCTestCase {
         XCTAssertEqual(label, "https://muanshop.com/index.html")
     }
 
+    /// ppomppu 모바일 리스트는 긴 제목을 리터럴 "…" 로 잘라 보내고, 그 잘린
+    /// 제목이 `post.title` 로 detail 헤더까지 따라온다. detail 의 og:title 은 전체
+    /// 제목이라 `PostDetail.fullTitle` 로 끌어올려 헤더가 그걸 쓰게 한다.
+    /// Regression net for m.ppomppu.co.kr/new/bbs_view.php?id=ppomppu&no=714970.
+    func testParseDetailLiftsFullTitleFromOGTitle() throws {
+        let full = "[지마켓] 마이크로닉스 Classic II 850W 80PLUS GOLD 풀모듈러 ATX3.1 (140,550원/무료)"
+        let html = """
+        <html><head>
+            <meta property="og:title" content="\(full)" />
+        </head><body>
+            <div class="bbs view">
+                <h4><span class="hi">2026-06-24 15:34</span></h4>
+                <div class="cont"></div>
+            </div>
+        </body></html>
+        """
+        // post.title 은 리스트에서 온 잘린 제목(리터럴 "…").
+        let truncated = Post(
+            id: "ppomppu-714970", site: .ppomppu, boardID: "ppomppu",
+            title: "[지마켓] 마이크로닉스 Classic II 850W 80PLUS GOLD 풀모듈러 ATX3…",
+            author: "hochan", date: nil, dateText: "", commentCount: 0,
+            url: URL(string: "https://m.ppomppu.co.kr/new/bbs_view.php?id=ppomppu&no=714970")!
+        )
+        let detail = try PpomppuParser().parseDetail(html: html, post: truncated)
+        XCTAssertEqual(detail.fullTitle, full, "og:title 의 전체 제목이 fullTitle 로 추출돼야 함")
+        XCTAssertFalse(detail.fullTitle?.contains("…") ?? true, "fullTitle 엔 잘림 표시(…)가 없어야 함")
+    }
+
+    /// og:title 이 없으면(또는 비면) fullTitle 은 nil → 헤더가 post.title 로 폴백.
+    /// "다른 사이트/마크업 변형 시 동작 불변" 계약을 핀.
+    func testParseDetailFullTitleNilWhenNoOGTitle() throws {
+        let html = """
+        <html><head></head><body>
+            <div class="bbs view">
+                <h4><span class="hi">2026-06-24 15:34</span></h4>
+                <div class="cont"></div>
+            </div>
+        </body></html>
+        """
+        let detail = try PpomppuParser().parseDetail(html: html, post: Self.makeDetailPost(no: "714970"))
+        XCTAssertNil(detail.fullTitle, "og:title 부재 시 fullTitle 은 nil(헤더는 post.title 폴백)")
+    }
+
     private static func makeDetailPost(no: String) -> Post {
         Post(
             id: "ppomppu-\(no)",
