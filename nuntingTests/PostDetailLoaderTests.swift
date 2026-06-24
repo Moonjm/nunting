@@ -281,6 +281,29 @@ final class PostDetailLoaderTests: XCTestCase {
             detail([.text("본문")], comments: [comment(video: img)])))
     }
 
+    /// 댓글 병합 재구성(`withComments`)이 fullTitle 등 다른 필드를 보존하는지.
+    /// ppomppu 처럼 댓글을 따로 받아 합치는 경로에서 fullTitle 이 떨어져나가
+    /// 헤더 제목이 리스트 잘림본으로 되돌아가던 버그의 회귀 네트.
+    func testWithCommentsPreservesAllOtherFields() {
+        let base = PostDetail(
+            post: bobaePost(),
+            blocks: [.text("본문")],
+            fullDateText: "2026-06-24 15:34",
+            viewCount: 1326,
+            source: nil,
+            comments: [],
+            fullTitle: "[지마켓] 마이크로닉스 Classic II 850W (140,550원/무료)"
+        )
+        let c = PostComment(id: "c", author: "a", dateText: "", content: "댓글",
+                            likeCount: 0, isReply: false, stickerURL: nil, videoURL: nil)
+        let merged = base.withComments([c])
+        XCTAssertEqual(merged.fullTitle, base.fullTitle, "댓글 병합 후에도 fullTitle 보존")
+        XCTAssertEqual(merged.comments.count, 1, "comments 는 교체")
+        XCTAssertEqual(merged.fullDateText, base.fullDateText)
+        XCTAssertEqual(merged.viewCount, base.viewCount)
+        XCTAssertEqual(merged.blocks.count, base.blocks.count)
+    }
+
     // MARK: - Warm HTML (DetailPrefetcher 소비)
 
     func testWarmHTMLSkipsNetworkFetch() async {

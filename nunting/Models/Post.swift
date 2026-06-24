@@ -179,4 +179,21 @@ public struct PostDetail {
             if case .image(let url, _, _) = block.kind { url } else { nil }
         }
     }
+
+    /// Returns a copy with `comments` replaced, preserving every other field.
+    /// Used by the loader when it merges separately-fetched comments (ppomppu/
+    /// others defer comments to `fetchAllComments`). Centralising the copy here
+    /// stops field-by-field reconstruction from silently dropping a newer field
+    /// — `fullTitle` was lost exactly that way before this helper existed.
+    public nonisolated func withComments(_ comments: [PostComment]) -> PostDetail {
+        PostDetail(
+            post: post,
+            blocks: blocks,
+            fullDateText: fullDateText,
+            viewCount: viewCount,
+            source: source,
+            comments: comments,
+            fullTitle: fullTitle
+        )
+    }
 }
