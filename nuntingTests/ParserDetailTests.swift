@@ -143,6 +143,49 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertTrue(detail.blocks.plainText.contains("안녕하세요 본문 텍스트입니다."))
     }
 
+    func testClienJirumDesktopAttachedLinkInsidePostContentEmitsDealLink() throws {
+        // Desktop (www.clien.net) layout counterpart to the mobile test above:
+        // here `div.attached_link` is NESTED inside `div.post_content`, before
+        // `<article>` — still outside `div.post_article`. Locks the other half
+        // of the `div.post_view div.attached_link` selector contract so a future
+        // scope change can't silently drop one layout.
+        let html = """
+        <html><body>
+        <div class="post_view">
+            <div class="post_content">
+                <div class="attached_link top">
+                    <span class="attached_subject">구매링크</span> <span class='outlink'><a class='url' href='https://link.coupang.com/re/AFFSDP?lptag=AF4576674&pageKey=8253382778'target='_blank'>https://link.coupang.com/a/eOR7nJ6kGz</a><span class='name'>coupang</span><button type='button' class='outlink_info'><i class='fa fa-info-circle'></i></button></span>
+                </div>
+                <article>
+                    <div class="post_article">
+                        <p>안녕하세요 본문 텍스트입니다.</p>
+                    </div>
+                </article>
+            </div>
+        </div>
+        <div class="post_date">2026-06-24 11:30</div>
+        </body></html>
+        """
+        let parser = ClienParser()
+        let post = Post.fixture(
+            id: "clien-jirum-desktop",
+            site: .clien,
+            boardID: "clien-jirum",
+            url: URL(string: "https://www.clien.net/service/board/jirum/19214091")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+
+        let deals = detail.blocks.dealLinks
+        XCTAssertEqual(deals.count, 1, "데스크톱(post_content 중첩) attached_link 도 dealLink 1건으로 emit")
+        XCTAssertEqual(deals.first?.0.absoluteString,
+                       "https://link.coupang.com/re/AFFSDP?lptag=AF4576674&pageKey=8253382778")
+        if case .dealLink = detail.blocks.first?.kind {} else {
+            XCTFail("dealLink 가 첫 블록이어야 함: \(String(describing: detail.blocks.first?.kind))")
+        }
+        XCTAssertTrue(detail.blocks.plainText.contains("안녕하세요 본문 텍스트입니다."))
+    }
+
     func testClienVideoWithoutPosterStillEmitsVideoBlock() throws {
         // <video> 가 poster 속성 없는 케이스 — InlineVideoPlayer 가
         // posterURL nil 도 정상 처리하므로 video 블록은 그대로 emit.
