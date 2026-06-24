@@ -44,17 +44,6 @@ final class PostDetailCache {
         order.removeAll { $0 == id }
     }
 
-    /// Drop every cached detail. Phase-3 background teardown: the session cache
-    /// holds up to `capacity` fully-parsed posts (comment arrays + body blocks)
-    /// that count toward suspended memory, but the keep-alive overlay's own
-    /// open post is held by its loader, not here — so clearing on background
-    /// frees the cache without losing the post the user is reading. Re-opening a
-    /// previously-viewed post just goes back to the network (fresh).
-    func clear() {
-        entries.removeAll()
-        order.removeAll()
-    }
-
     private func touch(_ id: String) {
         if let existing = order.firstIndex(of: id) {
             order.remove(at: existing)
