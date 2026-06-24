@@ -204,15 +204,13 @@ struct ContentView: View {
                 Task { await alertBadge.refresh() }
                 FootprintLogger.shared.record("scenePhase:active")
             } else if phase == .background {
-                // 백그라운드 진입 시 in-memory 캐시 해제. 지금까진 메모리 경고
-                // 때만 비웠는데, 백그라운드 전환엔 안 비워 ~1GB 쥔 채 suspend →
-                // jetsam 이 "제일 큰 백그라운드 앱"인 우리를 먼저 kill 했다(확인된
-                // JetsamEvent 2건). 백그라운드에도 같은 flush 를 적용해 막는다.
-                MemoryPressureResponder.shared.respond()
-                // Phase-3: 세션 detail 캐시(최대 20글 파싱본)도 해제 — keep-alive
-                // 로 열려있는 현재 글은 loader 가 쥐고 있어 안전. 본문 이미지
-                // 디코드는 NetworkImage 가 scenePhase=.background 를 보고 스스로 떨군다.
-                detailCache.clear()
+                // 과거 백그라운드에서 캐시를 선제 flush(MemoryPressureResponder
+                // + detailCache.clear)했던 건 "~1GB 쥔 채 suspend → jetsam"(확인된
+                // JetsamEvent 2건) 대응이었는데, 그 1GB 의 정체는 SwiftSoup 파싱
+                // 누수였고(2.13.5 로 해결) 캐시와 무관했다. 본문 이미지 디코드는
+                // NetworkImage 가 scenePhase=.background 를 보고 스스로 떨구고, 진짜
+                // 메모리 경고는 MemoryPressureResponder 가 받으므로, 선제 덤프는
+                // 불필요 churn(+resume 시 이미지 콜드)이라 제거. 진단 버퍼만 전송.
                 FootprintLogger.shared.onBackground()
             }
         }
