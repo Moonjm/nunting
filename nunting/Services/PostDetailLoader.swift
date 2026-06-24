@@ -237,14 +237,7 @@ final class PostDetailLoader {
                 switch await commentsTask {
                 case .success(let extras):
                     if !extras.isEmpty {
-                        parsed = PostDetail(
-                            post: parsed.post,
-                            blocks: parsed.blocks,
-                            fullDateText: parsed.fullDateText,
-                            viewCount: parsed.viewCount,
-                            source: parsed.source,
-                            comments: extras
-                        )
+                        parsed = parsed.withComments(extras)
                         detail = parsed
                     }
                 case .failure(let error):
@@ -311,14 +304,7 @@ final class PostDetailLoader {
             commentRetryContext = nil
             var updated = current
             if !extras.isEmpty {
-                updated = PostDetail(
-                    post: current.post,
-                    blocks: current.blocks,
-                    fullDateText: current.fullDateText,
-                    viewCount: current.viewCount,
-                    source: current.source,
-                    comments: extras
-                )
+                updated = current.withComments(extras)
                 detail = updated
             }
             cache.put(id: context.post.id, detail: updated)
