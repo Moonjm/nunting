@@ -66,6 +66,11 @@ public struct ClienParser: BoardParser {
             throw ParserError.structureChanged("post_article 없음")
         }
 
+        // 알뜰구매(jirum) 구매링크는 `div.attached_link` 안에 들어있고, 이건
+        // `<article>`(=post_article) 의 형제로 본문 바깥에 있다. 본문 walker 는
+        // article 만 훑으므로 dealLink 로 따로 추출하지 않으면 통째로 누락된다.
+        let dealBlocks = try attachedDealLinks(from: doc)
+
         let (source, skipFirstParagraph) = try extractSource(from: article)
 
         // Mutates the SwiftSoup document in-place; safe because `doc` is
@@ -87,7 +92,9 @@ public struct ClienParser: BoardParser {
             guard let info = try image(from: el) else { return [] }
             return [.image(info.url, aspectRatio: info.aspectRatio)]
         }
-        let blocks = try ParserBlockWalker(parser: self, rules: rules).walk(article)
+        let body = try ParserBlockWalker(parser: self, rules: rules).walk(article)
+        // 구매링크는 본문 위(소스 순서)에 prepend.
+        let blocks = dealBlocks + body
 
         let rawDate = try doc.select("div.post_date").first()?.text() ?? ""
         let fullDateText = collapsePostDate(rawDate)
@@ -104,6 +111,25 @@ public struct ClienParser: BoardParser {
             source: source,
             comments: comments
         )
+    }
+
+    /// Extracts `.dealLink` blocks from the jirum 구매링크 affordance
+    /// (`div.attached_link`). These anchors live OUTSIDE `div.post_article`, so
+    /// the body walker never sees them — on mobile as a sibling BEFORE
+    /// `div.post_content`, on desktop nested inside it. Both layouts sit under
+    /// `div.post_view`, while the comment list is a sibling OUTSIDE `post_view`
+    /// (verified against m.clien.net), so scoping the query to `post_view`
+    /// covers both jirum layouts yet never reaches comment anchors. No
+    /// `shouldEmitAnchor` suppression (cf. Ppomppu) is needed: the source is
+    /// outside `post_article`, so the walker can't re-emit it as a body link.
+    /// Clien's markup has a quirk — `href='...'target='_blank'` with no space
+    /// before `target` — which SwiftSoup's lenient tokenizer still parses.
+    nonisolated private func attachedDealLinks(from doc: Document) throws -> [ContentBlock] {
+        let anchors = try doc.select("div.post_view div.attached_link a[href]").array()
+        return try anchors.compactMap { el in
+            guard let resolved = try anchor(from: el) else { return nil }
+            return .dealLink(resolved.url, label: resolved.label)
+        }
     }
 
     /// Clien stuffs the registered date and modified date into the same

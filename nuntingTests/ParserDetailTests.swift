@@ -70,6 +70,79 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertTrue(combined.contains("아래 본문 텍스트"))
     }
 
+    func testClienJirumAttachedLinkEmitsDealLinkBlock() throws {
+        // Real shape from m.clien.net 알뜰구매(jirum) posts. The 구매링크 lives in
+        // `<div class="attached_link ...">` which on MOBILE is a SIBLING of (and
+        // BEFORE) `div.post_content` — i.e. entirely OUTSIDE `div.post_article`.
+        // (Desktop nests it inside post_content; both share a `post_view`
+        // ancestor.) Since the body walker only walks `post_article`, the
+        // purchase link was dropped. Note clien's markup quirks reproduced here:
+        // the mobile `<div class="link_list">` wrapper, the `<strong>구매링크 : </strong>`
+        // subject, and the malformed `href='...'target='_blank'` (no space before
+        // `target`) — which SwiftSoup's lenient tokenizer must still parse.
+        //
+        // The comment list sits OUTSIDE `div.post_view` in clien's real layout
+        // (verified against m.clien.net). The fixture reproduces that and goes
+        // one worse — a comment carrying its own `attached_link` anchor — to
+        // prove the `post_view` scope keeps comment anchors out of the deal
+        // blocks even in that adversarial case.
+        let html = """
+        <html><body>
+        <div class="post_view">
+            <div class="attached_link top inline_link">
+                <div class="link_list">
+                    <span class="attached_subject"><strong>구매링크 : </strong></span><span class='outlink'><a class='url' href='https://link.coupang.com/re/AFFSDP?lptag=AF4576674&pageKey=8253382778'target='_blank'>https://link.coupang.com/a/eOR7nJ6kGz</a><span class='name'>coupang</span><button type='button' class='outlink_info'><i class='fa fa-info-circle'></i></button></span>
+                </div>
+            </div>
+            <div class="post_content">
+                <article>
+                    <div class="post_article inline_link">
+                        <p>안녕하세요 본문 텍스트입니다.</p>
+                    </div>
+                </article>
+            </div>
+        </div>
+        <div class="post_date">2026-06-24 11:30</div>
+        <div class="comment">
+            <div class="comment_row">
+                <div class="comment_content">
+                    <div class="attached_link top inline_link">
+                        <div class="link_list"><span class='outlink'><a class='url' href='https://evil.example.com/from-a-comment'target='_blank'>댓글 속 링크</a></span></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        </body></html>
+        """
+        let parser = ClienParser()
+        let post = Post.fixture(
+            id: "clien-jirum-19214091",
+            site: .clien,
+            boardID: "clien-jirum",
+            url: URL(string: "https://m.clien.net/service/board/jirum/19214091")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+
+        // 1) 구매링크가 dealLink 블록 1건으로 추출 (어필리에이트 href 보존).
+        //    댓글 속 attached_link 앵커는 post_view 바깥이라 포함되지 않음 (count==1).
+        let deals = detail.blocks.dealLinks
+        XCTAssertEqual(deals.count, 1, "post_view 안 attached_link 만 dealLink 로 emit (댓글 링크 제외)")
+        XCTAssertEqual(deals.first?.0.absoluteString,
+                       "https://link.coupang.com/re/AFFSDP?lptag=AF4576674&pageKey=8253382778",
+                       "공백 누락 href='...'target= 도 어필리에이트 URL 로 파싱")
+        XCTAssertFalse(deals.contains { $0.0.absoluteString.contains("evil.example.com") },
+                       "댓글 속 attached_link 앵커가 구매링크 배너로 새지 않아야 함")
+
+        // 2) dealLink 는 본문보다 앞 (소스 순서: attached_link 가 article 위)
+        if case .dealLink = detail.blocks.first?.kind {} else {
+            XCTFail("dealLink 가 첫 블록이어야 함: \(String(describing: detail.blocks.first?.kind))")
+        }
+
+        // 3) 본문 텍스트는 그대로 살아있어야 함
+        XCTAssertTrue(detail.blocks.plainText.contains("안녕하세요 본문 텍스트입니다."))
+    }
+
     func testClienVideoWithoutPosterStillEmitsVideoBlock() throws {
         // <video> 가 poster 속성 없는 케이스 — InlineVideoPlayer 가
         // posterURL nil 도 정상 처리하므로 video 블록은 그대로 emit.
