@@ -35,15 +35,6 @@ final class FootprintLogger {
     private let flushThreshold = 60
     private let sampleIntervalNanos: UInt64 = 3 * 1_000_000_000
 
-    /// 선제 flush — footprint 가 이 값을 넘으면 OS 메모리경고(실측상 ~900MB 에서야
-    /// 옴)를 기다리지 말고 in-memory 캐시를 미리 비운다. 과거 frontmost OOM kill 이
-    /// 678MB 에서 났으므로 그 아래에서 발동해 ratchet 바닥을 낮춘다. (라이브 뷰가
-    /// 잡은 메모리는 못 비우므로 근본 해결은 아니고, 캐시분만 선제 회수.)
-    private let proactiveFlushMB = 650
-    /// 연속 flush 폭주(=재디코드 CPU 낭비) 방지 쿨다운.
-    private let flushCooldownSec = 20
-    private var lastProactiveFlushTs = 0
-
     private init() {
         // .shared 를 init 본문에서 잡는다 — default-arg 로 두면 nonisolated
         // 컨텍스트에서 평가돼 main-actor 경고가 난다.
@@ -90,25 +81,12 @@ final class FootprintLogger {
 
     // MARK: - Private
 
-    /// 샘플러 틱 — 선제 flush 판정 후, footprint 가 직전 기록 대비 threshold 이상
-    /// 움직였을 때만 기록.
+    /// 샘플러 틱 — footprint 가 직전 기록 대비 threshold 이상 움직였을 때만 기록.
     private func sampleIfChanged() {
         let mb = MemoryFootprint.currentMB()
-        maybeProactiveFlush(mb)
         guard abs(mb - lastSampledMB) >= changeThresholdMB else { return }
         append(label: "Δ", mb: mb)
         if buffer.count >= flushThreshold { flush() }
-    }
-
-    /// footprint 가 임계를 넘고 쿨다운이 지났으면 in-memory 캐시를 선제 회수한다.
-    /// 발동 시점을 타임라인(`proactive-flush@<mb>`)에 남겨 효과(직후 Δ 하락)를 본다.
-    private func maybeProactiveFlush(_ mb: Int) {
-        guard mb >= proactiveFlushMB else { return }
-        let now = Int(Date().timeIntervalSince1970)
-        guard now - lastProactiveFlushTs >= flushCooldownSec else { return }
-        lastProactiveFlushTs = now
-        record("proactive-flush@\(mb)")
-        MemoryPressureResponder.shared.respond()
     }
 
     private func append(label: String, mb: Int) {
