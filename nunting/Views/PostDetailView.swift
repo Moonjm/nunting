@@ -137,7 +137,7 @@ struct PostDetailView: View, Equatable {
                 StatusBarTapScrollClaimer(isActive: isOverlayVisible)
                     .frame(width: 0, height: 0)
                 VStack(alignment: .leading, spacing: 16) {
-                    WrappingTitleLabel(text: post.title)
+                    WrappingTitleLabel(text: loader.detail?.fullTitle ?? post.title)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
                     HStack(spacing: 10) {

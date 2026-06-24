@@ -114,6 +114,13 @@ public struct PpomppuParser: BoardParser {
             return ParserText.firstInteger(in: String(headerText[range.upperBound...]))
         }()
 
+        // ppomppu 모바일 리스트는 긴 제목을 리터럴 "…" 로 잘라 내보내, 그 잘린
+        // 제목이 detail 헤더까지 그대로 따라온다. detail 페이지의 og:title 은
+        // 항상 전체 제목(모바일/데스크톱 공통)이라 이를 헤더용 fullTitle 로 올린다.
+        let fullTitle = try doc.select("meta[property=og:title]").first()
+            .map { try ParserText.cleanTitle($0.attr("content")) }
+            .flatMap { $0.isEmpty ? nil : $0 }
+
         // Comments are deferred to fetchAllComments so multi-page (`c_page`) threads work.
         return PostDetail(
             post: post,
@@ -121,7 +128,8 @@ public struct PpomppuParser: BoardParser {
             fullDateText: fullDateText,
             viewCount: viewCount,
             source: nil,
-            comments: []
+            comments: [],
+            fullTitle: fullTitle
         )
     }
 
