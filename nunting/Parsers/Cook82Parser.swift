@@ -32,15 +32,16 @@ public struct Cook82Parser: BoardParser {
         // Deleted / moved posts replace the body wrapper with an error panel.
         if try doc.select("#articleBody").isEmpty() {
             let body = try doc.text()
-            let notice: String
-            if body.contains("삭제") || body.contains("이동") || body.contains("존재하지") {
-                notice = "삭제되거나 이동된 게시물입니다."
-            } else {
-                notice = "게시물을 불러올 수 없습니다."
+            // Deletion/relocation is a valid response — show a notice. Any
+            // other reason the body wrapper is gone means the markup changed;
+            // throw so the user sees the "구조가 바뀐 것 같아요" signal instead
+            // of a silently blank post.
+            guard body.contains("삭제") || body.contains("이동") || body.contains("존재하지") else {
+                throw ParserError.structureChanged("articleBody 없음")
             }
             return PostDetail(
                 post: post,
-                blocks: [.text(notice)],
+                blocks: [.text("삭제되거나 이동된 게시물입니다.")],
                 fullDateText: nil,
                 viewCount: nil,
                 source: nil,

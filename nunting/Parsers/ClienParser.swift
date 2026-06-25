@@ -304,11 +304,12 @@ public struct ClienParser: BoardParser {
                 return resolveHTTPURL(src)
             }()
 
-            // Allow image-only comments through. The guard now drops
-            // the row only when there's neither a caption nor an
-            // attachment, which is the genuine empty case (deleted
-            // content placeholder) we still want to skip.
-            guard !content.isEmpty || attachedImage != nil else { continue }
+            // Allow image-only and author-only comments through. The guard
+            // now drops the row only when caption, attachment AND author are
+            // all absent — the genuine empty case (deleted content
+            // placeholder). A comment with just a nickname (empty body, no
+            // media) still renders as an author line, so keep it.
+            guard !content.isEmpty || attachedImage != nil || !author.isEmpty else { continue }
 
             let likeText = try row.select("strong[id^=setLikeCount_]").first()?.text()
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? "0"

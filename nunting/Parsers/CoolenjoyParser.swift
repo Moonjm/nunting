@@ -111,7 +111,10 @@ public struct CoolenjoyParser: BoardParser {
 
                 let content = try article.select("textarea[id^=save_comment_]").first()?.text()
                     .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                guard !content.isEmpty else { continue }
+                // Keep author-only comments (empty body, no media) — they
+                // still render as an author line. Drop only the genuinely
+                // empty row (no content and no nickname).
+                guard !content.isEmpty || !author.isEmpty else { continue }
 
                 let likeText = try article.select("b[id^=c_g]").first()?.text()
                     .trimmingCharacters(in: .whitespacesAndNewlines) ?? "0"

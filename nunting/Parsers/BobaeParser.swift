@@ -229,7 +229,13 @@ public struct BobaeParser: BoardParser {
             try doc.select("#body_frame").first(),
             try doc.select("article.article").first(),
         ]
-        guard let wrap = candidates.compactMap({ $0 }).first else { return [] }
+        // None of the body-wrapper candidates matched. Deletion is handled
+        // earlier in `parseDetail` (the alert-script check), so reaching here
+        // with no wrapper means the markup changed — throw so the user sees
+        // the "구조가 바뀐 것 같아요" signal instead of a silently blank post.
+        guard let wrap = candidates.compactMap({ $0 }).first else {
+            throw ParserError.structureChanged("article-body 없음")
+        }
 
         // resolveImageURL / resolveVideoURL — 둘 다 standard(for:) 기본값이
         // Bobae 의 옛 로컬 헬퍼(realImageURL / videoURL) 와 동일한 동작

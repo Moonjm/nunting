@@ -235,7 +235,9 @@ public struct PpomppuParser: BoardParser {
             let stickerURL = try contentEl.flatMap { try extractStickerURL(from: $0) }
             let videoURL = try contentEl.flatMap { try extractCommentVideoURL(from: $0) }
 
-            guard !content.isEmpty || stickerURL != nil || videoURL != nil else { continue }
+            // Keep author-only comments — drop only the genuinely empty row
+            // (no content, no sticker, no video, no nickname).
+            guard !content.isEmpty || stickerURL != nil || videoURL != nil || !author.isEmpty else { continue }
 
             results.append(PostComment(
                 id: "\(site.rawValue)-c-\(cmtID)",

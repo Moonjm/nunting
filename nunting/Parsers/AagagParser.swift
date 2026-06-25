@@ -150,12 +150,31 @@ public struct AagagParser: BoardParser {
         let cleaned = ParserText.cleanTitle(try titleEl?.text() ?? "")
         let title = cleaned.isEmpty ? post.title : cleaned
 
-        // Issue detail content lives in `AAGAG_AA.content = "..."` inside a script tag,
-        // with payloads encoded as `[sTag]{json}[/sTag]`.
-        var blocks: [ContentBlock] = []
-        if let scriptText = try findContentScript(in: doc) {
-            blocks = blocksFromContentString(scriptText)
+        // Issue detail content lives in `AAGAG_AA.content = "..."` inside a script
+        // tag, with payloads encoded as `[sTag]{json}[/sTag]`. A valid post always
+        // ships the script (empty content included), so its absence is either a
+        // deleted/relocated issue or a markup change.
+        guard let scriptText = try findContentScript(in: doc) else {
+            // Deletion/relocation is a valid response — show a notice. Otherwise
+            // the markup changed; throw so the user sees the "구조가 바뀐 것
+            // 같아요" signal instead of a silently blank post. The keyword set is
+            // unverified against a real aagag deletion sample (aagag mirrors other
+            // boards, so native-issue deletions are rare) — throw is the safe
+            // fallback, and the banner is still informative.
+            let body = try doc.text()
+            guard body.contains("삭제") || body.contains("이동") || body.contains("존재하지") else {
+                throw ParserError.structureChanged("AAGAG content script 없음")
+            }
+            return PostDetail(
+                post: post,
+                blocks: [.text("삭제되거나 이동된 게시물입니다.")],
+                fullDateText: nil,
+                viewCount: nil,
+                source: nil,
+                comments: []
+            )
         }
+        let blocks = blocksFromContentString(scriptText)
 
         let dateText = try doc.select("span.t.odate").first()?.text()
             .trimmingCharacters(in: .whitespacesAndNewlines)
