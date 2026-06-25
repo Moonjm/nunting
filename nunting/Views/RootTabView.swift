@@ -12,18 +12,8 @@ struct RootTabView: View {
     @State private var alertBadge = AlertBadge.shared
 
     @State private var selectedTab = 0
-    // 모음 탭의 현재 보드/필터 — 하단 필터 액세서리가 읽어야 하므로 여기서 소유.
-    @State private var currentBoardID: String?
-    @State private var filterByBoard: [String: BoardFilter] = [:]
-    // 리더 상세에 들어가 있는 동안 true → 필터 액세서리 숨김.
-    @State private var reading = false
 
     @Environment(\.scenePhase) private var scenePhase
-
-    private var currentBoard: Board? {
-        let boards = favorites.favoriteBoards()
-        return boards.first { $0.id == currentBoardID } ?? boards.first
-    }
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -31,10 +21,7 @@ struct RootTabView: View {
                 ArchiveHome(
                     favorites: favorites,
                     readStore: readStore,
-                    cache: detailCache,
-                    currentBoardID: $currentBoardID,
-                    filterByBoard: $filterByBoard,
-                    reading: $reading
+                    cache: detailCache
                 )
             }
             Tab("둘러보기", systemImage: "square.grid.2x2", value: 1) {
@@ -49,13 +36,6 @@ struct RootTabView: View {
             .badge(alertBadge.unread)
         }
         .tabBarMinimizeBehavior(.onScrollDown)
-        // 보드 내 필터(전체/10추/30추…)는 하단 유리 액세서리(엄지 존)에.
-        // 모음 탭이고 읽는 중이 아니며 현재 보드에 필터가 있을 때만.
-        .tabViewBottomAccessory {
-            if selectedTab == 0, !reading, let board = currentBoard, !board.filters.isEmpty {
-                BoardFilterBar(board: board, selection: filterBinding(board.id))
-            }
-        }
         // 이미지 다운샘플/프리페치가 읽는 containerWidth 공급(기존엔 ContentView 담당).
         .background(
             GeometryReader { proxy in
@@ -78,13 +58,6 @@ struct RootTabView: View {
             Task { await alertBadge.refresh() }
         }
     }
-
-    private func filterBinding(_ id: String) -> Binding<BoardFilter?> {
-        Binding(
-            get: { filterByBoard[id] },
-            set: { filterByBoard[id] = $0 }
-        )
-    }
 }
 
 // MARK: - 모음 홈 (보드 페이저 + 슬림 헤더 + 컨텍스트 검색)
@@ -93,10 +66,9 @@ private struct ArchiveHome: View {
     let favorites: FavoritesStore
     let readStore: ReadStore
     let cache: PostDetailCache
-    @Binding var currentBoardID: String?
-    @Binding var filterByBoard: [String: BoardFilter]
-    @Binding var reading: Bool
 
+    @State private var currentBoardID: String?
+    @State private var filterByBoard: [String: BoardFilter] = [:]
     @State private var path: [Post] = []
     // 보드별 확정 검색어(빈/없음 = 검색 안 함). BoardListView 가 searchQuery 로
     // 받아 결과를 같은 목록 자리에 표출한다.
@@ -139,6 +111,14 @@ private struct ArchiveHome: View {
                     .ignoresSafeArea(edges: .bottom)
                 }
             }
+            // 보드 내 필터 탭은 인벤·애객처럼 *필터가 실제로 있는* 보드에서만,
+            // 탭바 바로 위(엄지 존)에 띄운다. 다른 보드/다른 탭에선 자리 안 차지.
+            // (상세 push 시엔 이 루트 콘텐츠가 가려지므로 자연히 숨겨진다.)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if let board = currentBoard, showsFilterBar(board), activeQuery == nil {
+                    BoardFilterBar(board: board, selection: filterBinding(board.id))
+                }
+            }
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: Post.self) { post in
                 PostDetailView(
@@ -150,13 +130,24 @@ private struct ArchiveHome: View {
                 .equatable()
                 .toolbar(.hidden, for: .navigationBar)
                 .toolbar(.hidden, for: .tabBar)
-                .onAppear { reading = true }
-                .onDisappear { reading = false }
             }
         }
         .onAppear {
             if currentBoardID == nil { currentBoardID = boards.first?.id }
         }
+    }
+
+    /// 필터 탭 바를 띄울 보드인지 — 인벤(10추/30추/인방)·애객(소스 필터)처럼
+    /// 필터가 실제로 있는 보드만. 그 외(클리앙 등)는 띄우지 않는다.
+    private func showsFilterBar(_ board: Board) -> Bool {
+        (board.site == .inven || board.site == .aagag) && !board.filters.isEmpty
+    }
+
+    private func filterBinding(_ id: String) -> Binding<BoardFilter?> {
+        Binding(
+            get: { filterByBoard[id] },
+            set: { filterByBoard[id] = $0 }
+        )
     }
 
     // 슬림 헤더 — 보드명 메뉴 + 사이트색 페이지 인디케이터(or 검색 결과 표시) + 돋보기.
