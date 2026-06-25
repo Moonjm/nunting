@@ -43,7 +43,8 @@ struct nuntingApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            // 2026 재디자인 셸. 구버전(ContentView)은 검증 전까지 보존.
+            RootTabView()
         }
     }
 }
