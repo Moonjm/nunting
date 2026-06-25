@@ -39,9 +39,13 @@ public struct EtolandParser: BoardParser {
             // Deletion/relocation is a valid response — show a notice. Any
             // other reason the article wrapper is gone means the markup
             // changed; throw so the user sees the "구조가 바뀐 것 같아요" signal
-            // instead of a silently blank post.
+            // instead of a silently blank post. The keyword set is unverified
+            // against a real etoland deletion sample — throw is the safe
+            // fallback (informative banner, not a blank). Broaden the keywords
+            // here if a real deleted post ever shows "구조가 바뀜" by mistake.
             let body = try doc.text()
-            guard body.contains("삭제") || body.contains("이동") || body.contains("존재하지") else {
+            guard body.contains("삭제") || body.contains("이동")
+                || body.contains("존재하지") || body.contains("없는 게시물") else {
                 throw ParserError.structureChanged("etoland article 없음")
             }
             return PostDetail(

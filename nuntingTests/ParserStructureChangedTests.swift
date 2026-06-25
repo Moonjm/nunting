@@ -93,4 +93,10 @@ final class ParserStructureChangedTests: XCTestCase {
         let html = "<html><body><script>alert('삭제된 글 입니다.');history.back();</script></body></html>"
         assertDeletionNotice(try BobaeParser().parseDetail(html: html, post: .fixture(site: .bobae)))
     }
+
+    func testAagagDeletionReturnsNotice() throws {
+        // No AAGAG_AA.content script + deletion keyword → notice, not throw.
+        let html = "<html><body>삭제되었거나 존재하지 않는 게시물입니다.</body></html>"
+        assertDeletionNotice(try AagagParser().parseDetail(html: html, post: .fixture(site: .aagag)))
+    }
 }
