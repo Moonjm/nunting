@@ -14,7 +14,7 @@ struct KeywordListView: View {
 
     @Environment(\.dismiss) private var dismiss
     @Namespace private var tabNamespace
-    @State private var tab: Tab = .keywords
+    @State private var tab: Tab = .history
     @State private var keywords: [KeywordSub] = []
     @State private var newKeyword = ""
     @State private var errorMessage: String?
