@@ -54,15 +54,16 @@ public struct HumorParser: BoardParser {
         // looks like the app hung — emit an inline notice instead.
         if try doc.select("#read_subject_div").isEmpty() {
             let body = try doc.text()
-            let notice: String
-            if body.contains("삭제/이동된") || body.contains("삭제된 게시물") {
-                notice = "삭제되거나 이동된 게시물입니다."
-            } else {
-                notice = "게시물을 불러올 수 없습니다."
+            // Deletion/relocation (redirect to /board/msg.html) is a valid
+            // response — show a notice. Any other reason the detail markup is
+            // gone means it changed; throw so the user sees the "구조가 바뀐 것
+            // 같아요" signal instead of a silently blank post.
+            guard body.contains("삭제/이동된") || body.contains("삭제된 게시물") else {
+                throw ParserError.structureChanged("read_subject_div 없음")
             }
             return PostDetail(
                 post: post,
-                blocks: [.text(notice)],
+                blocks: [.text("삭제되거나 이동된 게시물입니다.")],
                 fullDateText: nil,
                 viewCount: nil,
                 source: nil,

@@ -173,7 +173,9 @@ public struct InvenParser: BoardParser {
             for raw in block.list {
                 let stickerURL = extractStickerURL(from: raw.comment)
                 let content = cleanCommentText(raw.comment)
-                guard !content.isEmpty || stickerURL != nil else { continue }
+                // Keep author-only comments — drop only the genuinely empty
+                // row (no content, no sticker, no nickname).
+                guard !content.isEmpty || stickerURL != nil || !raw.name.isEmpty else { continue }
                 let isReply = raw.attr.cmtidx != raw.attr.cmtpidx
                 results.append(PostComment(
                     id: "\(site.rawValue)-c-\(raw.attr.cmtidx)",

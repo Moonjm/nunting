@@ -25,15 +25,16 @@ public struct SLRParser: BoardParser {
         // without the usual `.subject` heading. Fall back to a notice.
         if try doc.select(".subject").isEmpty() {
             let body = try doc.text()
-            let notice: String
-            if body.contains("삭제") || body.contains("이동") {
-                notice = "삭제되거나 이동된 게시물입니다."
-            } else {
-                notice = "게시물을 불러올 수 없습니다."
+            // Deletion/relocation is a valid response — show a notice. Any
+            // other reason `.subject` is gone means the markup changed; throw
+            // so the user sees the "구조가 바뀐 것 같아요" signal instead of a
+            // silently blank post.
+            guard body.contains("삭제") || body.contains("이동") else {
+                throw ParserError.structureChanged("subject 없음")
             }
             return PostDetail(
                 post: post,
-                blocks: [.text(notice)],
+                blocks: [.text("삭제되거나 이동된 게시물입니다.")],
                 fullDateText: nil,
                 viewCount: nil,
                 source: nil,

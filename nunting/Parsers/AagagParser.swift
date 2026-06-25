@@ -151,11 +151,14 @@ public struct AagagParser: BoardParser {
         let title = cleaned.isEmpty ? post.title : cleaned
 
         // Issue detail content lives in `AAGAG_AA.content = "..."` inside a script tag,
-        // with payloads encoded as `[sTag]{json}[/sTag]`.
-        var blocks: [ContentBlock] = []
-        if let scriptText = try findContentScript(in: doc) {
-            blocks = blocksFromContentString(scriptText)
+        // with payloads encoded as `[sTag]{json}[/sTag]`. Its absence means the
+        // page markup changed (a valid post always ships the script, empty
+        // content included) — throw so the user sees the "구조가 바뀐 것 같아요"
+        // signal instead of a silently blank post.
+        guard let scriptText = try findContentScript(in: doc) else {
+            throw ParserError.structureChanged("AAGAG content script 없음")
         }
+        let blocks = blocksFromContentString(scriptText)
 
         let dateText = try doc.select("span.t.odate").first()?.text()
             .trimmingCharacters(in: .whitespacesAndNewlines)
