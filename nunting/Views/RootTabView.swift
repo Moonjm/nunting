@@ -100,7 +100,7 @@ private struct PostDetailScreen: View {
         .equatable()
         .navigationTitle(post.site.displayName)
         .toolbarTitleDisplayMode(.inline)
-        .toolbar(.hidden, for: .tabBar)
+        // 탭바는 상세에서도 고정(숨기면 push/pop 시 사라졌다 나타나며 깜빡임).
         .toolbar {
             if let onBack {
                 ToolbarItem(placement: .topBarLeading) {
