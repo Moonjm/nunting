@@ -296,6 +296,9 @@ private struct ArchiveHome: View {
     @Binding var currentBoardID: String?
 
     @State private var filterByBoard: [String: BoardFilter] = [:]
+    // 떠 있는 탭바가 가리는 하단 안전영역 높이(측정). 리스트를 탭바 밑까지
+    // 깔되 이만큼 콘텐츠 인셋을 줘 마지막 글 가림을 막는다.
+    @State private var bottomSafeInset: CGFloat = 0
 
     private var boards: [Board] { favorites.favoriteBoards() }
     private var currentBoard: Board? {
@@ -327,12 +330,17 @@ private struct ArchiveHome: View {
                     searchByBoard: searchByBoard,
                     filterBarBoardIDs: filterBarBoardIDs,
                     filterBarInset: Self.filterBarInset,
+                    baseBottomInset: bottomSafeInset,
                     readStore: readStore,
                     onSelectPost: onSelectPost
                 )
+                // 탭바 밑까지 리스트가 깔려 유리 탭바에 콘텐츠가 비치게 한다.
+                .ignoresSafeArea(edges: .bottom)
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) { header }
+        // 탭바가 가리는 하단 안전영역 높이를 측정해 인셋으로 환원.
+        .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.bottom } action: { bottomSafeInset = $0 }
         // 모음 화면 배경을 탭바 밑까지 깔아, 떠 있는 유리 탭바가 이 AppSurface 를
         // 블러하도록 한다 — 목록 배경과 톤이 같아져 탭바가 목록과 일체감 있게 보임.
         // (안 깔면 탭바가 그 뒤 기본 윈도우 배경을 블러해 다른 톤이 된다.)
@@ -521,6 +529,9 @@ private struct BoardPager: View {
     // 떠 있는 필터 바를 가진 보드 id → 그만큼 목록 하단 인셋.
     let filterBarBoardIDs: Set<String>
     let filterBarInset: CGFloat
+    // 탭바 밑까지 리스트가 깔리도록 ignoresSafeArea 하므로, 탭바가 가리는
+    // 만큼(측정값)을 목록 하단 인셋으로 직접 돌려준다.
+    let baseBottomInset: CGFloat
     let readStore: ReadStore
     let onSelectPost: (Post) -> Void
 
@@ -528,7 +539,7 @@ private struct BoardPager: View {
     @State private var index = 1
 
     private func inset(_ board: Board) -> CGFloat {
-        filterBarBoardIDs.contains(board.id) ? filterBarInset : 0
+        baseBottomInset + (filterBarBoardIDs.contains(board.id) ? filterBarInset : 0)
     }
 
     var body: some View {
