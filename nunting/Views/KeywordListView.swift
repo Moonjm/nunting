@@ -12,7 +12,6 @@ struct KeywordListView: View {
     /// 종 아이콘 시트의 두 탭: 키워드 관리 / 매칭된 알림 이력.
     private enum Tab: Hashable { case keywords, history }
 
-    @Environment(\.dismiss) private var dismiss
     @Namespace private var tabNamespace
     @State private var tab: Tab = .history
     @State private var keywords: [KeywordSub] = []
@@ -44,16 +43,13 @@ struct KeywordListView: View {
                 keywordsList
                     .tag(Tab.keywords)
                 AlertHistoryView(
-                    // dismiss() 는 구 ContentView(시트로 띄움)에서 시트를 닫는다.
-                    // 새 셸(탭)에선 no-op — 오버레이는 ZStack 으로 탭 위에 뜬다.
+                    // 알림은 탭이라 닫을 시트가 없다 — 오버레이는 ZStack 으로
+                    // 탭 위에 바로 뜬다.
                     onOpen: { url, title in
-                        dismiss()
                         DetailOverlayController.shared.present(url: url, title: title)
                     },
                     // 받은 알림을 읽으면 세그먼트 배지(unreadCount)뿐 아니라 하단
-                    // 종 탭 배지(AlertBadge.shared)도 같이 내려준다. 옛 셸은 시트
-                    // onDismiss 에서 refresh 했지만 새 셸 탭엔 dismiss 가 없어
-                    // 종 배지가 stale 됐었다.
+                    // 종 탭 배지(AlertBadge.shared)도 같이 내려준다.
                     onUnreadCountChange: {
                         unreadCount = $0
                         AlertBadge.shared.unread = $0
