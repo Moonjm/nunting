@@ -243,6 +243,9 @@ private struct ArchiveHome: View {
     // 보드별 활성 검색어. 옛 앱처럼 검색은 보드에 묶인다 — 다른 보드로
     // 스와이프해도 각 보드의 검색 상태가 유지된다.
     @State private var searchByBoard: [String: String] = [:]
+    // 기본 필터를 이미 심은 보드(중복 시드 방지). 이후 사용자가 전체를
+    // 골라도 재시드하지 않는다.
+    @State private var seededFilterIDs: Set<String> = []
     // 돋보기 → SearchSheet(시트) 표시.
     @State private var showingSearch = false
 
@@ -292,6 +295,17 @@ private struct ArchiveHome: View {
         }
         .onAppear {
             if currentBoardID == nil { currentBoardID = boards.first?.id }
+            seedDefaultFilters()
+        }
+        .onChange(of: boards.map(\.id)) { _, _ in seedDefaultFilters() }
+    }
+
+    // 보드별 기본 필터(예: 메이플 인벤 → 10추)를 처음 보일 때 한 번 적용.
+    // 전체 피드가 시끄러운 보드의 초기 로딩을 기본 필터로 시작시킨다.
+    private func seedDefaultFilters() {
+        for b in boards where !seededFilterIDs.contains(b.id) {
+            if let def = b.defaultListFilter { filterByBoard[b.id] = def }
+            seededFilterIDs.insert(b.id)
         }
     }
 
