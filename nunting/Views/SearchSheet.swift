@@ -3,7 +3,9 @@ struct SearchSheet: View {
     let board: Board
     let initialQuery: String
     let onSubmit: (String) -> Void
-    let onClear: () -> Void
+    // 구 ContentView 의 "검색 해제" 버튼 경로가 사용한다(새 셸은 탭바 X 로
+    // 해제하므로 호출 안 함). Phase 5 에서 ContentView 제거 시 같이 정리.
+    var onClear: () -> Void = {}
 
     @Environment(\.dismiss) private var dismiss
     @State private var query: String = ""

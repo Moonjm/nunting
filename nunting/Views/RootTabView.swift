@@ -188,8 +188,7 @@ struct RootTabView: View {
                     SearchSheet(
                         board: board,
                         initialQuery: searchByBoard[board.id] ?? "",
-                        onSubmit: { searchByBoard[board.id] = $0 },
-                        onClear: { searchByBoard[board.id] = nil }
+                        onSubmit: { searchByBoard[board.id] = $0 }
                     )
                 }
             }
@@ -400,7 +399,7 @@ private struct ArchiveHome: View {
         )
     }
 
-    // 우상단에 떠 있는 햄버거 메뉴 버튼 — 검정 아이콘 + 유리 동그라미(하단
+    // 우상단에 떠 있는 보드 카드 메뉴 버튼 — 검정 아이콘 + 유리 동그라미(하단
     // 검색 버튼과 동일 룩). 누르면 모음에 담긴 보드(사이트) 목록이 드롭다운으로
     // 뜨고 선택하면 그 보드로 전환(현재 보드 체크). 목록은 그 밑으로 겹쳐 흐른다.
     private var boardMenu: some View {
@@ -425,6 +424,7 @@ private struct ArchiveHome: View {
                 .glassEffect(.regular, in: .circle)
         }
         .tint(.black)
+        .accessibilityLabel("보드 선택")
         .padding(.top, 6)
         .padding(.trailing, 16)
     }
