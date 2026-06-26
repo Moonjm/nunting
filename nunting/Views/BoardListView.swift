@@ -7,6 +7,11 @@ struct BoardListView: View, Equatable {
     /// 떠 있는 하단 필터 바가 있을 때, 마지막 글이 그 밑으로 가려지지 않게
     /// 스크롤 콘텐츠 하단에 주는 여백. 바가 없으면 0.
     var bottomContentInset: CGFloat = 0
+    /// 보드 전환 시 부모(`BoardPager`)가 증가시켜 강제 재로딩을 트리거한다.
+    /// `.task(id:)` 는 같은 보드로 돌아오면 key 가 같아 재실행되지 않으므로,
+    /// "보드 전환은 항상 새로 로드" 를 이 토큰으로 보장한다(reload 라 기존
+    /// 목록은 유지한 채 갱신 → 깜빡임 없음).
+    var reloadToken: Int = 0
     /// Returns `true` when `DetailBackDrag` has just observed any
     /// horizontal-dominant movement. Row taps consult this so a tiny `→`
     /// drag that doesn't reach the back-drag commit threshold doesn't fall
@@ -33,6 +38,7 @@ struct BoardListView: View, Equatable {
             && lhs.searchQuery == rhs.searchQuery
             && lhs.scrollLocked == rhs.scrollLocked
             && lhs.bottomContentInset == rhs.bottomContentInset
+            && lhs.reloadToken == rhs.reloadToken
     }
 
     @State private var loader = BoardListLoader()
@@ -56,6 +62,12 @@ struct BoardListView: View, Equatable {
             // 탭 시 RTT 제거. 보드 전환 시 .task(id:) 취소가 그대로 전파돼
             // 이전 보드 prefetch 는 중단된다.
             await DetailPrefetcher.shared.prefetch(posts: Array(loader.posts.prefix(3)))
+        }
+        // 보드 전환 시 토큰이 바뀌면 강제로 새로 불러온다(reload 는 loadedKey
+        // 단락을 우회 + 기존 목록 유지). 첫 진입은 위 .task 가 담당하므로 토큰
+        // 변경 때만 동작.
+        .onChange(of: reloadToken) { _, _ in
+            Task { await loader.reload(board: board, filter: filter, searchQuery: searchQuery) }
         }
     }
 

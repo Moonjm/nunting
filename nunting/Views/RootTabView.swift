@@ -584,6 +584,9 @@ private struct BoardPager: View {
 
     // 가상 인덱스: 0=헤드 센티넬(boards.last) / 1…n=실제 / n+1=테일 센티넬(boards.first)
     @State private var index = 1
+    // 보드별 재로딩 토큰 — 다른 보드로 전환해 들어올 때 그 보드 토큰을 올려
+    // BoardListView 가 새로 불러오게 한다(첫 진입 제외).
+    @State private var reloadTokens: [String: Int] = [:]
 
     private func inset(_ board: Board) -> CGFloat {
         baseBottomInset + (filterBarBoardIDs.contains(board.id) ? filterBarInset : 0)
@@ -594,7 +597,8 @@ private struct BoardPager: View {
             if let board = boards.first {
                 BoardListView(board: board, filter: filterByBoard[board.id],
                               searchQuery: searchByBoard[board.id],
-                              bottomContentInset: inset(board), readStore: readStore,
+                              bottomContentInset: inset(board),
+                              reloadToken: reloadTokens[board.id] ?? 0, readStore: readStore,
                               onSelectPost: onSelectPost)
                     .equatable()
             }
@@ -608,7 +612,12 @@ private struct BoardPager: View {
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
             .onChange(of: index) { _, idx in handleIndex(idx) }
-            .onChange(of: currentBoardID) { _, id in syncFromID(id) }
+            .onChange(of: currentBoardID) { old, id in
+                syncFromID(id)
+                // 첫 진입(nil→첫 보드)은 .task 가 로드하므로 제외, 그 외 전환은
+                // 도착한 보드를 새로 불러온다.
+                if old != nil, let id { reloadTokens[id, default: 0] += 1 }
+            }
             .onChange(of: boards.map(\.id)) { _, _ in index = realIndex(currentBoardID) ?? 1 }
             .onAppear { index = realIndex(currentBoardID) ?? 1 }
         }
@@ -617,7 +626,8 @@ private struct BoardPager: View {
     @ViewBuilder private func page(_ board: Board, tag: Int) -> some View {
         BoardListView(board: board, filter: filterByBoard[board.id],
                       searchQuery: searchByBoard[board.id],
-                      bottomContentInset: inset(board), readStore: readStore,
+                      bottomContentInset: inset(board),
+                      reloadToken: reloadTokens[board.id] ?? 0, readStore: readStore,
                       onSelectPost: onSelectPost)
             .equatable()
             .tag(tag)
