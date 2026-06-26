@@ -212,6 +212,9 @@ struct RootTabView: View {
                 HistorySheet(
                     posts: Array(readStore.recentPosts.prefix(5)),
                     onOpen: { post in
+                        // 시트 닫기 + 상세 열기를 같은 틱에. 상세는 시트가 아니라
+                        // 항상 떠 있는 ZStack 오버레이(activePost 갱신)라 시트
+                        // dismiss 트랜잭션과 독립적 → 드롭/이중표시 없이 안전.
                         showingHistory = false
                         detail.show(post)
                     }

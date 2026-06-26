@@ -18,7 +18,9 @@ final class ReadStore {
     /// 다시 열 수 있다. `markRead(_:)`(상세 진입) 로 들어온 Post 만 기록한다.
     private(set) var recentPosts: [Post] = []
     private let recentKey = "recentReadPosts.v1"
-    private let recentCapacity = 10
+    // 히스토리 시트가 보여주는 개수와 동일 — store==UI 로 도달 못 하는 잔여
+    // 기록이 없게.
+    private let recentCapacity = 5
 
     /// Tail of the persist task chain. Each `persist()` call awaits this
     /// before writing so concurrent detached tasks can't reorder their
