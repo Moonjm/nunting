@@ -410,17 +410,18 @@ private struct ArchiveHome: View {
                     withAnimation(.snappy) { currentBoardID = b.id }
                 } label: {
                     if b.id == currentBoard?.id {
-                        Label("\(b.site.displayName) · \(b.name)", systemImage: "checkmark")
+                        Label(b.name, systemImage: "checkmark")
                     } else {
-                        Text("\(b.site.displayName) · \(b.name)")
+                        Text(b.name)
                     }
                 }
             }
         } label: {
             Image(systemName: "line.3.horizontal")
-                .font(.body.weight(.semibold))
+                .font(.title3.weight(.semibold))
                 .foregroundStyle(.black)
-                .frame(width: 44, height: 44)
+                // 하단 검색 버튼(약 60pt 유리 동그라미)과 크기 맞춤.
+                .frame(width: 58, height: 58)
                 .glassEffect(.regular, in: .circle)
         }
         .tint(.black)
