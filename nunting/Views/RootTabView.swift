@@ -263,20 +263,13 @@ private struct ArchiveHome: View {
                 ContentUnavailableView("즐겨찾기한 보드가 없어요", systemImage: "star",
                                        description: Text("둘러보기에서 ⭐로 추가하세요"))
             } else {
-                TabView(selection: $currentBoardID) {
-                    ForEach(boards) { board in
-                        BoardListView(
-                            board: board,
-                            filter: filterByBoard[board.id],
-                            searchQuery: nil,
-                            readStore: readStore,
-                            onSelectPost: onSelectPost
-                        )
-                        .equatable()
-                        .tag(Optional(board.id))
-                    }
-                }
-                .tabViewStyle(.page(indexDisplayMode: .never))
+                BoardPager(
+                    boards: boards,
+                    currentBoardID: $currentBoardID,
+                    filterByBoard: filterByBoard,
+                    readStore: readStore,
+                    onSelectPost: onSelectPost
+                )
                 .ignoresSafeArea(edges: .bottom)
             }
         }
@@ -478,6 +471,84 @@ private struct SiteEmblem: View {
             .foregroundStyle(.white)
             .frame(width: 38, height: 38)
             .background(site.accentColor, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
+// MARK: - 보드 페이저 (좌우 스와이프 + 무한 순환)
+
+// TabView .page 는 끝에서 더 밀면 멈추므로, 앞뒤에 센티넬(맨끝/맨앞 복제) 페이지를
+// 두고 거기 닿으면 무애니메이션으로 반대편 실제 페이지로 점프 → 끊김 없는 순환.
+private struct BoardPager: View {
+    let boards: [Board]
+    @Binding var currentBoardID: String?
+    let filterByBoard: [String: BoardFilter]
+    let readStore: ReadStore
+    let onSelectPost: (Post) -> Void
+
+    // 가상 인덱스: 0=헤드 센티넬(boards.last) / 1…n=실제 / n+1=테일 센티넬(boards.first)
+    @State private var index = 1
+
+    var body: some View {
+        if boards.count <= 1 {
+            if let board = boards.first {
+                BoardListView(board: board, filter: filterByBoard[board.id],
+                              searchQuery: nil, readStore: readStore, onSelectPost: onSelectPost)
+                    .equatable()
+            }
+        } else {
+            TabView(selection: $index) {
+                page(boards.last!, tag: 0)
+                ForEach(Array(boards.enumerated()), id: \.offset) { i, board in
+                    page(board, tag: i + 1)
+                }
+                page(boards.first!, tag: boards.count + 1)
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            .onChange(of: index) { _, idx in handleIndex(idx) }
+            .onChange(of: currentBoardID) { _, id in syncFromID(id) }
+            .onChange(of: boards.map(\.id)) { _, _ in index = realIndex(currentBoardID) ?? 1 }
+            .onAppear { index = realIndex(currentBoardID) ?? 1 }
+        }
+    }
+
+    @ViewBuilder private func page(_ board: Board, tag: Int) -> some View {
+        BoardListView(board: board, filter: filterByBoard[board.id],
+                      searchQuery: nil, readStore: readStore, onSelectPost: onSelectPost)
+            .equatable()
+            .tag(tag)
+    }
+
+    private func realIndex(_ id: String?) -> Int? {
+        guard let id, let i = boards.firstIndex(where: { $0.id == id }) else { return nil }
+        return i + 1
+    }
+
+    // 센티넬에 닿으면 반대편 실제 페이지로 무애니메이션 점프(같은 보드라 끊김 없음).
+    private func handleIndex(_ idx: Int) {
+        if idx == 0 {
+            jump(boards.count)
+        } else if idx == boards.count + 1 {
+            jump(1)
+        } else {
+            let id = boards[idx - 1].id
+            if currentBoardID != id { currentBoardID = id }
+        }
+    }
+
+    private func jump(_ target: Int) {
+        var t = Transaction()
+        t.disablesAnimations = true
+        withTransaction(t) { index = target }
+        let id = boards[target - 1].id
+        if currentBoardID != id { currentBoardID = id }
+    }
+
+    // 보드명 메뉴/인디케이터 탭으로 currentBoardID 가 바뀌면 페이저도 따라간다.
+    private func syncFromID(_ id: String?) {
+        guard let target = realIndex(id) else { return }
+        if index != target, index != 0, index != boards.count + 1 {
+            index = target
+        }
     }
 }
 
