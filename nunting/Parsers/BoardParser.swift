@@ -796,18 +796,20 @@ enum CommentLiteScanner {
     enum TagAction { case block, strip, fallback }
 
     /// stampBlockBreaks 가 stamp 하는 정확한 블록 태그 — opening 시 blockMarker 1개.
-    static let blockTags: Set<String> = [
+    nonisolated static let blockTags: Set<String> = [
         "br", "p", "div", "li", "blockquote", "tr"]
 
     /// `.text()` 에 텍스트만 기여하는(앞에 공백을 안 넣는) **검증된 inline** + 미디어.
     /// SwiftSoup 은 `<s>`/`<u>`/`<sup>` 등 일부 태그를 block 으로 취급해 `.text()` 가
     /// 앞에 공백을 넣으므로(테스트로 발견), 동치가 깨진다 → 그런 태그는 여기 넣지
     /// 않고 fallback 시킨다(드물어 손실 없음). `img` 는 스티커 경로가 별도 추출 → drop.
-    static let stripTags: Set<String> = [
+    nonisolated static let stripTags: Set<String> = [
         "b", "i", "strong", "em", "span", "font", "img"]
 
     /// `inner` = `<` 와 `>` 사이(예: `"br"`, `"/p"`, `"div class=x"`, `"a href=…"`).
-    static func tagAction(_ inner: Substring) -> TagAction {
+    /// 순수 함수(오프메인 파서에서 호출) — 명시적 nonisolated 로 기본 액터 격리
+    /// 추론에 의한 MainActor 격리를 막는다.
+    nonisolated static func tagAction(_ inner: Substring) -> TagAction {
         var s = inner
         while let f = s.first, f == " " || f == "\t" || f == "\n" || f == "/" { s = s.dropFirst() }
         let name = String(s.prefix { $0.isLetter || $0.isNumber }).lowercased()
