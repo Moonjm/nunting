@@ -76,6 +76,8 @@ private struct ArchiveHome: View {
     @State private var searchActive = false
     @State private var queryText = ""
     @FocusState private var searchFocused: Bool
+    // 상세 우상단 "원문" → SafariView 시트.
+    @State private var browserItem: WebBrowserItem?
 
     private var boards: [Board] { favorites.favoriteBoards() }
     private var currentBoard: Board? {
@@ -121,16 +123,32 @@ private struct ArchiveHome: View {
             }
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: Post.self) { post in
+                // 시스템 유리 내비바 아래로 본문이 흐른다(헤더는 셸 toolbar 제공).
                 PostDetailView(
                     post: post,
                     readStore: readStore,
                     cache: cache,
-                    onDismiss: { if !path.isEmpty { path.removeLast() } }
+                    onDismiss: {},
+                    showsHeader: false
                 )
                 .equatable()
-                .toolbar(.hidden, for: .navigationBar)
+                .navigationTitle(post.site.displayName)
+                .toolbarTitleDisplayMode(.inline)
                 .toolbar(.hidden, for: .tabBar)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            browserItem = WebBrowserItem(url: post.url)
+                        } label: {
+                            Image(systemName: "safari")
+                        }
+                        .accessibilityLabel("원문 보기")
+                    }
+                }
             }
+        }
+        .sheet(item: $browserItem) { item in
+            SafariView(url: item.url).ignoresSafeArea()
         }
         .onAppear {
             if currentBoardID == nil { currentBoardID = boards.first?.id }

@@ -25,6 +25,10 @@ struct PostDetailView: View, Equatable {
     /// Invoked from the custom back button in the header. The parent owns the
     /// overlay offset animation; this view just asks to be dismissed.
     let onDismiss: () -> Void
+    /// 커스텀 상단 헤더(뒤로/사이트명/사파리) 렌더 여부. 오버레이(구 ContentView)
+    /// 에선 true. 새 셸의 NavigationStack push 에선 false 로 두고 시스템 유리
+    /// 내비바를 쓴다(뒤로·제목·원문은 호출부 toolbar 가 제공). 상수라 `==` 제외.
+    var showsHeader: Bool = true
 
     // Without this explicit Equatable, SwiftUI can't compare `onDismiss`
     // (closures aren't Equatable) and treats PostDetailView as "possibly
@@ -125,7 +129,7 @@ struct PostDetailView: View, Equatable {
 
     var body: some View {
         VStack(spacing: 0) {
-            detailHeader
+            if showsHeader { detailHeader }
             ScrollView {
                 // Claims UIKit's status-bar-tap scroll-to-top for this
                 // detail ScrollView. When the overlay is live, the list
