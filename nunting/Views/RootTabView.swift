@@ -24,7 +24,7 @@ struct RootTabView: View {
                 ArchiveHome(
                     favorites: favorites,
                     readStore: readStore,
-                    cache: detailCache
+                    onSelectPost: { detail.show($0) }
                 )
             }
             Tab("둘러보기", systemImage: "square.grid.2x2", value: 1) {
@@ -128,11 +128,13 @@ private struct PostDetailScreen: View {
 private struct ArchiveHome: View {
     let favorites: FavoritesStore
     let readStore: ReadStore
-    let cache: PostDetailCache
+    /// 글 탭 → 상세 열기. 상세는 RootTabView 의 fullScreenCover 로 전체화면을
+    /// 덮어 띄운다(탭바째 통째로 가려 목록 쪽 chrome 이 사라졌다/나타났다 하지
+    /// 않게 — push + tabBar 숨김의 깜빡임 회피).
+    let onSelectPost: (Post) -> Void
 
     @State private var currentBoardID: String?
     @State private var filterByBoard: [String: BoardFilter] = [:]
-    @State private var path: [Post] = []
     // 보드별 확정 검색어(빈/없음 = 검색 안 함). BoardListView 가 searchQuery 로
     // 받아 결과를 같은 목록 자리에 표출한다.
     @State private var queryByBoard: [String: String] = [:]
@@ -150,42 +152,34 @@ private struct ArchiveHome: View {
     }
 
     var body: some View {
-        NavigationStack(path: $path) {
-            VStack(spacing: 0) {
-                header
-                if boards.isEmpty {
-                    ContentUnavailableView("즐겨찾기한 보드가 없어요", systemImage: "star",
-                                           description: Text("둘러보기에서 ⭐로 추가하세요"))
-                } else {
-                    TabView(selection: $currentBoardID) {
-                        ForEach(boards) { board in
-                            BoardListView(
-                                board: board,
-                                filter: filterByBoard[board.id],
-                                searchQuery: queryByBoard[board.id],
-                                readStore: readStore,
-                                onSelectPost: { post in path.append(post) }
-                            )
-                            .equatable()
-                            .tag(Optional(board.id))
-                        }
+        VStack(spacing: 0) {
+            header
+            if boards.isEmpty {
+                ContentUnavailableView("즐겨찾기한 보드가 없어요", systemImage: "star",
+                                       description: Text("둘러보기에서 ⭐로 추가하세요"))
+            } else {
+                TabView(selection: $currentBoardID) {
+                    ForEach(boards) { board in
+                        BoardListView(
+                            board: board,
+                            filter: filterByBoard[board.id],
+                            searchQuery: queryByBoard[board.id],
+                            readStore: readStore,
+                            onSelectPost: onSelectPost
+                        )
+                        .equatable()
+                        .tag(Optional(board.id))
                     }
-                    .tabViewStyle(.page(indexDisplayMode: .never))
-                    .ignoresSafeArea(edges: .bottom)
                 }
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                .ignoresSafeArea(edges: .bottom)
             }
-            // 보드 내 필터 탭은 인벤·애객처럼 *필터가 실제로 있는* 보드에서만,
-            // 탭바 바로 위(엄지 존)에 띄운다. 다른 보드/다른 탭에선 자리 안 차지.
-            // (상세 push 시엔 이 루트 콘텐츠가 가려지므로 자연히 숨겨진다.)
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if let board = currentBoard, showsFilterBar(board), activeQuery == nil {
-                    GlassFilterBar(board: board, selection: filterBinding(board.id))
-                }
-            }
-            .toolbar(.hidden, for: .navigationBar)
-            .navigationDestination(for: Post.self) { post in
-                // 시스템 유리 내비바 아래로 본문이 흐른다. push 라 뒤로는 시스템 제공.
-                PostDetailScreen(post: post, readStore: readStore, cache: cache)
+        }
+        // 보드 내 필터 탭은 인벤·애객처럼 *필터가 실제로 있는* 보드에서만,
+        // 탭바 바로 위(엄지 존)에. 다른 보드/다른 탭에선 자리 안 차지.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if let board = currentBoard, showsFilterBar(board), activeQuery == nil {
+                GlassFilterBar(board: board, selection: filterBinding(board.id))
             }
         }
         .onAppear {
