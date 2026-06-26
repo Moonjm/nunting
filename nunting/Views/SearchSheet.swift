@@ -37,16 +37,6 @@ struct SearchSheet: View {
                     }
                     .padding(10)
                     .background(Color("AppSurface2"), in: RoundedRectangle(cornerRadius: 10))
-
-                    if !initialQuery.isEmpty {
-                        Button {
-                            onClear()
-                            dismiss()
-                        } label: {
-                            Label("검색 해제", systemImage: "arrow.uturn.left")
-                        }
-                        .buttonStyle(.bordered)
-                    }
                 } else {
                     HStack(spacing: 10) {
                         Image(systemName: "magnifyingglass.slash")
@@ -75,9 +65,9 @@ struct SearchSheet: View {
                 }
             }
         }
-        // 검색 필드가 차지하는 만큼만 — 키보드가 올라오면 시트가 그 위에
-        // 딱 붙어 빈 공간이 거의 없게. (해제 버튼이 있는 경우까지 고려한 높이)
-        .presentationDetents([.height(200)])
+        // 검색 필드가 차지하는 만큼만 — 키보드가 올라오면 그 위에 딱 붙어
+        // 빈 공간이 거의 없게. (해제는 탭바 X 버튼이 담당 → 시트엔 필드만)
+        .presentationDetents([.height(152)])
         .presentationDragIndicator(.visible)
         .onAppear {
             query = initialQuery
