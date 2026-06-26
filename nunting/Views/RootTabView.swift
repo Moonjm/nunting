@@ -1,5 +1,86 @@
 import SwiftUI
 
+// 상세 오버레이 백드래그(우→ 스와이프 닫기). 구앱 GestureCoordinator 에서
+// detail 백드래그만 떼어낸 경량판 — 드로어/forward-reveal 분기 없음(새 셸의
+// 보드 페이저 가로 스와이프와 충돌하지 않게). DetailOverlayController 의
+// offset/show/hide/shouldDismissSwipe 와 짝으로 동작한다.
+//
+// 닫을 때 슬라이드 아웃 뒤 activePost 를 비워 오버레이를 언마운트한다(구앱의
+// keep-alive 미사용): 메모리 회수 + "마지막 글 재노출"이 보드 스와이프와
+// 겹치는 문제를 원천 차단.
+@Observable @MainActor
+final class DetailBackDrag {
+    /// 가로 드래그가 잠긴 동안 true → PostDetailView 의 내부 ScrollView 잠금.
+    var scrollLocked = false
+    /// 백드래그 중 손가락 밑 이미지/영상이 touch-up 에 탭 발화하지 않게.
+    let tapGate = TapSuppressionGate()
+    /// 하단(탭바/필터) 영역 제외 판정용.
+    var containerHeight: CGFloat = 0
+
+    @ObservationIgnored private var horizontalLock: Bool? = nil  // nil 미정 / true 가로 / false 세로
+    @ObservationIgnored private var baseline: CGFloat = 0
+
+    private var detail: DetailOverlayController { .shared }
+
+    var gesture: some Gesture {
+        DragGesture(minimumDistance: 8, coordinateSpace: .global)
+            .onChanged { [self] v in onChanged(v) }
+            .onEnded { [self] v in onEnded(v) }
+    }
+
+    private func onChanged(_ v: DragGesture.Value) {
+        // 오버레이가 보이는 동안에만 — 닫혀있으면(보드 목록) 보드 페이저에 양보.
+        guard detail.activePost != nil, detail.isOverlayVisible else { return }
+        // 하단 ~110pt(탭바/필터)에서 시작한 드래그는 백드래그로 잡지 않는다.
+        if containerHeight > 0, v.startLocation.y > containerHeight - 110 { return }
+        let w = abs(v.translation.width), h = abs(v.translation.height)
+        if horizontalLock == nil {
+            if w > 10 && w >= h {
+                horizontalLock = true
+                baseline = v.translation.width
+                scrollLocked = true
+                detail.offsetBase = detail.offset
+            } else if h > 10 && h > w {
+                horizontalLock = false
+            }
+        }
+        if horizontalLock == true {
+            tapGate.suppress()
+            let dx = v.translation.width - baseline
+            detail.offset = max(0, min(detail.containerWidth, dx))  // 우→(닫기) 방향만
+        }
+    }
+
+    private func onEnded(_ v: DragGesture.Value) {
+        let horizontal = horizontalLock == true
+        let base = baseline
+        horizontalLock = nil
+        baseline = 0
+        scrollLocked = false
+        guard horizontal, detail.activePost != nil else { return }
+        let traveled = v.translation.width - base
+        let velocity = v.predictedEndTranslation.width - v.translation.width
+        if detail.shouldDismissSwipe(dx: traveled, velocityX: velocity) {
+            dismiss()
+        } else {
+            detail.beginAnimationLock()
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) { detail.offset = 0 }
+        }
+    }
+
+    /// 닫기 — 슬라이드 아웃 후 activePost 를 비워 언마운트(헤더 뒤로 버튼·백드래그 공용).
+    func dismiss() {
+        let token = detail.activePost?.id
+        detail.hide()
+        Task { @MainActor [self] in
+            try? await Task.sleep(for: .milliseconds(380))
+            if detail.activePost?.id == token, detail.offset >= detail.containerWidth - 0.5 {
+                detail.activePost = nil
+            }
+        }
+    }
+}
+
 // 2026/27 재디자인 셸 — Liquid Glass 탭바(모음/둘러보기/알림).
 // ContentView(드로어+오버레이+제스처)를 대체한다. 데이터/로더/상세 렌더는
 // 기존 서비스·뷰(BoardListView/PostDetailView/BoardFilterBar/KeywordListView)를
@@ -17,6 +98,8 @@ struct RootTabView: View {
     @State private var selectedTab = 0
     // 모음의 현재 보드 — 검색 탭이 "지금 보고 있는 보드"를 검색하도록 공유.
     @State private var currentBoardID: String?
+    // 상세 오버레이 백드래그(우→ 스와이프 닫기) 상태기계.
+    @State private var backDrag = DetailBackDrag()
 
     @Environment(\.scenePhase) private var scenePhase
 
@@ -26,42 +109,67 @@ struct RootTabView: View {
     }
 
     var body: some View {
-        TabView(selection: $selectedTab) {
-            Tab("모음", systemImage: "tray.full.fill", value: 0) {
-                ArchiveHome(
-                    favorites: favorites,
-                    readStore: readStore,
-                    cache: detailCache,
-                    currentBoardID: $currentBoardID
-                )
-            }
-            Tab("둘러보기", systemImage: "square.grid.2x2", value: 1) {
-                BrowseTab(catalog: catalog, favorites: favorites)
-            }
-            Tab("알림", systemImage: "bell", value: 2) {
-                NavigationStack {
-                    KeywordListView()
-                        .navigationTitle("알림")
+        ZStack {
+            TabView(selection: $selectedTab) {
+                Tab("모음", systemImage: "tray.full.fill", value: 0) {
+                    ArchiveHome(
+                        favorites: favorites,
+                        readStore: readStore,
+                        onSelectPost: { detail.show($0) },
+                        currentBoardID: $currentBoardID
+                    )
+                }
+                Tab("둘러보기", systemImage: "square.grid.2x2", value: 1) {
+                    BrowseTab(catalog: catalog, favorites: favorites)
+                }
+                Tab("알림", systemImage: "bell", value: 2) {
+                    NavigationStack {
+                        KeywordListView()
+                            .navigationTitle("알림")
+                    }
+                }
+                .badge(alertBadge.unread)
+                Tab("검색", systemImage: "magnifyingglass", value: 3, role: .search) {
+                    SearchTab(board: currentBoard, readStore: readStore,
+                              onSelectPost: { detail.show($0) })
                 }
             }
-            .badge(alertBadge.unread)
-            Tab("검색", systemImage: "magnifyingglass", value: 3, role: .search) {
-                SearchTab(board: currentBoard, readStore: readStore,
-                          onSelectPost: { detail.show($0) })
+
+            // 상세 오버레이 — TabView 위 ZStack 최상단 레이어로 화면 전체(탭바
+            // 포함)를 덮는다. show() 가 우측에서 슬라이드 인, 백드래그가 offset 을
+            // 추적해 우→ 스와이프로 닫는다. 인앱 글 탭·푸시·받은알림 모두 이 경로.
+            if let post = detail.activePost {
+                NavigationStack {
+                    PostDetailScreen(
+                        post: post,
+                        readStore: readStore,
+                        cache: detailCache,
+                        tapGate: backDrag.tapGate,
+                        isOverlayVisible: detail.isOverlayVisible,
+                        isScrollingBlocked: backDrag.scrollLocked || detail.animating,
+                        onBack: { backDrag.dismiss() }
+                    )
+                }
+                .background(Color(.systemBackground).ignoresSafeArea())
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .id(post.id)
+                .offset(x: detail.offset)
+                .allowsHitTesting(detail.allowsHitTesting)
+                .zIndex(10)
             }
         }
-        // 스크롤 시 탭바만 줄고 그 위 유리 필터 알약(safeAreaInset)은 그대로라
-        // 둘이 따로 놀아 이질감이 생긴다 — 탭바 축소를 끄고 둘 다 고정으로.
-        // (보드 리더에선 필터·탭이 항상 닿는 게 더 편하기도 함.)
-        // 이미지 다운샘플/프리페치가 읽는 containerWidth 공급(기존엔 ContentView 담당).
+        // 이미지 다운샘플/프리페치가 읽는 containerWidth + 백드래그 하단 제외용
+        // containerHeight 공급(기존엔 ContentView 담당).
         .background(
             GeometryReader { proxy in
                 Color.clear
-                    .onChange(of: proxy.size.width, initial: true) { _, width in
-                        DetailOverlayController.shared.updateContainerWidth(width)
+                    .onChange(of: proxy.size, initial: true) { _, size in
+                        detail.updateContainerWidth(size.width)
+                        backDrag.containerHeight = size.height
                     }
             }
         )
+        .simultaneousGesture(backDrag.gesture)
         .task {
             Networking.prewarmConnections()
             ImageWarmup.warm()
@@ -74,18 +182,6 @@ struct RootTabView: View {
             Task { await catalog.revalidateLoadedCatalogs() }
             Task { await alertBadge.refresh() }
         }
-        // 푸시/받은알림 딥링크 → activePost 가 세팅되면 상세를 모달로 띄운다.
-        // 현재 탭과 무관하게 동작(크로스탭 네비게이션 불필요). 읽음 처리는
-        // PostDetailView.task 가 담당.
-        .fullScreenCover(item: Binding(
-            get: { detail.activePost },
-            set: { if $0 == nil { detail.hide() } }
-        )) { post in
-            NavigationStack {
-                PostDetailScreen(post: post, readStore: readStore, cache: detailCache,
-                                 onBack: { detail.hide() })
-            }
-        }
     }
 }
 
@@ -95,8 +191,11 @@ private struct PostDetailScreen: View {
     let post: Post
     let readStore: ReadStore
     let cache: PostDetailCache
-    /// nil = NavigationStack push(시스템 뒤로 버튼 사용). non-nil = 모달 루트라
-    /// 명시적 뒤로(닫기) 버튼을 좌상단에 단다.
+    // 백드래그 공존용 — 드래그 중 내부 ScrollView 잠금 + 미디어 탭 억제.
+    var tapGate: TapSuppressionGate? = nil
+    var isOverlayVisible: Bool = true
+    var isScrollingBlocked: Bool = false
+    /// 좌상단 뒤로(닫기) 버튼 동작. 오버레이를 닫는다.
     var onBack: (() -> Void)? = nil
 
     @State private var browserItem: WebBrowserItem?
@@ -106,6 +205,9 @@ private struct PostDetailScreen: View {
             post: post,
             readStore: readStore,
             cache: cache,
+            tapGate: tapGate,
+            isOverlayVisible: isOverlayVisible,
+            isScrollingBlocked: isScrollingBlocked,
             onDismiss: {},
             showsHeader: false
         )
@@ -140,19 +242,14 @@ private struct PostDetailScreen: View {
 private struct ArchiveHome: View {
     let favorites: FavoritesStore
     let readStore: ReadStore
-    /// 글 탭 → 상세 열기. 상세는 RootTabView 의 fullScreenCover 로 전체화면을
-    /// 덮어 띄운다(탭바째 통째로 가려 목록 쪽 chrome 이 사라졌다/나타났다 하지
-    /// 않게 — push + tabBar 숨김의 깜빡임 회피).
-    let cache: PostDetailCache
+    /// 글 탭 → 상세 열기(detail.show). 상세는 RootTabView 의 ZStack 오버레이로
+    /// 우측에서 슬라이드 인하며 화면 전체(탭바 포함)를 덮는다.
+    let onSelectPost: (Post) -> Void
     // 검색은 하단 검색 탭으로 분리됐다(RootTabView). 현재 보드를 검색 탭이
     // 알아야 하므로 selection 을 위로 올려 공유한다.
     @Binding var currentBoardID: String?
 
     @State private var filterByBoard: [String: BoardFilter] = [:]
-    // 인앱 글 탭은 NavigationStack push(시스템 가장자리 스와이프 뒤로). 탭바는
-    // 숨기지 않아 상세에서도 고정 — push/pop 시 탭바가 사라졌다 나타나는
-    // 깜빡임이 없다. (딥링크/푸시는 RootTabView 의 fullScreenCover 로 별도.)
-    @State private var path: [Post] = []
 
     private var boards: [Board] { favorites.favoriteBoards() }
     private var currentBoard: Board? {
@@ -160,43 +257,34 @@ private struct ArchiveHome: View {
     }
 
     var body: some View {
-        NavigationStack(path: $path) {
-            VStack(spacing: 0) {
-                header
-                if boards.isEmpty {
-                    ContentUnavailableView("즐겨찾기한 보드가 없어요", systemImage: "star",
-                                           description: Text("둘러보기에서 ⭐로 추가하세요"))
-                } else {
-                    TabView(selection: $currentBoardID) {
-                        ForEach(boards) { board in
-                            BoardListView(
-                                board: board,
-                                filter: filterByBoard[board.id],
-                                searchQuery: nil,
-                                readStore: readStore,
-                                onSelectPost: { post in path.append(post) }
-                            )
-                            .equatable()
-                            .tag(Optional(board.id))
-                        }
+        VStack(spacing: 0) {
+            header
+            if boards.isEmpty {
+                ContentUnavailableView("즐겨찾기한 보드가 없어요", systemImage: "star",
+                                       description: Text("둘러보기에서 ⭐로 추가하세요"))
+            } else {
+                TabView(selection: $currentBoardID) {
+                    ForEach(boards) { board in
+                        BoardListView(
+                            board: board,
+                            filter: filterByBoard[board.id],
+                            searchQuery: nil,
+                            readStore: readStore,
+                            onSelectPost: onSelectPost
+                        )
+                        .equatable()
+                        .tag(Optional(board.id))
                     }
-                    .tabViewStyle(.page(indexDisplayMode: .never))
-                    .ignoresSafeArea(edges: .bottom)
                 }
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                .ignoresSafeArea(edges: .bottom)
             }
-            // 보드 내 필터 탭은 인벤·애객처럼 *필터가 실제로 있는* 보드에서만,
-            // 탭바 바로 위(엄지 존)에. 다른 보드/다른 탭에선 자리 안 차지.
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if let board = currentBoard, showsFilterBar(board) {
-                    GlassFilterBar(board: board, selection: filterBinding(board.id))
-                }
-            }
-            // 목록은 커스텀 슬림 헤더를 쓰므로 시스템 내비바 숨김(상세는 자체
-            // navigationTitle/toolbar 로 유리 내비바를 다시 켠다).
-            .toolbar(.hidden, for: .navigationBar)
-            .navigationDestination(for: Post.self) { post in
-                // push → 시스템 가장자리 스와이프 뒤로. 탭바는 안 숨겨 깜빡임 없음.
-                PostDetailScreen(post: post, readStore: readStore, cache: cache)
+        }
+        // 보드 내 필터 탭은 인벤·애객처럼 *필터가 실제로 있는* 보드에서만,
+        // 탭바 바로 위(엄지 존)에. 다른 보드/다른 탭에선 자리 안 차지.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if let board = currentBoard, showsFilterBar(board) {
+                GlassFilterBar(board: board, selection: filterBinding(board.id))
             }
         }
         .onAppear {
