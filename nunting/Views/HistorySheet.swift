@@ -51,5 +51,8 @@ private struct HistoryRow: View {
             }
         }
         .padding(.vertical, 2)
+        // 행 전체(빈 공간 포함)를 탭 영역으로 — 텍스트 밖을 눌러도 이동되게.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
     }
 }
