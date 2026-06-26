@@ -358,9 +358,10 @@ private struct ArchiveHome: View {
                 .ignoresSafeArea(edges: .bottom)
             }
         }
-        // 헤더 밴드 없이 목록이 상단까지 꽉 차고, 햄버거 메뉴 버튼은 우상단에
-        // 떠 있는 유리 동그라미(검색 버튼과 동일 룩)로 목록 위에 겹쳐 띄운다.
-        .overlay(alignment: .topTrailing) { boardMenu }
+        // 헤더 밴드 없이 목록이 상단까지 꽉 차고, 좌측엔 보드 메뉴 / 우측엔 최근
+        // 읽은 글 버튼을 떠 있는 유리 동그라미로 목록 위에 겹쳐 띄운다.
+        .overlay(alignment: .topLeading) { boardMenu }
+        .overlay(alignment: .topTrailing) { recentReadsMenu }
         // 탭바가 가리는 하단 안전영역 높이를 측정해 인셋으로 환원.
         .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.bottom } action: { bottomSafeInset = $0 }
         // 모음 화면 배경을 탭바 밑까지 깔아, 떠 있는 유리 탭바가 이 AppSurface 를
@@ -405,7 +406,7 @@ private struct ArchiveHome: View {
         )
     }
 
-    // 우상단에 떠 있는 보드 카드 메뉴 버튼 — 검정 아이콘 + 유리 동그라미(하단
+    // 좌상단에 떠 있는 보드 카드 메뉴 버튼 — 검정 아이콘 + 유리 동그라미(하단
     // 검색 버튼과 동일 룩). 누르면 모음에 담긴 보드(사이트) 목록이 드롭다운으로
     // 뜨고 선택하면 그 보드로 전환(현재 보드 체크). 목록은 그 밑으로 겹쳐 흐른다.
     private var boardMenu: some View {
@@ -431,6 +432,36 @@ private struct ArchiveHome: View {
         }
         .tint(.black)
         .accessibilityLabel("보드 선택")
+        .padding(.top, 6)
+        .padding(.leading, 16)
+    }
+
+    // 우상단에 떠 있는 최근 읽은 글 버튼 — 최근 연 글 5개를 드롭다운으로 보여주고
+    // 탭하면 그 글을 다시 연다(상세 오버레이 → 재로딩). 기록이 없으면 비활성.
+    private var recentReadsMenu: some View {
+        let recents = Array(readStore.recentPosts.prefix(5))
+        return Menu {
+            if recents.isEmpty {
+                Text("최근 읽은 글 없음")
+            } else {
+                ForEach(recents) { post in
+                    Button {
+                        onSelectPost(post)
+                    } label: {
+                        Text(post.title)
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "clock.arrow.circlepath")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.black)
+                .frame(width: 58, height: 58)
+                .glassEffect(.regular, in: .circle)
+        }
+        .tint(.black)
+        .disabled(recents.isEmpty)
+        .accessibilityLabel("최근 읽은 글")
         .padding(.top, 6)
         .padding(.trailing, 16)
     }
