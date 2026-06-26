@@ -108,6 +108,8 @@ struct RootTabView: View {
     // 모음 목록/배너가 공유하므로 셸 레벨에 둔다.
     @State private var searchByBoard: [String: String] = [:]
     @State private var showingSearch = false
+    // 하단 히스토리 탭 → 최근 읽은 글 시트.
+    @State private var showingHistory = false
     // 둘러보기에서 현재 열어둔 보드(글 목록). nil = 사이트 목록/미진입.
     @State private var browsingBoard: Board?
     // 상세 오버레이 백드래그(우→ 스와이프 닫기) 상태기계.
@@ -148,6 +150,9 @@ struct RootTabView: View {
                         } else if searchContextBoard != nil {
                             showingSearch = true
                         }
+                    } else if newValue == 4 {
+                        // 히스토리 탭 — 탭 전환 없이 최근 읽은 글 시트를 띄운다.
+                        showingHistory = true
                     } else {
                         selectedTab = newValue
                     }
@@ -178,6 +183,11 @@ struct RootTabView: View {
                     }
                 }
                 .badge(alertBadge.unread)
+                // 히스토리 — 탭하면 전환 대신 최근 읽은 글 시트를 띄운다(검색과
+                // 같은 패턴). 묶음 탭 마지막 자리.
+                Tab("히스토리", systemImage: "clock.arrow.circlepath", value: 4) {
+                    Color.clear
+                }
                 // 검색 버튼은 검색 대상 보드가 있을 때만 — 모음(현재 보드) /
                 // 둘러보기(열어둔 보드). 사이트 목록·알림에선 숨김.
                 if let b = searchContextBoard, b.supportsSearch {
@@ -197,6 +207,15 @@ struct RootTabView: View {
                         onSubmit: { searchByBoard[board.id] = $0 }
                     )
                 }
+            }
+            .sheet(isPresented: $showingHistory) {
+                HistorySheet(
+                    posts: Array(readStore.recentPosts.prefix(5)),
+                    onOpen: { post in
+                        showingHistory = false
+                        detail.show(post)
+                    }
+                )
             }
 
             // 상세 오버레이 — TabView 위 ZStack 최상단 레이어로 화면 전체(탭바
@@ -358,10 +377,9 @@ private struct ArchiveHome: View {
                 .ignoresSafeArea(edges: .bottom)
             }
         }
-        // 헤더 밴드 없이 목록이 상단까지 꽉 차고, 좌측엔 보드 메뉴 / 우측엔 최근
-        // 읽은 글 버튼을 떠 있는 유리 동그라미로 목록 위에 겹쳐 띄운다.
-        .overlay(alignment: .topLeading) { boardMenu }
-        .overlay(alignment: .topTrailing) { recentReadsMenu }
+        // 헤더 밴드 없이 목록이 상단까지 꽉 차고, 보드 메뉴 버튼만 우상단에 떠
+        // 있는 유리 동그라미로 겹쳐 띄운다. (검색·히스토리는 하단 탭바로 이동.)
+        .overlay(alignment: .topTrailing) { boardMenu }
         // 탭바가 가리는 하단 안전영역 높이를 측정해 인셋으로 환원.
         .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.bottom } action: { bottomSafeInset = $0 }
         // 모음 화면 배경을 탭바 밑까지 깔아, 떠 있는 유리 탭바가 이 AppSurface 를
@@ -406,7 +424,7 @@ private struct ArchiveHome: View {
         )
     }
 
-    // 좌상단에 떠 있는 보드 카드 메뉴 버튼 — 검정 아이콘 + 유리 동그라미(하단
+    // 우상단에 떠 있는 보드 카드 메뉴 버튼 — 검정 아이콘 + 유리 동그라미(하단
     // 검색 버튼과 동일 룩). 누르면 모음에 담긴 보드(사이트) 목록이 드롭다운으로
     // 뜨고 선택하면 그 보드로 전환(현재 보드 체크). 목록은 그 밑으로 겹쳐 흐른다.
     private var boardMenu: some View {
@@ -432,36 +450,6 @@ private struct ArchiveHome: View {
         }
         .tint(.black)
         .accessibilityLabel("보드 선택")
-        .padding(.top, 6)
-        .padding(.leading, 16)
-    }
-
-    // 우상단에 떠 있는 최근 읽은 글 버튼 — 최근 연 글 5개를 드롭다운으로 보여주고
-    // 탭하면 그 글을 다시 연다(상세 오버레이 → 재로딩). 기록이 없으면 비활성.
-    private var recentReadsMenu: some View {
-        let recents = Array(readStore.recentPosts.prefix(5))
-        return Menu {
-            if recents.isEmpty {
-                Text("최근 읽은 글 없음")
-            } else {
-                ForEach(recents) { post in
-                    Button {
-                        onSelectPost(post)
-                    } label: {
-                        Text(post.title)
-                    }
-                }
-            }
-        } label: {
-            Image(systemName: "clock.arrow.circlepath")
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(.black)
-                .frame(width: 58, height: 58)
-                .glassEffect(.regular, in: .circle)
-        }
-        .tint(.black)
-        .disabled(recents.isEmpty)
-        .accessibilityLabel("최근 읽은 글")
         .padding(.top, 6)
         .padding(.trailing, 16)
     }

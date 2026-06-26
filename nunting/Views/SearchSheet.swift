@@ -66,9 +66,9 @@ struct SearchSheet: View {
         }
         // 검색 필드가 차지하는 만큼만 — 키보드가 올라오면 그 위에 딱 붙어
         // 빈 공간이 거의 없게. (해제는 탭바 X 버튼이 담당 → 시트엔 필드만)
-        // 기본은 검색 필드+키패드만(152). 큰 Dynamic Type 등으로 내용이 넘치면
-        // 드래그로 .medium 까지 키울 수 있게 폴백 detent 추가.
-        .presentationDetents([.height(152), .medium])
+        // 검색 필드+키패드만(152) 고정 — 다중 detent 면 키보드 등장 시 큰
+        // detent 로 점프해 필드~키보드 사이가 다시 벌어진다. 단일로 유지.
+        .presentationDetents([.height(152)])
         .presentationDragIndicator(.visible)
         .onAppear {
             query = initialQuery
