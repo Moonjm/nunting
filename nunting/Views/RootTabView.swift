@@ -417,7 +417,7 @@ private struct ArchiveHome: View {
                 }
             }
         } label: {
-            Image(systemName: "line.3.horizontal")
+            Image(systemName: "rectangle.stack")
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(.black)
                 // 하단 검색 버튼(약 60pt 유리 동그라미)과 크기 맞춤.
