@@ -368,8 +368,9 @@ private struct ArchiveHome: View {
 
 /// 검색 탭. `.searchable` 은 검색 안 할 때도 resting 검색 바를 남겨서, X 후
 /// 입력창이 사라지지 않는다. 그래서 직접 만든 검색 필드를 `searchActive` 일
-/// 때만 상단에 띄운다. 탭 진입(재탭 포함) → 필드 + 키패드, X → 필드 제거 후
-/// 목록만. 수정은 필드 재터치(재포커스).
+/// 때만 **하단**(탭바 위, 엄지 존)에 띄운다 — 키패드가 올라오면 그 위로
+/// 따라붙는다. 탭 진입(재탭 포함) → 필드 + 키패드, X → 필드 제거 후 목록만.
+/// 수정은 필드 재터치(재포커스).
 private struct SearchTab: View {
     let board: Board?
     @Binding var searchActive: Bool
@@ -382,15 +383,12 @@ private struct SearchTab: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                if searchActive {
-                    searchField
-                    Divider()
+            content
+                .navigationTitle("검색")
+                .navigationBarTitleDisplayMode(.inline)
+                .safeAreaInset(edge: .bottom) {
+                    if searchActive { searchField }
                 }
-                content
-            }
-            .navigationTitle("검색")
-            .navigationBarTitleDisplayMode(.inline)
         }
         .onChange(of: searchActive) { _, active in if active { raiseKeyboard() } }
         .onAppear { if searchActive { raiseKeyboard() } }
