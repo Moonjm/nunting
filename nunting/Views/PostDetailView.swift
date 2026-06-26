@@ -27,7 +27,8 @@ struct PostDetailView: View, Equatable {
     let onDismiss: () -> Void
     /// 커스텀 상단 헤더(뒤로/사이트명/사파리) 렌더 여부. `RootTabView` 가 마운트하는
     /// 오버레이에선 true. 새 셸의 NavigationStack push 에선 false 로 두고 시스템 유리
-    /// 내비바를 쓴다(뒤로·제목·원문은 호출부 toolbar 가 제공). 상수라 `==` 제외.
+    /// 내비바를 쓴다(뒤로·제목·원문은 호출부 toolbar 가 제공). 호출부마다 상수지만
+    /// 방어적으로 `==` 에 포함한다.
     var showsHeader: Bool = true
 
     // Without this explicit Equatable, SwiftUI can't compare `onDismiss`
