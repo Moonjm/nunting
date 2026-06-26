@@ -127,7 +127,12 @@ struct RootTabView: View {
                 set: { newValue in
                     if newValue == 3 {
                         selectedTab = 0
-                        if currentBoard != nil { showingSearch = true }
+                        if searchActive {
+                            // 검색 중이면 버튼이 X — 탭하면 바로 해제(시트 X).
+                            if let id = currentBoard?.id { searchByBoard[id] = nil }
+                        } else if currentBoard != nil {
+                            showingSearch = true
+                        }
                     } else {
                         selectedTab = newValue
                     }
@@ -152,7 +157,9 @@ struct RootTabView: View {
                     }
                 }
                 .badge(alertBadge.unread)
-                Tab("검색", systemImage: searchActive ? "magnifyingglass.circle.fill" : "magnifyingglass",
+                // 검색 중이면 X(해제) 버튼으로 바뀐다.
+                Tab(searchActive ? "해제" : "검색",
+                    systemImage: searchActive ? "xmark" : "magnifyingglass",
                     value: 3, role: .search) {
                     Color.clear
                 }
