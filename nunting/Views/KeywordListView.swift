@@ -38,10 +38,11 @@ struct KeywordListView: View {
         VStack(spacing: 0) {
             tabBar
 
-            switch tab {
-            case .keywords:
+            // 좌우 스와이프로 키워드 ↔ 받은 알림 전환(상단 세그먼트와 양방향 동기).
+            // 순서는 세그먼트와 동일: 키워드(좌) · 받은 알림(우).
+            TabView(selection: $tab) {
                 keywordsList
-            case .history:
+                    .tag(Tab.keywords)
                 AlertHistoryView(
                     onOpen: { url, title in
                         dismiss()
@@ -49,7 +50,10 @@ struct KeywordListView: View {
                     },
                     onUnreadCountChange: { unreadCount = $0 }
                 )
+                .tag(Tab.history)
             }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            .animation(.snappy(duration: 0.2), value: tab)
         }
         .navigationTitle("알림")
         .navigationBarTitleDisplayMode(.inline)
