@@ -15,8 +15,15 @@ struct RootTabView: View {
     @State private var detail = DetailOverlayController.shared
 
     @State private var selectedTab = 0
+    // 모음의 현재 보드 — 검색 탭이 "지금 보고 있는 보드"를 검색하도록 공유.
+    @State private var currentBoardID: String?
 
     @Environment(\.scenePhase) private var scenePhase
+
+    private var currentBoard: Board? {
+        let boards = favorites.favoriteBoards()
+        return boards.first { $0.id == currentBoardID } ?? boards.first
+    }
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -24,7 +31,8 @@ struct RootTabView: View {
                 ArchiveHome(
                     favorites: favorites,
                     readStore: readStore,
-                    onSelectPost: { detail.show($0) }
+                    onSelectPost: { detail.show($0) },
+                    currentBoardID: $currentBoardID
                 )
             }
             Tab("둘러보기", systemImage: "square.grid.2x2", value: 1) {
@@ -37,6 +45,10 @@ struct RootTabView: View {
                 }
             }
             .badge(alertBadge.unread)
+            Tab("검색", systemImage: "magnifyingglass", value: 3, role: .search) {
+                SearchTab(board: currentBoard, readStore: readStore,
+                          onSelectPost: { detail.show($0) })
+            }
         }
         // 스크롤 시 탭바만 줄고 그 위 유리 필터 알약(safeAreaInset)은 그대로라
         // 둘이 따로 놀아 이질감이 생긴다 — 탭바 축소를 끄고 둘 다 고정으로.
@@ -132,23 +144,15 @@ private struct ArchiveHome: View {
     /// 덮어 띄운다(탭바째 통째로 가려 목록 쪽 chrome 이 사라졌다/나타났다 하지
     /// 않게 — push + tabBar 숨김의 깜빡임 회피).
     let onSelectPost: (Post) -> Void
+    // 검색은 하단 검색 탭으로 분리됐다(RootTabView). 현재 보드를 검색 탭이
+    // 알아야 하므로 selection 을 위로 올려 공유한다.
+    @Binding var currentBoardID: String?
 
-    @State private var currentBoardID: String?
     @State private var filterByBoard: [String: BoardFilter] = [:]
-    // 보드별 확정 검색어(빈/없음 = 검색 안 함). BoardListView 가 searchQuery 로
-    // 받아 결과를 같은 목록 자리에 표출한다.
-    @State private var queryByBoard: [String: String] = [:]
-    @State private var searchActive = false
-    @State private var queryText = ""
-    @FocusState private var searchFocused: Bool
 
     private var boards: [Board] { favorites.favoriteBoards() }
     private var currentBoard: Board? {
         boards.first { $0.id == currentBoardID } ?? boards.first
-    }
-    private var activeQuery: String? {
-        guard let id = currentBoard?.id, let q = queryByBoard[id], !q.isEmpty else { return nil }
-        return q
     }
 
     var body: some View {
@@ -163,7 +167,7 @@ private struct ArchiveHome: View {
                         BoardListView(
                             board: board,
                             filter: filterByBoard[board.id],
-                            searchQuery: queryByBoard[board.id],
+                            searchQuery: nil,
                             readStore: readStore,
                             onSelectPost: onSelectPost
                         )
@@ -178,7 +182,7 @@ private struct ArchiveHome: View {
         // 보드 내 필터 탭은 인벤·애객처럼 *필터가 실제로 있는* 보드에서만,
         // 탭바 바로 위(엄지 존)에. 다른 보드/다른 탭에선 자리 안 차지.
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if let board = currentBoard, showsFilterBar(board), activeQuery == nil {
+            if let board = currentBoard, showsFilterBar(board) {
                 GlassFilterBar(board: board, selection: filterBinding(board.id))
             }
         }
@@ -200,41 +204,15 @@ private struct ArchiveHome: View {
         )
     }
 
-    // 슬림 헤더 — 보드명 메뉴 + 사이트색 페이지 인디케이터(or 검색 결과 표시) + 돋보기.
-    @ViewBuilder private var header: some View {
-        if searchActive {
-            searchBar
-        } else {
-            ZStack {
-                VStack(spacing: 6) {
-                    boardMenu
-                    if let q = activeQuery {
-                        searchResultsRow(q)
-                    } else if boards.count > 1 {
-                        pageIndicator
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                if currentBoard?.supportsSearch == true {
-                    HStack {
-                        Spacer()
-                        Button {
-                            queryText = activeQuery ?? ""
-                            withAnimation(.snappy) { searchActive = true }
-                            searchFocused = true
-                        } label: {
-                            Image(systemName: "magnifyingglass")
-                                .font(.body)
-                                .foregroundStyle(.secondary)
-                                .padding(.trailing, 16)
-                                .contentShape(Rectangle())
-                        }
-                    }
-                }
-            }
-            .padding(.top, 4)
-            .padding(.bottom, 7)
+    // 슬림 헤더 — 보드명 메뉴 + 사이트색 페이지 인디케이터. (검색은 하단 탭으로 이동.)
+    private var header: some View {
+        VStack(spacing: 6) {
+            boardMenu
+            if boards.count > 1 { pageIndicator }
         }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 4)
+        .padding(.bottom, 7)
     }
 
     private var boardMenu: some View {
@@ -275,56 +253,51 @@ private struct ArchiveHome: View {
         .animation(.snappy, value: currentBoardID)
     }
 
-    private func searchResultsRow(_ q: String) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").font(.caption2.weight(.bold))
-            Text("‘\(q)' 검색 결과").font(.caption.weight(.semibold))
-            Button {
-                if let id = currentBoard?.id {
-                    withAnimation(.snappy) { queryByBoard[id] = nil }
-                }
-            } label: {
-                Text("· 해제").font(.caption.weight(.semibold))
-            }
-        }
-        .foregroundStyle(.tint)
-    }
+}
 
-    private var searchBar: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("‘\(currentBoard?.name ?? "")'에서 검색", text: $queryText)
-                    .focused($searchFocused)
-                    .submitLabel(.search)
-                    .autocorrectionDisabled()
-                    .onSubmit(commitSearch)
-                if !queryText.isEmpty {
-                    Button { queryText = "" } label: {
-                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+// MARK: - 검색 탭 (하단 검색 버튼 → 키패드+입력, 현재 보드 검색)
+
+private struct SearchTab: View {
+    let board: Board?
+    let readStore: ReadStore
+    let onSelectPost: (Post) -> Void
+
+    @State private var draft = ""
+    @State private var committed = ""
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let board, !committed.isEmpty {
+                    BoardListView(
+                        board: board,
+                        filter: nil,
+                        searchQuery: committed,
+                        readStore: readStore,
+                        onSelectPost: onSelectPost
+                    )
+                    .equatable()
+                } else if board?.supportsSearch == false {
+                    ContentUnavailableView("이 보드는 검색을 지원하지 않아요",
+                                           systemImage: "magnifyingglass")
+                } else {
+                    ContentUnavailableView {
+                        Label("검색", systemImage: "magnifyingglass")
+                    } description: {
+                        Text(board.map { "'\($0.name)'에서 검색어를 입력하세요" } ?? "보드를 먼저 선택하세요")
                     }
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color(.secondarySystemFill), in: Capsule())
-            Button("취소") {
-                searchActive = false
-                searchFocused = false
-                queryText = ""
-            }
+            .navigationTitle("검색")
+            .navigationBarTitleDisplayMode(.inline)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 7)
-    }
-
-    private func commitSearch() {
-        let t = queryText.trimmingCharacters(in: .whitespaces)
-        if let id = currentBoard?.id {
-            withAnimation(.snappy) { queryByBoard[id] = t.isEmpty ? nil : t }
+        .searchable(text: $draft, prompt: board.map { "'\($0.name)' 검색" } ?? "검색")
+        .onSubmit(of: .search) {
+            committed = draft.trimmingCharacters(in: .whitespaces)
         }
-        searchActive = false
-        searchFocused = false
+        .onChange(of: draft) { _, v in
+            if v.isEmpty { committed = "" }
+        }
     }
 }
 
