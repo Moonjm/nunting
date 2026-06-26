@@ -490,9 +490,8 @@ private struct GlassFilterBar: View {
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 4) {
-                chip(label: "전체", filter: nil)
-                ForEach(board.filters) { f in
-                    chip(label: f.name, filter: f)
+                ForEach(items) { item in
+                    chip(label: item.label, filter: item.filter)
                 }
             }
             .padding(5)
@@ -500,6 +499,28 @@ private struct GlassFilterBar: View {
         .glassEffect(.regular, in: .capsule)
         .padding(.horizontal, 16)
         .padding(.bottom, 6)
+    }
+
+    private struct Item: Identifiable {
+        let id: String
+        let label: String
+        let filter: BoardFilter?
+    }
+
+    /// 칩 순서 — 기존 BoardFilterBar 와 동일. 인벤 메이플만 커스텀 순서
+    /// (10추 · 인방 · 전체 · 30추), 그 외는 전체 + 보드 필터 순.
+    private var items: [Item] {
+        let all = Item(id: "_all", label: "전체", filter: nil)
+        if board.id == Board.invenMaple.id {
+            let byID = Dictionary(uniqueKeysWithValues: board.filters.map { ($0.id, $0) })
+            return [
+                byID["chu"].map { Item(id: $0.id, label: $0.name, filter: $0) },
+                byID["inbang"].map { Item(id: $0.id, label: $0.name, filter: $0) },
+                all,
+                byID["chuchu"].map { Item(id: $0.id, label: $0.name, filter: $0) },
+            ].compactMap { $0 }
+        }
+        return [all] + board.filters.map { Item(id: $0.id, label: $0.name, filter: $0) }
     }
 
     private func chip(label: String, filter: BoardFilter?) -> some View {
