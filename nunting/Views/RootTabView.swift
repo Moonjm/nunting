@@ -155,6 +155,9 @@ struct RootTabView: View {
                     NavigationStack {
                         KeywordListView()
                             .navigationTitle("알림")
+                            // 모음과 같은 처리 — 화면 배경을 리스트 색까지 깔아
+                            // 상단 유리 네비바·하단 탭바가 이 톤을 블러해 일체감.
+                            .background(Color(.systemGroupedBackground).ignoresSafeArea())
                     }
                 }
                 .badge(alertBadge.unread)
