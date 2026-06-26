@@ -7,9 +7,9 @@ import AVFoundation
 /// play button) so the inline video keeps its "moving image" feel.
 /// Tap anywhere on the strip seeks to that position; pan drags the
 /// playhead live then commits on touch-up.
-/// Marker conformance used by `ContentView`'s back-drag hit-test to
-/// detect that a touch started inside an inline video's scrub strip
-/// without `ContentView` having to import / type-check against the
+/// Marker conformance used by the detail back-drag's (`DetailBackDrag`)
+/// hit-test to detect that a touch started inside an inline video's scrub
+/// strip without the gesture having to import / type-check against the
 /// concrete `VideoScrubBarView`. A type check (`is InlineVideoScrubBarMarking`) keeps
 /// the contract refactor-safe — a string `accessibilityIdentifier`
 /// would collide with VoiceOver / UI-test instrumentation and could

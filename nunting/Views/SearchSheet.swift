@@ -3,7 +3,6 @@ struct SearchSheet: View {
     let board: Board
     let initialQuery: String
     let onSubmit: (String) -> Void
-    let onClear: () -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var query: String = ""
@@ -37,16 +36,6 @@ struct SearchSheet: View {
                     }
                     .padding(10)
                     .background(Color("AppSurface2"), in: RoundedRectangle(cornerRadius: 10))
-
-                    if !initialQuery.isEmpty {
-                        Button {
-                            onClear()
-                            dismiss()
-                        } label: {
-                            Label("검색 해제", systemImage: "arrow.uturn.left")
-                        }
-                        .buttonStyle(.bordered)
-                    }
                 } else {
                     HStack(spacing: 10) {
                         Image(systemName: "magnifyingglass.slash")
@@ -58,10 +47,9 @@ struct SearchSheet: View {
                     }
                     .padding(.vertical, 24)
                 }
-
-                Spacer()
             }
             .padding()
+            .frame(maxHeight: .infinity, alignment: .top)
             .navigationTitle("검색")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -76,7 +64,12 @@ struct SearchSheet: View {
                 }
             }
         }
-        .presentationDetents([.large])
+        // 검색 필드가 차지하는 만큼만 — 키보드가 올라오면 그 위에 딱 붙어
+        // 빈 공간이 거의 없게. (해제는 탭바 X 버튼이 담당 → 시트엔 필드만)
+        // 기본은 검색 필드+키패드만(152). 큰 Dynamic Type 등으로 내용이 넘치면
+        // 드래그로 .medium 까지 키울 수 있게 폴백 detent 추가.
+        .presentationDetents([.height(152), .medium])
+        .presentationDragIndicator(.visible)
         .onAppear {
             query = initialQuery
             if board.supportsSearch { focused = true }

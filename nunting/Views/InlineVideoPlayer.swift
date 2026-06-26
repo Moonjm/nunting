@@ -8,7 +8,7 @@ struct InlineVideoPlayer: View {
     /// that, a plain film-icon placeholder. Used as the visual backdrop
     /// shown until the AVPlayer produces its first frame.
     var posterURL: URL? = nil
-    /// Set by ContentView's `panGesture` while a back-drag is in flight
+    /// Set by `DetailBackDrag` while a back-drag is in flight
     /// so releasing a finger over the inline video doesn't push
     /// fullscreen playback when the user only intended to leave the
     /// detail screen.

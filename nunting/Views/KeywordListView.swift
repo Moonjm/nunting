@@ -12,9 +12,8 @@ struct KeywordListView: View {
     /// 종 아이콘 시트의 두 탭: 키워드 관리 / 매칭된 알림 이력.
     private enum Tab: Hashable { case keywords, history }
 
-    @Environment(\.dismiss) private var dismiss
     @Namespace private var tabNamespace
-    @State private var tab: Tab = .keywords
+    @State private var tab: Tab = .history
     @State private var keywords: [KeywordSub] = []
     @State private var newKeyword = ""
     @State private var errorMessage: String?
@@ -38,18 +37,28 @@ struct KeywordListView: View {
         VStack(spacing: 0) {
             tabBar
 
-            switch tab {
-            case .keywords:
+            // 좌우 스와이프로 키워드 ↔ 받은 알림 전환(상단 세그먼트와 양방향 동기).
+            // 순서는 세그먼트와 동일: 키워드(좌) · 받은 알림(우).
+            TabView(selection: $tab) {
                 keywordsList
-            case .history:
+                    .tag(Tab.keywords)
                 AlertHistoryView(
+                    // 알림은 탭이라 닫을 시트가 없다 — 오버레이는 ZStack 으로
+                    // 탭 위에 바로 뜬다.
                     onOpen: { url, title in
-                        dismiss()
                         DetailOverlayController.shared.present(url: url, title: title)
                     },
-                    onUnreadCountChange: { unreadCount = $0 }
+                    // 받은 알림을 읽으면 세그먼트 배지(unreadCount)뿐 아니라 하단
+                    // 종 탭 배지(AlertBadge.shared)도 같이 내려준다.
+                    onUnreadCountChange: {
+                        unreadCount = $0
+                        AlertBadge.shared.unread = $0
+                    }
                 )
+                .tag(Tab.history)
             }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            .animation(.snappy(duration: 0.2), value: tab)
         }
         .navigationTitle("알림")
         .navigationBarTitleDisplayMode(.inline)
@@ -246,6 +255,8 @@ struct KeywordListView: View {
         // 쪽이 onUnreadCountChange 로 badge 를 덮어써 일관성도 자연히 수렴.
         if let history = try? await AlertSubscriptionService.shared.fetchAlertHistory() {
             unreadCount = history.filter { !$0.read }.count
+            // 세그먼트 배지와 하단 종 탭 배지를 같은 fetch 로 일관되게 맞춘다.
+            AlertBadge.shared.unread = unreadCount
         }
     }
 

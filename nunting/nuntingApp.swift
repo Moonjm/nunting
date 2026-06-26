@@ -43,7 +43,8 @@ struct nuntingApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            // 2026 재디자인 셸(유리 탭바). 구 ContentView 드로어 셸은 Phase 5 에서 제거됨.
+            RootTabView()
         }
     }
 }

@@ -33,8 +33,8 @@ struct BotCheckSheet: View {
         // captured as a non-Sendable region when forwarded into the
         // child `BotCheckWebView` (which takes a @Sendable closure).
         // The registry lookup is a constant-time host-suffix branch, so
-        // calling it inside body costs nothing and keeps the caller
-        // (ContentView) free of the detector wiring too.
+        // calling it inside body costs nothing and keeps the host shell
+        // (`RootTabView`) free of the detector wiring too.
         let detector = BotCheckRegistry.detector(for: url)
         return NavigationStack {
             VStack(spacing: 0) {

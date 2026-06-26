@@ -13,11 +13,11 @@ import UIKit
 /// `openURL` environment so the host's SFSafariViewController override
 /// still wins.
 ///
-/// Coordinates with `ContentView.panGesture` purely via the host's
+/// Coordinates with `DetailBackDrag` purely via the host's
 /// `touchStartedNearSelectionHandle` proximity check (±28pt × ±16pt
 /// box around each visible selection handle — see that doccomment for
 /// why not a 44pt circle) — no shared gate needed. Every other
-/// touch on this view falls through to the host pan gesture exactly
+/// touch on this view falls through to the host back-drag gesture exactly
 /// as before, including loupe / long-press / menu interactions: the
 /// user explicitly opted into the simpler "only handle drags block
 /// back-swipe" contract.
