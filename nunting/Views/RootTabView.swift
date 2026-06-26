@@ -143,6 +143,7 @@ struct RootTabView: View {
                         favorites: favorites,
                         readStore: readStore,
                         onSelectPost: { detail.show($0) },
+                        isActive: selectedTab == 0,
                         searchByBoard: $searchByBoard,
                         currentBoardID: $currentBoardID
                     )
@@ -285,14 +286,13 @@ private struct ArchiveHome: View {
     /// 글 탭 → 상세 열기(detail.show). 상세는 RootTabView 의 ZStack 오버레이로
     /// 우측에서 슬라이드 인하며 화면 전체(탭바 포함)를 덮는다.
     let onSelectPost: (Post) -> Void
+    // 모음 탭이 활성인지 — 다른 탭 갔다 돌아오면 첫 필터로 리셋하기 위함.
+    let isActive: Bool
     // 보드별 활성 검색어 — 하단 검색 버튼이 띄우는 SearchSheet 와 공유(셸 소유).
     @Binding var searchByBoard: [String: String]
     @Binding var currentBoardID: String?
 
     @State private var filterByBoard: [String: BoardFilter] = [:]
-    // 기본 필터를 이미 심은 보드(중복 시드 방지). 이후 사용자가 전체를
-    // 골라도 재시드하지 않는다.
-    @State private var seededFilterIDs: Set<String> = []
 
     private var boards: [Board] { favorites.favoriteBoards() }
     private var currentBoard: Board? {
@@ -329,18 +329,18 @@ private struct ArchiveHome: View {
         }
         .onAppear {
             if currentBoardID == nil { currentBoardID = boards.first?.id }
-            seedDefaultFilters()
+            resetFilterToDefault(currentBoard)
         }
-        .onChange(of: boards.map(\.id)) { _, _ in seedDefaultFilters() }
+        // 보드를 바꾸거나(스와이프·메뉴) 모음 탭에 (다시) 들어올 때마다 무조건
+        // 첫 필터 탭으로 리셋한다. 인벤 → 10추, 전체 피드가 첫 탭인 보드 → 전체.
+        .onChange(of: currentBoardID) { _, _ in resetFilterToDefault(currentBoard) }
+        .onChange(of: isActive) { _, active in if active { resetFilterToDefault(currentBoard) } }
     }
 
-    // 보드별 기본 필터(예: 메이플 인벤 → 10추)를 처음 보일 때 한 번 적용.
-    // 전체 피드가 시끄러운 보드의 초기 로딩을 기본 필터로 시작시킨다.
-    private func seedDefaultFilters() {
-        for b in boards where !seededFilterIDs.contains(b.id) {
-            if let def = b.defaultListFilter { filterByBoard[b.id] = def }
-            seededFilterIDs.insert(b.id)
-        }
+    // 보드의 첫 필터 탭(= defaultListFilter; 없으면 전체=nil)으로 되돌린다.
+    private func resetFilterToDefault(_ board: Board?) {
+        guard let board else { return }
+        filterByBoard[board.id] = board.defaultListFilter
     }
 
     /// 필터 탭 바를 띄울 보드인지 — 인벤(10추/30추/인방)·애객(소스 필터)처럼
