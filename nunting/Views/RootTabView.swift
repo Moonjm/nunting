@@ -162,11 +162,15 @@ struct RootTabView: View {
                     }
                 }
                 .badge(alertBadge.unread)
-                // 검색 중이면 X(해제) 버튼으로 바뀐다.
-                Tab(searchActive ? "해제" : "검색",
-                    systemImage: searchActive ? "xmark" : "magnifyingglass",
-                    value: 3, role: .search) {
-                    Color.clear
+                // 검색은 모음 컨텍스트에서만 의미가 있으므로 모음 탭에서만 노출.
+                // (둘러보기는 보드 뷰 안에서, 알림은 검색 불필요.)
+                if selectedTab == 0 {
+                    // 검색 중이면 X(해제) 버튼으로 바뀐다.
+                    Tab(searchActive ? "해제" : "검색",
+                        systemImage: searchActive ? "xmark" : "magnifyingglass",
+                        value: 3, role: .search) {
+                        Color.clear
+                    }
                 }
             }
             .sheet(isPresented: $showingSearch) {
@@ -477,23 +481,49 @@ private struct BrowseTab: View {
 }
 
 /// 둘러보기에서 보드를 탭했을 때 그 보드의 글 목록(기본 필터로). 글 탭은
-/// 모음과 동일하게 상세 오버레이를 띄운다.
+/// 모음과 동일하게 상세 오버레이를 띄운다. 우상단 돋보기로 이 보드를 검색.
 private struct BoardPostsView: View {
     let board: Board
     let readStore: ReadStore
     let onSelectPost: (Post) -> Void
 
+    @State private var query = ""
+    @State private var showingSearch = false
+
     var body: some View {
         BoardListView(
             board: board,
-            filter: board.defaultListFilter,
-            searchQuery: nil,
+            // 검색 중엔 필터 해제(모음 검색과 동일).
+            filter: query.isEmpty ? board.defaultListFilter : nil,
+            searchQuery: query.isEmpty ? nil : query,
             readStore: readStore,
             onSelectPost: onSelectPost
         )
         .equatable()
         .navigationTitle(board.name)
         .toolbarTitleDisplayMode(.inline)
+        .toolbar {
+            if board.supportsSearch {
+                ToolbarItem(placement: .topBarTrailing) {
+                    if query.isEmpty {
+                        Button { showingSearch = true } label: {
+                            Image(systemName: "magnifyingglass")
+                        }
+                    } else {
+                        // 검색 중이면 X로 해제.
+                        Button { query = "" } label: { Image(systemName: "xmark") }
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showingSearch) {
+            SearchSheet(
+                board: board,
+                initialQuery: query,
+                onSubmit: { query = $0 },
+                onClear: { query = "" }
+            )
+        }
     }
 }
 
