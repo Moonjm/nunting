@@ -76,7 +76,9 @@ struct SearchSheet: View {
                 }
             }
         }
-        .presentationDetents([.large])
+        // 전체를 덮지 않고 검색 필드 + 키패드 정도만(반 정도) 차지.
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
         .onAppear {
             query = initialQuery
             if board.supportsSearch { focused = true }
