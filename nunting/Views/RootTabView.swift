@@ -353,7 +353,9 @@ private struct ArchiveHome: View {
                 .ignoresSafeArea(edges: .bottom)
             }
         }
-        .safeAreaInset(edge: .top, spacing: 0) { header }
+        // 헤더 밴드 없이 목록이 상단까지 꽉 차고, 햄버거 메뉴 버튼은 우상단에
+        // 떠 있는 유리 동그라미(검색 버튼과 동일 룩)로 목록 위에 겹쳐 띄운다.
+        .overlay(alignment: .topTrailing) { boardMenu }
         // 탭바가 가리는 하단 안전영역 높이를 측정해 인셋으로 환원.
         .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.bottom } action: { bottomSafeInset = $0 }
         // 모음 화면 배경을 탭바 밑까지 깔아, 떠 있는 유리 탭바가 이 AppSurface 를
@@ -398,23 +400,9 @@ private struct ArchiveHome: View {
         )
     }
 
-    // 슬림 헤더 — 좌측 햄버거 메뉴 버튼 하나. 누르면 모음에 담긴 보드(사이트)
-    // 목록이 드롭다운으로 뜨고, 선택하면 그 보드로 전환(현재 보드 체크).
-    // (보드명·페이지 점 표시는 제거.)
-    private var header: some View {
-        HStack {
-            boardMenu
-            Spacer()
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 8)
-        .padding(.top, 4)
-        .padding(.bottom, 7)
-        // 리스트가 헤더 밑으로 스크롤되므로 불투명 배경으로 가린다(상단은
-        // 비치지 않게 — 비치는 효과는 하단 탭바에서만).
-        .background(Color("AppSurface"))
-    }
-
+    // 우상단에 떠 있는 햄버거 메뉴 버튼 — 검정 아이콘 + 유리 동그라미(하단
+    // 검색 버튼과 동일 룩). 누르면 모음에 담긴 보드(사이트) 목록이 드롭다운으로
+    // 뜨고 선택하면 그 보드로 전환(현재 보드 체크). 목록은 그 밑으로 겹쳐 흐른다.
     private var boardMenu: some View {
         Menu {
             ForEach(boards) { b in
@@ -430,11 +418,14 @@ private struct ArchiveHome: View {
             }
         } label: {
             Image(systemName: "line.3.horizontal")
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(.primary)
-                .frame(width: 44, height: 36)
-                .contentShape(Rectangle())
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.black)
+                .frame(width: 44, height: 44)
+                .glassEffect(.regular, in: .circle)
         }
+        .tint(.black)
+        .padding(.top, 6)
+        .padding(.trailing, 16)
     }
 
 }
