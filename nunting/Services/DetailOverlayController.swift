@@ -1,26 +1,26 @@
 import SwiftUI
 /// State + transitions for the keep-alive `PostDetailView` overlay.
 ///
-/// The overlay is permanent-mounted in `ContentView`'s ZStack — once a
+/// The overlay is permanent-mounted in `RootTabView`'s ZStack — once a
 /// post opens the view stays in the SwiftUI tree for the rest of the
 /// session. `hide()` only animates it off-screen right; `show(_:)`
 /// either re-slides the same post back in (keep-alive path) or rebuilds
 /// the overlay around a different post via `.id(post.id)`.
 ///
-/// Pulled out of `ContentView` so that:
+/// Pulled out of the host shell (now consumed by `RootTabView`) so that:
 ///  - Tests can drive the state machine without spinning up SwiftUI
 ///  - Future overlay-shape changes (e.g. modal vs sheet vs sheetlet) only touch this file
-///  - The pan gesture still owns its own drag-state machine; this controller
+///  - `DetailBackDrag` still owns its own drag-state machine; this controller
 ///    only tracks the *result* of those gestures (`offset`, `offsetBase`).
 @Observable
 @MainActor
 final class DetailOverlayController {
     /// Process-wide singleton so non-SwiftUI call sites (push-notification
     /// deep links via `NotificationDelegate`) can route into the same
-    /// controller `ContentView` is already observing. SwiftUI `@State`
+    /// controller `RootTabView` is already observing. SwiftUI `@State`
     /// initialises lazily *per scene*, but `nunting` only has one
     /// `WindowGroup` so the shared instance and the scene's controller
-    /// are identical — `ContentView` binds to `.shared` instead of
+    /// are identical — `RootTabView` binds to `.shared` instead of
     /// instantiating its own.
     static let shared = DetailOverlayController()
 
@@ -41,8 +41,9 @@ final class DetailOverlayController {
     /// `onEnded`. Without this the inner ScrollView's contentOffset
     /// can drift mid-bounce.
     var animating: Bool = false
-    /// Mirrors `ContentView.containerWidth`. The controller needs it
-    /// to compute hide offsets and visibility predicates.
+    /// Mirrors the container width measured by `RootTabView` (via
+    /// GeometryReader, fed in through `updateContainerWidth`). The
+    /// controller needs it to compute hide offsets and visibility predicates.
     var containerWidth: CGFloat = 0
 
     /// In-flight deferred animation from `show(_:)`'s replace branch.

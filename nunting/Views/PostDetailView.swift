@@ -4,7 +4,7 @@ struct PostDetailView: View, Equatable {
     let post: Post
     let readStore: ReadStore
     let cache: PostDetailCache
-    /// Flipped by ContentView's `panGesture` while a back-drag is in
+    /// Flipped by `DetailBackDrag` while a back-drag is in
     /// flight so an image / video tap firing on the same touch-up
     /// doesn't open a viewer / fullscreen player when the user was only
     /// trying to leave the detail screen.
@@ -25,8 +25,8 @@ struct PostDetailView: View, Equatable {
     /// Invoked from the custom back button in the header. The parent owns the
     /// overlay offset animation; this view just asks to be dismissed.
     let onDismiss: () -> Void
-    /// 커스텀 상단 헤더(뒤로/사이트명/사파리) 렌더 여부. 오버레이(구 ContentView)
-    /// 에선 true. 새 셸의 NavigationStack push 에선 false 로 두고 시스템 유리
+    /// 커스텀 상단 헤더(뒤로/사이트명/사파리) 렌더 여부. `RootTabView` 가 마운트하는
+    /// 오버레이에선 true. 새 셸의 NavigationStack push 에선 false 로 두고 시스템 유리
     /// 내비바를 쓴다(뒤로·제목·원문은 호출부 toolbar 가 제공). 상수라 `==` 제외.
     var showsHeader: Bool = true
 
@@ -48,7 +48,8 @@ struct PostDetailView: View, Equatable {
     // - `tapGate`: read synchronously from `.onTapGesture` closures at
     //   tap time, not from `body`. Same reasoning as readStore/cache.
     // - `onDismiss`: deliberately ignored — the closure captures
-    //   ContentView's `hideDetail()`, which mutates `@State` via
+    //   `DetailBackDrag.dismiss()` (which calls `DetailOverlayController.hide()`
+    //   then clears `activePost`), mutating `@State` via
     //   out-of-line storage, so calling the first-eval closure still
     //   mutates the current state.
     // - `loader`: an `@Observable` reference type owned by `@State`.
@@ -80,7 +81,7 @@ struct PostDetailView: View, Equatable {
     /// — touches during that window route to the still-dismissing
     /// cover, not the detail, and the user perceives it as "터치가
     /// 바로 동작 안 한다". The overlay also absorbs taps in this window
-    /// which keeps that intent honest. ContentView's pan gesture is
+    /// which keeps that intent honest. `DetailBackDrag` is a
     /// `simultaneousGesture` so a back-drag still works.
     @State private var dismissCovering = false
     /// Monotonic counter bumped by `beginDismissCover()`. Each scheduled
@@ -224,7 +225,7 @@ struct PostDetailView: View, Equatable {
         //
         // `tapGate` short-circuit mirrors the image / video onTapGesture
         // guards: a right-edge back-drag fires `tapGate.suppress()` from
-        // `ContentView.panGesture`, and on touch-up SwiftUI still delivers
+        // `DetailBackDrag`, and on touch-up SwiftUI still delivers
         // the link tap that landed under the finger. Without this, a
         // back-swipe started over a linked span (body anchor, deal banner,
         // source badge) dismisses the detail AND opens SafariView on top

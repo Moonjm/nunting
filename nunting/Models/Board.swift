@@ -243,9 +243,9 @@ extension Board {
 
     /// Filter applied automatically when the user opens this board from
     /// the drawer / swipe-step. Currently only `invenMaple` overrides the
-    /// default ("10추") because its all-posts feed is too noisy. Used by
-    /// `ContentView` (state seed) and `BoardSelection` (atomic
-    /// transitions). The id is compared as a string literal rather than
+    /// default ("10추") because its all-posts feed is too noisy. Seeded by
+    /// `ArchiveHome` on board entry (the board's default filter is applied
+    /// as the initial selection). The id is compared as a string literal rather than
     /// via `Board.invenMaple.id` so the static-property lookup doesn't
     /// drag MainActor isolation into this path under Swift 6 mode.
     public nonisolated var defaultListFilter: BoardFilter? {

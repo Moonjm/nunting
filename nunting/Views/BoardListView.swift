@@ -7,24 +7,24 @@ struct BoardListView: View, Equatable {
     /// 떠 있는 하단 필터 바가 있을 때, 마지막 글이 그 밑으로 가려지지 않게
     /// 스크롤 콘텐츠 하단에 주는 여백. 바가 없으면 0.
     var bottomContentInset: CGFloat = 0
-    /// Returns `true` when ContentView's panGesture has just observed any
+    /// Returns `true` when `DetailBackDrag` has just observed any
     /// horizontal-dominant movement. Row taps consult this so a tiny `→`
-    /// drag that doesn't reach the drawer commit threshold doesn't fall
+    /// drag that doesn't reach the back-drag commit threshold doesn't fall
     /// through and trigger a row navigation on touch-up.
     var shouldSuppressRowTap: () -> Bool = { false }
     let readStore: ReadStore
     let onSelectPost: (Post) -> Void
 
-    // PostDetailView 와 동일한 패턴 — ContentView 는 드로어/백 드래그 중
-    // 매 프레임 재평가되고(drawerProgress / detail.offset 읽기) 그때마다 새
+    // PostDetailView 와 동일한 패턴 — `DetailBackDrag` 의 백드래그 중
+    // 매 프레임 재평가되고(오버레이 offset 읽기) 그때마다 새
     // closure(shouldSuppressRowTap / onSelectPost)를 만들어 넘긴다. SwiftUI
     // 는 closure 동등성을 판단할 수 없어 매 프레임 이 뷰의 body — 페이징으로
     // 수백 행 쌓인 ForEach diff — 를 재평가한다. diffable 입력만 비교해
     // `.equatable()` 이 그 churn 을 끊는다.
     //
     // `==` 에서 의도적으로 제외:
-    // - closures: 탭 시점에만 호출되고 ContentView 의 @State 를 out-of-line
-    //   storage 로 mutate 하므로 첫 평가본을 계속 써도 동작 동일.
+    // - closures: 탭 시점에만 호출되고 새 셸(`RootTabView`)의 @State 를
+    //   out-of-line storage 로 mutate 하므로 첫 평가본을 계속 써도 동작 동일.
     // - `readStore`: @Observable — body 의 `isRead` 읽기는 property 단위
     //   추적으로 무효화되므로 `==` 가 true 여도 변경이 전파됨.
     static func == (lhs: BoardListView, rhs: BoardListView) -> Bool {
@@ -139,8 +139,9 @@ struct BoardListView: View, Equatable {
         .contentMargins(.bottom, bottomContentInset, for: .scrollContent)
         .scrollContentBackground(.hidden)
         // List background no longer needs `.ignoresSafeArea()` — the
-        // ZStack's bottom-most `Color("AppSurface").ignoresSafeArea()`
-        // (ContentView.body) already covers every safe-area band, so a
+        // `Color("AppSurface").ignoresSafeArea()` fill in the host shell
+        // (`ArchiveHome` / `RootTabView`) already covers every safe-area
+        // band, so a
         // second extending background here is redundant *and* was the
         // race trigger that let `contentInset.bottom` settle at 0 on
         // late `loadingView → listView` body swaps. With the bar moved
