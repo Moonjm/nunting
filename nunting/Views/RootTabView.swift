@@ -102,6 +102,8 @@ struct RootTabView: View {
     // 모음 목록/배너가 공유하므로 셸 레벨에 둔다.
     @State private var searchByBoard: [String: String] = [:]
     @State private var showingSearch = false
+    // 둘러보기에서 현재 열어둔 보드(글 목록). nil = 사이트 목록/미진입.
+    @State private var browsingBoard: Board?
     // 상세 오버레이 백드래그(우→ 스와이프 닫기) 상태기계.
     @State private var backDrag = DetailBackDrag()
 
@@ -111,10 +113,18 @@ struct RootTabView: View {
         let boards = favorites.favoriteBoards()
         return boards.first { $0.id == currentBoardID } ?? boards.first
     }
-    // 현재 보드에 검색이 걸려 있으면 검색 버튼을 채운 아이콘으로 — 활성
-    // 표시 겸 해제 경로(눌러서 SearchSheet → 검색 해제) 안내.
+    // 하단 검색 버튼이 검색할 대상 — 모음에선 현재 보드, 둘러보기에선 열어둔
+    // 보드. 그 외 탭에선 없음(버튼도 숨김).
+    private var searchContextBoard: Board? {
+        switch selectedTab {
+        case 0: return currentBoard
+        case 1: return browsingBoard
+        default: return nil
+        }
+    }
+    // 대상 보드에 검색이 걸려 있으면 검색 버튼을 X(해제)로.
     private var searchActive: Bool {
-        currentBoard.flatMap { searchByBoard[$0.id] } != nil
+        searchContextBoard.flatMap { searchByBoard[$0.id] } != nil
     }
 
     var body: some View {
@@ -126,11 +136,10 @@ struct RootTabView: View {
                 get: { selectedTab },
                 set: { newValue in
                     if newValue == 3 {
-                        selectedTab = 0
+                        // 검색 버튼 — 탭 전환 없이 현재 컨텍스트 보드를 검색/해제.
                         if searchActive {
-                            // 검색 중이면 버튼이 X — 탭하면 바로 해제(시트 X).
-                            if let id = currentBoard?.id { searchByBoard[id] = nil }
-                        } else if currentBoard != nil {
+                            if let id = searchContextBoard?.id { searchByBoard[id] = nil }
+                        } else if searchContextBoard != nil {
                             showingSearch = true
                         }
                     } else {
@@ -150,7 +159,8 @@ struct RootTabView: View {
                 }
                 Tab("둘러보기", systemImage: "square.grid.2x2", value: 1) {
                     BrowseTab(catalog: catalog, favorites: favorites,
-                              readStore: readStore, onSelectPost: { detail.show($0) })
+                              readStore: readStore, onSelectPost: { detail.show($0) },
+                              searchByBoard: $searchByBoard, browsingBoard: $browsingBoard)
                 }
                 Tab("알림", systemImage: "bell", value: 2) {
                     NavigationStack {
@@ -162,9 +172,9 @@ struct RootTabView: View {
                     }
                 }
                 .badge(alertBadge.unread)
-                // 검색은 모음 컨텍스트에서만 의미가 있으므로 모음 탭에서만 노출.
-                // (둘러보기는 보드 뷰 안에서, 알림은 검색 불필요.)
-                if selectedTab == 0 {
+                // 검색 버튼은 검색 대상 보드가 있을 때만 — 모음(현재 보드) /
+                // 둘러보기(열어둔 보드). 사이트 목록·알림에선 숨김.
+                if let b = searchContextBoard, b.supportsSearch {
                     // 검색 중이면 X(해제) 버튼으로 바뀐다.
                     Tab(searchActive ? "해제" : "검색",
                         systemImage: searchActive ? "xmark" : "magnifyingglass",
@@ -174,7 +184,7 @@ struct RootTabView: View {
                 }
             }
             .sheet(isPresented: $showingSearch) {
-                if let board = currentBoard {
+                if let board = searchContextBoard {
                     SearchSheet(
                         board: board,
                         initialQuery: searchByBoard[board.id] ?? "",
@@ -451,6 +461,10 @@ private struct BrowseTab: View {
     let readStore: ReadStore
     /// 보드 글 목록에서 글 탭 → 상세 열기(모음과 동일하게 detail.show).
     let onSelectPost: (Post) -> Void
+    // 검색은 하단 검색 버튼으로(모음과 동일) — 보드별 검색어 공유 + 지금 열어둔
+    // 보드를 셸에 알려 하단 버튼이 그 보드를 검색하게 한다.
+    @Binding var searchByBoard: [String: String]
+    @Binding var browsingBoard: Board?
 
     private var sites: [Site] {
         DrawerSection.all.compactMap { if case .site(let s) = $0 { return s } else { return nil } }
@@ -474,56 +488,40 @@ private struct BrowseTab: View {
             }
             // 보드 탭 → 그 보드 글 목록.
             .navigationDestination(for: Board.self) { board in
-                BoardPostsView(board: board, readStore: readStore, onSelectPost: onSelectPost)
+                BoardPostsView(board: board, readStore: readStore, onSelectPost: onSelectPost,
+                               searchByBoard: $searchByBoard, browsingBoard: $browsingBoard)
             }
         }
     }
 }
 
 /// 둘러보기에서 보드를 탭했을 때 그 보드의 글 목록(기본 필터로). 글 탭은
-/// 모음과 동일하게 상세 오버레이를 띄운다. 우상단 돋보기로 이 보드를 검색.
+/// 모음과 동일하게 상세 오버레이를 띄운다. 검색은 모음처럼 하단 검색 버튼이
+/// 담당 — 진입 시 이 보드를 셸의 browsingBoard 로 보고하면 하단 버튼이 뜬다.
 private struct BoardPostsView: View {
     let board: Board
     let readStore: ReadStore
     let onSelectPost: (Post) -> Void
+    @Binding var searchByBoard: [String: String]
+    @Binding var browsingBoard: Board?
 
-    @State private var query = ""
-    @State private var showingSearch = false
+    private var query: String? { searchByBoard[board.id] }
 
     var body: some View {
         BoardListView(
             board: board,
             // 검색 중엔 필터 해제(모음 검색과 동일).
-            filter: query.isEmpty ? board.defaultListFilter : nil,
-            searchQuery: query.isEmpty ? nil : query,
+            filter: query == nil ? board.defaultListFilter : nil,
+            searchQuery: query,
             readStore: readStore,
             onSelectPost: onSelectPost
         )
         .equatable()
         .navigationTitle(board.name)
         .toolbarTitleDisplayMode(.inline)
-        .toolbar {
-            if board.supportsSearch {
-                ToolbarItem(placement: .topBarTrailing) {
-                    if query.isEmpty {
-                        Button { showingSearch = true } label: {
-                            Image(systemName: "magnifyingglass")
-                        }
-                    } else {
-                        // 검색 중이면 X로 해제.
-                        Button { query = "" } label: { Image(systemName: "xmark") }
-                    }
-                }
-            }
-        }
-        .sheet(isPresented: $showingSearch) {
-            SearchSheet(
-                board: board,
-                initialQuery: query,
-                onSubmit: { query = $0 },
-                onClear: { query = "" }
-            )
-        }
+        // 이 보드를 셸에 알려 하단 검색 버튼이 이 보드를 검색하게 한다.
+        .onAppear { browsingBoard = board }
+        .onDisappear { if browsingBoard?.id == board.id { browsingBoard = nil } }
     }
 }
 
