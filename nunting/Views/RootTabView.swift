@@ -149,7 +149,8 @@ struct RootTabView: View {
                     )
                 }
                 Tab("둘러보기", systemImage: "square.grid.2x2", value: 1) {
-                    BrowseTab(catalog: catalog, favorites: favorites)
+                    BrowseTab(catalog: catalog, favorites: favorites,
+                              readStore: readStore, onSelectPost: { detail.show($0) })
                 }
                 Tab("알림", systemImage: "bell", value: 2) {
                     NavigationStack {
@@ -443,6 +444,9 @@ private struct ArchiveHome: View {
 private struct BrowseTab: View {
     let catalog: BoardCatalogStore
     let favorites: FavoritesStore
+    let readStore: ReadStore
+    /// 보드 글 목록에서 글 탭 → 상세 열기(모음과 동일하게 detail.show).
+    let onSelectPost: (Post) -> Void
 
     private var sites: [Site] {
         DrawerSection.all.compactMap { if case .site(let s) = $0 { return s } else { return nil } }
@@ -461,9 +465,35 @@ private struct BrowseTab: View {
             }
             .navigationTitle("둘러보기")
             .navigationDestination(for: Site.self) { site in
-                SiteBoardsView(site: site, catalog: catalog, favorites: favorites)
+                SiteBoardsView(site: site, catalog: catalog, favorites: favorites,
+                               readStore: readStore, onSelectPost: onSelectPost)
+            }
+            // 보드 탭 → 그 보드 글 목록.
+            .navigationDestination(for: Board.self) { board in
+                BoardPostsView(board: board, readStore: readStore, onSelectPost: onSelectPost)
             }
         }
+    }
+}
+
+/// 둘러보기에서 보드를 탭했을 때 그 보드의 글 목록(기본 필터로). 글 탭은
+/// 모음과 동일하게 상세 오버레이를 띄운다.
+private struct BoardPostsView: View {
+    let board: Board
+    let readStore: ReadStore
+    let onSelectPost: (Post) -> Void
+
+    var body: some View {
+        BoardListView(
+            board: board,
+            filter: board.defaultListFilter,
+            searchQuery: nil,
+            readStore: readStore,
+            onSelectPost: onSelectPost
+        )
+        .equatable()
+        .navigationTitle(board.name)
+        .toolbarTitleDisplayMode(.inline)
     }
 }
 
@@ -471,22 +501,27 @@ private struct SiteBoardsView: View {
     let site: Site
     let catalog: BoardCatalogStore
     let favorites: FavoritesStore
+    let readStore: ReadStore
+    let onSelectPost: (Post) -> Void
 
     var body: some View {
         List {
             ForEach(catalog.groups(for: site)) { group in
                 Section(group.name ?? "") {
                     ForEach(group.boards) { board in
-                        HStack {
-                            Text(board.name)
-                            Spacer()
-                            Button {
-                                favorites.toggle(board)
-                            } label: {
-                                Image(systemName: favorites.isFavorite(board) ? "star.fill" : "star")
-                                    .foregroundStyle(favorites.isFavorite(board) ? AnyShapeStyle(.yellow) : AnyShapeStyle(.secondary))
+                        // 행 탭 → 글 목록(NavigationLink), 별표 버튼은 모음 추가/제거.
+                        NavigationLink(value: board) {
+                            HStack {
+                                Text(board.name)
+                                Spacer()
+                                Button {
+                                    favorites.toggle(board)
+                                } label: {
+                                    Image(systemName: favorites.isFavorite(board) ? "star.fill" : "star")
+                                        .foregroundStyle(favorites.isFavorite(board) ? AnyShapeStyle(.yellow) : AnyShapeStyle(.secondary))
+                                }
+                                .buttonStyle(.borderless)
                             }
-                            .buttonStyle(.borderless)
                         }
                     }
                 }
