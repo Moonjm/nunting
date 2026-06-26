@@ -116,7 +116,7 @@ private struct ArchiveHome: View {
             // (상세 push 시엔 이 루트 콘텐츠가 가려지므로 자연히 숨겨진다.)
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if let board = currentBoard, showsFilterBar(board), activeQuery == nil {
-                    BoardFilterBar(board: board, selection: filterBinding(board.id))
+                    GlassFilterBar(board: board, selection: filterBinding(board.id))
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
@@ -354,5 +354,42 @@ private struct SiteEmblem: View {
             .foregroundStyle(.white)
             .frame(width: 38, height: 38)
             .background(site.accentColor, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
+// MARK: - 유리 필터 바 (탭바 위에 떠 있는 Liquid Glass 알약)
+
+private struct GlassFilterBar: View {
+    let board: Board
+    @Binding var selection: BoardFilter?
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 4) {
+                chip(label: "전체", filter: nil)
+                ForEach(board.filters) { f in
+                    chip(label: f.name, filter: f)
+                }
+            }
+            .padding(5)
+        }
+        .glassEffect(.regular, in: .capsule)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 6)
+    }
+
+    private func chip(label: String, filter: BoardFilter?) -> some View {
+        let isSelected = selection?.id == filter?.id
+        return Text(label)
+            .font(.subheadline.weight(isSelected ? .semibold : .regular))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+            .background(
+                isSelected ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.clear),
+                in: Capsule()
+            )
+            .foregroundStyle(isSelected ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+            .contentShape(Capsule())
+            .onTapGesture { withAnimation(.easeInOut(duration: 0.15)) { selection = filter } }
     }
 }
