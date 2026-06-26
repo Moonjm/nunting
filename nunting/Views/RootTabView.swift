@@ -384,6 +384,8 @@ private struct SearchTab: View {
             }
             .navigationTitle("검색")
             .navigationBarTitleDisplayMode(.inline)
+            // 검색어가 비면(X 또는 전체 삭제) 검색 모드를 닫아 탭바·목록이 통째로 복귀.
+            .background(SearchDismissOnClear(text: draft))
         }
         .searchable(text: $draft, prompt: board.map { "'\($0.name)' 검색" } ?? "검색")
         .onSubmit(of: .search) {
@@ -392,6 +394,22 @@ private struct SearchTab: View {
         .onChange(of: draft) { _, v in
             if v.isEmpty { committed = "" }
         }
+    }
+}
+
+/// `.searchable` 내부 환경(isSearching/dismissSearch)에 접근해, 텍스트가
+/// 비는 순간 검색 모드를 닫는다. X 버튼이 텍스트만 지우고 검색 바를 활성
+/// 상태로 남겨두는 기본 동작을 보완 — 닫으면 하단 탭바가 다시 펼쳐진다.
+private struct SearchDismissOnClear: View {
+    let text: String
+    @Environment(\.isSearching) private var isSearching
+    @Environment(\.dismissSearch) private var dismissSearch
+
+    var body: some View {
+        Color.clear
+            .onChange(of: text) { _, v in
+                if v.isEmpty && isSearching { dismissSearch() }
+            }
     }
 }
 
