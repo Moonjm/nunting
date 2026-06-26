@@ -362,23 +362,23 @@ private struct SearchTab: View {
     var body: some View {
         NavigationStack {
             Group {
-                if let board, !committed.isEmpty {
+                if let board {
+                    // 검색어를 지우면(X) 그냥 해당 보드의 일반 목록으로 돌아옴.
+                    // 키워드 수정은 검색 input을 다시 터치해서.
+                    let query = committed.isEmpty ? nil : committed
                     BoardListView(
                         board: board,
                         filter: nil,
-                        searchQuery: committed,
+                        searchQuery: query,
                         readStore: readStore,
                         onSelectPost: onSelectPost
                     )
                     .equatable()
-                } else if board?.supportsSearch == false {
-                    ContentUnavailableView("이 보드는 검색을 지원하지 않아요",
-                                           systemImage: "magnifyingglass")
                 } else {
                     ContentUnavailableView {
                         Label("검색", systemImage: "magnifyingglass")
                     } description: {
-                        Text(board.map { "'\($0.name)'에서 검색어를 입력하세요" } ?? "보드를 먼저 선택하세요")
+                        Text("보드를 먼저 선택하세요")
                     }
                 }
             }
