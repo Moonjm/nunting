@@ -111,6 +111,11 @@ struct RootTabView: View {
         let boards = favorites.favoriteBoards()
         return boards.first { $0.id == currentBoardID } ?? boards.first
     }
+    // 현재 보드에 검색이 걸려 있으면 검색 버튼을 채운 아이콘으로 — 활성
+    // 표시 겸 해제 경로(눌러서 SearchSheet → 검색 해제) 안내.
+    private var searchActive: Bool {
+        currentBoard.flatMap { searchByBoard[$0.id] } != nil
+    }
 
     var body: some View {
         ZStack {
@@ -147,7 +152,8 @@ struct RootTabView: View {
                     }
                 }
                 .badge(alertBadge.unread)
-                Tab("검색", systemImage: "magnifyingglass", value: 3, role: .search) {
+                Tab("검색", systemImage: searchActive ? "magnifyingglass.circle.fill" : "magnifyingglass",
+                    value: 3, role: .search) {
                     Color.clear
                 }
             }
@@ -292,7 +298,6 @@ private struct ArchiveHome: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if let q = currentQuery { searchBanner(q) }
             if boards.isEmpty {
                 ContentUnavailableView("즐겨찾기한 보드가 없어요", systemImage: "star",
                                        description: Text("둘러보기에서 ⭐로 추가하세요"))
@@ -329,25 +334,6 @@ private struct ArchiveHome: View {
             if let def = b.defaultListFilter { filterByBoard[b.id] = def }
             seededFilterIDs.insert(b.id)
         }
-    }
-
-    // 검색 중 표시 배너 — 쿼리 + 해제. 같은 목록 자리에 결과가 흐른다.
-    private func searchBanner(_ query: String) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass").font(.caption)
-            Text("'\(query)' 검색 결과").font(.subheadline.weight(.medium))
-            Spacer()
-            Button {
-                if let id = currentBoard?.id { searchByBoard[id] = nil }
-            } label: {
-                Label("해제", systemImage: "xmark").labelStyle(.titleAndIcon).font(.caption)
-            }
-            .buttonStyle(.borderless)
-        }
-        .foregroundStyle(.secondary)
-        .padding(.horizontal)
-        .padding(.vertical, 8)
-        .background(.thinMaterial)
     }
 
     /// 필터 탭 바를 띄울 보드인지 — 인벤(10추/30추/인방)·애객(소스 필터)처럼
