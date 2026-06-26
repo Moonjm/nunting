@@ -35,7 +35,9 @@ struct RootTabView: View {
             }
             .badge(alertBadge.unread)
         }
-        .tabBarMinimizeBehavior(.onScrollDown)
+        // 스크롤 시 탭바만 줄고 그 위 유리 필터 알약(safeAreaInset)은 그대로라
+        // 둘이 따로 놀아 이질감이 생긴다 — 탭바 축소를 끄고 둘 다 고정으로.
+        // (보드 리더에선 필터·탭이 항상 닿는 게 더 편하기도 함.)
         // 이미지 다운샘플/프리페치가 읽는 containerWidth 공급(기존엔 ContentView 담당).
         .background(
             GeometryReader { proxy in
