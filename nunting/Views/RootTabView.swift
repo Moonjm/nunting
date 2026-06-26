@@ -398,14 +398,16 @@ private struct ArchiveHome: View {
         )
     }
 
-    // 슬림 헤더 — 가운데 보드명 메뉴 + 사이트색 페이지 인디케이터.
-    // (검색은 하단 탭바 오른쪽 돋보기 버튼으로 분리됨.)
+    // 슬림 헤더 — 좌측 햄버거 메뉴 버튼 하나. 누르면 모음에 담긴 보드(사이트)
+    // 목록이 드롭다운으로 뜨고, 선택하면 그 보드로 전환(현재 보드 체크).
+    // (보드명·페이지 점 표시는 제거.)
     private var header: some View {
-        VStack(spacing: 6) {
+        HStack {
             boardMenu
-            if boards.count > 1 { pageIndicator }
+            Spacer()
         }
         .frame(maxWidth: .infinity)
+        .padding(.horizontal, 8)
         .padding(.top, 4)
         .padding(.bottom, 7)
         // 리스트가 헤더 밑으로 스크롤되므로 불투명 배경으로 가린다(상단은
@@ -420,35 +422,19 @@ private struct ArchiveHome: View {
                     withAnimation(.snappy) { currentBoardID = b.id }
                 } label: {
                     if b.id == currentBoard?.id {
-                        Label(b.name, systemImage: "checkmark")
+                        Label("\(b.site.displayName) · \(b.name)", systemImage: "checkmark")
                     } else {
-                        Text(b.name)
+                        Text("\(b.site.displayName) · \(b.name)")
                     }
                 }
             }
         } label: {
-            HStack(spacing: 4) {
-                Text(currentBoard?.name ?? "모음")
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-                Image(systemName: "chevron.down")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-            }
+            Image(systemName: "line.3.horizontal")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 44, height: 36)
+                .contentShape(Rectangle())
         }
-    }
-
-    private var pageIndicator: some View {
-        HStack(spacing: 6) {
-            ForEach(boards) { b in
-                let isSel = b.id == currentBoard?.id
-                Capsule()
-                    .fill(isSel ? AnyShapeStyle(b.site.accentColor) : AnyShapeStyle(Color(.tertiaryLabel)))
-                    .frame(width: isSel ? 18 : 6, height: 6)
-                    .onTapGesture { withAnimation(.snappy) { currentBoardID = b.id } }
-            }
-        }
-        .animation(.snappy, value: currentBoardID)
     }
 
 }
