@@ -31,7 +31,7 @@ struct RootTabView: View {
                 ArchiveHome(
                     favorites: favorites,
                     readStore: readStore,
-                    onSelectPost: { detail.show($0) },
+                    cache: detailCache,
                     currentBoardID: $currentBoardID
                 )
             }
@@ -143,12 +143,16 @@ private struct ArchiveHome: View {
     /// 글 탭 → 상세 열기. 상세는 RootTabView 의 fullScreenCover 로 전체화면을
     /// 덮어 띄운다(탭바째 통째로 가려 목록 쪽 chrome 이 사라졌다/나타났다 하지
     /// 않게 — push + tabBar 숨김의 깜빡임 회피).
-    let onSelectPost: (Post) -> Void
+    let cache: PostDetailCache
     // 검색은 하단 검색 탭으로 분리됐다(RootTabView). 현재 보드를 검색 탭이
     // 알아야 하므로 selection 을 위로 올려 공유한다.
     @Binding var currentBoardID: String?
 
     @State private var filterByBoard: [String: BoardFilter] = [:]
+    // 인앱 글 탭은 NavigationStack push(시스템 가장자리 스와이프 뒤로). 탭바는
+    // 숨기지 않아 상세에서도 고정 — push/pop 시 탭바가 사라졌다 나타나는
+    // 깜빡임이 없다. (딥링크/푸시는 RootTabView 의 fullScreenCover 로 별도.)
+    @State private var path: [Post] = []
 
     private var boards: [Board] { favorites.favoriteBoards() }
     private var currentBoard: Board? {
@@ -156,34 +160,43 @@ private struct ArchiveHome: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            if boards.isEmpty {
-                ContentUnavailableView("즐겨찾기한 보드가 없어요", systemImage: "star",
-                                       description: Text("둘러보기에서 ⭐로 추가하세요"))
-            } else {
-                TabView(selection: $currentBoardID) {
-                    ForEach(boards) { board in
-                        BoardListView(
-                            board: board,
-                            filter: filterByBoard[board.id],
-                            searchQuery: nil,
-                            readStore: readStore,
-                            onSelectPost: onSelectPost
-                        )
-                        .equatable()
-                        .tag(Optional(board.id))
+        NavigationStack(path: $path) {
+            VStack(spacing: 0) {
+                header
+                if boards.isEmpty {
+                    ContentUnavailableView("즐겨찾기한 보드가 없어요", systemImage: "star",
+                                           description: Text("둘러보기에서 ⭐로 추가하세요"))
+                } else {
+                    TabView(selection: $currentBoardID) {
+                        ForEach(boards) { board in
+                            BoardListView(
+                                board: board,
+                                filter: filterByBoard[board.id],
+                                searchQuery: nil,
+                                readStore: readStore,
+                                onSelectPost: { post in path.append(post) }
+                            )
+                            .equatable()
+                            .tag(Optional(board.id))
+                        }
                     }
+                    .tabViewStyle(.page(indexDisplayMode: .never))
+                    .ignoresSafeArea(edges: .bottom)
                 }
-                .tabViewStyle(.page(indexDisplayMode: .never))
-                .ignoresSafeArea(edges: .bottom)
             }
-        }
-        // 보드 내 필터 탭은 인벤·애객처럼 *필터가 실제로 있는* 보드에서만,
-        // 탭바 바로 위(엄지 존)에. 다른 보드/다른 탭에선 자리 안 차지.
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if let board = currentBoard, showsFilterBar(board) {
-                GlassFilterBar(board: board, selection: filterBinding(board.id))
+            // 보드 내 필터 탭은 인벤·애객처럼 *필터가 실제로 있는* 보드에서만,
+            // 탭바 바로 위(엄지 존)에. 다른 보드/다른 탭에선 자리 안 차지.
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if let board = currentBoard, showsFilterBar(board) {
+                    GlassFilterBar(board: board, selection: filterBinding(board.id))
+                }
+            }
+            // 목록은 커스텀 슬림 헤더를 쓰므로 시스템 내비바 숨김(상세는 자체
+            // navigationTitle/toolbar 로 유리 내비바를 다시 켠다).
+            .toolbar(.hidden, for: .navigationBar)
+            .navigationDestination(for: Post.self) { post in
+                // push → 시스템 가장자리 스와이프 뒤로. 탭바는 안 숨겨 깜빡임 없음.
+                PostDetailScreen(post: post, readStore: readStore, cache: cache)
             }
         }
         .onAppear {
