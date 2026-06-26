@@ -96,32 +96,17 @@ struct RootTabView: View {
     @State private var detail = DetailOverlayController.shared
 
     @State private var selectedTab = 0
-    // 검색 탭이 "검색 중"인지 — true 일 때만 상단 검색 필드가 뜨고 키패드가
-    // 올라온다. X 로 false → 검색 필드 사라지고 목록만. 검색 탭을 (다시)
-    // 누르면 true 로 돌아와 재검색.
-    @State private var searchActive = false
-    // 모음의 현재 보드 — 검색 탭이 "지금 보고 있는 보드"를 검색하도록 공유.
+    // 모음의 현재 보드 — 페이저/헤더/검색이 공유한다.
     @State private var currentBoardID: String?
     // 상세 오버레이 백드래그(우→ 스와이프 닫기) 상태기계.
     @State private var backDrag = DetailBackDrag()
 
     @Environment(\.scenePhase) private var scenePhase
 
-    private var currentBoard: Board? {
-        let boards = favorites.favoriteBoards()
-        return boards.first { $0.id == currentBoardID } ?? boards.first
-    }
-
     var body: some View {
         ZStack {
-            // 검색 탭(3)을 누를 때마다(최초 진입·재탭 모두) 검색을 켠다.
-            TabView(selection: Binding(
-                get: { selectedTab },
-                set: { newValue in
-                    if newValue == 3 { searchActive = true }
-                    selectedTab = newValue
-                }
-            )) {
+            // 검색은 별도 탭이 아니라 모음 헤더의 돋보기 → 시트(SearchSheet).
+            TabView(selection: $selectedTab) {
                 Tab("모음", systemImage: "tray.full.fill", value: 0) {
                     ArchiveHome(
                         favorites: favorites,
@@ -140,14 +125,6 @@ struct RootTabView: View {
                     }
                 }
                 .badge(alertBadge.unread)
-                // 검색 필드는 searchActive 일 때만 상단에 뜬다(.searchable 의
-                // resting bar 가 X 후에도 남는 문제를 피함). 하단 탭바는 일반
-                // 탭이라 항상 펼쳐져 있다.
-                Tab("검색", systemImage: "magnifyingglass", value: 3) {
-                    SearchTab(board: currentBoard, searchActive: $searchActive,
-                              readStore: readStore,
-                              onSelectPost: { detail.show($0) })
-                }
             }
 
             // 상세 오버레이 — TabView 위 ZStack 최상단 레이어로 화면 전체(탭바
@@ -260,20 +237,27 @@ private struct ArchiveHome: View {
     /// 글 탭 → 상세 열기(detail.show). 상세는 RootTabView 의 ZStack 오버레이로
     /// 우측에서 슬라이드 인하며 화면 전체(탭바 포함)를 덮는다.
     let onSelectPost: (Post) -> Void
-    // 검색은 하단 검색 탭으로 분리됐다(RootTabView). 현재 보드를 검색 탭이
-    // 알아야 하므로 selection 을 위로 올려 공유한다.
     @Binding var currentBoardID: String?
 
     @State private var filterByBoard: [String: BoardFilter] = [:]
+    // 보드별 활성 검색어. 옛 앱처럼 검색은 보드에 묶인다 — 다른 보드로
+    // 스와이프해도 각 보드의 검색 상태가 유지된다.
+    @State private var searchByBoard: [String: String] = [:]
+    // 돋보기 → SearchSheet(시트) 표시.
+    @State private var showingSearch = false
 
     private var boards: [Board] { favorites.favoriteBoards() }
     private var currentBoard: Board? {
         boards.first { $0.id == currentBoardID } ?? boards.first
     }
+    private var currentQuery: String? {
+        currentBoard.flatMap { searchByBoard[$0.id] }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             header
+            if let q = currentQuery { searchBanner(q) }
             if boards.isEmpty {
                 ContentUnavailableView("즐겨찾기한 보드가 없어요", systemImage: "star",
                                        description: Text("둘러보기에서 ⭐로 추가하세요"))
@@ -282,6 +266,7 @@ private struct ArchiveHome: View {
                     boards: boards,
                     currentBoardID: $currentBoardID,
                     filterByBoard: filterByBoard,
+                    searchByBoard: searchByBoard,
                     readStore: readStore,
                     onSelectPost: onSelectPost
                 )
@@ -289,15 +274,44 @@ private struct ArchiveHome: View {
             }
         }
         // 보드 내 필터 탭은 인벤·애객처럼 *필터가 실제로 있는* 보드에서만,
-        // 탭바 바로 위(엄지 존)에. 다른 보드/다른 탭에선 자리 안 차지.
+        // 탭바 바로 위(엄지 존)에. 검색 중이면 숨겨 혼동 방지.
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if let board = currentBoard, showsFilterBar(board) {
+            if let board = currentBoard, currentQuery == nil, showsFilterBar(board) {
                 GlassFilterBar(board: board, selection: filterBinding(board.id))
+            }
+        }
+        .sheet(isPresented: $showingSearch) {
+            if let board = currentBoard {
+                SearchSheet(
+                    board: board,
+                    initialQuery: searchByBoard[board.id] ?? "",
+                    onSubmit: { searchByBoard[board.id] = $0 },
+                    onClear: { searchByBoard[board.id] = nil }
+                )
             }
         }
         .onAppear {
             if currentBoardID == nil { currentBoardID = boards.first?.id }
         }
+    }
+
+    // 검색 중 표시 배너 — 쿼리 + 해제. 같은 목록 자리에 결과가 흐른다.
+    private func searchBanner(_ query: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").font(.caption)
+            Text("'\(query)' 검색 결과").font(.subheadline.weight(.medium))
+            Spacer()
+            Button {
+                if let id = currentBoard?.id { searchByBoard[id] = nil }
+            } label: {
+                Label("해제", systemImage: "xmark").labelStyle(.titleAndIcon).font(.caption)
+            }
+            .buttonStyle(.borderless)
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+        .background(.thinMaterial)
     }
 
     /// 필터 탭 바를 띄울 보드인지 — 인벤(10추/30추/인방)·애객(소스 필터)처럼
@@ -313,10 +327,22 @@ private struct ArchiveHome: View {
         )
     }
 
-    // 슬림 헤더 — 보드명 메뉴 + 사이트색 페이지 인디케이터. (검색은 하단 탭으로 이동.)
+    // 슬림 헤더 — 가운데 보드명 메뉴 + 사이트색 페이지 인디케이터, 우측 돋보기.
     private var header: some View {
         VStack(spacing: 6) {
-            boardMenu
+            ZStack {
+                boardMenu
+                HStack {
+                    Spacer()
+                    Button { showingSearch = true } label: {
+                        Image(systemName: "magnifyingglass")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .disabled(currentBoard == nil)
+                    .padding(.trailing, 16)
+                }
+            }
             if boards.count > 1 { pageIndicator }
         }
         .frame(maxWidth: .infinity)
@@ -362,95 +388,6 @@ private struct ArchiveHome: View {
         .animation(.snappy, value: currentBoardID)
     }
 
-}
-
-// MARK: - 검색 탭 (하단 검색 버튼 → 키패드+입력, 현재 보드 검색)
-
-/// 검색 탭. `.searchable` 은 검색 안 할 때도 resting 검색 바를 남겨서, X 후
-/// 입력창이 사라지지 않는다. 그래서 직접 만든 검색 필드를 `searchActive` 일
-/// 때만 **하단**(탭바 위, 엄지 존)에 띄운다 — 키패드가 올라오면 그 위로
-/// 따라붙는다. 탭 진입(재탭 포함) → 필드 + 키패드, X → 필드 제거 후 목록만.
-/// 수정은 필드 재터치(재포커스).
-private struct SearchTab: View {
-    let board: Board?
-    @Binding var searchActive: Bool
-    let readStore: ReadStore
-    let onSelectPost: (Post) -> Void
-
-    @State private var draft = ""
-    @State private var committed = ""
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        NavigationStack {
-            content
-                .navigationTitle("검색")
-                .navigationBarTitleDisplayMode(.inline)
-                .safeAreaInset(edge: .bottom) {
-                    if searchActive { searchField }
-                }
-        }
-        .onChange(of: searchActive) { _, active in if active { raiseKeyboard() } }
-        .onAppear { if searchActive { raiseKeyboard() } }
-    }
-
-    // 필드가 막 렌더된 직후에 포커스해야 키패드가 안정적으로 올라온다.
-    private func raiseKeyboard() {
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(50))
-            focused = true
-        }
-    }
-
-    private var searchField: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-            TextField(board.map { "'\($0.name)' 검색" } ?? "검색", text: $draft)
-                .focused($focused)
-                .submitLabel(.search)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-                .onSubmit { committed = draft.trimmingCharacters(in: .whitespaces) }
-            Button {
-                // X: 검색 종료 → 필드 사라지고 목록만 남는다.
-                draft = ""
-                committed = ""
-                focused = false
-                searchActive = false
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .glassEffect(.regular, in: .capsule)
-        .padding(.horizontal)
-        .padding(.vertical, 8)
-    }
-
-    @ViewBuilder private var content: some View {
-        if let board {
-            // 검색어가 있으면 검색 결과, 비면 해당 보드의 일반 목록.
-            let query = committed.isEmpty ? nil : committed
-            BoardListView(
-                board: board,
-                filter: nil,
-                searchQuery: query,
-                readStore: readStore,
-                onSelectPost: onSelectPost
-            )
-            .equatable()
-        } else {
-            ContentUnavailableView {
-                Label("검색", systemImage: "magnifyingglass")
-            } description: {
-                Text("보드를 먼저 선택하세요")
-            }
-        }
-    }
 }
 
 // MARK: - 둘러보기 (사이트 → 보드, 별표로 모음 추가)
@@ -540,6 +477,7 @@ private struct BoardPager: View {
     let boards: [Board]
     @Binding var currentBoardID: String?
     let filterByBoard: [String: BoardFilter]
+    let searchByBoard: [String: String]
     let readStore: ReadStore
     let onSelectPost: (Post) -> Void
 
@@ -550,7 +488,8 @@ private struct BoardPager: View {
         if boards.count <= 1 {
             if let board = boards.first {
                 BoardListView(board: board, filter: filterByBoard[board.id],
-                              searchQuery: nil, readStore: readStore, onSelectPost: onSelectPost)
+                              searchQuery: searchByBoard[board.id], readStore: readStore,
+                              onSelectPost: onSelectPost)
                     .equatable()
             }
         } else {
@@ -571,7 +510,8 @@ private struct BoardPager: View {
 
     @ViewBuilder private func page(_ board: Board, tag: Int) -> some View {
         BoardListView(board: board, filter: filterByBoard[board.id],
-                      searchQuery: nil, readStore: readStore, onSelectPost: onSelectPost)
+                      searchQuery: searchByBoard[board.id], readStore: readStore,
+                      onSelectPost: onSelectPost)
             .equatable()
             .tag(tag)
     }
