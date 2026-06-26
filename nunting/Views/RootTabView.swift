@@ -108,6 +108,8 @@ struct RootTabView: View {
     // 모음 목록/배너가 공유하므로 셸 레벨에 둔다.
     @State private var searchByBoard: [String: String] = [:]
     @State private var showingSearch = false
+    // 하단 히스토리 탭 → 최근 읽은 글 시트.
+    @State private var showingHistory = false
     // 둘러보기에서 현재 열어둔 보드(글 목록). nil = 사이트 목록/미진입.
     @State private var browsingBoard: Board?
     // 상세 오버레이 백드래그(우→ 스와이프 닫기) 상태기계.
@@ -148,6 +150,9 @@ struct RootTabView: View {
                         } else if searchContextBoard != nil {
                             showingSearch = true
                         }
+                    } else if newValue == 4 {
+                        // 히스토리 탭 — 탭 전환 없이 최근 읽은 글 시트를 띄운다.
+                        showingHistory = true
                     } else {
                         selectedTab = newValue
                     }
@@ -178,6 +183,11 @@ struct RootTabView: View {
                     }
                 }
                 .badge(alertBadge.unread)
+                // 히스토리 — 탭하면 전환 대신 최근 읽은 글 시트를 띄운다(검색과
+                // 같은 패턴). 묶음 탭 마지막 자리.
+                Tab("히스토리", systemImage: "clock.arrow.circlepath", value: 4) {
+                    Color.clear
+                }
                 // 검색 버튼은 검색 대상 보드가 있을 때만 — 모음(현재 보드) /
                 // 둘러보기(열어둔 보드). 사이트 목록·알림에선 숨김.
                 if let b = searchContextBoard, b.supportsSearch {
@@ -197,6 +207,18 @@ struct RootTabView: View {
                         onSubmit: { searchByBoard[board.id] = $0 }
                     )
                 }
+            }
+            .sheet(isPresented: $showingHistory) {
+                HistorySheet(
+                    posts: Array(readStore.recentPosts.prefix(5)),
+                    onOpen: { post in
+                        // 시트 닫기 + 상세 열기를 같은 틱에. 상세는 시트가 아니라
+                        // 항상 떠 있는 ZStack 오버레이(activePost 갱신)라 시트
+                        // dismiss 트랜잭션과 독립적 → 드롭/이중표시 없이 안전.
+                        showingHistory = false
+                        detail.show(post)
+                    }
+                )
             }
 
             // 상세 오버레이 — TabView 위 ZStack 최상단 레이어로 화면 전체(탭바
@@ -358,8 +380,8 @@ private struct ArchiveHome: View {
                 .ignoresSafeArea(edges: .bottom)
             }
         }
-        // 헤더 밴드 없이 목록이 상단까지 꽉 차고, 햄버거 메뉴 버튼은 우상단에
-        // 떠 있는 유리 동그라미(검색 버튼과 동일 룩)로 목록 위에 겹쳐 띄운다.
+        // 헤더 밴드 없이 목록이 상단까지 꽉 차고, 보드 메뉴 버튼만 우상단에 떠
+        // 있는 유리 동그라미로 겹쳐 띄운다. (검색·히스토리는 하단 탭바로 이동.)
         .overlay(alignment: .topTrailing) { boardMenu }
         // 탭바가 가리는 하단 안전영역 높이를 측정해 인셋으로 환원.
         .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.bottom } action: { bottomSafeInset = $0 }
