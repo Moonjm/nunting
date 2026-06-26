@@ -58,10 +58,9 @@ struct SearchSheet: View {
                     }
                     .padding(.vertical, 24)
                 }
-
-                Spacer()
             }
             .padding()
+            .frame(maxHeight: .infinity, alignment: .top)
             .navigationTitle("검색")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -76,8 +75,9 @@ struct SearchSheet: View {
                 }
             }
         }
-        // 전체를 덮지 않고 검색 필드 + 키패드 정도만(반 정도) 차지.
-        .presentationDetents([.medium])
+        // 검색 필드가 차지하는 만큼만 — 키보드가 올라오면 시트가 그 위에
+        // 딱 붙어 빈 공간이 거의 없게. (해제 버튼이 있는 경우까지 고려한 높이)
+        .presentationDetents([.height(200)])
         .presentationDragIndicator(.visible)
         .onAppear {
             query = initialQuery
