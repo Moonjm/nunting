@@ -309,6 +309,8 @@ private struct ArchiveHome: View {
                 ContentUnavailableView("즐겨찾기한 보드가 없어요", systemImage: "star",
                                        description: Text("둘러보기에서 ⭐로 추가하세요"))
             } else {
+                // ignoresSafeArea(.bottom) 를 빼야 List 가 탭바(+필터바)만큼
+                // 하단 인셋을 잡아 마지막 글이 떠 있는 유리 탭바에 안 가려진다.
                 BoardPager(
                     boards: boards,
                     currentBoardID: $currentBoardID,
@@ -317,7 +319,6 @@ private struct ArchiveHome: View {
                     readStore: readStore,
                     onSelectPost: onSelectPost
                 )
-                .ignoresSafeArea(edges: .bottom)
             }
         }
         // 보드 내 필터 탭은 인벤·애객처럼 *필터가 실제로 있는* 보드에서만,
