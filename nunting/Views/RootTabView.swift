@@ -129,7 +129,10 @@ struct RootTabView: View {
                     }
                 }
                 .badge(alertBadge.unread)
-                Tab("검색", systemImage: "magnifyingglass", value: 3, role: .search) {
+                // role:.search 는 검색 필드를 탭바에 통합해 X 후에도 탭바가
+                // 접힌 채 남는다. 일반 탭 + 상단 .searchable 로 두면 하단 탭바는
+                // 항상 펼쳐져 있고 검색 필드만 위에서 접혔다 펴진다.
+                Tab("검색", systemImage: "magnifyingglass", value: 3) {
                     SearchTab(board: currentBoard, isActive: selectedTab == 3,
                               readStore: readStore,
                               onSelectPost: { detail.show($0) })
