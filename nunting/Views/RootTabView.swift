@@ -98,20 +98,42 @@ struct RootTabView: View {
     @State private var selectedTab = 0
     // 모음의 현재 보드 — 페이저/헤더/검색이 공유한다.
     @State private var currentBoardID: String?
+    // 보드별 활성 검색어(옛 앱처럼 검색은 보드에 묶임). 하단 검색 버튼과
+    // 모음 목록/배너가 공유하므로 셸 레벨에 둔다.
+    @State private var searchByBoard: [String: String] = [:]
+    @State private var showingSearch = false
     // 상세 오버레이 백드래그(우→ 스와이프 닫기) 상태기계.
     @State private var backDrag = DetailBackDrag()
 
     @Environment(\.scenePhase) private var scenePhase
 
+    private var currentBoard: Board? {
+        let boards = favorites.favoriteBoards()
+        return boards.first { $0.id == currentBoardID } ?? boards.first
+    }
+
     var body: some View {
         ZStack {
-            // 검색은 별도 탭이 아니라 모음 헤더의 돋보기 → 시트(SearchSheet).
-            TabView(selection: $selectedTab) {
+            // 검색은 별도 목적지가 아니라, 하단 탭바 오른쪽에 분리된 돋보기
+            // 버튼(role:.search). 탭하면 모음 컨텍스트로 이동해 SearchSheet 를
+            // 띄운다 — 검색 탭 자체는 선택되지 않으므로 통합검색이 활성화되지 않음.
+            TabView(selection: Binding(
+                get: { selectedTab },
+                set: { newValue in
+                    if newValue == 3 {
+                        selectedTab = 0
+                        if currentBoard != nil { showingSearch = true }
+                    } else {
+                        selectedTab = newValue
+                    }
+                }
+            )) {
                 Tab("모음", systemImage: "tray.full.fill", value: 0) {
                     ArchiveHome(
                         favorites: favorites,
                         readStore: readStore,
                         onSelectPost: { detail.show($0) },
+                        searchByBoard: $searchByBoard,
                         currentBoardID: $currentBoardID
                     )
                 }
@@ -125,6 +147,19 @@ struct RootTabView: View {
                     }
                 }
                 .badge(alertBadge.unread)
+                Tab("검색", systemImage: "magnifyingglass", value: 3, role: .search) {
+                    Color.clear
+                }
+            }
+            .sheet(isPresented: $showingSearch) {
+                if let board = currentBoard {
+                    SearchSheet(
+                        board: board,
+                        initialQuery: searchByBoard[board.id] ?? "",
+                        onSubmit: { searchByBoard[board.id] = $0 },
+                        onClear: { searchByBoard[board.id] = nil }
+                    )
+                }
             }
 
             // 상세 오버레이 — TabView 위 ZStack 최상단 레이어로 화면 전체(탭바
@@ -237,17 +272,14 @@ private struct ArchiveHome: View {
     /// 글 탭 → 상세 열기(detail.show). 상세는 RootTabView 의 ZStack 오버레이로
     /// 우측에서 슬라이드 인하며 화면 전체(탭바 포함)를 덮는다.
     let onSelectPost: (Post) -> Void
+    // 보드별 활성 검색어 — 하단 검색 버튼이 띄우는 SearchSheet 와 공유(셸 소유).
+    @Binding var searchByBoard: [String: String]
     @Binding var currentBoardID: String?
 
     @State private var filterByBoard: [String: BoardFilter] = [:]
-    // 보드별 활성 검색어. 옛 앱처럼 검색은 보드에 묶인다 — 다른 보드로
-    // 스와이프해도 각 보드의 검색 상태가 유지된다.
-    @State private var searchByBoard: [String: String] = [:]
     // 기본 필터를 이미 심은 보드(중복 시드 방지). 이후 사용자가 전체를
     // 골라도 재시드하지 않는다.
     @State private var seededFilterIDs: Set<String> = []
-    // 돋보기 → SearchSheet(시트) 표시.
-    @State private var showingSearch = false
 
     private var boards: [Board] { favorites.favoriteBoards() }
     private var currentBoard: Board? {
@@ -281,16 +313,6 @@ private struct ArchiveHome: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if let board = currentBoard, currentQuery == nil, showsFilterBar(board) {
                 GlassFilterBar(board: board, selection: filterBinding(board.id))
-            }
-        }
-        .sheet(isPresented: $showingSearch) {
-            if let board = currentBoard {
-                SearchSheet(
-                    board: board,
-                    initialQuery: searchByBoard[board.id] ?? "",
-                    onSubmit: { searchByBoard[board.id] = $0 },
-                    onClear: { searchByBoard[board.id] = nil }
-                )
             }
         }
         .onAppear {
@@ -341,22 +363,11 @@ private struct ArchiveHome: View {
         )
     }
 
-    // 슬림 헤더 — 가운데 보드명 메뉴 + 사이트색 페이지 인디케이터, 우측 돋보기.
+    // 슬림 헤더 — 가운데 보드명 메뉴 + 사이트색 페이지 인디케이터.
+    // (검색은 하단 탭바 오른쪽 돋보기 버튼으로 분리됨.)
     private var header: some View {
         VStack(spacing: 6) {
-            ZStack {
-                boardMenu
-                HStack {
-                    Spacer()
-                    Button { showingSearch = true } label: {
-                        Image(systemName: "magnifyingglass")
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                    .disabled(currentBoard == nil)
-                    .padding(.trailing, 16)
-                }
-            }
+            boardMenu
             if boards.count > 1 { pageIndicator }
         }
         .frame(maxWidth: .infinity)
