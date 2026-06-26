@@ -602,6 +602,9 @@ private struct GlassFilterBar: View {
             .padding(5)
         }
         .glassEffect(.regular, in: .capsule)
+        // 스크롤 시 선택 칩(파란 배경)이 캡슐의 둥근 양끝 밖으로 새지 않게
+        // 콘텐츠를 캡슐 모양으로 클리핑.
+        .clipShape(.capsule)
         // 떠 있는 유리 탭바와 한 덩어리로 붙어 보이지 않게 충분한 간격을 둬
         // 별개의 플로팅 알약으로 읽히게 한다. 좌우도 더 좁혀 탭바와 폭을 구분.
         .padding(.horizontal, 28)
