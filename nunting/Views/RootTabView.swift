@@ -301,6 +301,12 @@ private struct ArchiveHome: View {
     private var currentQuery: String? {
         currentBoard.flatMap { searchByBoard[$0.id] }
     }
+    // 떠 있는 필터 바가 가리는 높이만큼 목록 하단에 줄 여백.
+    static let filterBarInset: CGFloat = 60
+    // 지금 필터 바가 떠 있는(= 필터 보유 + 검색 중 아님) 보드 id 집합.
+    private var filterBarBoardIDs: Set<String> {
+        Set(boards.filter { showsFilterBar($0) && searchByBoard[$0.id] == nil }.map(\.id))
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -309,21 +315,23 @@ private struct ArchiveHome: View {
                 ContentUnavailableView("즐겨찾기한 보드가 없어요", systemImage: "star",
                                        description: Text("둘러보기에서 ⭐로 추가하세요"))
             } else {
-                // ignoresSafeArea(.bottom) 를 빼야 List 가 탭바(+필터바)만큼
-                // 하단 인셋을 잡아 마지막 글이 떠 있는 유리 탭바에 안 가려진다.
                 BoardPager(
                     boards: boards,
                     currentBoardID: $currentBoardID,
                     filterByBoard: filterByBoard,
                     searchByBoard: searchByBoard,
+                    filterBarBoardIDs: filterBarBoardIDs,
+                    filterBarInset: Self.filterBarInset,
                     readStore: readStore,
                     onSelectPost: onSelectPost
                 )
             }
         }
-        // 보드 내 필터 탭은 인벤·애객처럼 *필터가 실제로 있는* 보드에서만,
-        // 탭바 바로 위(엄지 존)에. 검색 중이면 숨겨 혼동 방지.
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+        // 필터 바는 safeAreaInset 이 아니라 overlay 로 띄운다. safeAreaInset 은
+        // 떠 있는 탭바의 안전영역에 흡수돼 탭바 플랫폼이 위로 자라 보였다.
+        // overlay 는 레이아웃·탭바를 건드리지 않고 목록 위에 독립적으로 떠 있고,
+        // 가림 방지는 BoardListView 의 bottomContentInset 이 담당한다.
+        .overlay(alignment: .bottom) {
             if let board = currentBoard, currentQuery == nil, showsFilterBar(board) {
                 GlassFilterBar(board: board, selection: filterBinding(board.id))
             }
@@ -497,17 +505,25 @@ private struct BoardPager: View {
     @Binding var currentBoardID: String?
     let filterByBoard: [String: BoardFilter]
     let searchByBoard: [String: String]
+    // 떠 있는 필터 바를 가진 보드 id → 그만큼 목록 하단 인셋.
+    let filterBarBoardIDs: Set<String>
+    let filterBarInset: CGFloat
     let readStore: ReadStore
     let onSelectPost: (Post) -> Void
 
     // 가상 인덱스: 0=헤드 센티넬(boards.last) / 1…n=실제 / n+1=테일 센티넬(boards.first)
     @State private var index = 1
 
+    private func inset(_ board: Board) -> CGFloat {
+        filterBarBoardIDs.contains(board.id) ? filterBarInset : 0
+    }
+
     var body: some View {
         if boards.count <= 1 {
             if let board = boards.first {
                 BoardListView(board: board, filter: filterByBoard[board.id],
-                              searchQuery: searchByBoard[board.id], readStore: readStore,
+                              searchQuery: searchByBoard[board.id],
+                              bottomContentInset: inset(board), readStore: readStore,
                               onSelectPost: onSelectPost)
                     .equatable()
             }
@@ -529,7 +545,8 @@ private struct BoardPager: View {
 
     @ViewBuilder private func page(_ board: Board, tag: Int) -> some View {
         BoardListView(board: board, filter: filterByBoard[board.id],
-                      searchQuery: searchByBoard[board.id], readStore: readStore,
+                      searchQuery: searchByBoard[board.id],
+                      bottomContentInset: inset(board), readStore: readStore,
                       onSelectPost: onSelectPost)
             .equatable()
             .tag(tag)

@@ -4,6 +4,9 @@ struct BoardListView: View, Equatable {
     var filter: BoardFilter? = nil
     var searchQuery: String? = nil
     var scrollLocked: Bool = false
+    /// 떠 있는 하단 필터 바가 있을 때, 마지막 글이 그 밑으로 가려지지 않게
+    /// 스크롤 콘텐츠 하단에 주는 여백. 바가 없으면 0.
+    var bottomContentInset: CGFloat = 0
     /// Returns `true` when ContentView's panGesture has just observed any
     /// horizontal-dominant movement. Row taps consult this so a tiny `→`
     /// drag that doesn't reach the drawer commit threshold doesn't fall
@@ -29,6 +32,7 @@ struct BoardListView: View, Equatable {
             && lhs.filter == rhs.filter
             && lhs.searchQuery == rhs.searchQuery
             && lhs.scrollLocked == rhs.scrollLocked
+            && lhs.bottomContentInset == rhs.bottomContentInset
     }
 
     @State private var loader = BoardListLoader()
@@ -130,6 +134,9 @@ struct BoardListView: View, Equatable {
             }
         }
         .listStyle(.plain)
+        // 떠 있는 필터 바만큼 스크롤 콘텐츠 하단에 여백 — 바는 레이아웃에
+        // 영향 주지 않는 overlay 라, 가림 방지는 이 인셋이 담당한다.
+        .contentMargins(.bottom, bottomContentInset, for: .scrollContent)
         .scrollContentBackground(.hidden)
         // List background no longer needs `.ignoresSafeArea()` — the
         // ZStack's bottom-most `Color("AppSurface").ignoresSafeArea()`
