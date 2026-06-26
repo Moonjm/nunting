@@ -66,7 +66,7 @@ final class ReadStore {
         persistRecent()
     }
 
-    /// 최대 10개라 인코딩이 가벼워 메인에서 바로 써도 무방.
+    /// 개수가 적어(최대 `recentCapacity`) 인코딩이 가벼워 메인에서 바로 써도 무방.
     private func persistRecent() {
         guard let data = try? JSONEncoder().encode(recentPosts) else { return }
         defaults.set(data, forKey: recentKey)
