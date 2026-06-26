@@ -36,10 +36,16 @@ final class DetailBackDrag {
         let w = abs(v.translation.width), h = abs(v.translation.height)
         if horizontalLock == nil {
             if w > 10 && w >= h {
-                horizontalLock = true
-                baseline = v.translation.width
-                scrollLocked = true
-                detail.offsetBase = detail.offset
+                if v.translation.width > 0 {
+                    // 우측(닫기) 가로 드래그만 백드래그로 잡는다.
+                    horizontalLock = true
+                    baseline = v.translation.width
+                    scrollLocked = true
+                    detail.offsetBase = detail.offset
+                } else {
+                    // 좌측 가로 드래그는 닫기와 무관 — 스크롤/탭을 막지 않게 양보.
+                    horizontalLock = false
+                }
             } else if h > 10 && h > w {
                 horizontalLock = false
             }

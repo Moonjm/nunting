@@ -255,6 +255,8 @@ struct KeywordListView: View {
         // 쪽이 onUnreadCountChange 로 badge 를 덮어써 일관성도 자연히 수렴.
         if let history = try? await AlertSubscriptionService.shared.fetchAlertHistory() {
             unreadCount = history.filter { !$0.read }.count
+            // 세그먼트 배지와 하단 종 탭 배지를 같은 fetch 로 일관되게 맞춘다.
+            AlertBadge.shared.unread = unreadCount
         }
     }
 

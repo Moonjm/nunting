@@ -61,6 +61,7 @@ struct PostDetailView: View, Equatable {
         lhs.post == rhs.post
             && lhs.isOverlayVisible == rhs.isOverlayVisible
             && lhs.isScrollingBlocked == rhs.isScrollingBlocked
+            && lhs.showsHeader == rhs.showsHeader
     }
 
     /// 프리페처 thumbnail 컨텍스트 구성용 — `NetworkImage` 가 내부에서 읽는
