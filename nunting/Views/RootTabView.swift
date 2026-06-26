@@ -327,6 +327,10 @@ private struct ArchiveHome: View {
                 )
             }
         }
+        // 모음 화면 배경을 탭바 밑까지 깔아, 떠 있는 유리 탭바가 이 AppSurface 를
+        // 블러하도록 한다 — 목록 배경과 톤이 같아져 탭바가 목록과 일체감 있게 보임.
+        // (안 깔면 탭바가 그 뒤 기본 윈도우 배경을 블러해 다른 톤이 된다.)
+        .background(Color("AppSurface").ignoresSafeArea())
         // 필터 바는 safeAreaInset 이 아니라 overlay 로 띄운다. safeAreaInset 은
         // 떠 있는 탭바의 안전영역에 흡수돼 탭바 플랫폼이 위로 자라 보였다.
         // overlay 는 레이아웃·탭바를 건드리지 않고 목록 위에 독립적으로 떠 있고,
