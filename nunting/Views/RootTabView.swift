@@ -96,6 +96,10 @@ struct RootTabView: View {
     @State private var detail = DetailOverlayController.shared
 
     @State private var selectedTab = 0
+    // 검색 탭이 "검색 중"인지 — true 일 때만 상단 검색 필드가 뜨고 키패드가
+    // 올라온다. X 로 false → 검색 필드 사라지고 목록만. 검색 탭을 (다시)
+    // 누르면 true 로 돌아와 재검색.
+    @State private var searchActive = false
     // 모음의 현재 보드 — 검색 탭이 "지금 보고 있는 보드"를 검색하도록 공유.
     @State private var currentBoardID: String?
     // 상세 오버레이 백드래그(우→ 스와이프 닫기) 상태기계.
@@ -110,7 +114,14 @@ struct RootTabView: View {
 
     var body: some View {
         ZStack {
-            TabView(selection: $selectedTab) {
+            // 검색 탭(3)을 누를 때마다(최초 진입·재탭 모두) 검색을 켠다.
+            TabView(selection: Binding(
+                get: { selectedTab },
+                set: { newValue in
+                    if newValue == 3 { searchActive = true }
+                    selectedTab = newValue
+                }
+            )) {
                 Tab("모음", systemImage: "tray.full.fill", value: 0) {
                     ArchiveHome(
                         favorites: favorites,
@@ -129,11 +140,11 @@ struct RootTabView: View {
                     }
                 }
                 .badge(alertBadge.unread)
-                // role:.search 는 검색 필드를 탭바에 통합해 X 후에도 탭바가
-                // 접힌 채 남는다. 일반 탭 + 상단 .searchable 로 두면 하단 탭바는
-                // 항상 펼쳐져 있고 검색 필드만 위에서 접혔다 펴진다.
+                // 검색 필드는 searchActive 일 때만 상단에 뜬다(.searchable 의
+                // resting bar 가 X 후에도 남는 문제를 피함). 하단 탭바는 일반
+                // 탭이라 항상 펼쳐져 있다.
                 Tab("검색", systemImage: "magnifyingglass", value: 3) {
-                    SearchTab(board: currentBoard, isActive: selectedTab == 3,
+                    SearchTab(board: currentBoard, searchActive: $searchActive,
                               readStore: readStore,
                               onSelectPost: { detail.show($0) })
                 }
@@ -355,60 +366,92 @@ private struct ArchiveHome: View {
 
 // MARK: - 검색 탭 (하단 검색 버튼 → 키패드+입력, 현재 보드 검색)
 
-/// 검색 탭. iOS 26 통합 검색(`role: .search` + `.searchable`)을 그대로
-/// 쓰되, 표시 상태를 `isPresented` 바인딩으로 직접 제어한다. 탭 진입 시
-/// 검색을 켜 키패드를 바로 올리고, 검색어가 비면(X) 검색을 꺼 탭바·목록을
-/// 통째로 원복. 수정은 검색 필드 재터치.
+/// 검색 탭. `.searchable` 은 검색 안 할 때도 resting 검색 바를 남겨서, X 후
+/// 입력창이 사라지지 않는다. 그래서 직접 만든 검색 필드를 `searchActive` 일
+/// 때만 상단에 띄운다. 탭 진입(재탭 포함) → 필드 + 키패드, X → 필드 제거 후
+/// 목록만. 수정은 필드 재터치(재포커스).
 private struct SearchTab: View {
     let board: Board?
-    let isActive: Bool
+    @Binding var searchActive: Bool
     let readStore: ReadStore
     let onSelectPost: (Post) -> Void
 
     @State private var draft = ""
     @State private var committed = ""
-    @State private var searchPresented = false
+    @FocusState private var focused: Bool
 
     var body: some View {
         NavigationStack {
-            Group {
-                if let board {
-                    // 검색어가 있으면 검색 결과, 비면 해당 보드의 일반 목록.
-                    let query = committed.isEmpty ? nil : committed
-                    BoardListView(
-                        board: board,
-                        filter: nil,
-                        searchQuery: query,
-                        readStore: readStore,
-                        onSelectPost: onSelectPost
-                    )
-                    .equatable()
-                } else {
-                    ContentUnavailableView {
-                        Label("검색", systemImage: "magnifyingglass")
-                    } description: {
-                        Text("보드를 먼저 선택하세요")
-                    }
+            VStack(spacing: 0) {
+                if searchActive {
+                    searchField
+                    Divider()
                 }
+                content
             }
             .navigationTitle("검색")
             .navigationBarTitleDisplayMode(.inline)
         }
-        .searchable(text: $draft, isPresented: $searchPresented,
-                    prompt: board.map { "'\($0.name)' 검색" } ?? "검색")
-        .onSubmit(of: .search) {
-            committed = draft.trimmingCharacters(in: .whitespaces)
+        .onChange(of: searchActive) { _, active in if active { raiseKeyboard() } }
+        .onAppear { if searchActive { raiseKeyboard() } }
+    }
+
+    // 필드가 막 렌더된 직후에 포커스해야 키패드가 안정적으로 올라온다.
+    private func raiseKeyboard() {
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(50))
+            focused = true
         }
-        .onChange(of: draft) { _, v in
-            // X(또는 전체 삭제)로 비면 검색 자체를 닫아 탭바·목록을 원복.
-            if v.isEmpty {
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField(board.map { "'\($0.name)' 검색" } ?? "검색", text: $draft)
+                .focused($focused)
+                .submitLabel(.search)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .onSubmit { committed = draft.trimmingCharacters(in: .whitespaces) }
+            Button {
+                // X: 검색 종료 → 필드 사라지고 목록만 남는다.
+                draft = ""
                 committed = ""
-                searchPresented = false
+                focused = false
+                searchActive = false
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .glassEffect(.regular, in: .capsule)
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+    }
+
+    @ViewBuilder private var content: some View {
+        if let board {
+            // 검색어가 있으면 검색 결과, 비면 해당 보드의 일반 목록.
+            let query = committed.isEmpty ? nil : committed
+            BoardListView(
+                board: board,
+                filter: nil,
+                searchQuery: query,
+                readStore: readStore,
+                onSelectPost: onSelectPost
+            )
+            .equatable()
+        } else {
+            ContentUnavailableView {
+                Label("검색", systemImage: "magnifyingglass")
+            } description: {
+                Text("보드를 먼저 선택하세요")
             }
         }
-        // 검색 탭에 들어오면 검색을 켜 키패드를 바로 올림.
-        .onChange(of: isActive) { _, active in if active { searchPresented = true } }
-        .onAppear { if isActive { searchPresented = true } }
     }
 }
 
