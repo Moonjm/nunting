@@ -312,8 +312,10 @@ private struct ArchiveHome: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
+        // 헤더를 VStack 으로 쌓지 않고 safeAreaInset(.top) 으로 올린다. 그래야
+        // 페이저(리스트)가 루트로서 화면 전체를 차지해 탭바 밑까지 스크롤되고,
+        // 유리 탭바가 그 밑을 지나가는 콘텐츠를 비춘다(알림 탭과 동일한 느낌).
+        Group {
             if boards.isEmpty {
                 ContentUnavailableView("즐겨찾기한 보드가 없어요", systemImage: "star",
                                        description: Text("둘러보기에서 ⭐로 추가하세요"))
@@ -330,6 +332,7 @@ private struct ArchiveHome: View {
                 )
             }
         }
+        .safeAreaInset(edge: .top, spacing: 0) { header }
         // 모음 화면 배경을 탭바 밑까지 깔아, 떠 있는 유리 탭바가 이 AppSurface 를
         // 블러하도록 한다 — 목록 배경과 톤이 같아져 탭바가 목록과 일체감 있게 보임.
         // (안 깔면 탭바가 그 뒤 기본 윈도우 배경을 블러해 다른 톤이 된다.)
@@ -382,6 +385,9 @@ private struct ArchiveHome: View {
         .frame(maxWidth: .infinity)
         .padding(.top, 4)
         .padding(.bottom, 7)
+        // 리스트가 헤더 밑으로 스크롤되므로 불투명 배경으로 가린다(상단은
+        // 비치지 않게 — 비치는 효과는 하단 탭바에서만).
+        .background(Color("AppSurface"))
     }
 
     private var boardMenu: some View {
