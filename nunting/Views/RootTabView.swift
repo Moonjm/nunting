@@ -10,6 +10,9 @@ struct RootTabView: View {
     @State private var readStore = ReadStore()
     @State private var detailCache = PostDetailCache()
     @State private var alertBadge = AlertBadge.shared
+    // 푸시 탭·받은알림 탭 모두 DetailOverlayController.present(url:title:) →
+    // activePost 로 funnel 된다. 새 셸은 그 activePost 를 관찰해 상세를 띄운다.
+    @State private var detail = DetailOverlayController.shared
 
     @State private var selectedTab = 0
 
@@ -59,6 +62,64 @@ struct RootTabView: View {
             Task { await catalog.revalidateLoadedCatalogs() }
             Task { await alertBadge.refresh() }
         }
+        // 푸시/받은알림 딥링크 → activePost 가 세팅되면 상세를 모달로 띄운다.
+        // 현재 탭과 무관하게 동작(크로스탭 네비게이션 불필요). 읽음 처리는
+        // PostDetailView.task 가 담당.
+        .fullScreenCover(item: Binding(
+            get: { detail.activePost },
+            set: { if $0 == nil { detail.hide() } }
+        )) { post in
+            NavigationStack {
+                PostDetailScreen(post: post, readStore: readStore, cache: detailCache,
+                                 onBack: { detail.hide() })
+            }
+        }
+    }
+}
+
+// MARK: - 상세 화면 (유리 내비바 + 원문) — 인앱 push 와 딥링크 모달이 공유
+
+private struct PostDetailScreen: View {
+    let post: Post
+    let readStore: ReadStore
+    let cache: PostDetailCache
+    /// nil = NavigationStack push(시스템 뒤로 버튼 사용). non-nil = 모달 루트라
+    /// 명시적 뒤로(닫기) 버튼을 좌상단에 단다.
+    var onBack: (() -> Void)? = nil
+
+    @State private var browserItem: WebBrowserItem?
+
+    var body: some View {
+        PostDetailView(
+            post: post,
+            readStore: readStore,
+            cache: cache,
+            onDismiss: {},
+            showsHeader: false
+        )
+        .equatable()
+        .navigationTitle(post.site.displayName)
+        .toolbarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
+        .toolbar {
+            if let onBack {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(action: onBack) { Image(systemName: "chevron.left") }
+                        .accessibilityLabel("뒤로")
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    browserItem = WebBrowserItem(url: post.url)
+                } label: {
+                    Image(systemName: "safari")
+                }
+                .accessibilityLabel("원문 보기")
+            }
+        }
+        .sheet(item: $browserItem) { item in
+            SafariView(url: item.url).ignoresSafeArea()
+        }
     }
 }
 
@@ -78,8 +139,6 @@ private struct ArchiveHome: View {
     @State private var searchActive = false
     @State private var queryText = ""
     @FocusState private var searchFocused: Bool
-    // 상세 우상단 "원문" → SafariView 시트.
-    @State private var browserItem: WebBrowserItem?
 
     private var boards: [Board] { favorites.favoriteBoards() }
     private var currentBoard: Board? {
@@ -125,32 +184,9 @@ private struct ArchiveHome: View {
             }
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: Post.self) { post in
-                // 시스템 유리 내비바 아래로 본문이 흐른다(헤더는 셸 toolbar 제공).
-                PostDetailView(
-                    post: post,
-                    readStore: readStore,
-                    cache: cache,
-                    onDismiss: {},
-                    showsHeader: false
-                )
-                .equatable()
-                .navigationTitle(post.site.displayName)
-                .toolbarTitleDisplayMode(.inline)
-                .toolbar(.hidden, for: .tabBar)
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            browserItem = WebBrowserItem(url: post.url)
-                        } label: {
-                            Image(systemName: "safari")
-                        }
-                        .accessibilityLabel("원문 보기")
-                    }
-                }
+                // 시스템 유리 내비바 아래로 본문이 흐른다. push 라 뒤로는 시스템 제공.
+                PostDetailScreen(post: post, readStore: readStore, cache: cache)
             }
-        }
-        .sheet(item: $browserItem) { item in
-            SafariView(url: item.url).ignoresSafeArea()
         }
         .onAppear {
             if currentBoardID == nil { currentBoardID = boards.first?.id }
