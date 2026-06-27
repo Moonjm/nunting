@@ -302,25 +302,12 @@ public struct PpomppuParser: BoardParser {
     }
 
     nonisolated private func imageURL(from element: Element) throws -> URL? {
-        // Match the comment-image attribute priority so body GIFs that use
-        // the same lazy-loading pattern as comments (src = placeholder like
-        // `/images/gif_load.gif`, `data-original` = real CDN URL) aren't
-        // silently rendered as the placeholder or dropped.
-        let candidates = [
-            try element.attr("data-original"),
-            try element.attr("data-src"),
-            try element.attr("src"),
-        ]
-        for raw in candidates {
-            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty,
-                  !trimmed.contains("lazyloading"),
-                  !trimmed.contains("/images/gif_load"),
-                  let url = resolveHTTPURL(trimmed)
-            else { continue }
-            return url
-        }
-        return nil
+        // 본문 GIF 도 댓글과 같은 lazy-load 패턴(src=placeholder 예 `/images/
+        // gif_load.gif`, data-original=실제 CDN URL)을 써서 속성 우선순위·skip
+        // 마커를 댓글과 동일하게 맞춘다. 공용 BoardParser.imageURL 로 위임.
+        imageURL(from: element,
+                 attributes: ["data-original", "data-src", "src"],
+                 skipMarkers: ["lazyloading", "/images/gif_load"])
     }
 
     nonisolated private func dealAnchor(from view: Element) throws -> (url: URL, label: String)? {
@@ -384,24 +371,9 @@ public struct PpomppuParser: BoardParser {
     }
 
     nonisolated private func commentImageURL(from el: Element) throws -> URL? {
-        let candidates = [
-            try el.attr("data-original"),
-            try el.attr("data-src"),
-            try el.attr("src"),
-        ]
-        for raw in candidates {
-            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty,
-                  !trimmed.contains("lazyloading"),
-                  !trimmed.contains("/images/gif_load")
-            else { continue }
-            guard let url = URL(string: trimmed, relativeTo: site.baseURL)?.absoluteURL,
-                  let scheme = url.scheme?.lowercased(),
-                  scheme == "http" || scheme == "https"
-            else { continue }
-            return url
-        }
-        return nil
+        imageURL(from: el,
+                 attributes: ["data-original", "data-src", "src"],
+                 skipMarkers: ["lazyloading", "/images/gif_load"])
     }
 
     nonisolated private func cleanCommentText(from element: Element) throws -> String {
