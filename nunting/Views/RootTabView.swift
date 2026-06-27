@@ -89,8 +89,8 @@ final class DetailBackDrag {
 
 // 2026/27 재디자인 셸 — Liquid Glass 탭바(모음/둘러보기/알림).
 // ContentView(드로어+오버레이+제스처)를 대체한다. 데이터/로더/상세 렌더는
-// 기존 서비스·뷰(BoardListView/PostDetailView/BoardFilterBar/KeywordListView)를
-// 그대로 재사용하고, 여기선 네비게이션 골격과 보드 전환/필터/검색만 조립한다.
+// 기존 서비스·뷰(BoardListView/PostDetailView/KeywordListView)를 그대로
+// 재사용하고, 여기선 네비게이션 골격과 보드 전환/필터/검색만 조립한다.
 struct RootTabView: View {
     @State private var favorites = FavoritesStore()
     @State private var catalog = BoardCatalogStore()
@@ -720,8 +720,8 @@ private struct GlassFilterBar: View {
         let filter: BoardFilter?
     }
 
-    /// 칩 순서 — 기존 BoardFilterBar 와 동일. 인벤 메이플만 커스텀 순서
-    /// (10추 · 인방 · 전체 · 30추), 그 외는 전체 + 보드 필터 순.
+    /// 칩 순서 — 인벤 메이플만 커스텀 순서(10추 · 인방 · 전체 · 30추),
+    /// 그 외는 전체 + 보드 필터 순.
     private var items: [Item] {
         let all = Item(id: "_all", label: "전체", filter: nil)
         if board.id == Board.invenMaple.id {

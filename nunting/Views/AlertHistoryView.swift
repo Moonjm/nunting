@@ -121,7 +121,19 @@ struct AlertHistoryView: View {
             items[idx].read = true
         }
         onUnreadCountChange(items.filter { !$0.read }.count)
-        Task { try? await AlertSubscriptionService.shared.markAlertRead(id: item.id) }
+        // 서버 write 실패 시 optimistic 갱신을 되돌린다 — 안 그러면 로컬만
+        // 읽음으로 갈라져, 다음 load() 가 다시 unread 로 끌어와 배지가 깜빡인다.
+        // (KeywordListView 토글의 optimistic-revert 규율과 동일.)
+        Task {
+            do {
+                try await AlertSubscriptionService.shared.markAlertRead(id: item.id)
+            } catch {
+                if let idx = items.firstIndex(where: { $0.id == item.id }) {
+                    items[idx].read = false
+                }
+                onUnreadCountChange(items.filter { !$0.read }.count)
+            }
+        }
     }
 
     private func load() async {
