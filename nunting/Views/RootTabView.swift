@@ -101,17 +101,13 @@ struct RootTabView: View {
     // activePost 로 funnel 된다. 새 셸은 그 activePost 를 관찰해 상세를 띄운다.
     @State private var detail = DetailOverlayController.shared
 
-    @State private var selectedTab = 0
-    // 히스토리(role:.search, value 4) 탭 직전의 실제 탭 — 커버 닫을 때 복귀용.
-    @State private var tabBeforeHistory = 0
+    @State private var historyTabState = HistoryTabSelectionState()
     // 모음의 현재 보드 — 페이저/헤더/검색이 공유한다.
     @State private var currentBoardID: String?
     // 보드별 활성 검색어(옛 앱처럼 검색은 보드에 묶임). 하단 검색 버튼과
     // 모음 목록/배너가 공유하므로 셸 레벨에 둔다.
     @State private var searchByBoard: [String: String] = [:]
     @State private var showingSearch = false
-    // 히스토리(role:.search 탭) 탭 시 최근 읽은 글 fullScreenCover 표시 플래그.
-    @State private var showingHistory = false
     // 둘러보기에서 현재 열어둔 보드(글 목록). nil = 사이트 목록/미진입.
     @State private var browsingBoard: Board?
     // 상세 오버레이 백드래그(우→ 스와이프 닫기) 상태기계.
@@ -126,7 +122,7 @@ struct RootTabView: View {
     // 하단 검색 버튼이 검색할 대상 — 모음에선 현재 보드, 둘러보기에선 열어둔
     // 보드. 그 외 탭에선 없음(버튼도 숨김).
     private var searchContextBoard: Board? {
-        switch selectedTab {
+        switch historyTabState.selectedTab {
         case 0: return currentBoard
         case 1: return browsingBoard
         default: return nil
@@ -142,7 +138,10 @@ struct RootTabView: View {
             // 바인딩 + 명시적 복원으로 처리한다. 선택이 4 로 가는 순간은 전체 화면
             // 커버가 가리므로 안 보이고, isActive 는 실제 탭 기준으로 마스킹해
             // 필터 리셋도 막는다.
-            TabView(selection: $selectedTab) {
+            TabView(selection: Binding(
+                get: { historyTabState.selectedTab },
+                set: { historyTabState.selectTab($0) }
+            )) {
                 Tab("모음", systemImage: "tray.full.fill", value: 0) {
                     ArchiveHome(
                         favorites: favorites,
@@ -150,7 +149,7 @@ struct RootTabView: View {
                         onSelectPost: { FootprintLogger.shared.record("post-open"); detail.show($0) },
                         // 히스토리(4)로 잠깐 가도 실제 탭 기준으로 — isActive 가 튀어
                         // resetFilterToDefault 가 도는 걸 막는다.
-                        isActive: (selectedTab == 4 ? tabBeforeHistory : selectedTab) == 0,
+                        isActive: historyTabState.effectiveSelectedTab == 0,
                         searchByBoard: $searchByBoard,
                         currentBoardID: $currentBoardID,
                         onPresentSearch: { showingSearch = true }
@@ -187,29 +186,20 @@ struct RootTabView: View {
                     )
                 }
             }
-            .fullScreenCover(isPresented: $showingHistory) {
+            .fullScreenCover(isPresented: Binding(
+                get: { historyTabState.showingHistory },
+                set: { historyTabState.setHistoryShowing($0) }
+            )) {
                 HistorySheet(
                     posts: readStore.recentPosts,
                     onOpen: { post in
                         // 시트 닫기 + 상세 열기를 같은 틱에. 상세는 시트가 아니라
                         // 항상 떠 있는 ZStack 오버레이(activePost 갱신)라 시트
                         // dismiss 트랜잭션과 독립적 → 드롭/이중표시 없이 안전.
-                        showingHistory = false
+                        historyTabState.setHistoryShowing(false)
                         detail.show(post)
                     }
                 )
-            }
-            // 히스토리(4) 선택 → 직전 탭 기억 후 커버 띄움. (커버가 전체 화면이라
-            // 4 로 잠깐 가는 건 안 보인다.)
-            .onChange(of: selectedTab) { old, new in
-                if new == 4 {
-                    tabBeforeHistory = (old == 4 ? tabBeforeHistory : old)
-                    showingHistory = true
-                }
-            }
-            // 커버 닫으면 직전 탭으로 복귀 — 히스토리 탭이 선택된 채 남지 않게.
-            .onChange(of: showingHistory) { _, showing in
-                if !showing, selectedTab == 4 { selectedTab = tabBeforeHistory }
             }
 
             // 상세 오버레이 — TabView 위 ZStack 최상단 레이어로 화면 전체(탭바

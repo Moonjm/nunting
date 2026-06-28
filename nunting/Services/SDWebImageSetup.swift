@@ -24,7 +24,9 @@ enum SDWebImageSetup {
         // SDWebImage docs recommend.
         // 시그포스트 래퍼를 등록 — 디코드 로직은 super 그대로, 앞뒤로 mxSignpost
         // 만 끼워 WebP 디코드 CPU 를 이름으로 측정한다(SignpostWebPCoder 참조).
-        SDImageCodersManager.shared.addCoder(SignpostWebPCoder())
+        let coderManager = SDImageCodersManager.shared
+        coderManager.coders = (coderManager.coders ?? []).filter { !($0 is SignpostWebPCoder) }
+        coderManager.addCoder(SignpostWebPCoder())
 
         // Redirect http→https on the URLSession redirect callback. ATS
         // blocks `https → 302 → http` chains and Korean board image
