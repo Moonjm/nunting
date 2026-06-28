@@ -377,16 +377,20 @@ private struct ArchiveHome: View {
         // 떠 있는 탭바의 안전영역에 흡수돼 탭바 플랫폼이 위로 자라 보였다.
         // overlay 는 레이아웃·탭바를 건드리지 않고 목록 위에 독립적으로 떠 있고,
         // 가림 방지는 BoardListView 의 bottomContentInset 이 담당한다.
+        // 필터 바(좌, 내용에 맞게 hug) + 검색 버튼(우)을 한 행에 세로 중앙
+        // 정렬로 띄운다. 둘이 같은 HStack 이라 겹치지 않고 센터가 맞는다.
         .overlay(alignment: .bottom) {
-            if let board = currentBoard, currentQuery == nil, showsFilterBar(board) {
-                GlassFilterBar(board: board, selection: filterBinding(board.id))
-            }
-        }
-        // 검색 버튼 — 필터 바와 같은 하단 행 우측 끝. 검색 지원 보드일 때만.
-        .overlay(alignment: .bottomTrailing) {
             if let board = currentBoard {
-                BoardSearchButton(board: board, searchByBoard: $searchByBoard,
-                                  onPresentSearch: onPresentSearch)
+                HStack(alignment: .center, spacing: 8) {
+                    if currentQuery == nil, showsFilterBar(board) {
+                        GlassFilterBar(board: board, selection: filterBinding(board.id))
+                    }
+                    Spacer(minLength: 0)
+                    BoardSearchButton(board: board, searchByBoard: $searchByBoard,
+                                      onPresentSearch: onPresentSearch)
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 16)
             }
         }
         .onAppear {
@@ -522,6 +526,8 @@ private struct BoardPostsView: View {
         .overlay(alignment: .bottomTrailing) {
             BoardSearchButton(board: board, searchByBoard: $searchByBoard,
                               onPresentSearch: onPresentSearch)
+                .padding(.trailing, 16)
+                .padding(.bottom, 16)
         }
         .navigationTitle(board.name)
         .toolbarTitleDisplayMode(.inline)
@@ -715,8 +721,6 @@ private struct BoardSearchButton: View {
             }
             .tint(.black)
             .accessibilityLabel(active ? "검색 해제" : "검색")
-            .padding(.trailing, 16)
-            .padding(.bottom, 16)
         }
     }
 }
@@ -724,6 +728,7 @@ private struct BoardSearchButton: View {
 private struct GlassFilterBar: View {
     let board: Board
     @Binding var selection: BoardFilter?
+    @State private var contentWidth: CGFloat = 0
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -733,15 +738,15 @@ private struct GlassFilterBar: View {
                 }
             }
             .padding(4)
+            // 칩 내용 폭을 측정해 캡슐을 내용에 맞게 줄인다(인벤 4칩=hug). 가용
+            // 폭은 부모 HStack 이 캡하므로 애객 11칩은 그 안에서 스크롤된다.
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
         }
+        .frame(maxWidth: contentWidth == 0 ? nil : contentWidth)
         .glassEffect(.regular, in: .capsule)
         // 스크롤 시 선택 칩(파란 배경)이 캡슐의 둥근 양끝 밖으로 새지 않게
         // 콘텐츠를 캡슐 모양으로 클리핑.
         .clipShape(.capsule)
-        // 떠 있는 유리 탭바와 한 덩어리로 붙어 보이지 않게 충분한 간격을 둬
-        // 별개의 플로팅 알약으로 읽히게 한다. 좌우도 더 좁혀 탭바와 폭을 구분.
-        .padding(.horizontal, 28)
-        .padding(.bottom, 16)
     }
 
     private struct Item: Identifiable {
