@@ -110,8 +110,7 @@ struct RootTabView: View {
     // 모음 목록/배너가 공유하므로 셸 레벨에 둔다.
     @State private var searchByBoard: [String: String] = [:]
     @State private var showingSearch = false
-    // 우상단 히스토리 버튼 → 최근 읽은 글 시트(검색과 같은 버튼+시트 패턴이라
-    // 탭 전환 바운스/깜빡임이 없다).
+    // 히스토리(role:.search 탭) 탭 시 최근 읽은 글 fullScreenCover 표시 플래그.
     @State private var showingHistory = false
     // 둘러보기에서 현재 열어둔 보드(글 목록). nil = 사이트 목록/미진입.
     @State private var browsingBoard: Board?
@@ -386,7 +385,7 @@ private struct ArchiveHome: View {
             }
         }
         // 헤더 밴드 없이 목록이 상단까지 꽉 차고, 보드 메뉴 버튼만 우상단에 떠
-        // 있는 유리 동그라미로 겹쳐 띄운다. (검색·히스토리는 하단 탭바로 이동.)
+        // 있는 유리 동그라미로 겹쳐 띄운다. (검색=필터행 버튼, 히스토리=하단 탭.)
         .overlay(alignment: .topTrailing) { boardMenu }
         // 탭바가 가리는 하단 안전영역 높이를 측정해 인셋으로 환원.
         .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.bottom } action: { bottomSafeInset = $0 }
@@ -422,11 +421,11 @@ private struct ArchiveHome: View {
                 .padding(.bottom, 8)
             }
         }
-        // onAppear 에선 필터를 리셋하지 않는다 — 히스토리 탭(거부 바인딩)이 탭
-        // 선택을 0→4→0 으로 튕기며 .onAppear 를 재발화시키는데, 거기서 리셋하면
-        // 바꿔둔 필터가 첫 탭으로 돌아가고 목록이 재로드(깜빡)된다. 첫 진입 리셋은
-        // 아래 currentBoardID(nil→첫 보드) onChange 가, 탭 재진입 리셋은 isActive
-        // onChange 가 담당하므로 onAppear 리셋은 불필요하다.
+        // onAppear 에선 필터를 리셋하지 않는다 — 히스토리(role:.search) 탭 시 탭
+        // 선택이 0→4→0 으로 튕기며(커버 닫을 때 복원) .onAppear 가 재발화되는데,
+        // 거기서 리셋하면 바꿔둔 필터가 첫 탭으로 돌아가고 목록이 재로드된다. 첫
+        // 진입 리셋은 currentBoardID(nil→첫 보드) onChange 가, 탭 재진입 리셋은
+        // isActive onChange 가 담당하므로 onAppear 리셋은 불필요하다.
         .onAppear {
             if currentBoardID == nil { currentBoardID = boards.first?.id }
         }
