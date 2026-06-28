@@ -403,9 +403,13 @@ private struct ArchiveHome: View {
                 .padding(.bottom, 8)
             }
         }
+        // onAppear 에선 필터를 리셋하지 않는다 — 히스토리 탭(거부 바인딩)이 탭
+        // 선택을 0→4→0 으로 튕기며 .onAppear 를 재발화시키는데, 거기서 리셋하면
+        // 바꿔둔 필터가 첫 탭으로 돌아가고 목록이 재로드(깜빡)된다. 첫 진입 리셋은
+        // 아래 currentBoardID(nil→첫 보드) onChange 가, 탭 재진입 리셋은 isActive
+        // onChange 가 담당하므로 onAppear 리셋은 불필요하다.
         .onAppear {
             if currentBoardID == nil { currentBoardID = boards.first?.id }
-            resetFilterToDefault(currentBoard)
         }
         // 보드를 바꾸거나(스와이프·메뉴) 모음 탭에 (다시) 들어올 때마다 무조건
         // 첫 필터 탭으로 리셋한다. 인벤 → 10추, 전체 피드가 첫 탭인 보드 → 전체.
