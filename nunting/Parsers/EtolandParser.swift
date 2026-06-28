@@ -113,13 +113,25 @@ public struct EtolandParser: BoardParser {
         }
         guard let url = Self.commentsAPIURL(for: post.url) else { return [] }
         let body = try await fetcher(url)
-        guard let data = body.data(using: .utf8),
-              let response = try? JSONDecoder().decode(APIResponse.self, from: data),
-              response.status == "ETOCD200000",
-              let comments = response.data?.comments
-        else { return [] }
+        // 디코드/상태 실패는 throw 한다 — `try?` + `return []` 로 뭉개면 "댓글
+        // 없는 글"과 구분 불가해, 호출부(PostDetailLoader)의 Result 분류가
+        // 실패를 못 잡고 재시도 배너(`commentsFailed`)가 영영 안 뜬다.
+        // 단, status 성공인데 comments 가 nil/빈 건 "진짜 댓글 없는 글"이라
+        // throw 가 아니라 `[]`. (인라인 우선 경로는 위에서 이미 return.)
+        guard let data = body.data(using: .utf8) else {
+            throw ParserError.invalidHTML
+        }
+        let response: APIResponse
+        do {
+            response = try JSONDecoder().decode(APIResponse.self, from: data)
+        } catch {
+            throw ParserError.structureChanged("etoland 댓글 응답 디코드 실패")
+        }
+        guard response.status == "ETOCD200000" else {
+            throw ParserError.structureChanged("etoland 댓글 status \(response.status)")
+        }
         var out: [PostComment] = []
-        for r in comments { Self.flatten(r, into: &out, isReply: false) }
+        for r in response.data?.comments ?? [] { Self.flatten(r, into: &out, isReply: false) }
         return out
     }
 

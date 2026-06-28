@@ -59,7 +59,7 @@ struct SearchSheet: View {
                 if board.supportsSearch {
                     ToolbarItem(placement: .confirmationAction) {
                         Button("검색", action: submit)
-                            .disabled(query.trimmingCharacters(in: .whitespaces).isEmpty)
+                            .disabled(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
             }

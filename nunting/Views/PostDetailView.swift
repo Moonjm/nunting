@@ -22,18 +22,9 @@ struct PostDetailView: View, Equatable {
     /// can drift `contentOffset` and the scroll position the user had
     /// on dismiss isn't preserved for re-entry.
     var isScrollingBlocked: Bool = false
-    /// Invoked from the custom back button in the header. The parent owns the
-    /// overlay offset animation; this view just asks to be dismissed.
-    let onDismiss: () -> Void
-    /// 커스텀 상단 헤더(뒤로/사이트명/사파리) 렌더 여부. `RootTabView` 가 마운트하는
-    /// 오버레이에선 true. 새 셸의 NavigationStack push 에선 false 로 두고 시스템 유리
-    /// 내비바를 쓴다(뒤로·제목·원문은 호출부 toolbar 가 제공). 호출부마다 상수지만
-    /// 방어적으로 `==` 에 포함한다.
-    var showsHeader: Bool = true
 
-    // Without this explicit Equatable, SwiftUI can't compare `onDismiss`
-    // (closures aren't Equatable) and treats PostDetailView as "possibly
-    // changed" on every parent re-eval. During a back-drag the parent
+    // Without this explicit Equatable, SwiftUI treats PostDetailView as
+    // "possibly changed" on every parent re-eval. During a back-drag the parent
     // re-evaluates every frame (detailOffset animates), so the inner
     // ScrollView + body VStack + comments LazyVStack of a long post gets
     // re-built on every frame too. Combined with heavy async image
@@ -48,11 +39,6 @@ struct PostDetailView: View, Equatable {
     //   `body`. Mutations don't need a body re-eval to propagate.
     // - `tapGate`: read synchronously from `.onTapGesture` closures at
     //   tap time, not from `body`. Same reasoning as readStore/cache.
-    // - `onDismiss`: deliberately ignored — the closure captures
-    //   `DetailBackDrag.dismiss()` (which calls `DetailOverlayController.hide()`
-    //   then clears `activePost`), mutating `@State` via
-    //   out-of-line storage, so calling the first-eval closure still
-    //   mutates the current state.
     // - `loader`: an `@Observable` reference type owned by `@State`.
     //   SwiftUI tracks `loader.detail` / `.isLoading` / `.errorMessage`
     //   reads from `body` directly through observation, so a property
@@ -63,7 +49,6 @@ struct PostDetailView: View, Equatable {
         lhs.post == rhs.post
             && lhs.isOverlayVisible == rhs.isOverlayVisible
             && lhs.isScrollingBlocked == rhs.isScrollingBlocked
-            && lhs.showsHeader == rhs.showsHeader
     }
 
     /// 프리페처 thumbnail 컨텍스트 구성용 — `NetworkImage` 가 내부에서 읽는
@@ -132,7 +117,6 @@ struct PostDetailView: View, Equatable {
 
     var body: some View {
         VStack(spacing: 0) {
-            if showsHeader { detailHeader }
             ScrollView {
                 // Claims UIKit's status-bar-tap scroll-to-top for this
                 // detail ScrollView. When the overlay is live, the list
@@ -340,40 +324,6 @@ struct PostDetailView: View, Equatable {
         )
     }
 
-    /// Custom top bar. We present this view as a ZStack overlay (not through
-    /// NavigationStack), so `.navigationTitle`/`.toolbar` have no effect and
-    /// we render chrome ourselves. Fixed-width side buttons keep the site
-    /// name visually centred.
-    private var detailHeader: some View {
-        HStack(spacing: 0) {
-            Button(action: onDismiss) {
-                Image(systemName: "chevron.left")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .frame(width: 44, height: 44, alignment: .leading)
-                    .contentShape(Rectangle())
-            }
-            Spacer(minLength: 0)
-            Text(post.site.displayName)
-                .font(.headline)
-                .lineLimit(1)
-            Spacer(minLength: 0)
-            Button {
-                if tapGate?.suppressed == true { return }
-                presentInBrowser(post.url)
-            } label: {
-                Image(systemName: "safari")
-                    .font(.body)
-                    .foregroundStyle(.primary)
-                    .frame(width: 44, height: 44, alignment: .trailing)
-                    .contentShape(Rectangle())
-            }
-        }
-        .padding(.horizontal, 12)
-        .frame(height: 44)
-        .background(Color("AppSurface"))
-        .overlay(Divider(), alignment: .bottom)
-    }
 
     /// Wraps the scheme gate + state assignment so the header button and
     /// the `openURL` environment override share one code path. Returns

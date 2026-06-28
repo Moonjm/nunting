@@ -89,8 +89,8 @@ final class DetailBackDrag {
 
 // 2026/27 재디자인 셸 — Liquid Glass 탭바(모음/둘러보기/알림).
 // ContentView(드로어+오버레이+제스처)를 대체한다. 데이터/로더/상세 렌더는
-// 기존 서비스·뷰(BoardListView/PostDetailView/BoardFilterBar/KeywordListView)를
-// 그대로 재사용하고, 여기선 네비게이션 골격과 보드 전환/필터/검색만 조립한다.
+// 기존 서비스·뷰(BoardListView/PostDetailView/KeywordListView)를 그대로
+// 재사용하고, 여기선 네비게이션 골격과 보드 전환/필터/검색만 조립한다.
 struct RootTabView: View {
     @State private var favorites = FavoritesStore()
     @State private var catalog = BoardCatalogStore()
@@ -130,27 +130,17 @@ struct RootTabView: View {
         default: return nil
         }
     }
-    // 대상 보드에 검색이 걸려 있으면 검색 버튼을 X(해제)로.
-    private var searchActive: Bool {
-        searchContextBoard.flatMap { searchByBoard[$0.id] } != nil
-    }
-
     var body: some View {
         ZStack {
-            // 검색은 별도 목적지가 아니라, 하단 탭바 오른쪽에 분리된 돋보기
-            // 버튼(role:.search). 탭하면 모음 컨텍스트로 이동해 SearchSheet 를
-            // 띄운다 — 검색 탭 자체는 선택되지 않으므로 통합검색이 활성화되지 않음.
+            // 검색은 하단 탭이 아니라, 필터 바와 같은 하단 행 우측 끝에 떠 있는
+            // 유리 동그라미 버튼(BoardSearchButton — 모음/둘러보기 보드 화면에 위치).
+            // 탭 구성은 4개(모음/둘러보기/알림/히스토리)로 고정 — 조건부 탭이 없어야
+            // 재평가 시 탭 콘텐츠 identity 가 안정돼 히스토리 탭에 목록이 재로딩되지
+            // 않는다.
             TabView(selection: Binding(
                 get: { selectedTab },
                 set: { newValue in
-                    if newValue == 3 {
-                        // 검색 버튼 — 탭 전환 없이 현재 컨텍스트 보드를 검색/해제.
-                        if searchActive {
-                            if let id = searchContextBoard?.id { searchByBoard[id] = nil }
-                        } else if searchContextBoard != nil {
-                            showingSearch = true
-                        }
-                    } else if newValue == 4 {
+                    if newValue == 4 {
                         // 히스토리 탭 — 탭 전환 없이 최근 읽은 글 시트를 띄운다.
                         showingHistory = true
                     } else {
@@ -165,13 +155,15 @@ struct RootTabView: View {
                         onSelectPost: { detail.show($0) },
                         isActive: selectedTab == 0,
                         searchByBoard: $searchByBoard,
-                        currentBoardID: $currentBoardID
+                        currentBoardID: $currentBoardID,
+                        onPresentSearch: { showingSearch = true }
                     )
                 }
                 Tab("둘러보기", systemImage: "square.grid.2x2", value: 1) {
                     BrowseTab(catalog: catalog, favorites: favorites,
                               readStore: readStore, onSelectPost: { detail.show($0) },
-                              searchByBoard: $searchByBoard, browsingBoard: $browsingBoard)
+                              searchByBoard: $searchByBoard, browsingBoard: $browsingBoard,
+                              onPresentSearch: { showingSearch = true })
                 }
                 Tab("알림", systemImage: "bell", value: 2) {
                     NavigationStack {
@@ -187,16 +179,6 @@ struct RootTabView: View {
                 // 같은 패턴). 묶음 탭 마지막 자리.
                 Tab("히스토리", systemImage: "clock.arrow.circlepath", value: 4) {
                     Color.clear
-                }
-                // 검색 버튼은 검색 대상 보드가 있을 때만 — 모음(현재 보드) /
-                // 둘러보기(열어둔 보드). 사이트 목록·알림에선 숨김.
-                if let b = searchContextBoard, b.supportsSearch {
-                    // 검색 중이면 X(해제) 버튼으로 바뀐다.
-                    Tab(searchActive ? "해제" : "검색",
-                        systemImage: searchActive ? "xmark" : "magnifyingglass",
-                        value: 3, role: .search) {
-                        Color.clear
-                    }
                 }
             }
             .sheet(isPresented: $showingSearch) {
@@ -293,12 +275,12 @@ private struct PostDetailScreen: View {
             cache: cache,
             tapGate: tapGate,
             isOverlayVisible: isOverlayVisible,
-            isScrollingBlocked: isScrollingBlocked,
-            onDismiss: {},
-            showsHeader: false
+            isScrollingBlocked: isScrollingBlocked
         )
         .equatable()
-        .navigationTitle(post.site.displayName)
+        // 게시판(사이트)명은 상세에서 표시하지 않는다 — 빈 타이틀로 두고
+        // 툴바 버튼(뒤로/원문)만 남긴다.
+        .navigationTitle("")
         .toolbarTitleDisplayMode(.inline)
         // 탭바는 상세에서도 고정(숨기면 push/pop 시 사라졌다 나타나며 깜빡임).
         .toolbar {
@@ -336,6 +318,8 @@ private struct ArchiveHome: View {
     // 보드별 활성 검색어 — 하단 검색 버튼이 띄우는 SearchSheet 와 공유(셸 소유).
     @Binding var searchByBoard: [String: String]
     @Binding var currentBoardID: String?
+    // 검색 버튼 탭 → 셸의 SearchSheet 띄우기.
+    let onPresentSearch: () -> Void
 
     @State private var filterByBoard: [String: BoardFilter] = [:]
     // 떠 있는 탭바가 가리는 하단 안전영역 높이(측정). 리스트를 탭바 밑까지
@@ -349,11 +333,13 @@ private struct ArchiveHome: View {
     private var currentQuery: String? {
         currentBoard.flatMap { searchByBoard[$0.id] }
     }
-    // 떠 있는 필터 바가 가리는 높이만큼 목록 하단에 줄 여백.
-    static let filterBarInset: CGFloat = 60
-    // 지금 필터 바가 떠 있는(= 필터 보유 + 검색 중 아님) 보드 id 집합.
-    private var filterBarBoardIDs: Set<String> {
-        Set(boards.filter { showsFilterBar($0) && searchByBoard[$0.id] == nil }.map(\.id))
+    // 떠 있는 하단 컨트롤(필터 바/검색 버튼)이 가리는 높이만큼 목록 하단에 줄 여백.
+    static let bottomControlsInset: CGFloat = 60
+    // 지금 하단 컨트롤이 떠 있는 보드 id 집합. 검색 버튼만 떠 있는 보드도 포함한다.
+    private var bottomControlsBoardIDs: Set<String> {
+        Set(boards.filter { board in
+            board.supportsSearch || (showsFilterBar(board) && searchByBoard[board.id] == nil)
+        }.map(\.id))
     }
 
     var body: some View {
@@ -370,8 +356,8 @@ private struct ArchiveHome: View {
                     currentBoardID: $currentBoardID,
                     filterByBoard: filterByBoard,
                     searchByBoard: searchByBoard,
-                    filterBarBoardIDs: filterBarBoardIDs,
-                    filterBarInset: Self.filterBarInset,
+                    bottomControlsBoardIDs: bottomControlsBoardIDs,
+                    bottomControlsInset: Self.bottomControlsInset,
                     baseBottomInset: bottomSafeInset,
                     readStore: readStore,
                     onSelectPost: onSelectPost
@@ -393,9 +379,28 @@ private struct ArchiveHome: View {
         // 떠 있는 탭바의 안전영역에 흡수돼 탭바 플랫폼이 위로 자라 보였다.
         // overlay 는 레이아웃·탭바를 건드리지 않고 목록 위에 독립적으로 떠 있고,
         // 가림 방지는 BoardListView 의 bottomContentInset 이 담당한다.
+        // 필터 바(좌, 내용에 맞게 hug) + 검색 버튼(우)을 한 행에 세로 중앙
+        // 정렬로 띄운다. 둘이 같은 HStack 이라 겹치지 않고 센터가 맞는다.
         .overlay(alignment: .bottom) {
-            if let board = currentBoard, currentQuery == nil, showsFilterBar(board) {
-                GlassFilterBar(board: board, selection: filterBinding(board.id))
+            if let board = currentBoard {
+                HStack(alignment: .center, spacing: 8) {
+                    if currentQuery == nil, showsFilterBar(board) {
+                        // layoutPriority: 캡슐과 Spacer 가 둘 다 flexible 이라
+                        // 우선순위 없으면 캡슐이 가용폭 절반만 받아 hug 가 깨진다.
+                        // 우선순위를 주면 전체 가용폭을 먼저 받아 min(가용,내용)으로
+                        // 줄어든다 — 인벤 4칩=hug, 애객 11칩=가용폭 캡 후 스크롤.
+                        GlassFilterBar(board: board, selection: filterBinding(board.id))
+                            .layoutPriority(1)
+                    }
+                    Spacer(minLength: 0)
+                    BoardSearchButton(board: board, searchByBoard: $searchByBoard,
+                                      onPresentSearch: onPresentSearch)
+                }
+                // 필터 바 시작 위치는 원래대로 좌측 28pt, 검색 버튼은 우측 16pt.
+                .padding(.leading, 28)
+                .padding(.trailing, 16)
+                // 하단 탭바와의 간격을 좁힌다.
+                .padding(.bottom, 8)
             }
         }
         .onAppear {
@@ -445,10 +450,10 @@ private struct ArchiveHome: View {
             }
         } label: {
             Image(systemName: "rectangle.stack")
-                .font(.title3.weight(.semibold))
+                .font(.body.weight(.semibold))
                 .foregroundStyle(.black)
-                // 하단 검색 버튼(약 60pt 유리 동그라미)과 크기 맞춤.
-                .frame(width: 58, height: 58)
+                // 하단 검색 버튼(44pt 유리 동그라미)과 크기 맞춤.
+                .frame(width: 44, height: 44)
                 .glassEffect(.regular, in: .circle)
         }
         .tint(.black)
@@ -471,6 +476,8 @@ private struct BrowseTab: View {
     // 보드를 셸에 알려 하단 버튼이 그 보드를 검색하게 한다.
     @Binding var searchByBoard: [String: String]
     @Binding var browsingBoard: Board?
+    // 검색 버튼 탭 → 셸의 SearchSheet 띄우기(모음과 공유).
+    let onPresentSearch: () -> Void
 
     private var sites: [Site] {
         DrawerSection.all.compactMap { if case .site(let s) = $0 { return s } else { return nil } }
@@ -495,7 +502,8 @@ private struct BrowseTab: View {
             // 보드 탭 → 그 보드 글 목록.
             .navigationDestination(for: Board.self) { board in
                 BoardPostsView(board: board, readStore: readStore, onSelectPost: onSelectPost,
-                               searchByBoard: $searchByBoard, browsingBoard: $browsingBoard)
+                               searchByBoard: $searchByBoard, browsingBoard: $browsingBoard,
+                               onPresentSearch: onPresentSearch)
             }
         }
     }
@@ -510,6 +518,7 @@ private struct BoardPostsView: View {
     let onSelectPost: (Post) -> Void
     @Binding var searchByBoard: [String: String]
     @Binding var browsingBoard: Board?
+    let onPresentSearch: () -> Void
 
     private var query: String? { searchByBoard[board.id] }
 
@@ -519,10 +528,18 @@ private struct BoardPostsView: View {
             // 검색 중엔 필터 해제(모음 검색과 동일).
             filter: query == nil ? board.defaultListFilter : nil,
             searchQuery: query,
+            bottomContentInset: board.supportsSearch ? ArchiveHome.bottomControlsInset : 0,
             readStore: readStore,
             onSelectPost: onSelectPost
         )
         .equatable()
+        // 검색 버튼 — 모음과 같은 하단 우측 떠있는 유리 동그라미.
+        .overlay(alignment: .bottomTrailing) {
+            BoardSearchButton(board: board, searchByBoard: $searchByBoard,
+                              onPresentSearch: onPresentSearch)
+                .padding(.trailing, 16)
+                .padding(.bottom, 8)
+        }
         .navigationTitle(board.name)
         .toolbarTitleDisplayMode(.inline)
         // 이 보드를 셸에 알려 하단 검색 버튼이 이 보드를 검색하게 한다.
@@ -595,9 +612,9 @@ private struct BoardPager: View {
     @Binding var currentBoardID: String?
     let filterByBoard: [String: BoardFilter]
     let searchByBoard: [String: String]
-    // 떠 있는 필터 바를 가진 보드 id → 그만큼 목록 하단 인셋.
-    let filterBarBoardIDs: Set<String>
-    let filterBarInset: CGFloat
+    // 떠 있는 하단 컨트롤을 가진 보드 id → 그만큼 목록 하단 인셋.
+    let bottomControlsBoardIDs: Set<String>
+    let bottomControlsInset: CGFloat
     // 탭바 밑까지 리스트가 깔리도록 ignoresSafeArea 하므로, 탭바가 가리는
     // 만큼(측정값)을 목록 하단 인셋으로 직접 돌려준다.
     let baseBottomInset: CGFloat
@@ -611,7 +628,7 @@ private struct BoardPager: View {
     @State private var reloadTokens: [String: Int] = [:]
 
     private func inset(_ board: Board) -> CGFloat {
-        baseBottomInset + (filterBarBoardIDs.contains(board.id) ? filterBarInset : 0)
+        baseBottomInset + (bottomControlsBoardIDs.contains(board.id) ? bottomControlsInset : 0)
     }
 
     var body: some View {
@@ -691,9 +708,38 @@ private struct BoardPager: View {
 
 // MARK: - 유리 필터 바 (탭바 위에 떠 있는 Liquid Glass 알약)
 
+// 보드 화면 하단 우측에 떠 있는 검색 버튼 — 보드 메뉴 버튼과 동일한 유리
+// 동그라미 룩(44pt). 검색 중이면 X(해제)로 바뀐다. 필터 바와 같은 하단 행
+// 반대편 끝. 모음(ArchiveHome)·둘러보기(BoardPostsView) 가 공유한다 — 둘 다
+// 탭 안이라 safe area 에 탭바 높이가 포함돼 필터 바와 같은 행에 정렬된다.
+private struct BoardSearchButton: View {
+    let board: Board
+    @Binding var searchByBoard: [String: String]
+    /// 검색 시작(시트 띄우기). 해제는 로컬에서 searchByBoard 만 비운다.
+    let onPresentSearch: () -> Void
+
+    var body: some View {
+        if board.supportsSearch {
+            let active = searchByBoard[board.id] != nil
+            Button {
+                if active { searchByBoard[board.id] = nil } else { onPresentSearch() }
+            } label: {
+                Image(systemName: active ? "xmark" : "magnifyingglass")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.black)
+                    .frame(width: 44, height: 44)
+                    .glassEffect(.regular, in: .circle)
+            }
+            .tint(.black)
+            .accessibilityLabel(active ? "검색 해제" : "검색")
+        }
+    }
+}
+
 private struct GlassFilterBar: View {
     let board: Board
     @Binding var selection: BoardFilter?
+    @State private var contentWidth: CGFloat = 0
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -702,16 +748,16 @@ private struct GlassFilterBar: View {
                     chip(label: item.label, filter: item.filter)
                 }
             }
-            .padding(5)
+            .padding(4)
+            // 칩 내용 폭을 측정해 캡슐을 내용에 맞게 줄인다(인벤 4칩=hug). 가용
+            // 폭은 부모 HStack 이 캡하므로 애객 11칩은 그 안에서 스크롤된다.
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
         }
+        .frame(maxWidth: contentWidth == 0 ? nil : contentWidth)
         .glassEffect(.regular, in: .capsule)
         // 스크롤 시 선택 칩(파란 배경)이 캡슐의 둥근 양끝 밖으로 새지 않게
         // 콘텐츠를 캡슐 모양으로 클리핑.
         .clipShape(.capsule)
-        // 떠 있는 유리 탭바와 한 덩어리로 붙어 보이지 않게 충분한 간격을 둬
-        // 별개의 플로팅 알약으로 읽히게 한다. 좌우도 더 좁혀 탭바와 폭을 구분.
-        .padding(.horizontal, 28)
-        .padding(.bottom, 16)
     }
 
     private struct Item: Identifiable {
@@ -720,8 +766,8 @@ private struct GlassFilterBar: View {
         let filter: BoardFilter?
     }
 
-    /// 칩 순서 — 기존 BoardFilterBar 와 동일. 인벤 메이플만 커스텀 순서
-    /// (10추 · 인방 · 전체 · 30추), 그 외는 전체 + 보드 필터 순.
+    /// 칩 순서 — 인벤 메이플만 커스텀 순서(10추 · 인방 · 전체 · 30추),
+    /// 그 외는 전체 + 보드 필터 순.
     private var items: [Item] {
         let all = Item(id: "_all", label: "전체", filter: nil)
         if board.id == Board.invenMaple.id {
@@ -739,9 +785,9 @@ private struct GlassFilterBar: View {
     private func chip(label: String, filter: BoardFilter?) -> some View {
         let isSelected = selection?.id == filter?.id
         return Text(label)
-            .font(.subheadline.weight(isSelected ? .semibold : .regular))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 6)
+            .font(.footnote.weight(isSelected ? .semibold : .regular))
+            .padding(.horizontal, 11)
+            .padding(.vertical, 5)
             .background(
                 isSelected ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.clear),
                 in: Capsule()
