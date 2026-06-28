@@ -152,7 +152,7 @@ struct RootTabView: View {
                     ArchiveHome(
                         favorites: favorites,
                         readStore: readStore,
-                        onSelectPost: { detail.show($0) },
+                        onSelectPost: { FootprintLogger.shared.record("post-open"); detail.show($0) },
                         isActive: selectedTab == 0,
                         searchByBoard: $searchByBoard,
                         currentBoardID: $currentBoardID,
@@ -161,7 +161,7 @@ struct RootTabView: View {
                 }
                 Tab("둘러보기", systemImage: "square.grid.2x2", value: 1) {
                     BrowseTab(catalog: catalog, favorites: favorites,
-                              readStore: readStore, onSelectPost: { detail.show($0) },
+                              readStore: readStore, onSelectPost: { FootprintLogger.shared.record("post-open"); detail.show($0) },
                               searchByBoard: $searchByBoard, browsingBoard: $browsingBoard,
                               onPresentSearch: { showingSearch = true })
                 }
@@ -244,11 +244,20 @@ struct RootTabView: View {
             await alertBadge.refresh()
         }
         .onChange(of: scenePhase) { _, phase in
-            guard phase == .active else { return }
-            Networking.prewarmConnections()
-            ImageWarmup.warm()
-            Task { await catalog.revalidateLoadedCatalogs() }
-            Task { await alertBadge.refresh() }
+            switch phase {
+            case .background:
+                // 백그라운드 진입 시 footprint 버퍼 flush — 이게 없으면 버퍼가
+                // 서버로 안 가고 suspend 때 유실된다(구 셸 제거 때 누락됐던 배선).
+                FootprintLogger.shared.onBackground()
+            case .active:
+                FootprintLogger.shared.record("scenePhase:active")
+                Networking.prewarmConnections()
+                ImageWarmup.warm()
+                Task { await catalog.revalidateLoadedCatalogs() }
+                Task { await alertBadge.refresh() }
+            default:
+                break
+            }
         }
     }
 }
@@ -413,7 +422,11 @@ private struct ArchiveHome: View {
         }
         // 보드를 바꾸거나(스와이프·메뉴) 모음 탭에 (다시) 들어올 때마다 무조건
         // 첫 필터 탭으로 리셋한다. 인벤 → 10추, 전체 피드가 첫 탭인 보드 → 전체.
-        .onChange(of: currentBoardID) { _, _ in resetFilterToDefault(currentBoard) }
+        .onChange(of: currentBoardID) { _, _ in
+            resetFilterToDefault(currentBoard)
+            // footprint 타임라인 태깅 — 어느 보드에서 메모리가 치솟는지 보려고.
+            FootprintLogger.shared.record("board:\(currentBoard?.name ?? "?")")
+        }
         .onChange(of: isActive) { _, active in if active { resetFilterToDefault(currentBoard) } }
     }
 
