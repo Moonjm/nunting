@@ -342,8 +342,8 @@ struct PostDetailView: View, Equatable {
 
     /// Custom top bar. We present this view as a ZStack overlay (not through
     /// NavigationStack), so `.navigationTitle`/`.toolbar` have no effect and
-    /// we render chrome ourselves. Fixed-width side buttons keep the site
-    /// name visually centred.
+    /// we render chrome ourselves. 게시판(사이트)명은 표시하지 않으며,
+    /// 뒤로/원문 버튼만 양끝에 둔다.
     private var detailHeader: some View {
         HStack(spacing: 0) {
             Button(action: onDismiss) {
@@ -353,10 +353,6 @@ struct PostDetailView: View, Equatable {
                     .frame(width: 44, height: 44, alignment: .leading)
                     .contentShape(Rectangle())
             }
-            Spacer(minLength: 0)
-            Text(post.site.displayName)
-                .font(.headline)
-                .lineLimit(1)
             Spacer(minLength: 0)
             Button {
                 if tapGate?.suppressed == true { return }

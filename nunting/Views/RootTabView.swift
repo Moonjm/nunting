@@ -280,7 +280,9 @@ private struct PostDetailScreen: View {
             showsHeader: false
         )
         .equatable()
-        .navigationTitle(post.site.displayName)
+        // 게시판(사이트)명은 상세에서 표시하지 않는다 — 빈 타이틀로 두고
+        // 툴바 버튼(뒤로/원문)만 남긴다.
+        .navigationTitle("")
         .toolbarTitleDisplayMode(.inline)
         // 탭바는 상세에서도 고정(숨기면 push/pop 시 사라졌다 나타나며 깜빡임).
         .toolbar {
