@@ -102,6 +102,8 @@ struct RootTabView: View {
     @State private var detail = DetailOverlayController.shared
 
     @State private var selectedTab = 0
+    // 히스토리(role:.search, value 4) 탭 직전의 실제 탭 — 커버 닫을 때 복귀용.
+    @State private var tabBeforeHistory = 0
     // 모음의 현재 보드 — 페이저/헤더/검색이 공유한다.
     @State private var currentBoardID: String?
     // 보드별 활성 검색어(옛 앱처럼 검색은 보드에 묶임). 하단 검색 버튼과
@@ -135,25 +137,21 @@ struct RootTabView: View {
         ZStack {
             // 보드 검색은 필터 바 행 우측의 떠있는 버튼(BoardSearchButton).
             // 히스토리는 role:.search 탭 — 시스템이 탭바 오른쪽에 분리 배치(옛 검색
-            // 자리). 탭하면 전환 대신 fullScreenCover 로 최근 읽은 글을 띄운다.
-            // 거부 바인딩의 0→4→0 선택 바운스(목록 깜빡임)는 전체 화면 커버가
-            // 끝까지 덮어 가린다 — 부분 시트와 달리 뒤가 안 보여 깜빡임이 안 보인다.
-            TabView(selection: Binding(
-                get: { selectedTab },
-                set: { newValue in
-                    if newValue == 4 {
-                        showingHistory = true
-                    } else {
-                        selectedTab = newValue
-                    }
-                }
-            )) {
+            // 자리). 탭하면 fullScreenCover 로 최근 읽은 글을 띄우고, 닫으면 직전
+            // 탭으로 복원한다(아래 onChange). role:.search 는 거부 바인딩으로 시각
+            // 선택이 안 풀려 닫은 뒤 히스토리 탭이 선택된 채 남는 문제가 있어, 평범
+            // 바인딩 + 명시적 복원으로 처리한다. 선택이 4 로 가는 순간은 전체 화면
+            // 커버가 가리므로 안 보이고, isActive 는 실제 탭 기준으로 마스킹해
+            // 필터 리셋도 막는다.
+            TabView(selection: $selectedTab) {
                 Tab("모음", systemImage: "tray.full.fill", value: 0) {
                     ArchiveHome(
                         favorites: favorites,
                         readStore: readStore,
                         onSelectPost: { FootprintLogger.shared.record("post-open"); detail.show($0) },
-                        isActive: selectedTab == 0,
+                        // 히스토리(4)로 잠깐 가도 실제 탭 기준으로 — isActive 가 튀어
+                        // resetFilterToDefault 가 도는 걸 막는다.
+                        isActive: (selectedTab == 4 ? tabBeforeHistory : selectedTab) == 0,
                         searchByBoard: $searchByBoard,
                         currentBoardID: $currentBoardID,
                         onPresentSearch: { showingSearch = true }
@@ -201,6 +199,18 @@ struct RootTabView: View {
                         detail.show(post)
                     }
                 )
+            }
+            // 히스토리(4) 선택 → 직전 탭 기억 후 커버 띄움. (커버가 전체 화면이라
+            // 4 로 잠깐 가는 건 안 보인다.)
+            .onChange(of: selectedTab) { old, new in
+                if new == 4 {
+                    tabBeforeHistory = (old == 4 ? tabBeforeHistory : old)
+                    showingHistory = true
+                }
+            }
+            // 커버 닫으면 직전 탭으로 복귀 — 히스토리 탭이 선택된 채 남지 않게.
+            .onChange(of: showingHistory) { _, showing in
+                if !showing, selectedTab == 4 { selectedTab = tabBeforeHistory }
             }
 
             // 상세 오버레이 — TabView 위 ZStack 최상단 레이어로 화면 전체(탭바
