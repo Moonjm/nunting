@@ -275,9 +275,7 @@ private struct PostDetailScreen: View {
             cache: cache,
             tapGate: tapGate,
             isOverlayVisible: isOverlayVisible,
-            isScrollingBlocked: isScrollingBlocked,
-            onDismiss: {},
-            showsHeader: false
+            isScrollingBlocked: isScrollingBlocked
         )
         .equatable()
         // 게시판(사이트)명은 상세에서 표시하지 않는다 — 빈 타이틀로 두고
@@ -401,7 +399,8 @@ private struct ArchiveHome: View {
                 // 필터 바 시작 위치는 원래대로 좌측 28pt, 검색 버튼은 우측 16pt.
                 .padding(.leading, 28)
                 .padding(.trailing, 16)
-                .padding(.bottom, 16)
+                // 하단 탭바와의 간격을 좁힌다.
+                .padding(.bottom, 8)
             }
         }
         .onAppear {
@@ -539,7 +538,7 @@ private struct BoardPostsView: View {
             BoardSearchButton(board: board, searchByBoard: $searchByBoard,
                               onPresentSearch: onPresentSearch)
                 .padding(.trailing, 16)
-                .padding(.bottom, 16)
+                .padding(.bottom, 8)
         }
         .navigationTitle(board.name)
         .toolbarTitleDisplayMode(.inline)
