@@ -146,7 +146,9 @@ struct RootTabView: View {
         .tint(.black)
         .accessibilityLabel("최근 읽은 글")
         .padding(.trailing, 16)
-        .padding(.bottom, 22)
+        // 맨 아래 탭바 레벨에 둔다 — 위로 올리면 한 줄 위의 검색 버튼(필터행)과
+        // 높이가 겹친다. 검색=필터행(위) / 히스토리=탭바 옆(맨 아래)로 분리.
+        .padding(.bottom, 10)
     }
 
     var body: some View {
