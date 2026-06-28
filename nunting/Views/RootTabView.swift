@@ -389,7 +389,9 @@ private struct ArchiveHome: View {
                     BoardSearchButton(board: board, searchByBoard: $searchByBoard,
                                       onPresentSearch: onPresentSearch)
                 }
-                .padding(.horizontal, 16)
+                // 필터 바 시작 위치는 원래대로 좌측 28pt, 검색 버튼은 우측 16pt.
+                .padding(.leading, 28)
+                .padding(.trailing, 16)
                 .padding(.bottom, 16)
             }
         }
