@@ -101,15 +101,13 @@ struct RootTabView: View {
     // activePost 로 funnel 된다. 새 셸은 그 activePost 를 관찰해 상세를 띄운다.
     @State private var detail = DetailOverlayController.shared
 
-    @State private var selectedTab = 0
+    @State private var historyTabState = HistoryTabSelectionState()
     // 모음의 현재 보드 — 페이저/헤더/검색이 공유한다.
     @State private var currentBoardID: String?
     // 보드별 활성 검색어(옛 앱처럼 검색은 보드에 묶임). 하단 검색 버튼과
     // 모음 목록/배너가 공유하므로 셸 레벨에 둔다.
     @State private var searchByBoard: [String: String] = [:]
     @State private var showingSearch = false
-    // 하단 히스토리 탭 → 최근 읽은 글 시트.
-    @State private var showingHistory = false
     // 둘러보기에서 현재 열어둔 보드(글 목록). nil = 사이트 목록/미진입.
     @State private var browsingBoard: Board?
     // 상세 오버레이 백드래그(우→ 스와이프 닫기) 상태기계.
@@ -124,7 +122,7 @@ struct RootTabView: View {
     // 하단 검색 버튼이 검색할 대상 — 모음에선 현재 보드, 둘러보기에선 열어둔
     // 보드. 그 외 탭에선 없음(버튼도 숨김).
     private var searchContextBoard: Board? {
-        switch selectedTab {
+        switch historyTabState.selectedTab {
         case 0: return currentBoard
         case 1: return browsingBoard
         default: return nil
@@ -132,28 +130,26 @@ struct RootTabView: View {
     }
     var body: some View {
         ZStack {
-            // 검색은 하단 탭이 아니라, 필터 바와 같은 하단 행 우측 끝에 떠 있는
-            // 유리 동그라미 버튼(BoardSearchButton — 모음/둘러보기 보드 화면에 위치).
-            // 탭 구성은 4개(모음/둘러보기/알림/히스토리)로 고정 — 조건부 탭이 없어야
-            // 재평가 시 탭 콘텐츠 identity 가 안정돼 히스토리 탭에 목록이 재로딩되지
-            // 않는다.
+            // 보드 검색은 필터 바 행 우측의 떠있는 버튼(BoardSearchButton).
+            // 히스토리는 role:.search 탭 — 시스템이 탭바 오른쪽에 분리 배치(옛 검색
+            // 자리). 탭하면 fullScreenCover 로 최근 읽은 글을 띄우고, 닫으면 직전
+            // 탭으로 복원한다(아래 onChange). role:.search 는 거부 바인딩으로 시각
+            // 선택이 안 풀려 닫은 뒤 히스토리 탭이 선택된 채 남는 문제가 있어, 평범
+            // 바인딩 + 명시적 복원으로 처리한다. 선택이 4 로 가는 순간은 전체 화면
+            // 커버가 가리므로 안 보이고, isActive 는 실제 탭 기준으로 마스킹해
+            // 필터 리셋도 막는다.
             TabView(selection: Binding(
-                get: { selectedTab },
-                set: { newValue in
-                    if newValue == 4 {
-                        // 히스토리 탭 — 탭 전환 없이 최근 읽은 글 시트를 띄운다.
-                        showingHistory = true
-                    } else {
-                        selectedTab = newValue
-                    }
-                }
+                get: { historyTabState.selectedTab },
+                set: { historyTabState.selectTab($0) }
             )) {
                 Tab("모음", systemImage: "tray.full.fill", value: 0) {
                     ArchiveHome(
                         favorites: favorites,
                         readStore: readStore,
-                        onSelectPost: { detail.show($0) },
-                        isActive: selectedTab == 0,
+                        onSelectPost: { FootprintLogger.shared.record("post-open"); detail.show($0) },
+                        // 히스토리(4)로 잠깐 가도 실제 탭 기준으로 — isActive 가 튀어
+                        // resetFilterToDefault 가 도는 걸 막는다.
+                        isActive: historyTabState.effectiveSelectedTab == 0,
                         searchByBoard: $searchByBoard,
                         currentBoardID: $currentBoardID,
                         onPresentSearch: { showingSearch = true }
@@ -161,7 +157,7 @@ struct RootTabView: View {
                 }
                 Tab("둘러보기", systemImage: "square.grid.2x2", value: 1) {
                     BrowseTab(catalog: catalog, favorites: favorites,
-                              readStore: readStore, onSelectPost: { detail.show($0) },
+                              readStore: readStore, onSelectPost: { FootprintLogger.shared.record("post-open"); detail.show($0) },
                               searchByBoard: $searchByBoard, browsingBoard: $browsingBoard,
                               onPresentSearch: { showingSearch = true })
                 }
@@ -175,9 +171,9 @@ struct RootTabView: View {
                     }
                 }
                 .badge(alertBadge.unread)
-                // 히스토리 — 탭하면 전환 대신 최근 읽은 글 시트를 띄운다(검색과
-                // 같은 패턴). 묶음 탭 마지막 자리.
-                Tab("히스토리", systemImage: "clock.arrow.circlepath", value: 4) {
+                // 히스토리 — role:.search 로 탭바 오른쪽 분리 슬롯(옛 검색 자리).
+                // 탭하면 전환 대신 fullScreenCover 로 최근 읽은 글을 띄운다.
+                Tab("히스토리", systemImage: "clock.arrow.circlepath", value: 4, role: .search) {
                     Color.clear
                 }
             }
@@ -190,14 +186,17 @@ struct RootTabView: View {
                     )
                 }
             }
-            .sheet(isPresented: $showingHistory) {
+            .fullScreenCover(isPresented: Binding(
+                get: { historyTabState.showingHistory },
+                set: { historyTabState.setHistoryShowing($0) }
+            )) {
                 HistorySheet(
-                    posts: Array(readStore.recentPosts.prefix(5)),
+                    posts: readStore.recentPosts,
                     onOpen: { post in
                         // 시트 닫기 + 상세 열기를 같은 틱에. 상세는 시트가 아니라
                         // 항상 떠 있는 ZStack 오버레이(activePost 갱신)라 시트
                         // dismiss 트랜잭션과 독립적 → 드롭/이중표시 없이 안전.
-                        showingHistory = false
+                        historyTabState.setHistoryShowing(false)
                         detail.show(post)
                     }
                 )
@@ -244,11 +243,20 @@ struct RootTabView: View {
             await alertBadge.refresh()
         }
         .onChange(of: scenePhase) { _, phase in
-            guard phase == .active else { return }
-            Networking.prewarmConnections()
-            ImageWarmup.warm()
-            Task { await catalog.revalidateLoadedCatalogs() }
-            Task { await alertBadge.refresh() }
+            switch phase {
+            case .background:
+                // 백그라운드 진입 시 footprint 버퍼 flush — 이게 없으면 버퍼가
+                // 서버로 안 가고 suspend 때 유실된다(구 셸 제거 때 누락됐던 배선).
+                FootprintLogger.shared.onBackground()
+            case .active:
+                FootprintLogger.shared.record("scenePhase:active")
+                Networking.prewarmConnections()
+                ImageWarmup.warm()
+                Task { await catalog.revalidateLoadedCatalogs() }
+                Task { await alertBadge.refresh() }
+            default:
+                break
+            }
         }
     }
 }
@@ -367,7 +375,7 @@ private struct ArchiveHome: View {
             }
         }
         // 헤더 밴드 없이 목록이 상단까지 꽉 차고, 보드 메뉴 버튼만 우상단에 떠
-        // 있는 유리 동그라미로 겹쳐 띄운다. (검색·히스토리는 하단 탭바로 이동.)
+        // 있는 유리 동그라미로 겹쳐 띄운다. (검색=필터행 버튼, 히스토리=하단 탭.)
         .overlay(alignment: .topTrailing) { boardMenu }
         // 탭바가 가리는 하단 안전영역 높이를 측정해 인셋으로 환원.
         .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.bottom } action: { bottomSafeInset = $0 }
@@ -403,13 +411,21 @@ private struct ArchiveHome: View {
                 .padding(.bottom, 8)
             }
         }
+        // onAppear 에선 필터를 리셋하지 않는다 — 히스토리(role:.search) 탭 시 탭
+        // 선택이 0→4→0 으로 튕기며(커버 닫을 때 복원) .onAppear 가 재발화되는데,
+        // 거기서 리셋하면 바꿔둔 필터가 첫 탭으로 돌아가고 목록이 재로드된다. 첫
+        // 진입 리셋은 currentBoardID(nil→첫 보드) onChange 가, 탭 재진입 리셋은
+        // isActive onChange 가 담당하므로 onAppear 리셋은 불필요하다.
         .onAppear {
             if currentBoardID == nil { currentBoardID = boards.first?.id }
-            resetFilterToDefault(currentBoard)
         }
         // 보드를 바꾸거나(스와이프·메뉴) 모음 탭에 (다시) 들어올 때마다 무조건
         // 첫 필터 탭으로 리셋한다. 인벤 → 10추, 전체 피드가 첫 탭인 보드 → 전체.
-        .onChange(of: currentBoardID) { _, _ in resetFilterToDefault(currentBoard) }
+        .onChange(of: currentBoardID) { _, _ in
+            resetFilterToDefault(currentBoard)
+            // footprint 타임라인 태깅 — 어느 보드에서 메모리가 치솟는지 보려고.
+            FootprintLogger.shared.record("board:\(currentBoard?.name ?? "?")")
+        }
         .onChange(of: isActive) { _, active in if active { resetFilterToDefault(currentBoard) } }
     }
 

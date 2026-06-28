@@ -1,12 +1,14 @@
 import SwiftUI
 
-/// 하단에서 올라오는 최근 읽은 글 시트(검색 시트와 같은 형태). 최근 연 글
-/// 몇 개를 목록으로 보여주고, 탭하면 그 글을 다시 연다(상세 오버레이 → 재로딩).
-/// 출처가 여러 보드에 걸쳐 있어 행마다 사이트를 함께 표시한다.
+/// 최근 읽은 글 목록. 하단 히스토리 탭(role:.search)이 fullScreenCover 로 띄운다.
+/// 전체 화면으로 덮으므로 탭 선택 바운스(깜빡임)가 뒤에 가려 안 보인다. 글을
+/// 탭하면 그 글을 다시 연다(상세 오버레이). 닫기 버튼으로 내린다. 출처가 여러
+/// 보드에 걸쳐 있어 행마다 사이트를 함께 표시한다.
 struct HistorySheet: View {
     let posts: [Post]
-    /// 행 탭 → 시트를 닫고 상세를 띄우기 위해 부모가 주입.
+    /// 행 탭 → 커버를 닫고 상세를 띄우기 위해 부모가 주입.
     let onOpen: (Post) -> Void
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
@@ -24,9 +26,15 @@ struct HistorySheet: View {
             }
             .navigationTitle("최근 읽음")
             .navigationBarTitleDisplayMode(.inline)
+            // fullScreenCover 는 스와이프 닫기가 없어 명시적 닫기 버튼을 둔다.
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("닫기") { dismiss() }
+                }
+            }
+            // 모음/알림과 같은 처리 — 배경을 깔아 톤 일체감.
+            .background(Color(.systemGroupedBackground).ignoresSafeArea())
         }
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
     }
 }
 
