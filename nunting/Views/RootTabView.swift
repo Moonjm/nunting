@@ -131,35 +131,23 @@ struct RootTabView: View {
         default: return nil
         }
     }
-    // 하단 탭바 옆(우측)에 떠 있는 히스토리 버튼 — 예전 "탭바 옆 검색 탭"처럼
-    // 탭바와 같은 레벨·같은 크기의 유리 동그라미. 누르면 최근 읽은 글 시트를
-    // 띄운다(버튼+시트라 탭 전환 바운스/깜빡임 없음). 탭바 알약과 세로 중앙을
-    // 맞추려 bottom 인셋을 키웠다.
-    private var historyButton: some View {
-        Button { showingHistory = true } label: {
-            Image(systemName: "clock.arrow.circlepath")
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(.black)
-                .frame(width: 56, height: 56)
-                .glassEffect(.regular, in: .circle)
-        }
-        .tint(.black)
-        .accessibilityLabel("최근 읽은 글")
-        // 탭바 알약(모음/둘러보기/알림) 바로 오른쪽에 붙게 당긴다. 알약은 시스템이
-        // 가운데 정렬로 그려 정확한 우측 끝을 코드가 모르므로 추정 인셋(52).
-        .padding(.trailing, 52)
-        // 맨 아래 탭바 레벨 — 위로 올리면 한 줄 위 검색 버튼(필터행)과 겹친다.
-        .padding(.bottom, 10)
-    }
-
     var body: some View {
         ZStack {
-            // 검색은 하단 탭이 아니라, 필터 바와 같은 하단 행 우측 끝에 떠 있는
-            // 유리 동그라미 버튼(BoardSearchButton — 모음/둘러보기 보드 화면에 위치).
-            // 하단 4탭(모음/둘러보기/알림/히스토리)은 모두 실제 콘텐츠를 가진 일반
-            // 탭이라 선택이 자연스럽게 전환된다 — 가짜 탭+시트 패턴의 0→4→0 선택
-            // 바운스(목록 깜빡임·필터 리셋)가 없다.
-            TabView(selection: $selectedTab) {
+            // 보드 검색은 필터 바 행 우측의 떠있는 버튼(BoardSearchButton).
+            // 히스토리는 role:.search 탭 — 시스템이 탭바 오른쪽에 분리 배치(옛 검색
+            // 자리). 탭하면 전환 대신 fullScreenCover 로 최근 읽은 글을 띄운다.
+            // 거부 바인딩의 0→4→0 선택 바운스(목록 깜빡임)는 전체 화면 커버가
+            // 끝까지 덮어 가린다 — 부분 시트와 달리 뒤가 안 보여 깜빡임이 안 보인다.
+            TabView(selection: Binding(
+                get: { selectedTab },
+                set: { newValue in
+                    if newValue == 4 {
+                        showingHistory = true
+                    } else {
+                        selectedTab = newValue
+                    }
+                }
+            )) {
                 Tab("모음", systemImage: "tray.full.fill", value: 0) {
                     ArchiveHome(
                         favorites: favorites,
@@ -187,9 +175,12 @@ struct RootTabView: View {
                     }
                 }
                 .badge(alertBadge.unread)
+                // 히스토리 — role:.search 로 탭바 오른쪽 분리 슬롯(옛 검색 자리).
+                // 탭하면 전환 대신 fullScreenCover 로 최근 읽은 글을 띄운다.
+                Tab("히스토리", systemImage: "clock.arrow.circlepath", value: 4, role: .search) {
+                    Color.clear
+                }
             }
-            // 하단 탭바 옆(우측 하단)에 떠 있는 히스토리 버튼 — 모든 탭에서 보인다.
-            .overlay(alignment: .bottomTrailing) { historyButton }
             .sheet(isPresented: $showingSearch) {
                 if let board = searchContextBoard {
                     SearchSheet(
@@ -199,7 +190,7 @@ struct RootTabView: View {
                     )
                 }
             }
-            .sheet(isPresented: $showingHistory) {
+            .fullScreenCover(isPresented: $showingHistory) {
                 HistorySheet(
                     posts: readStore.recentPosts,
                     onOpen: { post in
