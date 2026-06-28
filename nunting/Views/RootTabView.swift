@@ -335,11 +335,13 @@ private struct ArchiveHome: View {
     private var currentQuery: String? {
         currentBoard.flatMap { searchByBoard[$0.id] }
     }
-    // 떠 있는 필터 바가 가리는 높이만큼 목록 하단에 줄 여백.
-    static let filterBarInset: CGFloat = 60
-    // 지금 필터 바가 떠 있는(= 필터 보유 + 검색 중 아님) 보드 id 집합.
-    private var filterBarBoardIDs: Set<String> {
-        Set(boards.filter { showsFilterBar($0) && searchByBoard[$0.id] == nil }.map(\.id))
+    // 떠 있는 하단 컨트롤(필터 바/검색 버튼)이 가리는 높이만큼 목록 하단에 줄 여백.
+    static let bottomControlsInset: CGFloat = 60
+    // 지금 하단 컨트롤이 떠 있는 보드 id 집합. 검색 버튼만 떠 있는 보드도 포함한다.
+    private var bottomControlsBoardIDs: Set<String> {
+        Set(boards.filter { board in
+            board.supportsSearch || (showsFilterBar(board) && searchByBoard[board.id] == nil)
+        }.map(\.id))
     }
 
     var body: some View {
@@ -356,8 +358,8 @@ private struct ArchiveHome: View {
                     currentBoardID: $currentBoardID,
                     filterByBoard: filterByBoard,
                     searchByBoard: searchByBoard,
-                    filterBarBoardIDs: filterBarBoardIDs,
-                    filterBarInset: Self.filterBarInset,
+                    bottomControlsBoardIDs: bottomControlsBoardIDs,
+                    bottomControlsInset: Self.bottomControlsInset,
                     baseBottomInset: bottomSafeInset,
                     readStore: readStore,
                     onSelectPost: onSelectPost
@@ -385,7 +387,12 @@ private struct ArchiveHome: View {
             if let board = currentBoard {
                 HStack(alignment: .center, spacing: 8) {
                     if currentQuery == nil, showsFilterBar(board) {
+                        // layoutPriority: 캡슐과 Spacer 가 둘 다 flexible 이라
+                        // 우선순위 없으면 캡슐이 가용폭 절반만 받아 hug 가 깨진다.
+                        // 우선순위를 주면 전체 가용폭을 먼저 받아 min(가용,내용)으로
+                        // 줄어든다 — 인벤 4칩=hug, 애객 11칩=가용폭 캡 후 스크롤.
                         GlassFilterBar(board: board, selection: filterBinding(board.id))
+                            .layoutPriority(1)
                     }
                     Spacer(minLength: 0)
                     BoardSearchButton(board: board, searchByBoard: $searchByBoard,
@@ -522,6 +529,7 @@ private struct BoardPostsView: View {
             // 검색 중엔 필터 해제(모음 검색과 동일).
             filter: query == nil ? board.defaultListFilter : nil,
             searchQuery: query,
+            bottomContentInset: board.supportsSearch ? ArchiveHome.bottomControlsInset : 0,
             readStore: readStore,
             onSelectPost: onSelectPost
         )
@@ -605,9 +613,9 @@ private struct BoardPager: View {
     @Binding var currentBoardID: String?
     let filterByBoard: [String: BoardFilter]
     let searchByBoard: [String: String]
-    // 떠 있는 필터 바를 가진 보드 id → 그만큼 목록 하단 인셋.
-    let filterBarBoardIDs: Set<String>
-    let filterBarInset: CGFloat
+    // 떠 있는 하단 컨트롤을 가진 보드 id → 그만큼 목록 하단 인셋.
+    let bottomControlsBoardIDs: Set<String>
+    let bottomControlsInset: CGFloat
     // 탭바 밑까지 리스트가 깔리도록 ignoresSafeArea 하므로, 탭바가 가리는
     // 만큼(측정값)을 목록 하단 인셋으로 직접 돌려준다.
     let baseBottomInset: CGFloat
@@ -621,7 +629,7 @@ private struct BoardPager: View {
     @State private var reloadTokens: [String: Int] = [:]
 
     private func inset(_ board: Board) -> CGFloat {
-        baseBottomInset + (filterBarBoardIDs.contains(board.id) ? filterBarInset : 0)
+        baseBottomInset + (bottomControlsBoardIDs.contains(board.id) ? bottomControlsInset : 0)
     }
 
     var body: some View {
