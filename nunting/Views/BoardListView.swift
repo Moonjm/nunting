@@ -50,7 +50,8 @@ struct BoardListView: View, Equatable {
             } else if let errorMessage = loader.errorMessage, loader.posts.isEmpty {
                 ContentUnavailableView("불러오기 실패", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
             } else if loader.posts.isEmpty {
-                if let query = searchQuery, !query.isEmpty {
+                if let query = searchQuery?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !query.isEmpty {
                     ContentUnavailableView(
                         "검색 결과가 없어요",
                         systemImage: "magnifyingglass",
