@@ -131,22 +131,22 @@ struct RootTabView: View {
         default: return nil
         }
     }
-    // 하단 탭바 옆(우측 하단)에 떠 있는 히스토리 버튼. 누르면 최근 읽은 글
-    // 시트(HistorySheet)를 띄운다 — 검색과 같은 버튼+시트 패턴이라 탭 전환
-    // 바운스/깜빡임이 없다. 하단 탭바와 한 덩어리로 읽히게 탭바 높이에 맞춰
-    // 크게(60pt) 띄운다.
+    // 하단 탭바 옆(우측)에 떠 있는 히스토리 버튼 — 예전 "탭바 옆 검색 탭"처럼
+    // 탭바와 같은 레벨·같은 크기의 유리 동그라미. 누르면 최근 읽은 글 시트를
+    // 띄운다(버튼+시트라 탭 전환 바운스/깜빡임 없음). 탭바 알약과 세로 중앙을
+    // 맞추려 bottom 인셋을 키웠다.
     private var historyButton: some View {
         Button { showingHistory = true } label: {
             Image(systemName: "clock.arrow.circlepath")
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(.black)
-                .frame(width: 60, height: 60)
+                .frame(width: 56, height: 56)
                 .glassEffect(.regular, in: .circle)
         }
         .tint(.black)
         .accessibilityLabel("최근 읽은 글")
-        .padding(.trailing, 12)
-        .padding(.bottom, 10)
+        .padding(.trailing, 16)
+        .padding(.bottom, 22)
     }
 
     var body: some View {
