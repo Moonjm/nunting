@@ -108,8 +108,6 @@ struct RootTabView: View {
     // 모음 목록/배너가 공유하므로 셸 레벨에 둔다.
     @State private var searchByBoard: [String: String] = [:]
     @State private var showingSearch = false
-    // 하단 히스토리 탭 → 최근 읽은 글 시트.
-    @State private var showingHistory = false
     // 둘러보기에서 현재 열어둔 보드(글 목록). nil = 사이트 목록/미진입.
     @State private var browsingBoard: Board?
     // 상세 오버레이 백드래그(우→ 스와이프 닫기) 상태기계.
@@ -134,20 +132,10 @@ struct RootTabView: View {
         ZStack {
             // 검색은 하단 탭이 아니라, 필터 바와 같은 하단 행 우측 끝에 떠 있는
             // 유리 동그라미 버튼(BoardSearchButton — 모음/둘러보기 보드 화면에 위치).
-            // 탭 구성은 4개(모음/둘러보기/알림/히스토리)로 고정 — 조건부 탭이 없어야
-            // 재평가 시 탭 콘텐츠 identity 가 안정돼 히스토리 탭에 목록이 재로딩되지
-            // 않는다.
-            TabView(selection: Binding(
-                get: { selectedTab },
-                set: { newValue in
-                    if newValue == 4 {
-                        // 히스토리 탭 — 탭 전환 없이 최근 읽은 글 시트를 띄운다.
-                        showingHistory = true
-                    } else {
-                        selectedTab = newValue
-                    }
-                }
-            )) {
+            // 하단 4탭(모음/둘러보기/알림/히스토리)은 모두 실제 콘텐츠를 가진 일반
+            // 탭이라 선택이 자연스럽게 전환된다 — 가짜 탭+시트 패턴의 0→4→0 선택
+            // 바운스(목록 깜빡임·필터 리셋)가 없다.
+            TabView(selection: $selectedTab) {
                 Tab("모음", systemImage: "tray.full.fill", value: 0) {
                     ArchiveHome(
                         favorites: favorites,
@@ -175,10 +163,10 @@ struct RootTabView: View {
                     }
                 }
                 .badge(alertBadge.unread)
-                // 히스토리 — 탭하면 전환 대신 최근 읽은 글 시트를 띄운다(검색과
-                // 같은 패턴). 묶음 탭 마지막 자리.
+                // 히스토리 — 최근 읽은 글 목록(실제 탭 화면). 일반 탭 전환이라
+                // 깜빡임 없음. 글 탭 → 상세 오버레이.
                 Tab("히스토리", systemImage: "clock.arrow.circlepath", value: 4) {
-                    Color.clear
+                    HistoryTab(readStore: readStore, onSelectPost: { detail.show($0) })
                 }
             }
             .sheet(isPresented: $showingSearch) {
@@ -189,18 +177,6 @@ struct RootTabView: View {
                         onSubmit: { searchByBoard[board.id] = $0 }
                     )
                 }
-            }
-            .sheet(isPresented: $showingHistory) {
-                HistorySheet(
-                    posts: Array(readStore.recentPosts.prefix(5)),
-                    onOpen: { post in
-                        // 시트 닫기 + 상세 열기를 같은 틱에. 상세는 시트가 아니라
-                        // 항상 떠 있는 ZStack 오버레이(activePost 갱신)라 시트
-                        // dismiss 트랜잭션과 독립적 → 드롭/이중표시 없이 안전.
-                        showingHistory = false
-                        detail.show(post)
-                    }
-                )
             }
 
             // 상세 오버레이 — TabView 위 ZStack 최상단 레이어로 화면 전체(탭바
@@ -711,6 +687,66 @@ private struct BoardPager: View {
 }
 
 // MARK: - 유리 필터 바 (탭바 위에 떠 있는 Liquid Glass 알약)
+
+// MARK: - 히스토리 (최근 읽은 글 — 실제 탭 화면)
+
+/// 하단 히스토리 탭의 콘텐츠. 최근 읽은 글(readStore.recentPosts)을 목록으로
+/// 보여주고, 탭하면 상세 오버레이로 다시 연다. 시트가 아니라 실제 탭이라
+/// 선택 전환이 매끄럽다(가짜 탭 바운스 없음). 출처가 여러 보드에 걸쳐 있어
+/// 행마다 사이트를 함께 표시한다.
+private struct HistoryTab: View {
+    let readStore: ReadStore
+    let onSelectPost: (Post) -> Void
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if readStore.recentPosts.isEmpty {
+                    ContentUnavailableView("최근 읽은 글이 없어요", systemImage: "clock",
+                                           description: Text("글을 열어보면 여기에 쌓여요."))
+                } else {
+                    List(readStore.recentPosts) { post in
+                        Button { onSelectPost(post) } label: { HistoryRow(post: post) }
+                            .buttonStyle(.plain)
+                    }
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
+                }
+            }
+            .navigationTitle("히스토리")
+            .navigationBarTitleDisplayMode(.inline)
+            // 모음/알림과 같은 처리 — 배경을 깔아 유리 탭바가 이 톤을 블러해 일체감.
+            .background(Color(.systemGroupedBackground).ignoresSafeArea())
+        }
+    }
+}
+
+private struct HistoryRow: View {
+    let post: Post
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(post.title)
+                .font(.subheadline.weight(.medium))
+                .lineLimit(2)
+            HStack(spacing: 6) {
+                Circle().fill(post.site.accentColor).frame(width: 7, height: 7)
+                Text(post.site.displayName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if !post.author.isEmpty {
+                    Text("· \(post.author)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+        // 행 전체(빈 공간 포함)를 탭 영역으로 — 텍스트 밖을 눌러도 이동되게.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+}
 
 // 보드 화면 하단 우측에 떠 있는 검색 버튼 — 보드 메뉴 버튼과 동일한 유리
 // 동그라미 룩(44pt). 검색 중이면 X(해제)로 바뀐다. 필터 바와 같은 하단 행
