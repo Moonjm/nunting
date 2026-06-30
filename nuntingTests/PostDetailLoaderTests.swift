@@ -236,6 +236,74 @@ final class PostDetailLoaderTests: XCTestCase {
         XCTAssertFalse(loader.isLoading)
     }
 
+    // MARK: - 애객 미러 짧은 본문 캡챠 안전망
+
+    func testAagagMirrorShortBodyChallengesThenRefetches() async {
+        // /mirror/re 본문이 짧으면(<3KB) detector 통과 여부와 무관하게 챌린지
+        // 시트를 띄우고 한 번 재요청한다. 재요청이 충분히 길면 그대로 진행.
+        let challengeCount = TestCounter()
+        let fetchCount = TestCounter()
+        let longBody = String(repeating: "<p>x</p>", count: 500)  // >3000자
+        let loader = PostDetailLoader(
+            fetcher: { _, _ in
+                fetchCount.incrementAndGet() == 1 ? "<html>짧음</html>" : longBody
+            },
+            resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) },
+            warmHTML: { _ in nil },
+            challenger: { _ in challengeCount.increment() }
+        )
+        let cache = PostDetailCache(capacity: 4)
+
+        await loader.load(post: aagagMirrorPost(), cache: cache, renderReadyAt: now())
+
+        XCTAssertEqual(challengeCount.value, 1, "짧은 미러 본문 → 챌린지 1회")
+        XCTAssertEqual(fetchCount.value, 2, "챌린지 후 재요청 1회")
+    }
+
+    func testAagagMirrorPersistentShortBodyThrowsCaptchaChallenge() async {
+        // 재요청 결과도 여전히 짧으면(시트 닫힘/쿠키 실패) 인터스티셜을 파서로
+        // 넘기지 않고 통일된 캡챠 에러로 surface 한다.
+        let challengeCount = TestCounter()
+        let fetchCount = TestCounter()
+        let loader = PostDetailLoader(
+            fetcher: { _, _ in fetchCount.increment(); return "<html>짧음</html>" },
+            resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) },
+            warmHTML: { _ in nil },
+            challenger: { _ in challengeCount.increment() }
+        )
+        let cache = PostDetailCache(capacity: 4)
+
+        await loader.load(post: aagagMirrorPost(), cache: cache, renderReadyAt: now())
+
+        XCTAssertEqual(challengeCount.value, 1)
+        XCTAssertEqual(fetchCount.value, 2, "초기 + 재요청")
+        XCTAssertEqual(loader.errorMessage, "자동등록방지 통과 실패 — 다시 시도해 주세요",
+                       "재요청도 짧으면 캡챠 에러로 surface (파서로 안 넘김)")
+        XCTAssertNil(loader.detail, "캡챠 에러 시 detail 미설정")
+    }
+
+    func testAagagIssuePageShortBodyDoesNotTriggerChallenge() async {
+        // /issue/ 네이티브 페이지는 /mirror/re 가 아니므로 안전망 비대상 —
+        // 짧은 정상 본문에 오탐 챌린지가 뜨지 않아야 한다.
+        let challengeCount = TestCounter()
+        let loader = PostDetailLoader(
+            fetcher: { _, _ in "<html>짧음</html>" },
+            resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) },
+            warmHTML: { _ in nil },
+            challenger: { _ in challengeCount.increment() }
+        )
+        let cache = PostDetailCache(capacity: 4)
+        let post = Post(
+            id: "x", site: .aagag, boardID: "issue", title: "이슈", author: "a",
+            date: nil, dateText: "방금", commentCount: 0,
+            url: URL(string: "https://aagag.com/issue/?idx=42")!
+        )
+
+        await loader.load(post: post, cache: cache, renderReadyAt: now())
+
+        XCTAssertEqual(challengeCount.value, 0, "/issue/ 페이지는 챌린지 안 함")
+    }
+
     // MARK: - Render gate (텍스트 전용 글 면제)
 
     /// 400ms 렌더 게이트는 푸시 애니메이션 중 이미지 서브트리 빌드를 막는

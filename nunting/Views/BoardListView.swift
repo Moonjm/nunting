@@ -12,6 +12,9 @@ struct BoardListView: View, Equatable {
     /// "보드 전환은 항상 새로 로드" 를 이 토큰으로 보장한다(reload 라 기존
     /// 목록은 유지한 채 갱신 → 깜빡임 없음).
     var reloadToken: Int = 0
+    /// 모음 탭 재탭 시 부모가 증가시켜 목록을 맨 위로 스크롤하게 한다.
+    /// reloadToken 과 같은 토큰 패턴 — 값이 바뀐 페이지만 onChange 가 발화한다.
+    var scrollTopToken: Int = 0
     /// Returns `true` when `DetailBackDrag` has just observed any
     /// horizontal-dominant movement. Row taps consult this so a tiny `→`
     /// drag that doesn't reach the back-drag commit threshold doesn't fall
@@ -39,6 +42,7 @@ struct BoardListView: View, Equatable {
             && lhs.scrollLocked == rhs.scrollLocked
             && lhs.bottomContentInset == rhs.bottomContentInset
             && lhs.reloadToken == rhs.reloadToken
+            && lhs.scrollTopToken == rhs.scrollTopToken
     }
 
     @State private var loader = BoardListLoader()
@@ -76,7 +80,9 @@ struct BoardListView: View, Equatable {
         // 단락을 우회 + 기존 목록 유지). 첫 진입은 위 .task 가 담당하므로 토큰
         // 변경 때만 동작.
         .onChange(of: reloadToken) { _, _ in
-            Task { await loader.reload(board: board, filter: filter, searchQuery: searchQuery) }
+            // 보드 전환은 목록을 비우고 스피너 — 먼 보드(헐렸다 재생성)와 동일한
+            // "새로고침 중" 피드백. 비우면서 자연히 맨 위에서 다시 그려진다.
+            Task { await loader.reload(board: board, filter: filter, searchQuery: searchQuery, clearingList: true) }
         }
     }
 
@@ -90,6 +96,7 @@ struct BoardListView: View, Equatable {
     }
 
     private var listView: some View {
+        ScrollViewReader { proxy in
         List {
             ForEach(loader.posts) { post in
                 postRow(post: post)
@@ -172,6 +179,15 @@ struct BoardListView: View, Equatable {
         .scrollDisabled(scrollLocked)
         .refreshable {
             await loader.reload(board: board, filter: filter, searchQuery: searchQuery)
+        }
+        // 모음 탭 재탭 신호 → 첫 글로 맨 위 스크롤(같은 보드라 reload 없음).
+        // 보이지 않는(다른 보드) 페이지도 발화하지만 무해하고, 빈 목록은
+        // 스크롤 대상이 없어 no-op. (보드 전환은 reloadToken 의 목록-비움이
+        // 자연히 맨 위에서 다시 그리므로 여기서 따로 스크롤하지 않는다.)
+        .onChange(of: scrollTopToken) { _, _ in
+            guard let firstID = loader.posts.first?.id else { return }
+            withAnimation { proxy.scrollTo(firstID, anchor: .top) }
+        }
         }
     }
 

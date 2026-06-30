@@ -107,6 +107,10 @@ struct Networking {
         encoding: String.Encoding = .utf8,
         userAgent: String? = nil,
         handlesCookies: Bool = true,
+        /// HTTP 캐시 정책. 기본은 세션 기본값(`.useProtocolCachePolicy`).
+        /// 보드 목록처럼 "항상 최신"이 중요한 호출은 `.reloadIgnoringLocalCacheData`
+        /// 를 넘겨 URLSession HTTP 캐시를 우회한다(전환 시 stale 목록 방지).
+        cachePolicy: URLRequest.CachePolicy = .useProtocolCachePolicy,
         session: URLSession = Networking.session
     ) async throws -> String {
         let retry: @Sendable () async throws -> String = {
@@ -115,6 +119,7 @@ struct Networking {
                 encoding: encoding,
                 userAgent: userAgent,
                 handlesCookies: handlesCookies,
+                cachePolicy: cachePolicy,
                 session: session
             )
         }
@@ -124,6 +129,7 @@ struct Networking {
                 encoding: encoding,
                 userAgent: userAgent,
                 handlesCookies: handlesCookies,
+                cachePolicy: cachePolicy,
                 session: session
             )
             return try await applyBotCheckGuard(url: url, body: html, retry: retry)
@@ -145,10 +151,12 @@ struct Networking {
         encoding: String.Encoding,
         userAgent: String?,
         handlesCookies: Bool,
+        cachePolicy: URLRequest.CachePolicy,
         session: URLSession
     ) async throws -> String {
         var request = URLRequest(url: url)
         request.httpShouldHandleCookies = handlesCookies
+        request.cachePolicy = cachePolicy
         if let userAgent {
             request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         }

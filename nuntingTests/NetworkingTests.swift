@@ -42,6 +42,35 @@ final class NetworkingTests: XCTestCase {
         XCTAssertEqual(MockURLProtocol.attempts.count, 1)
     }
 
+    // MARK: - Cache policy
+
+    func testFetchHTMLThreadsCachePolicyToRequest() async throws {
+        // 보드 목록은 항상 fresh 를 위해 reloadIgnoringLocalCacheData 를 넘긴다 —
+        // 그게 실제 URLRequest 까지 도달하는지 핀.
+        MockURLProtocol.handlers = [.response(status: 200, body: "<html>ok</html>")]
+
+        _ = try await Networking.fetchHTML(
+            url: URL(string: "https://example.com/")!,
+            cachePolicy: .reloadIgnoringLocalCacheData,
+            session: session
+        )
+
+        XCTAssertEqual(MockURLProtocol.attempts.first?.cachePolicy, .reloadIgnoringLocalCacheData)
+    }
+
+    func testFetchHTMLDefaultsToProtocolCachePolicy() async throws {
+        // 기본값은 세션 기본 정책 — cachePolicy 인자가 기존 호출부 동작을
+        // 바꾸지 않음을 핀.
+        MockURLProtocol.handlers = [.response(status: 200, body: "<html>ok</html>")]
+
+        _ = try await Networking.fetchHTML(
+            url: URL(string: "https://example.com/")!,
+            session: session
+        )
+
+        XCTAssertEqual(MockURLProtocol.attempts.first?.cachePolicy, .useProtocolCachePolicy)
+    }
+
     // MARK: - Transient retry
 
     func testFetchHTMLRetriesOnNetworkConnectionLostAndSucceeds() async throws {

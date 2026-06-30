@@ -37,6 +37,12 @@ final class PostDetailLoader {
     /// 건너뛴다. 테스트는 canned HTML 주입.
     typealias WarmHTML = @MainActor (String) -> String?
 
+    /// 봇체크 챌린지 시트를 띄우는 side-effect 시임. 프로덕션은
+    /// `BotCheckCoordinator.shared.challenge(url:)` 로 연결되고, 테스트는
+    /// no-op 스파이를 주입해 실제 시트/대기 없이 안전망 분기를 검증한다.
+    /// (`Networking.recoverFromBotCheckStatus` 의 challenger 와 같은 계약.)
+    typealias Challenger = @Sendable (URL) async -> Void
+
     // MARK: - Observed state
 
     private(set) var detail: PostDetail?
@@ -57,6 +63,7 @@ final class PostDetailLoader {
     private let fetcher: Fetcher
     private let resolver: Resolver
     private let warmHTML: WarmHTML
+    private let challenger: Challenger
     /// 댓글 재시도에 필요한 입력(디스패치 후 resolved Post + 이미 받아 둔
     /// detail HTML). 댓글 실패 시에만 채워진다.
     private var commentRetryContext: (post: Post, detailHTML: String)?
@@ -74,11 +81,15 @@ final class PostDetailLoader {
         },
         warmHTML: @escaping WarmHTML = { id in
             DetailPrefetcher.shared.consume(id: id)
+        },
+        challenger: @escaping Challenger = { url in
+            await BotCheckCoordinator.shared.challenge(url: url)
         }
     ) {
         self.fetcher = fetcher
         self.resolver = resolver
         self.warmHTML = warmHTML
+        self.challenger = challenger
     }
 
     // MARK: - Public API
@@ -145,7 +156,8 @@ final class PostDetailLoader {
 
             case .parser(let resolved, let prefetched):
                 let parser = try ParserFactory.parser(for: resolved.site)
-                let html: String
+                // var: 아래 애객 인터스티셜 안전망에서 재요청 본으로 교체될 수 있다.
+                var html: String
                 if let prefetched {
                     // The prefetched body came from `resolveFinalURL`'s
                     // GET — that path never goes through `fetchHTML`,
@@ -171,6 +183,33 @@ final class PostDetailLoader {
                     html = warm
                 } else {
                     html = try await fetcher(resolved.url, resolved.site.encoding)
+                }
+                // 애객 미러 인터스티셜 2차 안전망. 1차 detector(fetchHTML /
+                // applyBotCheckGuard 내부의 `looksLikeBotCheck`)는 마커 substring
+                // 에 의존해, 챌린지 페이지 문구가 바뀌면 인터스티셜을 놓쳐
+                // AagagParser 로 흘려보내고 사용자는 "불러오기 실패"만 본다.
+                // 미러 본문이 비정상적으로 짧으면(정상 미러 상세는 수십 KB) 마커와
+                // 무관하게 봇체크로 보고 시트를 띄운 뒤 한 번 재요청한다.
+                //
+                // 범위를 `/mirror/re` 로 한정: 리다이렉트가 풀린 경우 `resolved.site`
+                // 는 소스 사이트라 제외되고, 미러 항목이 리다이렉트에 실패해(=303
+                // 챌린지) 애객 호스트가 직접 짧은 응답을 준 경우만 잡는다. 네이티브
+                // `/issue/` 페이지나 정상 미러 본문은 대상이 아니다.
+                if resolved.site == .aagag,
+                   resolved.url.path.hasPrefix("/mirror/re"),
+                   html.count < 3_000 {
+                    await challenger(resolved.url)
+                    try Task.checkCancellation()
+                    html = try await fetcher(resolved.url, resolved.site.encoding)
+                    // 재요청 결과도 같은 조건으로 재검증. 사용자가 시트를 닫았거나
+                    // 쿠키 처리가 실패하면 두 번째 응답도 짧은 인터스티셜일 수 있다 —
+                    // 그걸 AagagParser 로 흘리면 "불러오기 실패"로 뭉개지므로,
+                    // 통일된 캡챠 에러로 surface 한다(applyBotCheckGuard 의
+                    // retry-여전히-막힘 → .captchaChallenge 와 같은 계약; 시트 루프
+                    // 없이 outer catch 가 localized 메시지를 띄운다).
+                    if html.count < 3_000 {
+                        throw NetworkError.captchaChallenge(resolved.url)
+                    }
                 }
                 try Task.checkCancellation()
 

@@ -112,6 +112,10 @@ struct RootTabView: View {
     @State private var browsingBoard: Board?
     // 상세 오버레이 백드래그(우→ 스와이프 닫기) 상태기계.
     @State private var backDrag = DetailBackDrag()
+    // 모음(0) 탭 재탭 시 증가 — 상세가 떠 있으면 상세 본문을, 아니면 현재
+    // 보드 목록을 맨 위로 스크롤하는 신호. reloadToken 과 같은 토큰 패턴으로
+    // ArchiveHome/BoardPager/BoardListView·PostDetailScreen 까지 내려간다.
+    @State private var scrollTopToken = 0
 
     @Environment(\.scenePhase) private var scenePhase
 
@@ -140,7 +144,16 @@ struct RootTabView: View {
             // 필터 리셋도 막는다.
             TabView(selection: Binding(
                 get: { historyTabState.selectedTab },
-                set: { historyTabState.selectTab($0) }
+                set: { newValue in
+                    // 모음(0) 재탭(이미 모음 선택 상태에서 다시 탭) → 맨 위로
+                    // 스크롤 신호. SwiftUI 는 선택된 탭을 재탭해도 selection
+                    // setter 를 같은 값으로 호출하므로 여기서 감지한다. 다른
+                    // 탭에서 모음으로 "전환"은 재탭이 아니므로 스크롤하지 않는다.
+                    if newValue == 0, historyTabState.selectedTab == 0 {
+                        scrollTopToken += 1
+                    }
+                    historyTabState.selectTab(newValue)
+                }
             )) {
                 Tab("모음", systemImage: "tray.full.fill", value: 0) {
                     ArchiveHome(
@@ -152,7 +165,8 @@ struct RootTabView: View {
                         isActive: historyTabState.effectiveSelectedTab == 0,
                         searchByBoard: $searchByBoard,
                         currentBoardID: $currentBoardID,
-                        onPresentSearch: { showingSearch = true }
+                        onPresentSearch: { showingSearch = true },
+                        scrollTopToken: scrollTopToken
                     )
                 }
                 Tab("둘러보기", systemImage: "square.grid.2x2", value: 1) {
@@ -328,6 +342,8 @@ private struct ArchiveHome: View {
     @Binding var currentBoardID: String?
     // 검색 버튼 탭 → 셸의 SearchSheet 띄우기.
     let onPresentSearch: () -> Void
+    // 모음 탭 재탭 시 증가 — 현재 보드 목록을 맨 위로 스크롤하는 신호.
+    let scrollTopToken: Int
 
     @State private var filterByBoard: [String: BoardFilter] = [:]
     // 떠 있는 탭바가 가리는 하단 안전영역 높이(측정). 리스트를 탭바 밑까지
@@ -368,7 +384,8 @@ private struct ArchiveHome: View {
                     bottomControlsInset: Self.bottomControlsInset,
                     baseBottomInset: bottomSafeInset,
                     readStore: readStore,
-                    onSelectPost: onSelectPost
+                    onSelectPost: onSelectPost,
+                    scrollTopToken: scrollTopToken
                 )
                 // 탭바 밑까지 리스트가 깔려 유리 탭바에 콘텐츠가 비치게 한다.
                 .ignoresSafeArea(edges: .bottom)
@@ -636,6 +653,8 @@ private struct BoardPager: View {
     let baseBottomInset: CGFloat
     let readStore: ReadStore
     let onSelectPost: (Post) -> Void
+    // 모음 탭 재탭 시 증가 — 각 페이지(BoardListView)로 내려보내 맨 위로 스크롤.
+    let scrollTopToken: Int
 
     // 가상 인덱스: 0=헤드 센티넬(boards.last) / 1…n=실제 / n+1=테일 센티넬(boards.first)
     @State private var index = 1
@@ -653,7 +672,8 @@ private struct BoardPager: View {
                 BoardListView(board: board, filter: filterByBoard[board.id],
                               searchQuery: searchByBoard[board.id],
                               bottomContentInset: inset(board),
-                              reloadToken: reloadTokens[board.id] ?? 0, readStore: readStore,
+                              reloadToken: reloadTokens[board.id] ?? 0,
+                              scrollTopToken: scrollTopToken, readStore: readStore,
                               onSelectPost: onSelectPost)
                     .equatable()
             }
@@ -682,7 +702,8 @@ private struct BoardPager: View {
         BoardListView(board: board, filter: filterByBoard[board.id],
                       searchQuery: searchByBoard[board.id],
                       bottomContentInset: inset(board),
-                      reloadToken: reloadTokens[board.id] ?? 0, readStore: readStore,
+                      reloadToken: reloadTokens[board.id] ?? 0,
+                      scrollTopToken: scrollTopToken, readStore: readStore,
                       onSelectPost: onSelectPost)
             .equatable()
             .tag(tag)

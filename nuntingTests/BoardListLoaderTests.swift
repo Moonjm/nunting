@@ -139,6 +139,48 @@ final class BoardListLoaderTests: XCTestCase {
                        "pull-to-refresh 는 loadedKey 가드 우회 — 같은 key 라도 재페치")
     }
 
+    // MARK: - 보드 전환 reload (목록 비움 + 스피너)
+
+    func testReloadClearingListEmptiesPostsWhenFetchFails() async {
+        // 보드 전환(clearingList: true)은 목록을 즉시 비운다 → 실패한 재요청은
+        // 다시 채우지 않으므로 빈 채로 남는다(스피너/에러 상태). 먼 보드가
+        // 헐렸다 새 loader 로 재생성되는 것과 동일한 "비웠다 채움" 피드백.
+        let calls = TestCounter()
+        let loader = makeLoader(fetcher: { [clienHTML] _, _, _, _ in
+            calls.increment()
+            if calls.value == 1 { return clienHTML }
+            throw URLError(.timedOut)
+        })
+
+        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil)
+        XCTAssertEqual(loader.posts.count, 2)
+
+        await loader.reload(board: .clienNews, filter: nil, searchQuery: nil, clearingList: true)
+
+        XCTAssertTrue(loader.posts.isEmpty,
+                      "clearingList 는 목록을 비우고, 실패한 재요청은 다시 채우지 않음")
+        XCTAssertNotNil(loader.errorMessage)
+    }
+
+    func testReloadWithoutClearingKeepsPostsWhenFetchFails() async {
+        // 대조군: 기본 reload(pull-to-refresh)는 실패해도 이전 목록을 유지 —
+        // 네이티브 새로고침 스피너가 있고 깜빡임을 피하기 위함.
+        let calls = TestCounter()
+        let loader = makeLoader(fetcher: { [clienHTML] _, _, _, _ in
+            calls.increment()
+            if calls.value == 1 { return clienHTML }
+            throw URLError(.timedOut)
+        })
+
+        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil)
+        XCTAssertEqual(loader.posts.count, 2)
+
+        await loader.reload(board: .clienNews, filter: nil, searchQuery: nil)
+
+        XCTAssertEqual(loader.posts.count, 2,
+                       "기본 reload 는 새로고침 중 이전 목록을 유지")
+    }
+
     // MARK: - 보드 재방문 = 항상 fresh (사용자 선호: 최신글 우선)
 
     func testRevisitGoesColdAndShowsFreshPosts() async {
