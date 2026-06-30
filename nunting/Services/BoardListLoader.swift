@@ -75,7 +75,12 @@ final class BoardListLoader {
                 url: url,
                 encoding: encoding,
                 userAgent: userAgent,
-                handlesCookies: handlesCookies
+                handlesCookies: handlesCookies,
+                // 보드 목록은 항상 최신글이 중요 — HTTP 캐시를 우회해 보드 전환/
+                // 새로고침 때마다 무조건 서버에서 새로 받는다. (전환 자체는 이미
+                // reload 로 재요청하지만, URLSession 캐시가 stale 응답을 내주면
+                // "새로고침 안 된 듯" 보이던 것을 차단.)
+                cachePolicy: .reloadIgnoringLocalCacheData
             )
         },
         snapshotStore: BoardListSnapshotStore = BoardListSnapshotStore()
@@ -118,7 +123,11 @@ final class BoardListLoader {
             isLoadingMore = false
             loadMoreError = false
             errorMessage = nil
-            loadedKey = key
+            // loadedKey 는 여기서 설정하지 않는다 — fresh 재검증 fetch 가 성공해야
+            // (load() 내부에서) 비로소 설정된다. 콜드 스타트 재검증이 실패하면
+            // loadedKey 가 nil 로 남아, 다음 refresh 가 stale 스냅샷에 갇히지 않고
+            // 다시 fresh 를 시도할 수 있다. (cold-path 분기와도 일관 — 거기도
+            // load 성공 시에만 loadedKey 를 찍는다.)
             await load(board: board, filter: filter, searchQuery: searchQuery)
             return
         }
@@ -142,15 +151,28 @@ final class BoardListLoader {
         await load(board: board, filter: filter, searchQuery: searchQuery)
     }
 
-    /// Drive from the view's `.refreshable` modifier (pull-to-refresh).
-    /// Bypasses the `loadedKey` short-circuit so a manual refresh
-    /// always re-fetches even if the same key was just loaded.
-    func reload(board: Board, filter: BoardFilter?, searchQuery: String?) async {
+    /// Drive from the view's `.refreshable` modifier (pull-to-refresh)
+    /// and from board-switch reload-token bumps. Bypasses the `loadedKey`
+    /// short-circuit so a manual refresh always re-fetches even if the
+    /// same key was just loaded.
+    ///
+    /// `clearingList`: 보드 전환은 `true` — 목록을 비우고 스피너를 띄워
+    /// "새로고침 중"이 눈에 보이게(헐렸다 다시 만들어지는 먼 보드와 동일한
+    /// 피드백). pull-to-refresh 는 `false`(기본) — `.refreshable` 자체 스피너가
+    /// 있으니 이전 목록을 화면에 유지한다.
+    func reload(board: Board, filter: BoardFilter?, searchQuery: String?, clearingList: Bool = false) async {
         let key = Self.taskKey(board: board, filter: filter, searchQuery: searchQuery)
         currentKey = key
-        // Don't clear `posts` first — the existing list stays on
-        // screen during the refresh and `.refreshable` shows its own
-        // native spinner.
+        if clearingList {
+            posts = []
+            seenIDs = []
+            currentPage = 1
+            hasMorePages = true
+            isLoadingMore = false
+            loadMoreError = false
+            errorMessage = nil
+            nextSearchURL = nil
+        }
         await load(board: board, filter: filter, searchQuery: searchQuery)
     }
 
