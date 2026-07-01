@@ -38,13 +38,13 @@ final class CommentAuthorOnlyTests: XCTestCase {
     }
 
     func testPpomppuKeepsAuthorOnlyComment() throws {
-        let html = """
-        <html><body><div class="cmAr"><div class="sect-cmt" data-depth="0">
-          <h6 class="com_name"><span class="com_name_writer">영희</span></h6>
-          <div id="ctx_5"></div>
-        </div></div></body></html>
-        """
-        let comments = try PpomppuParser().parseComments(html: html)
+        // 본문이 빈 댓글(memo 없음)이라도 작성자(name)만 있으면 노출돼야 한다.
+        let json = #"""
+        {"comments":[
+          {"no":5,"depth":0,"name":"<b>영희</b>","memo":"","vote_btn":{"vote_count":0},"meta":{"time_display":"방금"}}
+        ],"total_page":1,"c_page":1}
+        """#
+        let comments = try PpomppuParser().parseComments(html: json)
         XCTAssertEqual(comments.count, 1)
         XCTAssertEqual(comments.first?.author, "영희")
         XCTAssertTrue(comments.first?.content.isEmpty == true)

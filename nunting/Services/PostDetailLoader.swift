@@ -224,7 +224,6 @@ final class PostDetailLoader {
                 // or first-page comment DOM) can reuse it.
                 let parsedHTML = html
                 let parsedPost = resolved
-                let postSite = resolved.site
                 let fetcher = self.fetcher
                 async let parsedTask: PostDetail = Task.detached(priority: .userInitiated) {
                     // autoreleasepool: 파싱은 detached(협력 풀) 스레드에서 도는데,
@@ -251,7 +250,10 @@ final class PostDetailLoader {
                             for: resolved,
                             detailHTML: parsedHTML
                         ) { url in
-                            try await fetcher(url, postSite.encoding)
+                            // 파서가 URL 별 charset 을 지정 — ppomppu 댓글 JSON 은
+                            // UTF-8, 페이지는 CP949 라 사이트 단일 인코딩으로는
+                            // 한글이 깨진다. `responseEncoding` 이 URL 로 판별.
+                            try await fetcher(url, parser.responseEncoding(for: url))
                         })
                     } catch {
                         return .failure(error)
@@ -327,14 +329,13 @@ final class PostDetailLoader {
         defer { isRetryingComments = false }
 
         let fetcher = self.fetcher
-        let encoding = context.post.site.encoding
         let generation = loadGeneration
         do {
             let extras = try await parser.fetchAllComments(
                 for: context.post,
                 detailHTML: context.detailHTML
             ) { url in
-                try await fetcher(url, encoding)
+                try await fetcher(url, parser.responseEncoding(for: url))
             }
             // fetch 사이 새 로드가 더 신선한 본을 커밋했으면(세대 변화) 이
             // 결과는 stale — `current` 로 되돌리지 말고 조용히 버린다.
