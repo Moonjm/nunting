@@ -1,29 +1,24 @@
 import XCTest
 @testable import nunting
 
-/// 뽐뿌 모바일 detail 은 댓글 "마지막 페이지"를 inline 으로 렌더하는데,
-/// fetchAllComments 가 이를 page 1 로 오인해 그 페이지를 중복시키고 실제
-/// page 1 을 누락시키던 버그 회귀 방지. (스크롤하면 같은 댓글이 다시 나옴)
+/// 뽐뿌가 댓글을 서버렌더 HTML(`div.cmAr div.sect-cmt`)에서 per-page JSON
+/// 엔드포인트(`ajax_bbs_comment.php?cmd=get_comment_json`)로 옮긴 뒤, 옛 HTML
+/// 스크레이퍼가 빈 배열만 반환하던 회귀(댓글이 아예 안 보임)를 막는다. 새
+/// 경로의 페이지네이션·병합·실패흡수·매핑을 JSON fixture 로 고정한다.
 final class PpomppuCommentPaginationTests: XCTestCase {
-    /// 병렬 task group 의 fetcher 가 어떤 c_page 를 요청했는지 thread-safe 하게
-    /// 기록(자식 task 들이 동시에 append 하므로 plain Array 는 race).
-    private actor PageRecorder {
-        private(set) var pages: [String] = []
-        func add(_ p: String) { pages.append(p) }
+    /// 병렬 task group 의 fetcher 가 어떤 URL 을 요청했는지 thread-safe 하게 기록
+    /// (자식 task 들이 동시에 append 하므로 plain Array 는 race).
+    private actor RequestRecorder {
+        private(set) var urls: [URL] = []
+        func add(_ u: URL) { urls.append(u) }
     }
 
-    /// current/total + 댓글 1개를 가진 최소 뽐뿌 댓글 페이지 HTML.
-    private func page(current: Int, total: Int, ctxID: String, content: String) -> String {
-        """
-        <html><body>
-        <div class="cmt-topInfo"><span class="cmt-total">159</span>\
-        <span class="cmt-page"><a class="prevPage"></a>\(current) / \(total)\
-        <a class="nextPage"></a></span></div>
-        <div class="cmAr">
-          <div class="sect-cmt" data-depth="0"><div id="ctx_\(ctxID)">\(content)</div></div>
-        </div>
-        </body></html>
-        """
+    /// 최소 `get_comment_json` 페이지. content-only 댓글을 `no` 오름차순으로 싣는다.
+    private func jsonPage(totalPage: Int, comments: [(no: Int, content: String)]) -> String {
+        let items = comments.map { c in
+            #"{"no":\#(c.no),"depth":0,"name":"<b>글쓴이</b>","memo":"<p>\#(c.content)</p>","vote_btn":{"vote_count":0},"meta":{"time_display":"2026-07-01 10:00"}}"#
+        }.joined(separator: ",")
+        return #"{"comments":[\#(items)],"total_page":\#(totalPage),"c_page":1}"#
     }
 
     private func cpage(of url: URL) -> String {
@@ -37,81 +32,140 @@ final class PpomppuCommentPaginationTests: XCTestCase {
             url: URL(string: "https://m.ppomppu.co.kr/new/bbs_view.php?id=freeboard&no=\(no)")!)
     }
 
-    func testDetailLastPageNotDuplicatedAndAllPagesIncluded() async throws {
+    func testMultiPageFetchesEveryPageAndMergesInOrder() async throws {
         let parser = PpomppuParser()
-        // detail = 마지막 페이지(3/3) inline.
-        let detailHTML = page(current: 3, total: 3, ctxID: "30", content: "p3")
-
-        let recorder = PageRecorder()
-        let comments = try await parser.fetchAllComments(for: post(no: 1), detailHTML: detailHTML) { url in
-            let cp = self.cpage(of: url)
-            await recorder.add(cp)
-            switch cp {
-            case "1": return self.page(current: 1, total: 3, ctxID: "10", content: "p1")
-            case "2": return self.page(current: 2, total: 3, ctxID: "20", content: "p2")
-            case "3": return self.page(current: 3, total: 3, ctxID: "30", content: "p3")
-            default: return ""
+        let recorder = RequestRecorder()
+        let comments = try await parser.fetchAllComments(for: post(no: 1), detailHTML: nil) { url in
+            await recorder.add(url)
+            switch self.cpage(of: url) {
+            case "1": return self.jsonPage(totalPage: 3, comments: [(1, "p1")])
+            case "2": return self.jsonPage(totalPage: 3, comments: [(2, "p2")])
+            case "3": return self.jsonPage(totalPage: 3, comments: [(3, "p3")])
+            default: return self.jsonPage(totalPage: 3, comments: [])
             }
         }
 
-        // 1·2·3 순서대로, 중복/누락 없이.
-        XCTAssertEqual(comments.map(\.content), ["p1", "p2", "p3"])
+        XCTAssertEqual(comments.map(\.content), ["p1", "p2", "p3"], "1→N 순서로 병합")
         XCTAssertEqual(Set(comments.map(\.id)).count, 3, "중복 댓글 없어야 함")
-        // detail(=page3)은 재사용 → c_page=3 안 가져오고 빠진 1·2 만 fetch.
-        let requested = await recorder.pages
-        XCTAssertEqual(Set(requested), ["1", "2"])
-    }
 
-    func testDetailGenuinelyPage1MultiPageFetchesRest() async throws {
-        // 어떤 글은 detail 이 실제 page 1 (1/2) 일 수도 있다. 그땐 2..N 만
-        // 가져오면 되고 중복이 없어야 한다(clamp/슬롯 로직의 반대쪽 케이스).
-        let parser = PpomppuParser()
-        let detailHTML = page(current: 1, total: 2, ctxID: "10", content: "p1")
-
-        let recorder = PageRecorder()
-        let comments = try await parser.fetchAllComments(for: post(no: 3), detailHTML: detailHTML) { url in
-            let cp = self.cpage(of: url)
-            await recorder.add(cp)
-            return cp == "2" ? self.page(current: 2, total: 2, ctxID: "20", content: "p2") : ""
+        let requested = await recorder.urls
+        // 옛 방식과 달리 detailHTML 재사용이 없다 — page 1 도 JSON 으로 fetch.
+        XCTAssertEqual(Set(requested.map(self.cpage(of:))), ["1", "2", "3"])
+        // 모든 요청이 sort_asc JSON 엔드포인트로 나가고, id/no 를 post.url 에서 뽑는다.
+        for url in requested {
+            let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            XCTAssertEqual(url.lastPathComponent, "ajax_bbs_comment.php")
+            XCTAssertEqual(comps?.queryItems?.first(where: { $0.name == "cmd" })?.value, "get_comment_json")
+            XCTAssertEqual(comps?.queryItems?.first(where: { $0.name == "comment_mode" })?.value, "sort_asc")
+            XCTAssertEqual(comps?.queryItems?.first(where: { $0.name == "id" })?.value, "freeboard")
+            XCTAssertEqual(comps?.queryItems?.first(where: { $0.name == "no" })?.value, "1")
         }
-
-        XCTAssertEqual(comments.map(\.content), ["p1", "p2"])
-        let requested = await recorder.pages
-        XCTAssertEqual(requested, ["2"], "detail=page1 이면 page2 만 가져옴")
     }
 
-    /// 한 페이지 fetch 가 throw 해도 나머지 페이지는 살아야 한다. throwing
-    /// task group 이던 시절엔 단일 실패가 그룹 전체를 취소시키고 호출부의
-    /// `try?` 가 댓글을 통째로 nil 처리했다(페이지 많을수록 누적 실패).
+    func testSinglePageFetchesOnlyPageOne() async throws {
+        let parser = PpomppuParser()
+        let recorder = RequestRecorder()
+        let comments = try await parser.fetchAllComments(for: post(no: 2), detailHTML: nil) { url in
+            await recorder.add(url)
+            return self.jsonPage(totalPage: 1, comments: [(10, "only")])
+        }
+        XCTAssertEqual(comments.map(\.content), ["only"])
+        let requested = await recorder.urls
+        XCTAssertEqual(requested.map(self.cpage(of:)), ["1"], "단일 페이지는 page1 만 fetch")
+    }
+
+    /// 한 페이지 fetch 가 throw 해도 나머지는 살아야 한다 — throwing group 이던
+    /// 시절엔 단일 실패가 그룹 전체를 취소시켜 멀쩡한 페이지까지 사라졌다.
     func testPageFetchFailureIsAbsorbedAndOtherPagesSurvive() async throws {
         struct PageError: Error {}
         let parser = PpomppuParser()
-        // detail = 마지막 페이지(3/3). 빠진 1·2 중 2 만 실패시킨다.
-        let detailHTML = page(current: 3, total: 3, ctxID: "30", content: "p3")
-
-        let comments = try await parser.fetchAllComments(for: post(no: 4), detailHTML: detailHTML) { url in
+        let comments = try await parser.fetchAllComments(for: post(no: 4), detailHTML: nil) { url in
             switch self.cpage(of: url) {
-            case "1": return self.page(current: 1, total: 3, ctxID: "10", content: "p1")
+            case "1": return self.jsonPage(totalPage: 3, comments: [(1, "p1")])
             case "2": throw PageError()
-            default: return ""
+            case "3": return self.jsonPage(totalPage: 3, comments: [(3, "p3")])
+            default: return self.jsonPage(totalPage: 3, comments: [])
             }
         }
-
-        // page2 만 빠지고 1·3 은 시간순으로 보존.
-        XCTAssertEqual(comments.map(\.content), ["p1", "p3"])
+        XCTAssertEqual(comments.map(\.content), ["p1", "p3"], "page2 만 빠지고 1·3 은 순서 보존")
     }
 
-    func testSinglePageReusesDetailWithoutFetching() async throws {
+    /// 0-comment 글은 `{"comments":[],"total_page":0}` 을 반환한다 — throw 하면
+    /// 로드된 글에 "댓글 로드 실패" 배너가 뜬다. 빈 배열로 조용히 끝나야 한다.
+    func testEmptyThreadYieldsNoCommentsWithoutThrowing() async throws {
         let parser = PpomppuParser()
-        let detailHTML = page(current: 1, total: 1, ctxID: "5", content: "only")
-
-        let recorder = PageRecorder()
-        let comments = try await parser.fetchAllComments(for: post(no: 2), detailHTML: detailHTML) { url in
-            await recorder.add(self.cpage(of: url))
-            return ""
+        let comments = try await parser.fetchAllComments(for: post(no: 5), detailHTML: nil) { _ in
+            #"{"comments":[],"total_page":0,"c_page":1,"total_comment":0}"#
         }
-        XCTAssertEqual(comments.map(\.content), ["only"])
-        let requested = await recorder.pages
-        XCTAssertTrue(requested.isEmpty, "단일 페이지는 추가 fetch 없이 detail 재사용")
+        XCTAssertTrue(comments.isEmpty)
+    }
+
+    /// JSON → PostComment 매핑: name/ memo HTML flatten, vote_count, time_display,
+    /// depth>0=isReply, 그리고 lazy-load 스티커 img 는 stickerURL 로 추출된다.
+    /// 대댓글은 부모의 `sub_cmt` 안에 들어오므로, 실제 응답 shape 대로 중첩시킨다.
+    func testDecodeMapsFieldsAndExtractsSticker() throws {
+        let json = #"""
+        {"comments":[
+          {"no":100,"depth":0,"name":"<b><a href=\"#\"><i class=\"nlevel lv4\"></i>영희</a></b>","memo":"<p>안녕하세요</p>","vote_btn":{"vote_count":7},"meta":{"time_display":"2026-07-01 16:36"},
+           "sub_cmt":[
+             {"no":101,"depth":1,"name":"<b>철수</b>","memo":"<img src=\"/images/lazyloading.jpg\" data-original=\"https://cdn2.ppomppu.co.kr/sticker/emo.gif\">","vote_btn":{"vote_count":0},"meta":{"time_display":"2026-07-01 16:40"}}
+           ]}
+        ],"total_page":1,"c_page":1}
+        """#
+        let comments = try PpomppuParser().parseCommentPage(json).comments
+        XCTAssertEqual(comments.count, 2, "부모 + sub_cmt 대댓글")
+
+        let first = comments[0]
+        XCTAssertEqual(first.author, "영희")
+        XCTAssertEqual(first.content, "안녕하세요")
+        XCTAssertEqual(first.likeCount, 7)
+        XCTAssertEqual(first.dateText, "2026-07-01 16:36")
+        XCTAssertFalse(first.isReply)
+        XCTAssertNil(first.stickerURL)
+
+        let reply = comments[1]
+        XCTAssertEqual(reply.author, "철수")
+        XCTAssertTrue(reply.isReply, "depth>0 은 대댓글")
+        XCTAssertTrue(reply.content.isEmpty, "스티커만 있는 댓글은 본문 비어야")
+        XCTAssertEqual(reply.stickerURL?.absoluteString, "https://cdn2.ppomppu.co.kr/sticker/emo.gif")
+    }
+
+    /// 뽐뿌 대댓글은 부모 댓글의 `sub_cmt` 배열에 **재귀적으로** 중첩된다(대댓글의
+    /// 대댓글까지). 실측: id=car&no=971984 은 top 82 + sub 32 + sub-of-sub 13 = 127.
+    /// 평탄화가 없으면 앱은 top-level 만(82) 보여준다 — 이 회귀를 고정한다.
+    func testNestedSubCommentsAreFlattenedPreOrder() throws {
+        let json = #"""
+        {"comments":[
+          {"no":1,"depth":0,"name":"<b>A</b>","memo":"<p>a</p>","meta":{"time_display":"t"},
+           "sub_cmt":[
+             {"no":2,"depth":1,"name":"<b>B</b>","memo":"<p>b</p>","meta":{"time_display":"t"},
+              "sub_cmt":[
+                {"no":3,"depth":2,"name":"<b>C</b>","memo":"<p>c</p>","meta":{"time_display":"t"},"sub_cmt":null}
+              ]},
+             {"no":4,"depth":1,"name":"<b>D</b>","memo":"<p>d</p>","meta":{"time_display":"t"},"sub_cmt":null}
+           ]},
+          {"no":5,"depth":0,"name":"<b>E</b>","memo":"<p>e</p>","meta":{"time_display":"t"},"sub_cmt":null}
+        ],"total_page":1,"c_page":1}
+        """#
+        let comments = try PpomppuParser().parseCommentPage(json).comments
+        // pre-order: 부모 → 그 대댓글 서브트리 → 다음 형제.
+        XCTAssertEqual(comments.map(\.content), ["a", "b", "c", "d", "e"])
+        XCTAssertEqual(comments.map(\.isReply), [false, true, true, true, false])
+    }
+
+    /// 개별 댓글이 깨져도(예: `no` 누락) 페이지 전체가 아니라 그 행만 드롭돼야 한다 —
+    /// 한 행 파싱 실패로 "댓글 로드 실패" 배너가 뜨면 안 된다.
+    func testMalformedCommentIsDroppedNotWholePage() throws {
+        let json = #"""
+        {"comments":[
+          {"no":1,"depth":0,"name":"<b>A</b>","memo":"<p>ok</p>","meta":{"time_display":"t"}},
+          {"depth":0,"name":"<b>X</b>","memo":"<p>no-id</p>","meta":{"time_display":"t"}},
+          {"no":"3","depth":0,"name":"<b>C</b>","memo":"<p>string-id</p>","meta":{"time_display":"t"}}
+        ],"total_page":1,"c_page":1}
+        """#
+        let comments = try PpomppuParser().parseCommentPage(json).comments
+        // no 없는 행만 빠지고, 문자열 no("3") 는 허용된다.
+        XCTAssertEqual(comments.map(\.content), ["ok", "string-id"])
+        XCTAssertEqual(comments.last?.id, "ppomppu-c-3")
     }
 }

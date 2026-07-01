@@ -134,149 +134,134 @@ public struct PpomppuParser: BoardParser {
     }
 
     public nonisolated func commentsURL(for post: Post) -> URL? {
-        // Comments are embedded in the detail page; pagination uses ?c_page=N on the same URL.
+        // Non-nil so PostDetailLoader triggers the comment leg; the actual
+        // JSON endpoint URL is built in `fetchAllComments`.
         post.url
     }
 
+    /// Ppomppu moved comments out of the server-rendered detail DOM into a
+    /// per-page JSON endpoint (`ajax_bbs_comment.php?cmd=get_comment_json`).
+    /// The old `div.cmAr div.sect-cmt` markup is gone from the detail page —
+    /// `#cmAr` now ships empty and the browser fills it via XHR — so the
+    /// former HTML scraper returned nothing. `detailHTML` is unused: the
+    /// JSON endpoint is independent of the detail body (and, unlike that
+    /// CP949 page, it returns UTF-8 — see `responseEncoding(for:)`).
     public nonisolated func fetchAllComments(
         for post: Post,
-        detailHTML: String?,
+        detailHTML _: String?,
         fetcher: @escaping @Sendable (URL) async throws -> String
     ) async throws -> [PostComment] {
-        // Reuse the detail HTML the caller already fetched for
-        // `parseDetail` — Ppomppu's first-page comments live inside the
-        // detail DOM, so re-fetching `post.url` here only duplicates
-        // parse work.
-        let firstHtml: String
-        if let detailHTML {
-            firstHtml = detailHTML
-        } else {
-            firstHtml = try await fetcher(post.url)
-        }
-        let (info, firstPage) = try parsedDocument(firstHtml) { firstDoc -> ((current: Int, total: Int), [PostComment]) in
-            let info = try commentPageInfo(in: firstDoc)
-            let firstPage = try parseComments(in: firstDoc, fallbackPage: info.current)
-            return (info, firstPage)
-        }
-        if info.total <= 1 { return firstPage }
+        guard let id = queryValue(in: post.url, name: "id"),
+              let no = queryValue(in: post.url, name: "no"),
+              let firstURL = commentJSONURL(id: id, no: no, page: 1)
+        else { return [] }
 
-        // 모바일 detail 은 댓글 **마지막** 페이지를 inline 으로 렌더한다(page 1
-        // 아님). 그 댓글을 무조건 page 1 로 놓으면 `current` 페이지가 중복되고
-        // 빠진 페이지(특히 1번)가 누락된다 — "스크롤하면 같은 댓글이 다시 나옴"
-        // 의 원인. detail 댓글을 실제 인덱스(info.current)에 놓고 나머지 페이지만
-        // 가져온다. 병렬 fetch + 실패 흡수 골격은 `mergeCommentPages` 참조.
+        let first = try parseCommentPage(try await fetcher(firstURL))
+        guard first.totalPage > 1 else { return first.comments }
+
+        // `comment_mode=sort_asc` makes page 1 the oldest comments and each
+        // page ascend chronologically on every board (the default order is
+        // board-dependent — ppomppu descends, pmarket ascends), so a plain
+        // 1...total concat is already chronological. Parallel fetch + per-page
+        // failure absorption skeleton lives in `mergeCommentPages`.
         return try await mergeCommentPages(
-            total: info.total, inlinePage: info.current, inline: firstPage
+            total: first.totalPage, inlinePage: 1, inline: first.comments
         ) { page in
-            guard let pageURL = self.appendingCommentPage(to: post.url, page: page) else { return [] }
-            let html = try await fetcher(pageURL)
-            return try self.parsedDocument(html) { pageDoc in
-                try self.parseComments(in: pageDoc, fallbackPage: page)
-            }
+            guard let pageURL = self.commentJSONURL(id: id, no: no, page: page) else { return [] }
+            return try self.parseCommentPage(try await fetcher(pageURL)).comments
         }
     }
 
-    public nonisolated func parseComments(html: String) throws -> [PostComment] {
-        try parsedDocument(html) { doc in
-            try parseComments(in: doc, fallbackPage: 1)
-        }
+    public nonisolated func parseComments(html json: String) throws -> [PostComment] {
+        try parseCommentPage(json).comments
     }
 
-    /// `fallbackPage` 는 id 없는 댓글의 synthetic id 에 섞어 페이지 간 충돌을
-    /// 막는다 — 페이지마다 `results.count` 가 0 부터 다시 시작하므로, page 를
-    /// 안 섞으면 서로 다른 페이지의 id 없는 두 댓글이 같은 id 를 받아 SwiftUI
-    /// ForEach 키가 충돌한다(멀티페이지 병합 후 발생).
-    nonisolated private func parseComments(in doc: Document, fallbackPage: Int) throws -> [PostComment] {
-        let nodes = try doc.select("div.cmAr div[class*=sect-cmt]")
-        var results: [PostComment] = []
-        for node in nodes {
-            // Ignore nested wrappers if any: only take elements whose own class includes sect-cmt.
-            let classAttr = (try? node.attr("class")) ?? ""
-            let classTokens = classAttr.split(whereSeparator: { $0.isWhitespace }).map(String.init)
-            guard classTokens.contains("sect-cmt") else { continue }
-
-            let depthAttr = try node.attr("data-depth")
-            let isReply = (Int(depthAttr) ?? 0) > 0
-
-            // PostComment ID lives on the preceding anchor, or inside ctx_{id}.
-            // Fallback uses the result index so identity stays stable across re-parses
-            // (avoids SwiftUI ForEach churn).
-            let cmtID: String = try {
-                if let anchor = try node.previousElementSibling(),
-                   anchor.tagName().lowercased() == "a" {
-                    let id = try anchor.attr("id")
-                    if !id.isEmpty { return id }
-                }
-                if let ctx = try node.select("[id^=ctx_]").first() {
-                    let raw = try ctx.attr("id")
-                    return String(raw.dropFirst(4))
-                }
-                return "fallback-p\(fallbackPage)-\(results.count)"
-            }()
-
-            let writerEl = try node.select("h6.com_name span.com_name_writer").first()
-            let writerCopy = writerEl.flatMap { $0.copy() as? Element } ?? writerEl
-            try writerCopy?.select("i, span, img").remove()
-            let author = try writerCopy?.text().trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-            let levelClass = try node.select("h6.com_name i.nlevel").first()
-                .flatMap { try? $0.classNames() }
-                .flatMap { $0.first(where: { $0.hasPrefix("lv") }) }
-            let levelIconURL = Self.levelIconURL(level: levelClass)
-
-            let likeText = try node.select("[id^=vote_cnt_]").first()?.text() ?? "0"
-            let likeCount = ParserText.integerFromDigits(in: likeText) ?? 0
-
-            let dateText = try node.select("div.cin_02 time").first()?.text()
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-            let contentEl = try node.select("[id^=ctx_]").first()
-            let content = try contentEl.map { try cleanCommentText(from: $0) } ?? ""
-            let stickerURL = try contentEl.flatMap { try extractStickerURL(from: $0) }
-            let videoURL = try contentEl.flatMap { try extractCommentVideoURL(from: $0) }
-
-            // Keep author-only comments — drop only the genuinely empty row
-            // (no content, no sticker, no video, no nickname).
-            guard !content.isEmpty || stickerURL != nil || videoURL != nil || !author.isEmpty else { continue }
-
-            results.append(PostComment(
-                id: "\(site.rawValue)-c-\(cmtID)",
-                author: author,
-                dateText: dateText,
-                content: content,
-                likeCount: likeCount,
-                isReply: isReply,
-                stickerURL: stickerURL,
-                videoURL: videoURL,
-                authIconURL: nil,
-                levelIconURL: levelIconURL
-            ))
-        }
-        return results
+    /// Ppomppu comment JSON is UTF-8 while its HTML pages are CP949, so the
+    /// detail-fetching fetcher (bound to `site.encoding`) must decode this
+    /// endpoint as UTF-8 instead. `PostDetailLoader` asks the parser per URL.
+    public nonisolated func responseEncoding(for url: URL) -> String.Encoding {
+        url.lastPathComponent == "ajax_bbs_comment.php" ? .utf8 : site.encoding
     }
 
-    /// 댓글 페이지 정보 "current / total". 모바일 detail 은 **마지막** 댓글
-    /// 페이지를 inline 으로 렌더하므로(예 "3 / 3"), total 뿐 아니라 current 도
-    /// 읽어야 detail 댓글을 올바른 페이지 슬롯에 놓을 수 있다. current 를
-    /// 1...total 로 clamp. 못 읽으면 (1, 1).
-    nonisolated private func commentPageInfo(in doc: Document) throws -> (current: Int, total: Int) {
-        guard let pageEl = try doc.select("div.cmt-topInfo span.cmt-page").first() else { return (1, 1) }
-        let text = try pageEl.text()
-        // Format: "3 / 3" (prevPage/nextPage 앵커는 텍스트 없음).
-        let parts = text.split(separator: "/").map { $0.trimmingCharacters(in: .whitespaces) }
-        guard parts.count == 2,
-              let current = ParserText.integerFromDigits(in: parts[0]),
-              let total = ParserText.integerFromDigits(in: parts[1]), total >= 1
-        else { return (1, 1) }
-        return (min(max(1, current), total), total)
+    /// Decode one `get_comment_json` page into comments + page count. Internal
+    /// (not private) so the empty-thread / mapping contract is unit-testable
+    /// without a live fetch — a 0-comment post returns `{"comments":[],
+    /// "total_page":0,…}`, which must yield `([], 1)` rather than throw (a
+    /// throw here surfaces as a false "댓글 로드 실패" banner on a loaded thread).
+    nonisolated func parseCommentPage(_ json: String) throws -> (comments: [PostComment], totalPage: Int) {
+        let resp = try JSONDecoder().decode(CommentResponse.self, from: Data(json.utf8))
+        var flattened: [PostComment] = []
+        for raw in resp.comments { appendComment(raw, into: &flattened) }
+        return (flattened, max(1, resp.totalPage))
     }
 
-    nonisolated private func appendingCommentPage(to url: URL, page: Int) -> URL? {
-        guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
-        var items = (comps.queryItems ?? []).filter { $0.name != "c_page" }
-        items.append(URLQueryItem(name: "c_page", value: "\(page)"))
-        comps.queryItems = items
+    /// Ppomppu nests replies (and replies-to-replies) inside each comment's
+    /// `sub_cmt` array rather than the flat `comments` list — with `depth`
+    /// growing per level. Emit each comment pre-order (parent, then its reply
+    /// subtree) so threaded order is preserved and the row's `isReply` indent
+    /// reflects `depth>0`. Without this recursion every reply is dropped:
+    /// a 127-comment thread surfaced only its 82 top-level comments.
+    nonisolated private func appendComment(_ raw: CommentResponse.RawComment, into out: inout [PostComment]) {
+        if let mapped = mapComment(raw) { out.append(mapped) }
+        // Recurse even when the parent maps to nil (genuinely empty row) so a
+        // deleted/blank parent doesn't swallow its still-visible replies.
+        for reply in raw.subCmt { appendComment(reply, into: &out) }
+    }
+
+    nonisolated func commentJSONURL(id: String, no: String, page: Int) -> URL? {
+        guard var comps = URLComponents(url: site.baseURL, resolvingAgainstBaseURL: false) else { return nil }
+        comps.path = "/new/bbs_view/ajax_bbs_comment.php"
+        comps.queryItems = [
+            URLQueryItem(name: "cmd", value: "get_comment_json"),
+            URLQueryItem(name: "id", value: id),
+            URLQueryItem(name: "no", value: no),
+            URLQueryItem(name: "c_page", value: "\(page)"),
+            URLQueryItem(name: "comment_mode", value: "sort_asc"),
+        ]
         return comps.url
+    }
+
+    nonisolated private func mapComment(_ raw: CommentResponse.RawComment) -> PostComment? {
+        let author = authorName(fromNameHTML: raw.name)
+        let (content, stickerURL, videoURL) = renderMemo(raw.memo)
+        // Keep author-only comments — drop only the genuinely empty row
+        // (no content, no sticker, no video, no nickname).
+        guard !content.isEmpty || stickerURL != nil || videoURL != nil || !author.isEmpty else { return nil }
+        return PostComment(
+            id: "\(site.rawValue)-c-\(raw.no)",
+            author: author,
+            dateText: raw.meta?.timeDisplay ?? "",
+            content: content,
+            likeCount: raw.voteBtn?.voteCount ?? 0,
+            isReply: raw.depth > 0,
+            stickerURL: stickerURL,
+            videoURL: videoURL,
+            authIconURL: nil,
+            levelIconURL: nil
+        )
+    }
+
+    /// `name` is an HTML fragment (`<b><a><i class="nlevel lvN"></i>닉네임</a></b>`);
+    /// drop the level-icon `<i>` and any image, then flatten to the nickname.
+    nonisolated private func authorName(fromNameHTML html: String) -> String {
+        (try? parsedBodyFragment(html) { doc -> String in
+            let body = doc.body() ?? doc
+            try body.select("i, img").remove()
+            return try body.text().trimmingCharacters(in: .whitespacesAndNewlines)
+        }) ?? ""
+    }
+
+    /// `memo` is the comment-body HTML fragment (same markup the old `ctx_`
+    /// container held), so the existing sticker/video/text extractors apply
+    /// unchanged once it's parsed. One parse feeds all three.
+    nonisolated private func renderMemo(_ html: String) -> (content: String, sticker: URL?, video: URL?) {
+        (try? parsedBodyFragment(html) { doc -> (String, URL?, URL?) in
+            let body = doc.body() ?? doc
+            let content = try cleanCommentText(from: body)
+            let sticker = try extractStickerURL(from: body)
+            let video = try extractCommentVideoURL(from: body)
+            return (content, sticker, video)
+        }) ?? ("", nil, nil)
     }
 
     /// Ppomppu wraps user-uploaded video files in `<img src="...mov">` /
@@ -431,10 +416,87 @@ public struct PpomppuParser: BoardParser {
         guard let comps = URLComponents(string: board.path) else { return nil }
         return comps.queryItems?.first(where: { $0.name == "id" })?.value
     }
+}
 
-    nonisolated private static func levelIconURL(level: String?) -> URL? {
-        // Ppomppu levels are CSS sprites without standalone image URLs; show plain text instead.
-        _ = level
-        return nil
+// MARK: - Comment JSON envelope
+
+/// `ajax_bbs_comment.php?cmd=get_comment_json` response. Decoded defensively
+/// so neither a 0-comment post (`{"comments":[],"total_page":0,…}`) nor a
+/// single malformed comment surfaces as a false "댓글 로드 실패" banner:
+/// missing keys default, and each comment decodes through `Failable` so one
+/// unparseable row is dropped instead of failing the whole page.
+private struct CommentResponse: Decodable {
+    let comments: [RawComment]
+    let totalPage: Int
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        comments = (try c.decodeIfPresent([Failable<RawComment>].self, forKey: .comments) ?? [])
+            .compactMap(\.value)
+        totalPage = try c.decodeIfPresent(Int.self, forKey: .totalPage) ?? 1
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case comments
+        case totalPage = "total_page"
+    }
+
+    /// Wrapper that turns a per-element decode failure into `nil` rather than
+    /// aborting the enclosing array — used for both the top-level `comments`
+    /// list and each nested `sub_cmt` list so a lone bad row never nukes the
+    /// page (or a reply subtree).
+    struct Failable<T: Decodable>: Decodable {
+        let value: T?
+        init(from decoder: Decoder) throws { value = try? T(from: decoder) }
+    }
+
+    struct RawComment: Decodable {
+        let no: Int
+        let depth: Int
+        let name: String            // author HTML fragment
+        let memo: String            // comment-body HTML fragment
+        let meta: Meta?
+        let voteBtn: VoteBtn?
+        let subCmt: [RawComment]    // nested replies (recursive, `depth`-tagged)
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            // `no` is the identity — accept Int or numeric String; a truly
+            // absent/garbage id makes the row undroppable-by-id, so fail (the
+            // `Failable` wrapper then drops just this row, not the page).
+            if let i = try? c.decode(Int.self, forKey: .no) {
+                no = i
+            } else if let s = try? c.decode(String.self, forKey: .no), let i = Int(s) {
+                no = i
+            } else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .no, in: c, debugDescription: "comment `no` missing/non-numeric")
+            }
+            depth = try c.decodeIfPresent(Int.self, forKey: .depth) ?? 0
+            name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+            memo = try c.decodeIfPresent(String.self, forKey: .memo) ?? ""
+            meta = try? c.decodeIfPresent(Meta.self, forKey: .meta)
+            voteBtn = try? c.decodeIfPresent(VoteBtn.self, forKey: .voteBtn)
+            // `sub_cmt` is `null` on leaf comments and an array on threaded
+            // ones; `try?` also absorbs any unexpected scalar shape.
+            subCmt = ((try? c.decodeIfPresent([Failable<RawComment>].self, forKey: .subCmt)) ?? nil)?
+                .compactMap(\.value) ?? []
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case no, depth, name, memo, meta
+            case voteBtn = "vote_btn"
+            case subCmt = "sub_cmt"
+        }
+    }
+
+    struct Meta: Decodable {
+        let timeDisplay: String?
+        enum CodingKeys: String, CodingKey { case timeDisplay = "time_display" }
+    }
+
+    struct VoteBtn: Decodable {
+        let voteCount: Int?
+        enum CodingKeys: String, CodingKey { case voteCount = "vote_count" }
     }
 }

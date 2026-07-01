@@ -25,15 +25,24 @@ public protocol BoardParser: Sendable {
     nonisolated func commentsURL(for post: Post) -> URL?
     nonisolated func parseComments(html: String) throws -> [PostComment]
     /// `detailHTML` is the body of `post.url` that the caller already
-    /// fetched for `parseDetail`. Ppomppu/SLR/Ddanzi use it to skip a
-    /// second `post.url` fetch they'd otherwise do just to pull AJAX
-    /// params / first-page comment DOM. Parsers that don't need it
-    /// ignore the argument.
+    /// fetched for `parseDetail`. SLR/Ddanzi use it to skip a second
+    /// `post.url` fetch they'd otherwise do just to pull AJAX params /
+    /// first-page comment DOM. Parsers that don't need it ignore the
+    /// argument (e.g. Ppomppu/Inven, whose comments live at a separate
+    /// JSON endpoint independent of the detail body).
     nonisolated func fetchAllComments(
         for post: Post,
         detailHTML: String?,
         fetcher: @escaping @Sendable (URL) async throws -> String
     ) async throws -> [PostComment]
+
+    /// Charset to decode a fetched URL's bytes as. Defaults to the site's page
+    /// encoding; parsers whose comment/API endpoint uses a different charset
+    /// than their HTML pages (e.g. Ppomppu: CP949 pages, UTF-8 comment JSON)
+    /// override this per URL so `PostDetailLoader` can decode each request
+    /// correctly. Must be a protocol requirement — the loader calls it on an
+    /// `any BoardParser`, so an extension-only impl would skip the override.
+    nonisolated func responseEncoding(for url: URL) -> String.Encoding
 }
 
 extension BoardParser {
@@ -52,6 +61,7 @@ extension BoardParser {
 
     public nonisolated func commentsURL(for post: Post) -> URL? { nil }
     public nonisolated func parseComments(html: String) throws -> [PostComment] { [] }
+    public nonisolated func responseEncoding(for url: URL) -> String.Encoding { site.encoding }
 
     /// SwiftSoup 파싱+추출을 한 `autoreleasepool` 스코프에 묶는다. 파싱이
     /// nonisolated async/`Task.detached`(협력 풀) 컨텍스트에서 돌면 런루프가 없어
