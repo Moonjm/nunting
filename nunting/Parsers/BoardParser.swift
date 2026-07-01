@@ -25,10 +25,11 @@ public protocol BoardParser: Sendable {
     nonisolated func commentsURL(for post: Post) -> URL?
     nonisolated func parseComments(html: String) throws -> [PostComment]
     /// `detailHTML` is the body of `post.url` that the caller already
-    /// fetched for `parseDetail`. Ppomppu/SLR/Ddanzi use it to skip a
-    /// second `post.url` fetch they'd otherwise do just to pull AJAX
-    /// params / first-page comment DOM. Parsers that don't need it
-    /// ignore the argument.
+    /// fetched for `parseDetail`. SLR/Ddanzi use it to skip a second
+    /// `post.url` fetch they'd otherwise do just to pull AJAX params /
+    /// first-page comment DOM. Parsers that don't need it ignore the
+    /// argument (e.g. Ppomppu/Inven, whose comments live at a separate
+    /// JSON endpoint independent of the detail body).
     nonisolated func fetchAllComments(
         for post: Post,
         detailHTML: String?,

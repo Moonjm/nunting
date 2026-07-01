@@ -102,15 +102,18 @@ final class PpomppuCommentPaginationTests: XCTestCase {
 
     /// JSON → PostComment 매핑: name/ memo HTML flatten, vote_count, time_display,
     /// depth>0=isReply, 그리고 lazy-load 스티커 img 는 stickerURL 로 추출된다.
+    /// 대댓글은 부모의 `sub_cmt` 안에 들어오므로, 실제 응답 shape 대로 중첩시킨다.
     func testDecodeMapsFieldsAndExtractsSticker() throws {
         let json = #"""
         {"comments":[
-          {"no":100,"depth":0,"name":"<b><a href=\"#\"><i class=\"nlevel lv4\"></i>영희</a></b>","memo":"<p>안녕하세요</p>","vote_btn":{"vote_count":7},"meta":{"time_display":"2026-07-01 16:36"}},
-          {"no":101,"depth":1,"name":"<b>철수</b>","memo":"<img src=\"/images/lazyloading.jpg\" data-original=\"https://cdn2.ppomppu.co.kr/sticker/emo.gif\">","vote_btn":{"vote_count":0},"meta":{"time_display":"2026-07-01 16:40"}}
+          {"no":100,"depth":0,"name":"<b><a href=\"#\"><i class=\"nlevel lv4\"></i>영희</a></b>","memo":"<p>안녕하세요</p>","vote_btn":{"vote_count":7},"meta":{"time_display":"2026-07-01 16:36"},
+           "sub_cmt":[
+             {"no":101,"depth":1,"name":"<b>철수</b>","memo":"<img src=\"/images/lazyloading.jpg\" data-original=\"https://cdn2.ppomppu.co.kr/sticker/emo.gif\">","vote_btn":{"vote_count":0},"meta":{"time_display":"2026-07-01 16:40"}}
+           ]}
         ],"total_page":1,"c_page":1}
         """#
         let comments = try PpomppuParser().parseCommentPage(json).comments
-        XCTAssertEqual(comments.count, 2)
+        XCTAssertEqual(comments.count, 2, "부모 + sub_cmt 대댓글")
 
         let first = comments[0]
         XCTAssertEqual(first.author, "영희")
@@ -125,5 +128,44 @@ final class PpomppuCommentPaginationTests: XCTestCase {
         XCTAssertTrue(reply.isReply, "depth>0 은 대댓글")
         XCTAssertTrue(reply.content.isEmpty, "스티커만 있는 댓글은 본문 비어야")
         XCTAssertEqual(reply.stickerURL?.absoluteString, "https://cdn2.ppomppu.co.kr/sticker/emo.gif")
+    }
+
+    /// 뽐뿌 대댓글은 부모 댓글의 `sub_cmt` 배열에 **재귀적으로** 중첩된다(대댓글의
+    /// 대댓글까지). 실측: id=car&no=971984 은 top 82 + sub 32 + sub-of-sub 13 = 127.
+    /// 평탄화가 없으면 앱은 top-level 만(82) 보여준다 — 이 회귀를 고정한다.
+    func testNestedSubCommentsAreFlattenedPreOrder() throws {
+        let json = #"""
+        {"comments":[
+          {"no":1,"depth":0,"name":"<b>A</b>","memo":"<p>a</p>","meta":{"time_display":"t"},
+           "sub_cmt":[
+             {"no":2,"depth":1,"name":"<b>B</b>","memo":"<p>b</p>","meta":{"time_display":"t"},
+              "sub_cmt":[
+                {"no":3,"depth":2,"name":"<b>C</b>","memo":"<p>c</p>","meta":{"time_display":"t"},"sub_cmt":null}
+              ]},
+             {"no":4,"depth":1,"name":"<b>D</b>","memo":"<p>d</p>","meta":{"time_display":"t"},"sub_cmt":null}
+           ]},
+          {"no":5,"depth":0,"name":"<b>E</b>","memo":"<p>e</p>","meta":{"time_display":"t"},"sub_cmt":null}
+        ],"total_page":1,"c_page":1}
+        """#
+        let comments = try PpomppuParser().parseCommentPage(json).comments
+        // pre-order: 부모 → 그 대댓글 서브트리 → 다음 형제.
+        XCTAssertEqual(comments.map(\.content), ["a", "b", "c", "d", "e"])
+        XCTAssertEqual(comments.map(\.isReply), [false, true, true, true, false])
+    }
+
+    /// 개별 댓글이 깨져도(예: `no` 누락) 페이지 전체가 아니라 그 행만 드롭돼야 한다 —
+    /// 한 행 파싱 실패로 "댓글 로드 실패" 배너가 뜨면 안 된다.
+    func testMalformedCommentIsDroppedNotWholePage() throws {
+        let json = #"""
+        {"comments":[
+          {"no":1,"depth":0,"name":"<b>A</b>","memo":"<p>ok</p>","meta":{"time_display":"t"}},
+          {"depth":0,"name":"<b>X</b>","memo":"<p>no-id</p>","meta":{"time_display":"t"}},
+          {"no":"3","depth":0,"name":"<b>C</b>","memo":"<p>string-id</p>","meta":{"time_display":"t"}}
+        ],"total_page":1,"c_page":1}
+        """#
+        let comments = try PpomppuParser().parseCommentPage(json).comments
+        // no 없는 행만 빠지고, 문자열 no("3") 는 허용된다.
+        XCTAssertEqual(comments.map(\.content), ["ok", "string-id"])
+        XCTAssertEqual(comments.last?.id, "ppomppu-c-3")
     }
 }

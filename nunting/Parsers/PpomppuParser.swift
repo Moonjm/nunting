@@ -190,8 +190,22 @@ public struct PpomppuParser: BoardParser {
     /// throw here surfaces as a false "댓글 로드 실패" banner on a loaded thread).
     nonisolated func parseCommentPage(_ json: String) throws -> (comments: [PostComment], totalPage: Int) {
         let resp = try JSONDecoder().decode(CommentResponse.self, from: Data(json.utf8))
-        let comments = resp.comments.compactMap { mapComment($0) }
-        return (comments, max(1, resp.totalPage))
+        var flattened: [PostComment] = []
+        for raw in resp.comments { appendComment(raw, into: &flattened) }
+        return (flattened, max(1, resp.totalPage))
+    }
+
+    /// Ppomppu nests replies (and replies-to-replies) inside each comment's
+    /// `sub_cmt` array rather than the flat `comments` list — with `depth`
+    /// growing per level. Emit each comment pre-order (parent, then its reply
+    /// subtree) so threaded order is preserved and the row's `isReply` indent
+    /// reflects `depth>0`. Without this recursion every reply is dropped:
+    /// a 127-comment thread surfaced only its 82 top-level comments.
+    nonisolated private func appendComment(_ raw: CommentResponse.RawComment, into out: inout [PostComment]) {
+        if let mapped = mapComment(raw) { out.append(mapped) }
+        // Recurse even when the parent maps to nil (genuinely empty row) so a
+        // deleted/blank parent doesn't swallow its still-visible replies.
+        for reply in raw.subCmt { appendComment(reply, into: &out) }
     }
 
     nonisolated func commentJSONURL(id: String, no: String, page: Int) -> URL? {
@@ -406,17 +420,19 @@ public struct PpomppuParser: BoardParser {
 
 // MARK: - Comment JSON envelope
 
-/// `ajax_bbs_comment.php?cmd=get_comment_json` response. Every field is
-/// decoded defensively (missing keys default rather than throw) so a
-/// 0-comment post — which ships `{"comments":[],"total_page":0,…}` — and any
-/// future field additions never surface as a false "댓글 로드 실패" banner.
+/// `ajax_bbs_comment.php?cmd=get_comment_json` response. Decoded defensively
+/// so neither a 0-comment post (`{"comments":[],"total_page":0,…}`) nor a
+/// single malformed comment surfaces as a false "댓글 로드 실패" banner:
+/// missing keys default, and each comment decodes through `Failable` so one
+/// unparseable row is dropped instead of failing the whole page.
 private struct CommentResponse: Decodable {
     let comments: [RawComment]
     let totalPage: Int
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        comments = try c.decodeIfPresent([RawComment].self, forKey: .comments) ?? []
+        comments = (try c.decodeIfPresent([Failable<RawComment>].self, forKey: .comments) ?? [])
+            .compactMap(\.value)
         totalPage = try c.decodeIfPresent(Int.self, forKey: .totalPage) ?? 1
     }
 
@@ -425,27 +441,52 @@ private struct CommentResponse: Decodable {
         case totalPage = "total_page"
     }
 
+    /// Wrapper that turns a per-element decode failure into `nil` rather than
+    /// aborting the enclosing array — used for both the top-level `comments`
+    /// list and each nested `sub_cmt` list so a lone bad row never nukes the
+    /// page (or a reply subtree).
+    struct Failable<T: Decodable>: Decodable {
+        let value: T?
+        init(from decoder: Decoder) throws { value = try? T(from: decoder) }
+    }
+
     struct RawComment: Decodable {
         let no: Int
         let depth: Int
-        let name: String   // author HTML fragment
-        let memo: String   // comment-body HTML fragment
+        let name: String            // author HTML fragment
+        let memo: String            // comment-body HTML fragment
         let meta: Meta?
         let voteBtn: VoteBtn?
+        let subCmt: [RawComment]    // nested replies (recursive, `depth`-tagged)
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
-            no = try c.decode(Int.self, forKey: .no)
+            // `no` is the identity — accept Int or numeric String; a truly
+            // absent/garbage id makes the row undroppable-by-id, so fail (the
+            // `Failable` wrapper then drops just this row, not the page).
+            if let i = try? c.decode(Int.self, forKey: .no) {
+                no = i
+            } else if let s = try? c.decode(String.self, forKey: .no), let i = Int(s) {
+                no = i
+            } else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .no, in: c, debugDescription: "comment `no` missing/non-numeric")
+            }
             depth = try c.decodeIfPresent(Int.self, forKey: .depth) ?? 0
             name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
             memo = try c.decodeIfPresent(String.self, forKey: .memo) ?? ""
-            meta = try c.decodeIfPresent(Meta.self, forKey: .meta)
-            voteBtn = try c.decodeIfPresent(VoteBtn.self, forKey: .voteBtn)
+            meta = try? c.decodeIfPresent(Meta.self, forKey: .meta)
+            voteBtn = try? c.decodeIfPresent(VoteBtn.self, forKey: .voteBtn)
+            // `sub_cmt` is `null` on leaf comments and an array on threaded
+            // ones; `try?` also absorbs any unexpected scalar shape.
+            subCmt = ((try? c.decodeIfPresent([Failable<RawComment>].self, forKey: .subCmt)) ?? nil)?
+                .compactMap(\.value) ?? []
         }
 
         enum CodingKeys: String, CodingKey {
             case no, depth, name, memo, meta
             case voteBtn = "vote_btn"
+            case subCmt = "sub_cmt"
         }
     }
 
