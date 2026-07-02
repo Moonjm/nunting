@@ -29,6 +29,16 @@ final class CommentImageOriginalTests: XCTestCase {
         )
     }
 
+    func testInvenStripsOnlyResizeParamKeepingOthers() throws {
+        // MW 만 제거하고 나머지 쿼리 아이템은 보존해야 한다 — URL 전체를
+        // 통째로 자르는 회귀(쿼리 전부 유실)를 막는 가드.
+        let url = URL(string: "https://upload3.inven.co.kr/upload/2026/07/02/bbs/i1.jpg?MW=360&foo=bar")!
+        XCTAssertEqual(
+            InvenParser.strippingResizeParam(url).absoluteString,
+            "https://upload3.inven.co.kr/upload/2026/07/02/bbs/i1.jpg?foo=bar"
+        )
+    }
+
     func testInvenStickerWithoutQueryUnchanged() throws {
         // 스티커는 쿼리 없이 옴 — 변형 없이 그대로 통과해야 한다.
         let json = """
@@ -99,6 +109,15 @@ final class CommentImageOriginalTests: XCTestCase {
             detail.comments.first?.stickerURL?.absoluteString,
             "https://edgio.clien.net/F03/2026/7/15767170/12fef72fc378d0.PNG?scale=width:740",
             "scale=width:480 → width:740 (무왕복 최대 해상도)"
+        )
+    }
+
+    func testClienUpgradesScaleKeepingOtherQueryItems() throws {
+        // scale 만 740 으로 바꾸고 다른 쿼리 아이템(순서 포함)은 보존.
+        let url = URL(string: "https://edgio.clien.net/F03/1/a.png?scale=width:480&foo=bar")!
+        XCTAssertEqual(
+            ClienParser.upgradingScaleWidth(url).absoluteString,
+            "https://edgio.clien.net/F03/1/a.png?scale=width:740&foo=bar"
         )
     }
 
