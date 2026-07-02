@@ -301,7 +301,7 @@ public struct ClienParser: BoardParser {
                 guard let img = try? row.select("img[data-role=attach-image]").first(),
                       let src = try? img.attr("src")
                 else { return nil }
-                return resolveHTTPURL(src)
+                return resolveHTTPURL(src).map(Self.upgradingScaleWidth)
             }()
 
             // Allow image-only and author-only comments through. The guard
@@ -332,5 +332,26 @@ public struct ClienParser: BoardParser {
             ))
         }
         return results
+    }
+
+    /// Clien comment attachments always ship `?scale=width:480` — a server
+    /// resize the CDN only honours for widths 480 and 740 (bare URLs and any
+    /// other width 302 to the error page; the true original needs a signed
+    /// token from `/service/api/ori/imgView`, a per-open round-trip). Rewrite
+    /// 480 → 740, the largest no-round-trip variant: sources ≤740px come back
+    /// at native size (measured), larger ones at 740 instead of 480 — a 1.5×
+    /// improvement for the fullscreen viewer with zero extra requests.
+    /// Internal for the unit test.
+    nonisolated static func upgradingScaleWidth(_ url: URL) -> URL {
+        guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let items = comps.queryItems,
+              items.contains(where: { $0.name == "scale" && $0.value == "width:480" })
+        else { return url }
+        comps.queryItems = items.map {
+            $0.name == "scale" && $0.value == "width:480"
+                ? URLQueryItem(name: "scale", value: "width:740")
+                : $0
+        }
+        return comps.url ?? url
     }
 }

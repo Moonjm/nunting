@@ -209,8 +209,24 @@ public struct InvenParser: BoardParser {
                   let scheme = url.scheme?.lowercased(),
                   scheme == "http" || scheme == "https"
             else { return nil }
-            return url
+            return Self.strippingResizeParam(url)
         }) ?? nil
+    }
+
+    /// Inven serves uploaded comment photos through a `?MW=360` (max-width)
+    /// server resize — the markup never carries the original URL separately.
+    /// Dropping the param returns the untouched upload (measured: 360×687 →
+    /// 1080×2061), so the fullscreen viewer gets full resolution instead of
+    /// a blurry 360px thumbnail. Stickers ship without a query and pass
+    /// through unchanged. Internal for the unit test.
+    nonisolated static func strippingResizeParam(_ url: URL) -> URL {
+        guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let items = comps.queryItems,
+              items.contains(where: { $0.name == "MW" })
+        else { return url }
+        let remaining = items.filter { $0.name != "MW" }
+        comps.queryItems = remaining.isEmpty ? nil : remaining
+        return comps.url ?? url
     }
 
     nonisolated private func cleanCommentText(_ raw: String) -> String {
