@@ -359,6 +359,29 @@ public struct PpomppuParser: BoardParser {
         imageURL(from: el,
                  attributes: ["data-original", "data-src", "src"],
                  skipMarkers: ["lazyloading", "/images/gif_load"])
+            .map(Self.strippingCommentWidthVariant)
+    }
+
+    /// Ppomppu serves comment photos as a `_550w`-suffixed width variant
+    /// (`…/comment/16/ppomppu_15633116_550w`, 690px wide) while the original
+    /// lives at the suffix-less path (measured 7/7: 958–1200px). The markup
+    /// never links the original, so strip the `_<width>w` suffix here — the
+    /// fullscreen viewer then decodes full resolution instead of the 690px
+    /// thumbnail. Scoped to `/zboard/data3/comment/` paths, whose filenames
+    /// are machine-generated (`{board}_{cmtno}`), so a trailing `_\d+w` can
+    /// only be the variant marker. Query (cache-buster `?v=`) is preserved.
+    /// Internal for the unit test.
+    nonisolated static func strippingCommentWidthVariant(_ url: URL) -> URL {
+        guard url.path.contains("/zboard/data3/comment/") else { return url }
+        let last = url.lastPathComponent
+        guard let range = last.range(of: #"_\d+w$"#, options: .regularExpression)
+        else { return url }
+        guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+        var path = comps.path
+        guard path.hasSuffix(last) else { return url }
+        path.removeLast(last.count)
+        comps.path = path + last[..<range.lowerBound]
+        return comps.url ?? url
     }
 
     nonisolated private func cleanCommentText(from element: Element) throws -> String {
