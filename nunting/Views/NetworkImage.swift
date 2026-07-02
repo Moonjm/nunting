@@ -371,7 +371,7 @@ struct NetworkImage: View {
 
     /// SD/URLSession 의 취소 신호 판별 — 뷰 교체·identity 변경·로드 경합에서
     /// 이전 오퍼레이션이 취소될 때 onFailure 로 전달되는 에러들.
-    static func isCancellation(_ error: Error) -> Bool {
+    nonisolated static func isCancellation(_ error: Error) -> Bool {
         let ns = error as NSError
         if ns.domain == SDWebImageErrorDomain && ns.code == SDWebImageError.cancelled.rawValue {
             return true
@@ -401,7 +401,7 @@ struct NetworkImage: View {
     /// fallback. `static` 이라 우선순위 계약을 단위테스트로 핀. fallback 이
     /// nil 이면(아이콘/스티커 등 비-본문 호출부) 셋 다 없을 때 nil 을 반환해
     /// 종전 `applyAspect(nil)` no-op 동작을 유지한다.
-    static func effectiveAspect(
+    nonisolated static func effectiveAspect(
         aspectRatio: CGFloat?,
         measuredAspect: CGFloat?,
         fallbackAspect: CGFloat?
@@ -409,7 +409,7 @@ struct NetworkImage: View {
         aspectRatio ?? measuredAspect ?? fallbackAspect
     }
 
-    static func shouldShowHeavyImage(
+    nonisolated static func shouldShowHeavyImage(
         visibilityGated: Bool,
         hasBeenVisible: Bool,
         releasesWhenOffscreen: Bool,
@@ -519,7 +519,7 @@ struct NetworkImage: View {
 
     /// 다운샘플 박스 매핑 — internal static 이라 박스 모양 계약(정사각 우선,
     /// 비정방은 높이 무제한)을 단위 테스트로 고정할 수 있다.
-    static func thumbnailContext(
+    nonisolated static func thumbnailContext(
         maxPointSize: CGFloat?,
         maxPointWidth: CGFloat?,
         scale: CGFloat

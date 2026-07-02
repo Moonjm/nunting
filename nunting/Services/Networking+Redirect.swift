@@ -8,7 +8,7 @@ extension URL {
     /// (carisyou, tistory, etc.) serve the same path over HTTPS, so a
     /// blind upgrade is safe; callers that need the original scheme
     /// should not use this helper.
-    var atsSafe: URL {
+    nonisolated var atsSafe: URL {
         guard scheme?.lowercased() == "http",
               var comps = URLComponents(url: self, resolvingAgainstBaseURL: false)
         else { return self }
@@ -59,7 +59,7 @@ extension Networking {
     // MainActor inference.
     nonisolated static let redirectUpgrader = RedirectHTTPSUpgrader()
 
-    struct ResolvedRedirect {
+    nonisolated struct ResolvedRedirect: Sendable {
         let url: URL
         /// When non-nil, the body fetched while discovering the URL — return it
         /// to the caller so they don't have to re-fetch the same URL.

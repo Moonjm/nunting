@@ -11,19 +11,19 @@ final class BobaeCommentPaginationTests: XCTestCase {
         func add(_ p: String) { pages.append(p) }
     }
 
-    private func post() -> Post {
+    fileprivate static func post() -> Post {
         Post.fixture(
             id: "strange-6925135", site: .bobae, boardID: "strange",
             url: URL(string: "https://m.bobaedream.co.kr/board/bbs_view/strange/6925135")!)
     }
 
     /// `comment_call(sel_tb, mapCD, mapNO, ocode, ono, page, order)` 의 page 인자.
-    private func pageParam(of url: URL) -> String {
+    private static func pageParam(of url: URL) -> String {
         URLComponents(url: url, resolvingAgainstBaseURL: false)?
             .queryItems?.first(where: { $0.name == "page" })?.value ?? "?"
     }
 
-    private func commentLI(_ content: String, author: String, id: Int) -> String {
+    private static func commentLI(_ content: String, author: String, id: Int) -> String {
         """
         <li>
           <div class="con_area">
@@ -36,7 +36,7 @@ final class BobaeCommentPaginationTests: XCTestCase {
     }
 
     /// 댓글 페이저: `.page span.num` — 현재 페이지는 `a.on`, 나머지는 comment_call.
-    private func pager(current: Int, total: Int) -> String {
+    private static func pager(current: Int, total: Int) -> String {
         var anchors = ""
         for p in 1...total {
             if p == current {
@@ -49,33 +49,33 @@ final class BobaeCommentPaginationTests: XCTestCase {
     }
 
     /// detail 페이지: 댓글이 `.reple_body > ul.list > li` 에 inline.
-    private func detailHTML(current: Int, total: Int, comments: [(String, String, Int)]) -> String {
-        let lis = comments.map { commentLI($0.0, author: $0.1, id: $0.2) }.joined()
+    private static func detailHTML(current: Int, total: Int, comments: [(String, String, Int)]) -> String {
+        let lis = comments.map { Self.commentLI($0.0, author: $0.1, id: $0.2) }.joined()
         return """
         <html><body>
-        <div class="reple_body"><ul class="list">\(lis)</ul>\(pager(current: current, total: total))</div>
+        <div class="reple_body"><ul class="list">\(lis)</ul>\(Self.pager(current: current, total: total))</div>
         </body></html>
         """
     }
 
     /// AJAX `comment_call` 응답: `.reple_body` 래퍼 없이 `ul.list > li` 만.
-    private func fragment(current: Int, total: Int, comments: [(String, String, Int)]) -> String {
-        let lis = comments.map { commentLI($0.0, author: $0.1, id: $0.2) }.joined()
-        return "<ul class=\"list\">\(lis)</ul>\(pager(current: current, total: total))"
+    fileprivate static func fragment(current: Int, total: Int, comments: [(String, String, Int)]) -> String {
+        let lis = comments.map { Self.commentLI($0.0, author: $0.1, id: $0.2) }.joined()
+        return "<ul class=\"list\">\(lis)</ul>\(Self.pager(current: current, total: total))"
     }
 
     func testFetchesMissingPagesAndMergesInPageOrder() async throws {
         let parser = BobaeParser()
         // detail = 마지막 페이지(2/2) inline.
-        let detail = detailHTML(current: 2, total: 2, comments: [
+        let detail = Self.detailHTML(current: 2, total: 2, comments: [
             ("p2a", "글쓴이2a", 21), ("p2b", "글쓴이2b", 22),
         ])
 
         let recorder = PageRecorder()
-        let comments = try await parser.fetchAllComments(for: post(), detailHTML: detail) { url in
-            await recorder.add(self.pageParam(of: url))
+        let comments = try await parser.fetchAllComments(for: Self.post(), detailHTML: detail) { url in
+            await recorder.add(Self.pageParam(of: url))
             XCTAssertTrue(url.absoluteString.contains("/board/comment_call/"), "댓글 AJAX 엔드포인트여야 함")
-            return self.fragment(current: 1, total: 2, comments: [
+            return Self.fragment(current: 1, total: 2, comments: [
                 ("p1a", "글쓴이1a", 11), ("p1b", "글쓴이1b", 12),
             ])
         }
@@ -92,12 +92,12 @@ final class BobaeCommentPaginationTests: XCTestCase {
         // 페이저 없는 단일 페이지 detail.
         let detail = """
         <html><body><div class="reple_body"><ul class="list">\
-        \(commentLI("only", author: "혼자", id: 1))\
+        \(Self.commentLI("only", author: "혼자", id: 1))\
         </ul></div></body></html>
         """
         let recorder = PageRecorder()
-        let comments = try await parser.fetchAllComments(for: post(), detailHTML: detail) { url in
-            await recorder.add(self.pageParam(of: url))
+        let comments = try await parser.fetchAllComments(for: Self.post(), detailHTML: detail) { url in
+            await recorder.add(Self.pageParam(of: url))
             return ""
         }
         XCTAssertEqual(comments.map(\.content), ["only"])
@@ -115,14 +115,14 @@ final class BobaeCommentPaginationTests: XCTestCase {
         <html><body><div class="reple_body"><ul class="list">\
         <li><div class="con_area"><div class="reply">p2only</div>\
         <div class="util"><span class="data4">A</span><span>1:00</span></div></div></li>\
-        </ul>\(pager(current: 2, total: 2))</div></body></html>
+        </ul>\(Self.pager(current: 2, total: 2))</div></body></html>
         """
-        let comments = try await parser.fetchAllComments(for: post(), detailHTML: detail) { _ in
+        let comments = try await parser.fetchAllComments(for: Self.post(), detailHTML: detail) { _ in
             // page1 fragment: 역시 repl_ 없는 댓글.
             """
             <ul class="list"><li><div class="con_area"><div class="reply">p1only</div>\
             <div class="util"><span class="data4">B</span><span>2:00</span></div></div></li></ul>\
-            \(self.pager(current: 1, total: 2))
+            \(Self.pager(current: 1, total: 2))
             """
         }
         XCTAssertEqual(comments.map(\.content), ["p1only", "p2only"])
@@ -142,12 +142,12 @@ final class BobaeCommentPaginationTests: XCTestCase {
         """
         let detail = """
         <html><body><div class="reple_body"><ul class="list">\
-        \(commentLI("inline", author: "A", id: 1))\
+        \(Self.commentLI("inline", author: "A", id: 1))\
         </ul>\(pagerNoOn)</div></body></html>
         """
         let recorder = PageRecorder()
-        let comments = try await parser.fetchAllComments(for: post(), detailHTML: detail) { url in
-            await recorder.add(self.pageParam(of: url))
+        let comments = try await parser.fetchAllComments(for: Self.post(), detailHTML: detail) { url in
+            await recorder.add(Self.pageParam(of: url))
             return ""
         }
         XCTAssertEqual(comments.map(\.content), ["inline"])
@@ -160,33 +160,45 @@ final class BobaeCommentPaginationTests: XCTestCase {
     /// 부모 task 가 취소됐으면 throw 해야 한다.
     func testCancellationThrowsInsteadOfReturningPartial() async throws {
         let parser = BobaeParser()
-        let detail = detailHTML(current: 2, total: 2, comments: [("p2a", "A", 21)])
+        let detail = Self.detailHTML(current: 2, total: 2, comments: [("p2a", "A", 21)])
 
-        let task = Task {
-            try await parser.fetchAllComments(for: post(), detailHTML: detail) { _ in
-                // 취소될 때까지 대기 → 그 뒤엔 성공 응답을 줘도 throw 돼야 함.
-                while !Task.isCancelled { await Task.yield() }
-                return self.fragment(current: 1, total: 2, comments: [("p1a", "B", 11)])
-            }
-        }
+        // 자유 함수 우회: Task 클로저에서 fetchAllComments 를 직결 호출하는
+        // 형태를 Swift 6(6.3.3) region 체커가 "please file a bug" 로 거부 —
+        // CommentPageMergeTests 의 mergeRethrowsCancellation 과 같은 처리.
+        let task = Task.detached { await bobaeRethrowsCancellation(detailHTML: detail) }
         task.cancel()
-        do {
-            _ = try await task.value
-            XCTFail("취소 시 부분 댓글 대신 CancellationError 를 던져야 함")
-        } catch is CancellationError {
-            // 기대대로
-        }
+        let rethrew = await task.value
+        XCTAssertTrue(rethrew, "취소 시 부분 댓글 대신 CancellationError 를 던져야 함")
     }
 
     func testPageFetchFailureIsAbsorbedAndInlineSurvives() async throws {
         struct PageError: Error {}
         let parser = BobaeParser()
-        let detail = detailHTML(current: 2, total: 2, comments: [("p2a", "글쓴이", 21)])
+        let detail = Self.detailHTML(current: 2, total: 2, comments: [("p2a", "글쓴이", 21)])
 
         // page1 fetch 가 실패해도 inline(page2)은 살아야 한다.
-        let comments = try await parser.fetchAllComments(for: post(), detailHTML: detail) { _ in
+        let comments = try await parser.fetchAllComments(for: Self.post(), detailHTML: detail) { _ in
             throw PageError()
         }
         XCTAssertEqual(comments.map(\.content), ["p2a"])
+    }
+}
+
+/// 취소 재던짐 검증용 자유 함수 — 판정까지 안에서 끝내 Bool 만 반환.
+/// (Task 클로저 → fetchAllComments 직결 형태의 region 체커 버그 우회)
+private func bobaeRethrowsCancellation(detailHTML: String) async -> Bool {
+    do {
+        _ = try await BobaeParser().fetchAllComments(
+            for: BobaeCommentPaginationTests.post(), detailHTML: detailHTML
+        ) { _ in
+            // 취소될 때까지 대기 → 그 뒤엔 성공 응답을 줘도 throw 돼야 함.
+            while !Task.isCancelled { await Task.yield() }
+            return BobaeCommentPaginationTests.fragment(current: 1, total: 2, comments: [("p1a", "B", 11)])
+        }
+        return false
+    } catch is CancellationError {
+        return true
+    } catch {
+        return false
     }
 }

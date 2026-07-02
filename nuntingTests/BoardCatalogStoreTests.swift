@@ -19,6 +19,9 @@ import XCTest
 /// data race under Swift 6 strict concurrency. `Task.detached(...).value`
 /// already happens-before the test's reads in practice, but the helpers
 /// make that explicit at the type level.
+// @MainActor: 검증 대상 스토어/로더가 main actor 소속 — Swift 6 모드에서
+// nonisolated 테스트가 동기 접근할 수 없어 테스트 클래스를 main actor 로 올린다.
+@MainActor
 final class BoardCatalogStoreTests: XCTestCase {
 
     // Smallest body that still produces at least one Board through

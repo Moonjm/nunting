@@ -215,6 +215,9 @@ final class NetworkingTests: XCTestCase {
             // URLError.unknown, but we'd still see attempts == 2.
         ]
 
+        // 로컬 바인딩: 인스턴스 프로퍼티(session) 캡처는 non-Sendable self
+        // 캡처가 돼 Swift 6 sending 검사에 걸린다. URLSession 은 Sendable.
+        let session: URLSession = self.session
         let task = Task {
             try await Networking.fetchHTML(
                 url: URL(string: "https://example.com/")!,

@@ -156,7 +156,11 @@ struct AVPlayerControllerView: UIViewControllerRepresentable {
         /// callback — without removal, the closure (which captures the
         /// coordinator weakly) would dangle on the default center until
         /// the AVPlayerItem itself deallocates.
-        private var endObservation: NSObjectProtocol?
+        /// `nonisolated(unsafe)`: Swift 6 모드에서 deinit 은 nonisolated 라
+        /// MainActor 추론이 붙은 non-Sendable 프로퍼티를 읽을 수 없다. 이
+        /// 토큰은 main actor 에서만 쓰고 deinit 의 마지막 removeObserver 가
+        /// 유일한 off-actor 접근(단일 스레드 소멸 시점)이라 실제 경합 없음.
+        nonisolated(unsafe) private var endObservation: NSObjectProtocol?
         /// Handle to the deferred player-attach Task (see
         /// `makeUIViewController`). Retained here so dismantle can cancel
         /// it before the closure body fires against a torn-down controller.

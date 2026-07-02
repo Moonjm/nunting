@@ -8,6 +8,9 @@ import XCTest
 /// Captured `var` from the @Sendable fetcher closure goes through the
 /// same lock-protected helpers used in `BoardCatalogStoreTests`
 /// (TestCounter / TestRecorder). See those for the rationale.
+// @MainActor: 검증 대상 스토어/로더가 main actor 소속 — Swift 6 모드에서
+// nonisolated 테스트가 동기 접근할 수 없어 테스트 클래스를 main actor 로 올린다.
+@MainActor
 final class BoardListLoaderTests: XCTestCase {
 
     // Smallest body that produces non-empty Posts via ClienParser.

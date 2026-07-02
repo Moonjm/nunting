@@ -1,6 +1,9 @@
 import Foundation
 
-public struct PostComment: Identifiable, Hashable {
+// nonisolated(타입 단위): 파서(백그라운드)가 생성하고 테스트가 nonisolated
+// 컨텍스트에서 프로퍼티를 읽는 순수 값 — 기본 MainActor 격리 추론에서 통째로
+// 뺀다(Swift 6 모드에선 저장 프로퍼티 접근까지 격리가 강제됨).
+nonisolated public struct PostComment: Identifiable, Hashable, Sendable {
     public let id: String
     public let author: String
     public let dateText: String

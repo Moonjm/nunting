@@ -20,7 +20,11 @@ import SDWebImage
 // nothing new is added. The downloader runs on its own NSOperationQueue
 // and never mutates shared state from this subclass, so the unchecked
 // promise stays accurate.
-class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOperation, @unchecked Sendable {
+// `nonisolated`: 부모(SDWebImageDownloaderOperation)의 init/딜리게이트 선언이
+// nonisolated 라, 기본 MainActor 격리 추론이 붙은 오버라이드는 Swift 6 모드에서
+// "different actor isolation" 에러가 된다. 이 오퍼레이션은 자체 NSOperationQueue
+// 에서 돌므로 main actor 소속이어서도 안 된다.
+nonisolated class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOperation, @unchecked Sendable {
     // Combination required for the ObjC runtime to actually install this
     // selector into the dispatch table when overriding an optional
     // protocol method (NSURLSessionTaskDelegate, declared on

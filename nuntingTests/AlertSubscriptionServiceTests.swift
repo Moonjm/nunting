@@ -1,6 +1,8 @@
 import XCTest
 @testable import nunting
 
+// @MainActor: AlertSubscriptionService 가 main actor 소속(앱 서비스).
+@MainActor
 final class AlertSubscriptionServiceTests: XCTestCase {
     /// upsertKeyword → POST {keyword, exclude} + 정규화된 KeywordSub echo.
     func testUpsertKeywordReturnsNormalizedFromServer() async throws {

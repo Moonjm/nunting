@@ -4,7 +4,7 @@ import Observation
 /// when the dynamic catalog hasn't been fetched yet (or the upstream site
 /// removed the board). Catalog re-fetches refresh the snapshots in place via
 /// `merge(boards:)`, so renames/path changes still flow through.
-struct FavoriteBoardSnapshot: Codable, Hashable {
+nonisolated struct FavoriteBoardSnapshot: Codable, Hashable, Sendable {
     let id: String
     let siteRaw: String
     let name: String

@@ -46,7 +46,7 @@ enum AlertSubscriptionError: LocalizedError {
 
 /// 서버 `/me/alert-history` 응답의 한 건. 키 이름은 서버 Go `AlertHistoryItem`
 /// (snake_case) 과 합의됨. `read` 는 글을 열어 읽음 처리됐는지 여부.
-struct AlertHistoryItem: Decodable, Identifiable {
+nonisolated struct AlertHistoryItem: Decodable, Identifiable, Sendable {
     let id: Int
     let keyword: String
     let postNo: String
@@ -72,7 +72,7 @@ struct AlertHistoryItem: Decodable, Identifiable {
 /// `KeywordSub` (keyword/exclude/enabled) 와 합의된 형태. `exclude == ""` 면
 /// 제외 없음. `enabled == false` 면 매칭돼도 푸시는 안 오고 "받은 알림"에만 쌓인다.
 /// `id` 는 포함 키워드(행 PK) — 같은 글에 대한 ForEach/upsert 식별자.
-struct KeywordSub: Codable, Hashable, Identifiable {
+nonisolated struct KeywordSub: Codable, Hashable, Identifiable, Sendable {
     let keyword: String
     let exclude: String
     var enabled: Bool

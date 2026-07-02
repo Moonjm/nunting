@@ -14,7 +14,9 @@ import SDWebImageWebPCoder
 /// payload 가 주소/오프셋뿐이라 어느 디코드가 CPU 를 먹는지 함수명으로 못 봤다.
 /// 디코드 구간에 이름표를 달아 다음 payload 에서 "webpStatic/webpFrame" 의
 /// CPU 기여도를 이름으로 확인한다.
-enum AppSignpost {
+// nonisolated: OSLog 핸들은 스레드 세이프 불변값 — SD 백그라운드 디코드 큐의
+// SignpostWebPCoder(nonisolated)가 읽으므로 기본 MainActor 격리에서 뺀다.
+nonisolated enum AppSignpost {
     static let image = MXMetricManager.makeLogHandle(category: "imageDecode")
 }
 
@@ -24,7 +26,10 @@ enum AppSignpost {
 /// WebP 디코드(`decodedImage`)와 애니메 WebP 프레임 디코드(`animatedImageFrame`)
 /// 의 CPU 가 각각 잡힌다. 동시 디코드가 겹쳐도 구간마다 고유 signpostID 라
 /// begin/end 가 정확히 짝지어진다.
-final class SignpostWebPCoder: SDImageWebPCoder {
+// `nonisolated`: 부모(SDImageWebPCoder)의 init/디코드 선언이 nonisolated 라,
+// 기본 MainActor 격리 추론이 붙은 오버라이드는 Swift 6 모드에서 "different
+// actor isolation" 에러가 된다. 디코드는 SD 의 백그라운드 큐에서 돈다.
+nonisolated final class SignpostWebPCoder: SDImageWebPCoder {
     override func decodedImage(with data: Data?, options: [SDImageCoderOption: Any]?) -> UIImage? {
         let id = OSSignpostID(log: AppSignpost.image)
         mxSignpost(.begin, log: AppSignpost.image, name: "webpStatic", signpostID: id)

@@ -14,14 +14,14 @@ final class PpomppuCommentPaginationTests: XCTestCase {
     }
 
     /// 최소 `get_comment_json` 페이지. content-only 댓글을 `no` 오름차순으로 싣는다.
-    private func jsonPage(totalPage: Int, comments: [(no: Int, content: String)]) -> String {
+    private static func jsonPage(totalPage: Int, comments: [(no: Int, content: String)]) -> String {
         let items = comments.map { c in
             #"{"no":\#(c.no),"depth":0,"name":"<b>글쓴이</b>","memo":"<p>\#(c.content)</p>","vote_btn":{"vote_count":0},"meta":{"time_display":"2026-07-01 10:00"}}"#
         }.joined(separator: ",")
         return #"{"comments":[\#(items)],"total_page":\#(totalPage),"c_page":1}"#
     }
 
-    private func cpage(of url: URL) -> String {
+    private static func cpage(of url: URL) -> String {
         URLComponents(url: url, resolvingAgainstBaseURL: false)?
             .queryItems?.first(where: { $0.name == "c_page" })?.value ?? "?"
     }
@@ -37,11 +37,11 @@ final class PpomppuCommentPaginationTests: XCTestCase {
         let recorder = RequestRecorder()
         let comments = try await parser.fetchAllComments(for: post(no: 1), detailHTML: nil) { url in
             await recorder.add(url)
-            switch self.cpage(of: url) {
-            case "1": return self.jsonPage(totalPage: 3, comments: [(1, "p1")])
-            case "2": return self.jsonPage(totalPage: 3, comments: [(2, "p2")])
-            case "3": return self.jsonPage(totalPage: 3, comments: [(3, "p3")])
-            default: return self.jsonPage(totalPage: 3, comments: [])
+            switch Self.cpage(of: url) {
+            case "1": return Self.jsonPage(totalPage: 3, comments: [(1, "p1")])
+            case "2": return Self.jsonPage(totalPage: 3, comments: [(2, "p2")])
+            case "3": return Self.jsonPage(totalPage: 3, comments: [(3, "p3")])
+            default: return Self.jsonPage(totalPage: 3, comments: [])
             }
         }
 
@@ -50,7 +50,7 @@ final class PpomppuCommentPaginationTests: XCTestCase {
 
         let requested = await recorder.urls
         // 옛 방식과 달리 detailHTML 재사용이 없다 — page 1 도 JSON 으로 fetch.
-        XCTAssertEqual(Set(requested.map(self.cpage(of:))), ["1", "2", "3"])
+        XCTAssertEqual(Set(requested.map(Self.cpage(of:))), ["1", "2", "3"])
         // 모든 요청이 sort_asc JSON 엔드포인트로 나가고, id/no 를 post.url 에서 뽑는다.
         for url in requested {
             let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
@@ -67,11 +67,11 @@ final class PpomppuCommentPaginationTests: XCTestCase {
         let recorder = RequestRecorder()
         let comments = try await parser.fetchAllComments(for: post(no: 2), detailHTML: nil) { url in
             await recorder.add(url)
-            return self.jsonPage(totalPage: 1, comments: [(10, "only")])
+            return Self.jsonPage(totalPage: 1, comments: [(10, "only")])
         }
         XCTAssertEqual(comments.map(\.content), ["only"])
         let requested = await recorder.urls
-        XCTAssertEqual(requested.map(self.cpage(of:)), ["1"], "단일 페이지는 page1 만 fetch")
+        XCTAssertEqual(requested.map(Self.cpage(of:)), ["1"], "단일 페이지는 page1 만 fetch")
     }
 
     /// 한 페이지 fetch 가 throw 해도 나머지는 살아야 한다 — throwing group 이던
@@ -80,11 +80,11 @@ final class PpomppuCommentPaginationTests: XCTestCase {
         struct PageError: Error {}
         let parser = PpomppuParser()
         let comments = try await parser.fetchAllComments(for: post(no: 4), detailHTML: nil) { url in
-            switch self.cpage(of: url) {
-            case "1": return self.jsonPage(totalPage: 3, comments: [(1, "p1")])
+            switch Self.cpage(of: url) {
+            case "1": return Self.jsonPage(totalPage: 3, comments: [(1, "p1")])
             case "2": throw PageError()
-            case "3": return self.jsonPage(totalPage: 3, comments: [(3, "p3")])
-            default: return self.jsonPage(totalPage: 3, comments: [])
+            case "3": return Self.jsonPage(totalPage: 3, comments: [(3, "p3")])
+            default: return Self.jsonPage(totalPage: 3, comments: [])
             }
         }
         XCTAssertEqual(comments.map(\.content), ["p1", "p3"], "page2 만 빠지고 1·3 은 순서 보존")

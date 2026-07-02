@@ -448,7 +448,7 @@ public struct PpomppuParser: BoardParser {
 /// single malformed comment surfaces as a false "댓글 로드 실패" banner:
 /// missing keys default, and each comment decodes through `Failable` so one
 /// unparseable row is dropped instead of failing the whole page.
-private struct CommentResponse: Decodable {
+nonisolated private struct CommentResponse: Decodable {
     let comments: [RawComment]
     let totalPage: Int
 

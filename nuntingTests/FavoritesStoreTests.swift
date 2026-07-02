@@ -6,6 +6,9 @@ import XCTest
 /// leak state into each other. The store's constructor already accepts
 /// an injected `UserDefaults`, which is the only seam needed to keep
 /// tests hermetic.
+// @MainActor: 검증 대상 스토어/로더가 main actor 소속 — Swift 6 모드에서
+// nonisolated 테스트가 동기 접근할 수 없어 테스트 클래스를 main actor 로 올린다.
+@MainActor
 final class FavoritesStoreTests: XCTestCase {
 
     private var defaults: UserDefaults!

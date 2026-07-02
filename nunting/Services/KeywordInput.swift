@@ -6,7 +6,9 @@ import Foundation
 /// 형식: 콤마로 토큰 구분, 토큰 앞에 `-` 가 붙으면 제외(앞의 `-` 1개만 플래그,
 /// 중간 하이픈은 리터럴 — 예 `갤럭시-탭`). 포함은 AND, 제외는 OR.
 /// 정규화(소문자/dedup/정렬)는 서버 책임 — 여기선 역할 분리만 한다.
-enum KeywordInput {
+// nonisolated: 순수 문자열 변환 — 기본 MainActor 격리 불필요(테스트가
+// nonisolated 컨텍스트에서 직접 호출).
+nonisolated enum KeywordInput {
     /// `"갤럭시, s24, -중고, -판매"` → (include: `"갤럭시,s24"`, exclude: `"중고,판매"`).
     /// 빈 토큰과 `-` 만 있는 토큰은 버린다.
     static func parse(_ raw: String) -> (include: String, exclude: String) {

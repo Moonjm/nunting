@@ -5,7 +5,7 @@ import SwiftSoup
 /// `WalkerRules.standard(for:)` (sensible defaults that match most boards) and
 /// then per-site overrides — see `PpomppuParser` / `BobaeParser` for
 /// concrete examples.
-public struct WalkerRules: Sendable {
+nonisolated public struct WalkerRules: Sendable {
     public var blockTags: Set<String>
     public var skipTags: Set<String>
     public var mediaTags: Set<String>

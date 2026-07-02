@@ -17,7 +17,7 @@ import UserNotifications
 /// Returns nil when the URL isn't a recognisable post (host not a known
 /// site, or no `no` query param) — such notifications are left untouched,
 /// the same graceful no-op the app already falls back to today.
-enum PostNotificationKey {
+nonisolated enum PostNotificationKey {
     static func make(from url: URL) -> String? {
         guard let site = Site.detect(host: url.host) else { return nil }
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
@@ -33,13 +33,13 @@ enum PostNotificationKey {
 /// Minimal projection of a delivered notification — just the fields the
 /// matcher needs, so the matching logic stays a pure function testable
 /// without `UNUserNotificationCenter`.
-struct DeliveredAlert: Equatable {
+nonisolated struct DeliveredAlert: Equatable, Sendable {
     let identifier: String
     let urlString: String?
     let alertID: Int?
 }
 
-enum DeliveredAlertMatcher {
+nonisolated enum DeliveredAlertMatcher {
     /// Delivered notifications whose payload URL resolves to the same
     /// post as `viewedPostURL`. Empty when the viewed URL isn't a
     /// recognisable post (nothing to clear) or none match.

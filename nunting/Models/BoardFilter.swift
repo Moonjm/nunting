@@ -1,6 +1,6 @@
 import Foundation
 
-public struct BoardFilter: Identifiable, Hashable, Codable {
+nonisolated public struct BoardFilter: Identifiable, Hashable, Codable, Sendable {
     public let id: String
     public let name: String
     /// Merged onto the active path's existing query items.

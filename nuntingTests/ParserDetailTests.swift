@@ -872,15 +872,16 @@ final class ParserDetailTests: XCTestCase {
         // on any user comment whose body literally contains that string).
         let inlineHTML = #"<script>self.__next_f.push([1,"...\"data\":{\"comments\":[{}]}..."])</script>"#
 
-        var fetched = false
+        let recorder = FetchRecorder()
         let comments = try await parser.fetchAllComments(
             for: post,
             detailHTML: inlineHTML
-        ) { _ in
-            fetched = true
+        ) { url in
+            await recorder.record(url)
             return ""
         }
         XCTAssertTrue(comments.isEmpty)
+        let fetched = await recorder.lastURL != nil
         XCTAssertFalse(fetched, "inline path must short-circuit before the network round-trip")
     }
 
@@ -900,14 +901,15 @@ final class ParserDetailTests: XCTestCase {
         {"status":"ETOCD200000","data":{"comments":[{"commentId":1,"parentId":null,"writeDateTimestamp":1,"recommendCount":2,"content":"테스트","isAnonymous":false,"member":{"nickname":"a","image":null},"file":null,"childrenComments":[]}]}}
         """
 
-        var hitURL: URL?
+        let recorder = FetchRecorder()
         let comments = try await parser.fetchAllComments(
             for: post,
             detailHTML: bailoutHTML
         ) { url in
-            hitURL = url
+            await recorder.record(url)
             return apiBody
         }
+        let hitURL = await recorder.lastURL
         XCTAssertEqual(
             hitURL?.path,
             "/api/v1/board/etohumor07/article/slug/-9022769/comments",
@@ -1999,4 +2001,11 @@ final class ParserDetailTests: XCTestCase {
         parser.convertAnchorsToMarkdown(in: body)
         XCTAssertEqual(try body.text(), "[https://example.com/x](<https://example.com/x>)")
     }
+}
+
+/// fetcher(@Sendable) 가 요청한 URL 을 thread-safe 하게 기록 — 캡처한 로컬
+/// var 뮤테이션은 Swift 6 모드에서 컴파일 에러라 actor 로 감싼다.
+private actor FetchRecorder {
+    private(set) var lastURL: URL?
+    func record(_ url: URL) { lastURL = url }
 }

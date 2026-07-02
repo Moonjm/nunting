@@ -3,7 +3,7 @@ import CoreGraphics
 
 /// `Codable`: 목록 디스크 스냅샷(`BoardListSnapshotStore`)용 — 모든 필드가
 /// 텍스트 메타데이터라 합성 인코딩으로 충분하다.
-public struct Post: Identifiable, Hashable, Codable {
+nonisolated public struct Post: Identifiable, Hashable, Codable, Sendable {
     public let id: String
     public let site: Site
     public let boardID: String
@@ -85,11 +85,11 @@ public struct Post: Identifiable, Hashable, Codable {
     }
 }
 
-public struct ContentBlock: Identifiable, Hashable {
+nonisolated public struct ContentBlock: Identifiable, Hashable, Sendable {
     public let id: UUID
     public let kind: Kind
 
-    public enum Kind: Hashable {
+    public enum Kind: Hashable, Sendable {
         case richText([InlineSegment])
         case image(url: URL, posterURL: URL?, aspectRatio: CGFloat?)
         case video(url: URL, posterURL: URL?)
@@ -122,17 +122,17 @@ public struct ContentBlock: Identifiable, Hashable {
     }
 }
 
-public enum EmbedProvider: Hashable {
+nonisolated public enum EmbedProvider: Hashable, Sendable {
     case youtube
     case instagram
 }
 
-public enum InlineSegment: Hashable {
+nonisolated public enum InlineSegment: Hashable, Sendable {
     case text(String)
     case link(url: URL, label: String)
 }
 
-public struct PostSource: Hashable {
+nonisolated public struct PostSource: Hashable, Sendable {
     public let name: String
     public let url: URL
 
@@ -142,7 +142,7 @@ public struct PostSource: Hashable {
     }
 }
 
-public struct PostDetail {
+nonisolated public struct PostDetail: Sendable {
     public let post: Post
     public let blocks: [ContentBlock]
     public let fullDateText: String?

@@ -1,6 +1,6 @@
 import Foundation
 
-public enum Site: String, CaseIterable, Identifiable, Codable {
+nonisolated public enum Site: String, CaseIterable, Identifiable, Codable, Sendable {
     case clien
     case coolenjoy
     case inven

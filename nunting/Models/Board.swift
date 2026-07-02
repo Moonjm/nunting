@@ -4,7 +4,7 @@ import Foundation
 /// which rebuilds a `Board` via the designated initializer so the
 /// `normalizedSearchQueryName` / default-page-query migration always runs.
 /// Intentionally non-`Codable` to prevent bypassing that migration path.
-public struct Board: Identifiable, Hashable {
+nonisolated public struct Board: Identifiable, Hashable, Sendable {
     public let id: String
     public let site: Site
     public let name: String

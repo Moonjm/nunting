@@ -117,7 +117,11 @@ final class ReadStore {
     private func persist() {
         let snapshot = order
         let key = storageKey
-        let store = defaults
+        // nonisolated(unsafe): UserDefaults 는 문서상 thread-safe 지만 SDK 가
+        // Sendable 로 표시하지 않아, Swift 6 모드에서 detached 클로저 캡처가
+        // sending 위반으로 잡힌다. 실제 경합 없음(아래 태스크 체인이 쓰기를
+        // 직렬화).
+        nonisolated(unsafe) let store = defaults
         let previous = pendingPersist
         pendingPersist = Task.detached(priority: .userInitiated) {
             _ = await previous?.value
