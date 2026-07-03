@@ -9,9 +9,7 @@ nonisolated struct FavoriteBoardSnapshot: Codable, Hashable, Sendable {
     let siteRaw: String
     let name: String
     let path: String
-    /// Optional so older v3 payloads (before this field existed) still decode;
-    /// reconstruction defaults to `[]`.
-    let filters: [BoardFilter]?
+    let filters: [BoardFilter]
     let searchQueryName: String?
     let pageQueryName: String?
 
@@ -32,7 +30,7 @@ nonisolated struct FavoriteBoardSnapshot: Codable, Hashable, Sendable {
             site: site,
             name: name,
             path: path,
-            filters: filters ?? [],
+            filters: filters,
             searchQueryName: searchQueryName,
             pageQueryName: pageQueryName
         )
@@ -43,8 +41,6 @@ nonisolated struct FavoriteBoardSnapshot: Codable, Hashable, Sendable {
 final class FavoritesStore {
     /// v3 stores an ordered array so the user can reorder favorites.
     private let storageKey = "favoriteBoards.v3"
-    private let legacyV2Key = "favoriteBoards.v2"
-    private let legacyIDKey = "favoriteBoardIDs"
     private let seededKey = "favoritesSeeded"
     private let defaults: UserDefaults
 
@@ -64,24 +60,6 @@ final class FavoritesStore {
             // without requiring the user to navigate into a site section
             // (which is the only other place `merge(boards:)` is wired).
             merge(boards: Board.all)
-            return
-        }
-
-        // Migrate v2 (id → snapshot dict) by taking values in any order.
-        if let data = defaults.data(forKey: legacyV2Key),
-           let dict = try? JSONDecoder().decode([String: FavoriteBoardSnapshot].self, from: data) {
-            self.snapshots = Array(dict.values).sorted { $0.name < $1.name }
-            Self.persist(snapshots: self.snapshots, key: storageKey, defaults: defaults)
-            return
-        }
-
-        // Migrate v1 (id-only Set) via Board.all lookup.
-        if let data = defaults.data(forKey: legacyIDKey),
-           let ids = try? JSONDecoder().decode(Set<String>.self, from: data) {
-            self.snapshots = Board.all
-                .filter { ids.contains($0.id) }
-                .map(FavoriteBoardSnapshot.init)
-            Self.persist(snapshots: self.snapshots, key: storageKey, defaults: defaults)
             return
         }
 
