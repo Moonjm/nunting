@@ -1,6 +1,6 @@
 import XCTest
 @testable import nunting
-/// Persistence + migration tests for `FavoritesStore`.
+/// Persistence tests for `FavoritesStore`.
 ///
 /// Each test uses an isolated `UserDefaults(suiteName:)` so cases don't
 /// leak state into each other. The store's constructor already accepts
@@ -47,45 +47,13 @@ final class FavoritesStoreTests: XCTestCase {
         XCTAssertTrue(second.favoriteBoards().isEmpty, "한 번 seed 된 뒤 사용자가 다 지웠으면 재seed 안 됨")
     }
 
-    // MARK: - v1 → v3 migration
+    // MARK: - v3 read-back
 
-    func testV1IDSetMigratesToV3Snapshots() throws {
-        // v1 stored a Set<String> of board IDs under "favoriteBoardIDs".
-        let ids: Set<String> = [Board.clienNews.id, Board.invenMaple.id]
-        let data = try JSONEncoder().encode(ids)
-        defaults.set(data, forKey: "favoriteBoardIDs")
-
-        let store = FavoritesStore(defaults: defaults)
-        let boardIDs = store.favoriteBoards().map(\.id).sorted()
-        XCTAssertEqual(boardIDs, [Board.clienNews.id, Board.invenMaple.id].sorted())
-        // Persisted forward as v3.
-        XCTAssertNotNil(defaults.data(forKey: "favoriteBoards.v3"))
-    }
-
-    // MARK: - v2 → v3 migration
-
-    func testV2DictMigratesToV3SortedArray() throws {
-        // v2 stored a dict keyed by board ID. Migration sorts by snapshot name
-        // because the dict has no inherent ordering.
-        let news = FavoriteBoardSnapshot(.clienNews)
-        let inven = FavoriteBoardSnapshot(.invenMaple)
-        let dict: [String: FavoriteBoardSnapshot] = [news.id: news, inven.id: inven]
-        let data = try JSONEncoder().encode(dict)
-        defaults.set(data, forKey: "favoriteBoards.v2")
-
-        let store = FavoritesStore(defaults: defaults)
-        let boards = store.favoriteBoards()
-        XCTAssertEqual(boards.count, 2)
-        // 메이플 자유게시판 (ㅁ) < 새로운 소식 (ㅅ)
-        XCTAssertEqual(boards.map(\.name), ["메이플 자유게시판", "새로운 소식"])
-        XCTAssertNotNil(defaults.data(forKey: "favoriteBoards.v3"), "v3 로 forward-persist")
-    }
-
-    func testV2SnapshotWithStaleSearchQueryNameIsNormalizedOnRehydrate() throws {
-        // v2 snapshot might carry Clien's pre-rename `sv` searchQueryName.
-        // `Board.init` runs `normalizedSearchQueryName(...)` which forces
-        // Clien back to `q` regardless of what's persisted.
-        let staleSnapshot = FavoriteBoardSnapshot.legacy(
+    func testSnapshotWithStaleSearchQueryNameIsNormalizedOnRehydrate() throws {
+        // A persisted snapshot might carry Clien's pre-rename `sv`
+        // searchQueryName. `Board.init` runs `normalizedSearchQueryName(...)`
+        // which forces Clien back to `q` regardless of what's persisted.
+        let staleSnapshot = FavoriteBoardSnapshot.raw(
             id: Board.clienNews.id,
             siteRaw: "clien",
             name: "새로운 소식",
@@ -94,16 +62,13 @@ final class FavoritesStoreTests: XCTestCase {
             searchQueryName: "sv",  // stale
             pageQueryName: nil
         )
-        let dict: [String: FavoriteBoardSnapshot] = [staleSnapshot.id: staleSnapshot]
-        let data = try JSONEncoder().encode(dict)
-        defaults.set(data, forKey: "favoriteBoards.v2")
+        let data = try JSONEncoder().encode([staleSnapshot])
+        defaults.set(data, forKey: "favoriteBoards.v3")
 
         let store = FavoritesStore(defaults: defaults)
         let board = store.favoriteBoards().first
         XCTAssertEqual(board?.searchQueryName, "q", "stale 'sv' → 'q' 로 정규화")
     }
-
-    // MARK: - v3 read-back
 
     func testV3OrderedArrayReadsBackInOrder() throws {
         // v3 preserves the user-edited order; assert it round-trips.
@@ -173,7 +138,7 @@ final class FavoritesStoreTests: XCTestCase {
 
     func testMergePropagatesRenamesPreservingOrder() {
         // Persist a snapshot with an old name.
-        let oldSnapshot = FavoriteBoardSnapshot.legacy(
+        let oldSnapshot = FavoriteBoardSnapshot.raw(
             id: "test-board",
             siteRaw: "clien",
             name: "예전 이름",
@@ -204,42 +169,35 @@ final class FavoritesStoreTests: XCTestCase {
 }
 
 /// Builds a `FavoriteBoardSnapshot` directly from raw fields, bypassing
-/// the `init(_ board:)` path. The point is to synthesize *legacy
-/// payloads* — stale `searchQueryName` (e.g. Clien's pre-rename `sv`),
-/// the v3-pre-filters-field shape where the `filters` key is absent —
-/// that current `Board` values cannot produce. If a test only needs
-/// fields that round-trip cleanly from a `Board`, prefer
+/// the `init(_ board:)` path. The point is to synthesize *persisted
+/// payloads* that current `Board` values cannot produce — e.g. a stale
+/// `searchQueryName` (Clien's pre-rename `sv`), which `Board.init` would
+/// normalize away at construction. If a test only needs fields that
+/// round-trip cleanly from a `Board`, prefer
 /// `FavoriteBoardSnapshot(_ board:)` directly.
-///
-/// `filters: nil` omits the JSON key entirely (decode path with the
-/// optional missing); `filters: []` writes an empty array (decode path
-/// with the field present-but-empty); `filters: [BoardFilter(...)]`
-/// round-trips through `BoardFilter.Codable`.
 private extension FavoriteBoardSnapshot {
-    static func legacy(
+    static func raw(
         id: String,
         siteRaw: String,
         name: String,
         path: String,
-        filters: [BoardFilter]?,
+        filters: [BoardFilter],
         searchQueryName: String?,
         pageQueryName: String?
     ) -> FavoriteBoardSnapshot {
-        var json: [String: Any] = [
+        // Round-trip filters through BoardFilter.Codable so we honor whatever
+        // shape the production decoder expects, instead of hand-writing the
+        // JSON for `BoardFilter`.
+        let filtersData = try! JSONEncoder().encode(filters)
+        let json: [String: Any] = [
             "id": id,
             "siteRaw": siteRaw,
             "name": name,
             "path": path,
+            "filters": try! JSONSerialization.jsonObject(with: filtersData),
             "searchQueryName": searchQueryName as Any? ?? NSNull(),
             "pageQueryName": pageQueryName as Any? ?? NSNull(),
         ]
-        if let filters {
-            // Round-trip through BoardFilter.Codable so we honor whatever
-            // shape the production decoder expects, instead of
-            // hand-writing the JSON for `BoardFilter`.
-            let filtersData = try! JSONEncoder().encode(filters)
-            json["filters"] = try! JSONSerialization.jsonObject(with: filtersData)
-        }
         let data = try! JSONSerialization.data(withJSONObject: json)
         return try! JSONDecoder().decode(FavoriteBoardSnapshot.self, from: data)
     }
