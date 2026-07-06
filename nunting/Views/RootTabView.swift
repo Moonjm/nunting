@@ -482,7 +482,25 @@ private struct ArchiveHome: View {
     private func filterBinding(_ id: String) -> Binding<BoardFilter?> {
         Binding(
             get: { filterByBoard[id] },
-            set: { filterByBoard[id] = $0 }
+            set: { newFilter in
+                let previous = filterByBoard[id]
+                filterByBoard[id] = newFilter
+                // 사용자가 실제로 다른 필터 탭으로 바꿀 때만 후속 처리. 같은 칩
+                // 재탭이나 resetFilterToDefault(직접 dict 쓰기라 이 setter 우회)는
+                // 지나가지 않는다.
+                guard newFilter?.id != previous?.id else { return }
+                // 필터는 엔드포인트를 통째로 바꿀 수 있어(BoardFilter.replacementPath,
+                // 애객 소스 필터) 이전 검색어는 새 경로에서 의미가 없다 → 비운다.
+                // 구 ContentView 의 `.onChange(of: selection.filter)` 동작 복원
+                // (Glass 재디자인 #120 에서 새 셸로 이관 누락).
+                searchByBoard[id] = nil
+                // footprint 타임라인 태깅 — 인벤/애객처럼 필터가 소스 경로를 바꾸는
+                // 보드에서 어느 탭이 메모리를 튀기는지 서버 admin 뷰에서 가른다.
+                // board 라벨만으론 탭별 구분이 안 돼 `board:<보드>/<필터>` 로 태깅.
+                if let board = boards.first(where: { $0.id == id }) {
+                    FootprintLogger.shared.record("board:\(board.name)/\(newFilter?.name ?? "전체")")
+                }
+            }
         )
     }
 
