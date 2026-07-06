@@ -112,6 +112,12 @@ struct RootTabView: View {
     @State private var browsingBoard: Board?
     // 상세 오버레이 백드래그(우→ 스와이프 닫기) 상태기계.
     @State private var backDrag = DetailBackDrag()
+    // aagag 봇체크 인터랙티브 복구. Networking 이 캡챠 인터스티셜을 감지하면
+    // BotCheckCoordinator.shared.challenge(url:) 로 pending 을 세팅하고 fetch
+    // 태스크가 대기한다. 셸이 그 pending 을 관찰해 BotCheckSheet(WKWebView)를
+    // 띄워야 사용자가 문자를 풀 수 있다(구 ContentView 담당이던 배선 — Glass
+    // 재디자인 #120 에서 새 셸로 이관 누락됐던 걸 복원).
+    @State private var botCheck = BotCheckCoordinator.shared
     // 모음(0) 탭 재탭 시 증가 — 상세가 떠 있으면 상세 본문을, 아니면 현재
     // 보드 목록을 맨 위로 스크롤하는 신호. reloadToken 과 같은 토큰 패턴으로
     // ArchiveHome/BoardPager/BoardListView·PostDetailScreen 까지 내려간다.
@@ -251,6 +257,21 @@ struct RootTabView: View {
             }
         )
         .simultaneousGesture(backDrag.gesture)
+        // 봇체크 인터랙티브 복구 시트. pending 은 코디네이터에서 private(set)
+        // (resolve() 만 nil 로 되돌림)이라, 시스템 드래그-다운으로 닫혀도
+        // 대기 중인 fetch 를 깨우도록 dismiss→nil 쓰기를 resolve() 로 흘려보내는
+        // 커스텀 바인딩으로 시트를 구동한다. 상세 오버레이(ZStack zIndex 10)
+        // 위까지 덮어야 하므로 최외곽 ZStack 에 붙인다.
+        .sheet(item: Binding(
+            get: { botCheck.pending },
+            set: { newValue in
+                if newValue == nil { botCheck.resolve() }
+            }
+        )) { challenge in
+            BotCheckSheet(url: challenge.url) {
+                botCheck.resolve()
+            }
+        }
         .task {
             Networking.prewarmConnections()
             ImageWarmup.warm()
@@ -461,7 +482,25 @@ private struct ArchiveHome: View {
     private func filterBinding(_ id: String) -> Binding<BoardFilter?> {
         Binding(
             get: { filterByBoard[id] },
-            set: { filterByBoard[id] = $0 }
+            set: { newFilter in
+                let previous = filterByBoard[id]
+                filterByBoard[id] = newFilter
+                // 사용자가 실제로 다른 필터 탭으로 바꿀 때만 후속 처리. 같은 칩
+                // 재탭이나 resetFilterToDefault(직접 dict 쓰기라 이 setter 우회)는
+                // 지나가지 않는다.
+                guard newFilter?.id != previous?.id else { return }
+                // 필터는 엔드포인트를 통째로 바꿀 수 있어(BoardFilter.replacementPath,
+                // 애객 소스 필터) 이전 검색어는 새 경로에서 의미가 없다 → 비운다.
+                // 구 ContentView 의 `.onChange(of: selection.filter)` 동작 복원
+                // (Glass 재디자인 #120 에서 새 셸로 이관 누락).
+                searchByBoard[id] = nil
+                // footprint 타임라인 태깅 — 인벤/애객처럼 필터가 소스 경로를 바꾸는
+                // 보드에서 어느 탭이 메모리를 튀기는지 서버 admin 뷰에서 가른다.
+                // board 라벨만으론 탭별 구분이 안 돼 `board:<보드>/<필터>` 로 태깅.
+                if let board = boards.first(where: { $0.id == id }) {
+                    FootprintLogger.shared.record("board:\(board.name)/\(newFilter?.name ?? "전체")")
+                }
+            }
         )
     }
 
