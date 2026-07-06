@@ -203,10 +203,53 @@ final class ParserListTests: XCTestCase {
         XCTAssertEqual(posts[0].viewCount, 1234)
         XCTAssertEqual(posts[0].author, "뽐뿌유저")
         XCTAssertEqual(posts[0].id, "aagag-ppomppu_111")
-        XCTAssertEqual(posts[0].url.path, "/mirror/re", "rawHref 're?...' 가 /mirror/re 로 prefixed")
+        XCTAssertEqual(posts[0].url.absoluteString,
+                       "https://m.ppomppu.co.kr/new/bbs_view.php?id=freeboard&no=111",
+                       "알려진 소스(ppomppu)는 미러 대신 원본 직접 URL 로 재작성")
+        XCTAssertEqual(posts[0].site, .aagag,
+                       "URL 만 원본으로 바꾸고 site 는 .aagag 유지 — 목록 스타일/prefetch skip 보존")
         XCTAssertEqual(posts[1].title, "웃대 인기글")
         XCTAssertEqual(posts[1].levelText, "humor")
-        XCTAssertEqual(posts[1].url.path, "/mirror/re", "'./re?...' 도 동일하게 정규화")
+        XCTAssertEqual(posts[1].url.absoluteString,
+                       "https://m.humoruniv.com/board/read.html?table=pds&number=222",
+                       "'./re?...' 소스도 원본 직접 URL 로 재작성")
+    }
+
+    func testAagagDirectSourceURLRewritesEachKnownSource() {
+        // Aagag 가 소스별로 고정 board 를 크롤링하므로 `ss={site}_{id}` 만으로
+        // 원본 canonical URL 을 재구성 — 미러 리다이렉트를 건너뛴다. 각 URL 은
+        // 해당 파서가 이미 처리하는 형식(2026-07 라이브 리다이렉트로 확인).
+        func url(_ ss: String) -> String? { AagagParser.directSourceURL(fromSS: ss)?.absoluteString }
+        XCTAssertEqual(url("clien_19222011"), "https://m.clien.net/service/board/park/19222011")
+        XCTAssertEqual(url("ppomppu_10025666"), "https://m.ppomppu.co.kr/new/bbs_view.php?id=freeboard&no=10025666")
+        XCTAssertEqual(url("82cook_4210834"), "https://www.82cook.com/entiz/read.php?bn=15&num=4210834")
+        XCTAssertEqual(url("bobae_6948140"), "https://m.bobaedream.co.kr/board/bbs_view/strange/6948140")
+        XCTAssertEqual(url("inven_2692657"), "https://m.inven.co.kr/board/webzine/2097/2692657")
+        XCTAssertEqual(url("humor_1416660"), "https://m.humoruniv.com/board/read.html?table=pds&number=1416660")
+        XCTAssertEqual(url("ddanzi_888824568"), "https://www.ddanzi.com/free/888824568")
+        XCTAssertEqual(url("slrclub_41680774"), "https://m.slrclub.com/v/free/41680774")
+        XCTAssertEqual(url("etoland_9167644"), "https://etoland.co.kr/b/etohumor07/view/-9167644",
+                       "etoland slug 은 앞에 '-' 가 붙는다")
+    }
+
+    func testAagagDirectSourceURLKeepsMirrorForUnparsedSourcesAndIssueRows() {
+        // 파서 없는 소스(fmkorea/mlbpark/ruli/ou/damoang), 네이티브 issue 행,
+        // 비정상 ss 는 재작성하지 않고 nil → 호출부가 미러 URL 을 유지한다.
+        XCTAssertNil(AagagParser.directSourceURL(fromSS: "fmkorea_8357468318"))
+        XCTAssertNil(AagagParser.directSourceURL(fromSS: "mlbpark_202505100103952145"))
+        XCTAssertNil(AagagParser.directSourceURL(fromSS: "ruli_70605703"))
+        XCTAssertNil(AagagParser.directSourceURL(fromSS: "ou_2037169"))
+        XCTAssertNil(AagagParser.directSourceURL(fromSS: "damoang_12345"))
+        XCTAssertNil(AagagParser.directSourceURL(fromSS: "issue_1541343"))
+        XCTAssertNil(AagagParser.directSourceURL(fromSS: "clien_"), "id 없는 ss")
+        XCTAssertNil(AagagParser.directSourceURL(fromSS: "noseparator"))
+        XCTAssertNil(AagagParser.directSourceURL(fromSS: ""))
+        // Malformed id (숫자 아님/다중 파트/제어문자) 는 재작성하지 않는다 —
+        // 깨진 직접 URL 대신 미러 경로를 유지해야 한다.
+        XCTAssertNil(AagagParser.directSourceURL(fromSS: "clien_abc"), "숫자 아닌 id")
+        XCTAssertNil(AagagParser.directSourceURL(fromSS: "ppomppu_123_extra"), "다중 파트 id")
+        XCTAssertNil(AagagParser.directSourceURL(fromSS: "humor_%0A"), "제어문자 포함 id")
+        XCTAssertNil(AagagParser.directSourceURL(fromSS: "bobae_12a"), "숫자+문자 혼합 id")
     }
 
     func testAagagListWithoutSSAttrKeepsStableUniqueIDs() throws {

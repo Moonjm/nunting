@@ -376,6 +376,21 @@ final class PostDetailLoader {
     /// load: dispatch to a source parser if we recognise the host, else
     /// surface a "외부 사이트로 이동" banner.
     private func resolveDispatchedPost(_ post: Post) async throws -> Dispatch {
+        // Aagag list rows may already carry a direct source-site URL —
+        // `AagagParser.directSourceURL` rebuilds the source's canonical URL
+        // from the row's `ss`, so we skip the `/mirror/re?ss=…` redirect (and
+        // Aagag's Cloudflare/bot-check gate). Such a post keeps `site == .aagag`
+        // (list styling + prefetch skip stay put), but its URL host is the
+        // source site — dispatch straight to that parser with no round-trip.
+        // Native issue rows keep the aagag.com host and fall through below.
+        if post.site == .aagag,
+           let host = post.url.host,
+           !Site.host(host, matches: "aagag.com"),
+           let sourceSite = Site.detect(host: host) {
+            return .parser(dispatchedPost(post, site: sourceSite, url: post.url),
+                           prefetched: nil)
+        }
+
         // Mirror detail URLs always live under /mirror/re and carry the
         // item id in the `ss` query — matching the query is less brittle
         // than a bare path suffix if aagag ever renames the redirect
@@ -396,22 +411,29 @@ final class PostDetailLoader {
         guard let sourceSite = Site.detect(host: resolved.url.host) else {
             return .external(resolved.url)
         }
-        let dispatched = Post(
+        return .parser(dispatchedPost(post, site: sourceSite, url: resolved.url),
+                       prefetched: resolved.prefetchedBody)
+    }
+
+    /// Rebuild `post` under a source site + resolved URL so dispatch runs the
+    /// source parser with the source site's encoding. `id` / `boardID` stay
+    /// put so read-state and the owning Aagag board are preserved.
+    private func dispatchedPost(_ post: Post, site: Site, url: URL) -> Post {
+        Post(
             id: post.id,
-            site: sourceSite,
+            site: site,
             boardID: post.boardID,
             title: post.title,
             author: post.author,
             date: post.date,
             dateText: post.dateText,
             commentCount: post.commentCount,
-            url: resolved.url,
+            url: url,
             viewCount: post.viewCount,
             recommendCount: post.recommendCount,
             levelText: post.levelText,
             hasAuthIcon: post.hasAuthIcon
         )
-        return .parser(dispatched, prefetched: resolved.prefetchedBody)
     }
 
     /// 첫 commit 이 렌더 게이트를 기다려야 하는가 — 푸시 애니메이션 프레임을

@@ -87,6 +87,13 @@ public struct AagagParser: BoardParser {
             let dedupKey = ss.isEmpty ? url.absoluteString : ss
             if !seen.insert(dedupKey).inserted { continue }
 
+            // Rebuild the source site's canonical URL from `ss` so detail
+            // loading fetches the source directly and skips Aagag's
+            // `/mirror/re?ss=…` redirect (one network hop + Aagag's Cloudflare/
+            // bot-check gate). Sources we don't parse keep the mirror URL and
+            // resolve the old way via `PostDetailLoader`.
+            let postURL = Self.directSourceURL(fromSS: ss) ?? url
+
             let titleEl = try el.select("span.title").first()
             let titleCopy = titleEl.flatMap { $0.copy() as? Element } ?? titleEl
             try titleCopy?.select("span.btmlayer, span.cmt").remove()
@@ -134,7 +141,7 @@ public struct AagagParser: BoardParser {
                 date: nil,
                 dateText: dateText,
                 commentCount: commentCount,
-                url: url,
+                url: postURL,
                 viewCount: viewCount,
                 recommendCount: nil,
                 levelText: sourceLabel,
@@ -142,6 +149,50 @@ public struct AagagParser: BoardParser {
             ))
         }
         return results
+    }
+
+    /// Aagag mirror rows carry `ss="{sourceCode}_{id}"`. Aagag crawls a
+    /// *fixed* board per source, so the source site's canonical detail URL
+    /// can be rebuilt client-side — letting detail loading fetch the source
+    /// directly and skip the `/mirror/re?ss=…` redirect (one hop + Aagag's
+    /// Cloudflare/bot-check gate). Each URL below is the exact shape the
+    /// source-site parser already handles (verified against live Aagag
+    /// redirects, 2026-07); the board segment is the board Aagag mirrors for
+    /// that source. Sources we don't parse (damoang, mlbpark, ou, ruli,
+    /// fmkorea) and native `issue_…` rows return nil and keep the mirror URL,
+    /// so `PostDetailLoader` still resolves them via the redirect.
+    ///
+    /// If Aagag ever changes which board it mirrors, the hardcoded board here
+    /// goes stale (wrong/404 detail) — an accepted single-user trade-off:
+    /// fix the map when it breaks rather than pay the redirect on every open.
+    nonisolated static func directSourceURL(fromSS ss: String) -> URL? {
+        guard let sep = ss.firstIndex(of: "_") else { return nil }
+        let code = String(ss[..<sep])
+        let id = String(ss[ss.index(after: sep)...])
+        // Every mapped source uses a bare numeric post id, so require one.
+        // This rejects malformed / multi-part ss (`ppomppu_123_extra`,
+        // `clien_abc`, `humor_%0A`, …) — they fall through to nil and keep
+        // the mirror/resolver path instead of building a broken direct URL.
+        guard !id.isEmpty, id.allSatisfy(\.isNumber) else { return nil }
+
+        // Mobile (`m.`) detail URLs — the exact shape each source parser was
+        // written against (parsers target the mobile DOM; the desktop `www`
+        // pages have different markup and fail to parse). Verified against
+        // live mobile navigation, 2026-07.
+        let string: String
+        switch code {
+        case "clien":   string = "https://m.clien.net/service/board/park/\(id)"
+        case "ppomppu": string = "https://m.ppomppu.co.kr/new/bbs_view.php?id=freeboard&no=\(id)"
+        case "82cook":  string = "https://www.82cook.com/entiz/read.php?bn=15&num=\(id)"
+        case "bobae":   string = "https://m.bobaedream.co.kr/board/bbs_view/strange/\(id)"
+        case "inven":   string = "https://m.inven.co.kr/board/webzine/2097/\(id)"
+        case "humor":   string = "https://m.humoruniv.com/board/read.html?table=pds&number=\(id)"
+        case "ddanzi":  string = "https://www.ddanzi.com/free/\(id)"
+        case "slrclub": string = "https://m.slrclub.com/v/free/\(id)"
+        case "etoland": string = "https://etoland.co.kr/b/etohumor07/view/-\(id)"
+        default:        return nil
+        }
+        return URL(string: string)
     }
 
     public nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
