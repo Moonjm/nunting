@@ -199,6 +199,78 @@ final class PostDetailLoaderTests: XCTestCase {
         XCTAssertFalse(loader.isLoading)
     }
 
+    func testAagagDirectSourceURLDispatchesToSourceParserWithoutResolver() async {
+        // parseList 가 이미 원본 직접 URL 로 재작성한 행(site=.aagag, host=원본
+        // 사이트): 미러 리다이렉트 resolver 를 거치지 않고 곧장 원본 파서로
+        // 디스패치되어 그 사이트의 인코딩으로 로드돼야 한다.
+        let resolverCalled = TestCounter()
+        let loader = PostDetailLoader(
+            fetcher: { [bobaeDeletedHTML] _, _ in bobaeDeletedHTML },
+            resolver: { url in
+                resolverCalled.increment()
+                return Networking.ResolvedRedirect(url: url, prefetchedBody: nil)
+            }
+        )
+        let cache = PostDetailCache(capacity: 4)
+        let post = Post(
+            id: "aagag-bobae_42",
+            site: .aagag,
+            boardID: "mirror",
+            title: "미러",
+            author: "aagag",
+            date: nil,
+            dateText: "방금",
+            commentCount: 0,
+            // AagagParser.directSourceURL 이 재작성한 bobae 원본 모바일 URL
+            url: URL(string: "https://m.bobaedream.co.kr/board/bbs_view/strange/42")!
+        )
+
+        await loader.load(post: post, cache: cache, renderReadyAt: now())
+
+        XCTAssertEqual(resolverCalled.value, 0,
+                       "원본 직접 URL 은 리다이렉트 resolver 를 거치지 않음")
+        XCTAssertNotNil(loader.detail, "host 로 BobaeParser 디스패치되어 파싱 완료")
+        XCTAssertFalse(loader.isLoading)
+        XCTAssertNil(loader.errorMessage)
+    }
+
+    func testAagagDirectSourceUsesSourceSiteEncodingNotAagag() async {
+        // Option 2 의 핵심 리스크: 원본 직접 URL(site=.aagag 유지)을 상세 fetch
+        // 할 때 반드시 **원본 사이트** 인코딩을 써야 한다 — ppomppu 는 CP949 라
+        // aagag(UTF-8)로 받으면 한글이 깨진다. detail fetch 로 넘어간 encoding 을
+        // 캡처해 검증(fetch 가 파싱보다 먼저이므로 파싱 성공 여부와 무관).
+        XCTAssertNotEqual(Site.ppomppu.encoding, Site.aagag.encoding,
+                          "전제: ppomppu(CP949) 와 aagag(UTF-8) 인코딩이 실제로 다름")
+        let recorder = FetchRecorder()
+        let loader = PostDetailLoader(
+            fetcher: { url, encoding in
+                recorder.record(url: url, encoding: encoding)
+                return "<html></html>"
+            },
+            resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) }
+        )
+        let cache = PostDetailCache(capacity: 4)
+        let post = Post(
+            id: "aagag-ppomppu_1",
+            site: .aagag,
+            boardID: "mirror",
+            title: "미러",
+            author: "aagag",
+            date: nil,
+            dateText: "방금",
+            commentCount: 0,
+            url: URL(string: "https://m.ppomppu.co.kr/new/bbs_view.php?id=freeboard&no=1")!
+        )
+
+        await loader.load(post: post, cache: cache, renderReadyAt: now())
+
+        guard let first = recorder.first else { XCTFail("detail fetcher 미호출"); return }
+        XCTAssertEqual(first.url.host, "m.ppomppu.co.kr",
+                       "원본 ppomppu URL 로 직접 fetch")
+        XCTAssertEqual(first.encoding, Site.ppomppu.encoding,
+                       "상세는 원본(ppomppu, CP949) 인코딩으로 fetch — aagag UTF-8 아님")
+    }
+
     func testAagagMirrorWithoutSsQueryFallsThroughToAagagParser() async {
         // post.url 이 /mirror/re 패턴이지만 ss 쿼리 없음 → resolver 우회,
         // 원본 post (aagag) 로 parser 디스패치. AagagParser 가 입력을
@@ -678,6 +750,25 @@ private final class TestFlag: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return flag
+    }
+}
+
+/// fetcher 로 넘어온 (url, encoding) 을 순서대로 기록하는 스레드-세이프 레코더.
+/// 직접-디스패치 경로가 원본 사이트 인코딩을 쓰는지 검증하는 데 쓴다.
+private final class FetchRecorder: @unchecked Sendable {
+    private var calls: [(url: URL, encoding: String.Encoding)] = []
+    private let lock = NSLock()
+
+    func record(url: URL, encoding: String.Encoding) {
+        lock.lock()
+        defer { lock.unlock() }
+        calls.append((url, encoding))
+    }
+
+    var first: (url: URL, encoding: String.Encoding)? {
+        lock.lock()
+        defer { lock.unlock() }
+        return calls.first
     }
 }
 
