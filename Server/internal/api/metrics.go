@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"html/template"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -21,25 +22,34 @@ var validMetricKinds = map[string]bool{"metric": true, "diagnostic": true}
 // kind 검증 + JSON 유효성만 확인하고 그대로 저장한다(해석은 adminMetrics 가).
 // body 상한(1MB)은 라우터의 maxBody 미들웨어가 강제 — 초과 시 read 가 에러.
 func (h *handlers) postMetrics(w http.ResponseWriter, r *http.Request) {
+	// MetricKit 은 하루 1건가량이라 성공/실패 모두 로깅해도 스팸이 아니다.
+	// "왜 metric_payloads 에 안 쌓이나"를 서버 로그만 봐도 판별할 수 있게, 모든
+	// 거부 경로와 성공 수신을 남긴다(이전엔 전 경로 무로깅이라 서버에서 안 보였다).
+	device := shortUUID(UUIDFrom(r.Context()))
 	kind := r.URL.Query().Get("kind")
 	if !validMetricKinds[kind] {
+		slog.Warn("metrics_invalid_kind", "kind", kind, "device", device)
 		http.Error(w, "invalid kind", http.StatusBadRequest)
 		return
 	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		// MaxBytesReader 초과 포함 — 413 으로 본문 과대를 명시.
+		slog.Warn("metrics_body_read_failed", "kind", kind, "device", device, "err", err)
 		http.Error(w, "body too large or read error", http.StatusRequestEntityTooLarge)
 		return
 	}
 	if len(body) == 0 || !json.Valid(body) {
+		slog.Warn("metrics_invalid_json", "kind", kind, "device", device, "bytes", len(body))
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
 	if err := h.store.InsertMetricPayload(r.Context(), UUIDFrom(r.Context()), kind, string(body)); err != nil {
+		slog.Error("metrics_insert_failed", "kind", kind, "device", device, "bytes", len(body), "err", err)
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
+	slog.Info("metrics_received", "kind", kind, "device", device, "bytes", len(body))
 	w.WriteHeader(http.StatusOK)
 }
 
