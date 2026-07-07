@@ -5,9 +5,12 @@ import SwiftUI
 // 보드 페이저 가로 스와이프와 충돌하지 않게). DetailOverlayController 의
 // offset/show/hide/shouldDismissSwipe 와 짝으로 동작한다.
 //
-// 닫을 때 슬라이드 아웃 뒤 activePost 를 비워 오버레이를 언마운트한다(구앱의
-// keep-alive 미사용): 메모리 회수 + "마지막 글 재노출"이 보드 스와이프와
-// 겹치는 문제를 원천 차단.
+// 닫을 때 오버레이를 화면 밖으로 밀기만 하고 activePost 는 살려둔다(keep-alive):
+// 히스토리 버튼이 detail.show(activePost) 로 그 뷰(스크롤·본문·재생 상태 유지)를
+// 그대로 다시 슬라이드 인할 수 있게. 재노출을 스와이프가 아닌 버튼으로 하므로
+// 보드 페이저 가로 스와이프와 겹치지 않는다. 트레이드오프: 마지막 상세뷰 1개가
+// 다음 글을 열 때까지 메모리에 상주(사용자 수용). 숨겨진 오버레이는
+// isOverlayVisible=false 라 스와이프·히트테스트·영상/디코드 모두 비활성.
 @Observable @MainActor
 final class DetailBackDrag {
     /// 가로 드래그가 잠긴 동안 true → PostDetailView 의 내부 ScrollView 잠금.
@@ -74,16 +77,11 @@ final class DetailBackDrag {
         }
     }
 
-    /// 닫기 — 슬라이드 아웃 후 activePost 를 비워 언마운트(헤더 뒤로 버튼·백드래그 공용).
+    /// 닫기 — 슬라이드 아웃만 하고 activePost 는 살려둔다(keep-alive). 헤더 뒤로
+    /// 버튼·백드래그 공용. 히스토리 버튼이 이 살아있는 오버레이를 다시 슬라이드
+    /// 인한다. 다음 글을 열면 그때 이전 오버레이가 교체·해제된다.
     func dismiss() {
-        let token = detail.activePost?.id
         detail.hide()
-        Task { @MainActor [self] in
-            try? await Task.sleep(for: .milliseconds(380))
-            if detail.activePost?.id == token, detail.offset >= detail.containerWidth - 0.5 {
-                detail.activePost = nil
-            }
-        }
     }
 }
 
@@ -142,15 +140,22 @@ struct RootTabView: View {
         ZStack {
             // 보드 검색은 필터 바 행 우측의 떠있는 버튼(BoardSearchButton).
             // 히스토리는 role:.search 탭 — 시스템이 탭바 오른쪽에 분리 배치(옛 검색
-            // 자리). 탭하면 fullScreenCover 로 최근 읽은 글을 띄우고, 닫으면 직전
-            // 탭으로 복원한다(아래 onChange). role:.search 는 거부 바인딩으로 시각
-            // 선택이 안 풀려 닫은 뒤 히스토리 탭이 선택된 채 남는 문제가 있어, 평범
-            // 바인딩 + 명시적 복원으로 처리한다. 선택이 4 로 가는 순간은 전체 화면
-            // 커버가 가리므로 안 보이고, isActive 는 실제 탭 기준으로 마스킹해
-            // 필터 리셋도 막는다.
+            // 자리). 탭하면 탭 전환이 아니라 "마지막 본 상세 재노출" 버튼으로 쓴다:
+            // selectedTab 을 건드리지 않고(4 로 바꾸면 tab4 의 빈 Color.clear 가 한
+            // 프레임 노출돼 상세 슬라이드-인 중 깜빡인다) keep-alive 로 살아있는
+            // detail.activePost 만 다시 슬라이드 인한다. 언더레이는 직전 탭 그대로라
+            // 매끄럽다.
             TabView(selection: Binding(
                 get: { historyTabState.selectedTab },
                 set: { newValue in
+                    if newValue == 4 {
+                        // 히스토리 = 마지막 본 상세 재노출. keep-alive 라 activePost
+                        // 가 살아 있으면 show 가 그 뷰를 그대로 슬라이드 인한다(같은
+                        // id → keep-alive 분기). 없으면 무반응(탭도 .disabled). 선택
+                        // 탭은 바꾸지 않는다 — 깜빡임 방지.
+                        if let post = detail.activePost { detail.show(post) }
+                        return
+                    }
                     // 모음(0) 재탭(이미 모음 선택 상태에서 다시 탭) → 맨 위로
                     // 스크롤 신호. SwiftUI 는 선택된 탭을 재탭해도 selection
                     // setter 를 같은 값으로 호출하므로 여기서 감지한다. 다른
@@ -166,9 +171,7 @@ struct RootTabView: View {
                         favorites: favorites,
                         readStore: readStore,
                         onSelectPost: { FootprintLogger.shared.record("post-open"); detail.show($0) },
-                        // 히스토리(4)로 잠깐 가도 실제 탭 기준으로 — isActive 가 튀어
-                        // resetFilterToDefault 가 도는 걸 막는다.
-                        isActive: historyTabState.effectiveSelectedTab == 0,
+                        isActive: historyTabState.selectedTab == 0,
                         searchByBoard: $searchByBoard,
                         currentBoardID: $currentBoardID,
                         onPresentSearch: { showingSearch = true },
@@ -192,10 +195,14 @@ struct RootTabView: View {
                 }
                 .badge(alertBadge.unread)
                 // 히스토리 — role:.search 로 탭바 오른쪽 분리 슬롯(옛 검색 자리).
-                // 탭하면 전환 대신 fullScreenCover 로 최근 읽은 글을 띄운다.
+                // 탭하면 전환 대신 마지막 본 상세 오버레이를 그대로 다시 띄운다.
+                // 재노출할 상세가 없으면(이번 세션에 연 글 없음) 비활성 — 글을
+                // 하나라도 열면 activePost 가 채워져 자동 활성(keep-alive 라 이후
+                // 세션 내내 유지). 앱 재실행 시 다시 비활성.
                 Tab("히스토리", systemImage: "clock.arrow.circlepath", value: 4, role: .search) {
                     Color.clear
                 }
+                .disabled(detail.activePost == nil)
             }
             .sheet(isPresented: $showingSearch) {
                 if let board = searchContextBoard {
@@ -206,22 +213,6 @@ struct RootTabView: View {
                     )
                 }
             }
-            .fullScreenCover(isPresented: Binding(
-                get: { historyTabState.showingHistory },
-                set: { historyTabState.setHistoryShowing($0) }
-            )) {
-                HistorySheet(
-                    posts: readStore.recentPosts,
-                    onOpen: { post in
-                        // 시트 닫기 + 상세 열기를 같은 틱에. 상세는 시트가 아니라
-                        // 항상 떠 있는 ZStack 오버레이(activePost 갱신)라 시트
-                        // dismiss 트랜잭션과 독립적 → 드롭/이중표시 없이 안전.
-                        historyTabState.setHistoryShowing(false)
-                        detail.show(post)
-                    }
-                )
-            }
-
             // 상세 오버레이 — TabView 위 ZStack 최상단 레이어로 화면 전체(탭바
             // 포함)를 덮는다. show() 가 우측에서 슬라이드 인, 백드래그가 offset 을
             // 추적해 우→ 스와이프로 닫는다. 인앱 글 탭·푸시·받은알림 모두 이 경로.
