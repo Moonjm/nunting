@@ -57,8 +57,22 @@
 이미지 포함)가 다음 글을 열거나 앱을 끌 때까지 메모리에 상주한다.
 
 - 항상 **딱 1개**다 — 새 글을 열면 `.id(post.id)`가 바뀌며 이전 뷰가 해제된다.
-- 숨겨진 동안 영상/디코드는 멈추지만, 이미 디코드된 이미지는 상주한다.
+- 이미 디코드된 이미지는 상주한다(뷰포트-바운드 decode는 phase-2 미배포).
 - 최악: 무거운 글을 열었다가 나와서 목록만 한참 보는 경우 그 1개가 계속 물린다.
+
+### keep-alive 부작용: 인라인 비디오 정지 배선 (중요)
+
+이전엔 dismiss가 `activePost = nil`로 상세를 **언마운트**해서 인라인 비디오가
+자동으로 파괴·정지됐다. keep-alive는 뷰를 살려두므로 이 자동 정지가 사라진다.
+그런데 `InlineVideoPlayer`의 재생 게이트는 `isVisible && !isPresented`뿐이고,
+`isVisible`은 상세 **내부** ScrollView의 `onScrollVisibilityChange`로만 결정된다 —
+오버레이 전체가 `.offset`으로 화면 밖에 나가도 뷰포트에 있던 비디오는 계속
+`isVisible=true`라 **닫아도 재생(오디오 포함)이 이어진다.**
+
+수정: `InlineVideoPlayer`에 `isOverlayVisible` prop을 추가하고
+`isPlaying = isOverlayVisible && isVisible && !isPresented`로 게이트. 본문
+(`PostDetailView`)·댓글(`PostDetailComments`) 두 호출부 모두 전달. `PostDetailView`는
+`Equatable`이고 `==`에 `isOverlayVisible`이 포함돼 있어 값이 바뀌면 재렌더된다.
 
 사용자가 이 상주를 명시적으로 수용했다("그냥 메모리상주해도 괜찮아"). 이번 변경은
 OOM 완화 티어다운의 **부분 되돌림**임을 기록으로 남긴다.
