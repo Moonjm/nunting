@@ -1,5 +1,9 @@
 import Foundation
-import UserNotifications
+// @preconcurrency: UNUserNotificationCenter 가 SDK 에서 Sendable 미표시라,
+// getDeliveredNotifications 의 @Sendable 완료 클로저 안에서 center 를 다시
+// 참조하는(remove...) 표준 사용 패턴이 Swift 6 에서 Sendable 경고를 낸다.
+// 실사용상 안전(같은 center 싱글톤)하므로 모듈 단위로 경고를 억제한다.
+@preconcurrency import UserNotifications
 
 /// Canonical identity used to match a delivered keyword-alert
 /// notification against the post the user is currently viewing.
