@@ -11,7 +11,14 @@ import MetricKit
 ///
 /// 전송 실패해도 재시도하지 않는다 — MetricKit 카운트는 누적이라 다음 전달 때 같은
 /// 정보가 다시 오고, 콜백 스레드를 붙잡지 않는 게 낫다.
-final class MetricsReporter: NSObject, MXMetricManagerSubscriber {
+///
+/// `nonisolated` 필수: 이 앱은 `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` 라
+/// 명시 안 하면 클래스가 `@MainActor` 로 추론된다. 그런데 `MXMetricManager` 는
+/// `didReceive(_:)` 를 **백그라운드 큐**에서 부른다 — `@MainActor` 로 격리된 콜백을
+/// OS 가 백그라운드 스레드에서 때리면 executor 격리 위반으로 콜백이 발화되지 않아
+/// payload 가 조용히 유실된다(Swift 6 전환 후 metric 수집이 끊긴 실제 원인).
+/// UI 상태 없는 순수 포워더라 nonisolated 가 맞다.
+nonisolated final class MetricsReporter: NSObject, MXMetricManagerSubscriber {
     static let shared = MetricsReporter()
 
     private let service: AlertSubscriptionService
@@ -43,6 +50,9 @@ final class MetricsReporter: NSObject, MXMetricManagerSubscriber {
 
     private func upload(_ json: Data, kind: String) {
         guard !json.isEmpty else { return }
+        // service 만 로컬 캡처 — nonisolated 콜백 스레드에서 self 를 Task 로
+        // 넘기지 않게. reportMetricPayload 는 async 라 알아서 서비스 격리로 hop.
+        let service = self.service
         Task {
             do {
                 try await service.reportMetricPayload(json, kind: kind)
