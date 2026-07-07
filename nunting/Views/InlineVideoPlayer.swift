@@ -24,6 +24,15 @@ struct InlineVideoPlayer: View {
     /// the underlying view. The visual cue keeps the intent honest:
     /// nothing to interact with until the cover is fully gone.
     var onDismissBegin: () -> Void = {}
+    /// True while the host detail overlay is actually on-screen. The
+    /// overlay is keep-alive: closing it slides the whole detail view
+    /// off-screen right (`.offset`) but leaves it mounted in the SwiftUI
+    /// tree, so `onScrollVisibilityChange` — which only tracks position
+    /// inside the detail's own ScrollView — keeps a viewport video marked
+    /// `isVisible`. Without ANDing this in, a video would keep playing
+    /// (audio included) after the user closes the detail. Defaults true so
+    /// non-overlay callers are unaffected.
+    var isOverlayVisible: Bool = true
 
     @State private var isPresented = false
     /// `onScrollVisibilityChange` callback target. Drives the inline
@@ -77,7 +86,7 @@ struct InlineVideoPlayer: View {
             if isWebmContainer {
                 WebmInlineWebView(
                     url: url,
-                    isPlaying: isVisible && !isPresented,
+                    isPlaying: isOverlayVisible && isVisible && !isPresented,
                     onAspectKnown: { aspect in
                         if aspect.isFinite && aspect > 0 {
                             measuredAspect = aspect
@@ -87,7 +96,7 @@ struct InlineVideoPlayer: View {
             } else {
                 InlineAutoplayVideoView(
                     url: url,
-                    isPlaying: isVisible && !isPresented,
+                    isPlaying: isOverlayVisible && isVisible && !isPresented,
                     onAspectKnown: { aspect in
                         // Guard against degenerate metadata (audio-only
                         // tracks or assets where preferredTransform makes

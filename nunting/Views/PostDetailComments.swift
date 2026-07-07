@@ -6,6 +6,9 @@ struct PostDetailCommentsSection: View {
     var tapGate: TapSuppressionGate? = nil
     let onImageTap: (URL) -> Void
     let onVideoDismissBegin: () -> Void
+    /// 상세 오버레이가 화면에 실제로 떠 있는지 — 댓글 비디오를 오버레이 offset
+    /// 기준으로도 정지시키기 위해 InlineVideoPlayer 까지 내려보낸다.
+    var isOverlayVisible: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -29,7 +32,8 @@ struct PostDetailCommentsSection: View {
                         comment: comment,
                         tapGate: tapGate,
                         onImageTap: onImageTap,
-                        onVideoDismissBegin: onVideoDismissBegin
+                        onVideoDismissBegin: onVideoDismissBegin,
+                        isOverlayVisible: isOverlayVisible
                     )
                     if index < comments.count - 1 {
                         Divider().padding(.vertical, 2)
@@ -45,6 +49,7 @@ struct PostDetailCommentRow: View {
     var tapGate: TapSuppressionGate? = nil
     let onImageTap: (URL) -> Void
     let onVideoDismissBegin: () -> Void
+    var isOverlayVisible: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -83,7 +88,8 @@ struct PostDetailCommentRow: View {
                     InlineVideoPlayer(
                         url: videoURL,
                         tapGate: tapGate,
-                        onDismissBegin: onVideoDismissBegin
+                        onDismissBegin: onVideoDismissBegin,
+                        isOverlayVisible: isOverlayVisible
                     )
                         .frame(maxWidth: 320, maxHeight: 240)
                     Spacer(minLength: 0)

@@ -160,7 +160,8 @@ struct PostDetailView: View, Equatable {
                                 if tapGate?.suppressed == true { return }
                                 selectedImage = ImageViewerItem(url: url)
                             },
-                            onVideoDismissBegin: { beginDismissCover() }
+                            onVideoDismissBegin: { beginDismissCover() },
+                            isOverlayVisible: isOverlayVisible
                         )
                             .padding(.top, 8)
                     }
@@ -469,7 +470,11 @@ struct PostDetailView: View, Equatable {
                             url: url,
                             posterURL: posterURL,
                             tapGate: tapGate,
-                            onDismissBegin: { beginDismissCover() }
+                            onDismissBegin: { beginDismissCover() },
+                            // keep-alive 오버레이가 화면 밖으로 밀리면(닫힘) 뷰포트에
+                            // 있던 비디오도 멈추게 — ScrollView 내부 visibility 만으론
+                            // 오버레이 offset 을 모른다.
+                            isOverlayVisible: isOverlayVisible
                         )
                     case .dealLink(let url, let label):
                         PostDetailDealLinkBanner(url: url, label: label)

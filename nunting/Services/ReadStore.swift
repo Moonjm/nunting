@@ -13,15 +13,6 @@ final class ReadStore {
     /// FIFO eviction queue — oldest first.
     private var order: [String]
 
-    /// 최근 연 글(재열기용) — 최신이 앞(move-to-front), id 기준 dedup, 최대 N개.
-    /// `ids/order` 가 ID만 갖는 것과 달리 제목·URL 까지 보존해 헤더에서 바로
-    /// 다시 열 수 있다. `markRead(_:)`(상세 진입) 로 들어온 Post 만 기록한다.
-    private(set) var recentPosts: [Post] = []
-    private let recentKey = "recentReadPosts.v1"
-    // 히스토리 시트가 보여주는 개수와 동일 — store==UI 로 도달 못 하는 잔여
-    // 기록이 없게.
-    private let recentCapacity = 5
-
     /// Tail of the persist task chain. Each `persist()` call awaits this
     /// before writing so concurrent detached tasks can't reorder their
     /// `defaults.set` calls and leave a stale snapshot on disk.
@@ -41,10 +32,6 @@ final class ReadStore {
         }
         self.order = loadedOrder
         self.ids = Set(loadedOrder)
-        if let data = defaults.data(forKey: recentKey),
-           let decoded = try? JSONDecoder().decode([Post].self, from: data) {
-            self.recentPosts = Array(decoded.prefix(recentCapacity))
-        }
     }
 
     func isRead(_ post: Post) -> Bool { ids.contains(post.id) }
@@ -52,24 +39,7 @@ final class ReadStore {
     func isRead(id: String) -> Bool { ids.contains(id) }
 
     func markRead(_ post: Post) {
-        recordRecent(post)
         markRead(id: post.id)
-    }
-
-    /// 최근 연 글 목록 갱신 — 이미 있으면 앞으로 끌어올리고, 캡 초과분은 버린다.
-    private func recordRecent(_ post: Post) {
-        recentPosts.removeAll { $0.id == post.id }
-        recentPosts.insert(post, at: 0)
-        if recentPosts.count > recentCapacity {
-            recentPosts.removeLast(recentPosts.count - recentCapacity)
-        }
-        persistRecent()
-    }
-
-    /// 개수가 적어(최대 `recentCapacity`) 인코딩이 가벼워 메인에서 바로 써도 무방.
-    private func persistRecent() {
-        guard let data = try? JSONEncoder().encode(recentPosts) else { return }
-        defaults.set(data, forKey: recentKey)
     }
 
     func markRead(id: String) {
@@ -87,8 +57,6 @@ final class ReadStore {
     func clear() {
         ids = []
         order = []
-        recentPosts = []
-        persistRecent()
         persist()
     }
 
