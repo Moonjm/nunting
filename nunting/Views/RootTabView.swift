@@ -804,21 +804,23 @@ private struct HistoryResumeHandle: View {
                     detail.show(post)
                 } label: {
                     Image(systemName: "clock.arrow.circlepath")
-                        .font(.title3.weight(.semibold))
+                        .font(.title2.weight(.semibold))
                         .foregroundStyle(.black)
-                        // 아이콘을 보이는(좌측) 쪽으로 몰아 우측 클립에 안 잘리게.
-                        .frame(width: 34, height: 52, alignment: .leading)
-                        .padding(.leading, 12)
-                        .frame(height: 52)
+                        // 보이는 히트/아이콘 영역 — 아이콘은 이 안에서 가운데라
+                        // 좌우 여백이 고르게 남는다(우측이 화면 모서리에 안 붙음).
+                        .frame(width: 50, height: 60)
+                        // trailing 여백은 아래 offset 으로 화면 밖에 흘려 모서리에
+                        // 걸친 탭처럼 — 유리 배경이 화면 끝까지 이어진다.
+                        .padding(.trailing, 16)
                         .glassEffect(.regular, in: UnevenRoundedRectangle(
-                            topLeadingRadius: 18, bottomLeadingRadius: 18,
+                            topLeadingRadius: 22, bottomLeadingRadius: 22,
                             bottomTrailingRadius: 0, topTrailingRadius: 0,
                             style: .continuous))
                 }
                 .tint(.black)
                 .accessibilityLabel("이전 글 다시 보기")
-                // 오른쪽 일부를 화면 밖으로 흘린다 — 모서리에 걸친 탭.
-                .offset(x: 12, y: 24)
+                // trailing 여백(16)만큼 화면 밖으로 흘린다 — 모서리에 걸친 탭.
+                .offset(x: 16, y: 24)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
         }
