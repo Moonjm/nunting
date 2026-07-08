@@ -127,8 +127,7 @@ struct RootTabView: View {
         let boards = favorites.favoriteBoards()
         return boards.first { $0.id == currentBoardID } ?? boards.first
     }
-    // 하단 검색 버튼이 검색할 대상 — 모음에선 현재 보드, 둘러보기에선 열어둔
-    // 보드. 그 외 탭에선 없음(버튼도 숨김).
+    // 검색 대상 — 모음에선 현재 보드, 둘러보기에선 열어둔 보드. 그 외 탭에선 없음.
     private var searchContextBoard: Board? {
         switch rootTabSelectionState.selectedTab {
         case 0: return currentBoard
@@ -136,15 +135,39 @@ struct RootTabView: View {
         default: return nil
         }
     }
+    // 검색 탭(role:.search)이 실제로 검색할 보드 — 검색 지원 보드만. nil 이면 검색
+    // 탭 비활성(알림 탭·비검색 보드). 예전 떠있던 검색 버튼의 노출 조건과 동일.
+    private var activeSearchBoard: Board? {
+        guard let board = searchContextBoard, board.supportsSearch else { return nil }
+        return board
+    }
+    // 그 보드에 검색어가 걸려 있는지 — 검색 탭 아이콘 🔍/✕ 토글 + 탭 동작 분기용.
+    private var isSearchActive: Bool {
+        guard let board = activeSearchBoard else { return false }
+        return searchByBoard[board.id] != nil
+    }
     var body: some View {
         ZStack {
-            // 보드 검색은 필터 바 행 우측의 떠있는 버튼(BoardSearchButton). 마지막 본
-            // 상세를 다시 여는 "이전 글"은 이 ZStack 아래쪽 HistoryResumeHandle(우측
-            // 모서리에 걸친 유리 탭)이 전역으로 담당한다 — 예전 role:.search 탭바 우측
-            // 슬롯이 오른손 한손 도달이 애매해 떠있는 핸들로 옮겼다.
+            // 보드 검색은 탭바 오른쪽 role:.search 탭(iOS 26 유리 탭바가 분리 배치).
+            // 탭하면 전환이 아니라 현재 보드 검색 시트 열기/해제로 쓴다(value 4 인터셉트).
+            // 마지막 본 상세를 다시 여는 "이전 글"은 이 ZStack 아래쪽 HistoryResumeHandle
+            // (우측 모서리에 걸친 유리 탭)이 전역으로 담당한다.
             TabView(selection: Binding(
                 get: { rootTabSelectionState.selectedTab },
                 set: { newValue in
+                    // 검색 탭(role:.search, value 4) — 탭 전환이 아니라 검색 동작.
+                    // 검색어가 걸려 있으면 해제, 아니면 검색 시트를 연다. selectedTab
+                    // 은 건드리지 않는다(빈 Color.clear 노출·언더레이 교체 방지).
+                    if newValue == 4 {
+                        if let board = activeSearchBoard {
+                            if searchByBoard[board.id] != nil {
+                                searchByBoard[board.id] = nil
+                            } else {
+                                showingSearch = true
+                            }
+                        }
+                        return
+                    }
                     // 모음(0) 재탭(이미 모음 선택 상태에서 다시 탭) → 맨 위로
                     // 스크롤 신호. SwiftUI 는 선택된 탭을 재탭해도 selection
                     // setter 를 같은 값으로 호출하므로 여기서 감지한다. 다른
@@ -163,15 +186,13 @@ struct RootTabView: View {
                         isActive: rootTabSelectionState.selectedTab == 0,
                         searchByBoard: $searchByBoard,
                         currentBoardID: $currentBoardID,
-                        onPresentSearch: { showingSearch = true },
                         scrollTopToken: scrollTopToken
                     )
                 }
                 Tab("둘러보기", systemImage: "square.grid.2x2", value: 1) {
                     BrowseTab(catalog: catalog, favorites: favorites,
                               readStore: readStore, onSelectPost: { FootprintLogger.shared.record("post-open"); detail.show($0) },
-                              searchByBoard: $searchByBoard, browsingBoard: $browsingBoard,
-                              onPresentSearch: { showingSearch = true })
+                              searchByBoard: $searchByBoard, browsingBoard: $browsingBoard)
                 }
                 Tab("알림", systemImage: "bell", value: 2) {
                     NavigationStack {
@@ -183,6 +204,14 @@ struct RootTabView: View {
                     }
                 }
                 .badge(alertBadge.unread)
+                // 검색 — iOS 26 유리 탭바 우측 분리 슬롯. 탭하면 전환 대신 현재 보드
+                // 검색 시트를 열고(위 setter 인터셉트), 검색 중이면 아이콘이 ✕(해제)로
+                // 바뀐다. 검색 지원 보드가 없으면(알림 탭·비검색 보드) 비활성.
+                Tab("검색", systemImage: isSearchActive ? "xmark" : "magnifyingglass",
+                    value: 4, role: .search) {
+                    Color.clear
+                }
+                .disabled(activeSearchBoard == nil)
             }
             .sheet(isPresented: $showingSearch) {
                 if let board = searchContextBoard {
@@ -335,11 +364,9 @@ private struct ArchiveHome: View {
     let onSelectPost: (Post) -> Void
     // 모음 탭이 활성인지 — 다른 탭 갔다 돌아오면 첫 필터로 리셋하기 위함.
     let isActive: Bool
-    // 보드별 활성 검색어 — 하단 검색 버튼이 띄우는 SearchSheet 와 공유(셸 소유).
+    // 보드별 활성 검색어 — 탭바 검색이 띄우는 SearchSheet 와 공유(셸 소유).
     @Binding var searchByBoard: [String: String]
     @Binding var currentBoardID: String?
-    // 검색 버튼 탭 → 셸의 SearchSheet 띄우기.
-    let onPresentSearch: () -> Void
     // 모음 탭 재탭 시 증가 — 현재 보드 목록을 맨 위로 스크롤하는 신호.
     let scrollTopToken: Int
 
@@ -359,10 +386,11 @@ private struct ArchiveHome: View {
     }
     // 떠 있는 하단 컨트롤(필터 바/검색 버튼)이 가리는 높이만큼 목록 하단에 줄 여백.
     static let bottomControlsInset: CGFloat = 60
-    // 지금 하단 컨트롤이 떠 있는 보드 id 집합. 검색 버튼만 떠 있는 보드도 포함한다.
+    // 지금 하단에 떠 있는 컨트롤(필터 바)이 있는 보드 id 집합 — 그만큼 목록 하단
+    // 인셋. 검색은 탭바 role:.search 로 옮겨 더는 하단에 안 뜨므로 필터 바만 센다.
     private var bottomControlsBoardIDs: Set<String> {
         Set(boards.filter { board in
-            board.supportsSearch || (showsFilterBar(board) && searchByBoard[board.id] == nil)
+            showsFilterBar(board) && searchByBoard[board.id] == nil
         }.map(\.id))
     }
 
@@ -407,24 +435,20 @@ private struct ArchiveHome: View {
         // 떠 있는 탭바의 안전영역에 흡수돼 탭바 플랫폼이 위로 자라 보였다.
         // overlay 는 레이아웃·탭바를 건드리지 않고 목록 위에 독립적으로 떠 있고,
         // 가림 방지는 BoardListView 의 bottomContentInset 이 담당한다.
-        // 필터 바(좌, 내용에 맞게 hug) + 검색 버튼(우)을 한 행에 세로 중앙
-        // 정렬로 띄운다. 둘이 같은 HStack 이라 겹치지 않고 센터가 맞는다.
+        // 필터 바(좌, 내용에 맞게 hug)를 띄운다. Spacer 가 남은 폭을 채워 필터 바를
+        // 좌측 정렬로 유지한다(검색은 탭바 role:.search 로 옮겨 여기선 안 띄운다).
         .overlay(alignment: .bottom) {
-            if let board = currentBoard {
+            if let board = currentBoard, currentQuery == nil, showsFilterBar(board) {
                 HStack(alignment: .center, spacing: 8) {
-                    if currentQuery == nil, showsFilterBar(board) {
-                        // layoutPriority: 캡슐과 Spacer 가 둘 다 flexible 이라
-                        // 우선순위 없으면 캡슐이 가용폭 절반만 받아 hug 가 깨진다.
-                        // 우선순위를 주면 전체 가용폭을 먼저 받아 min(가용,내용)으로
-                        // 줄어든다 — 인벤 4칩=hug, 애객 11칩=가용폭 캡 후 스크롤.
-                        GlassFilterBar(board: board, selection: filterBinding(board.id))
-                            .layoutPriority(1)
-                    }
+                    // layoutPriority: 캡슐과 Spacer 가 둘 다 flexible 이라 우선순위
+                    // 없으면 캡슐이 가용폭 절반만 받아 hug 가 깨진다. 우선순위를 주면
+                    // 전체 가용폭을 먼저 받아 min(가용,내용)으로 줄어든다 — 인벤
+                    // 4칩=hug, 애객 11칩=가용폭 캡 후 스크롤.
+                    GlassFilterBar(board: board, selection: filterBinding(board.id))
+                        .layoutPriority(1)
                     Spacer(minLength: 0)
-                    BoardSearchButton(board: board, searchByBoard: $searchByBoard,
-                                      onPresentSearch: onPresentSearch)
                 }
-                // 필터 바 시작 위치는 원래대로 좌측 28pt, 검색 버튼은 우측 16pt.
+                // 필터 바 시작 위치는 원래대로 좌측 28pt, 우측 여백 16pt.
                 .padding(.leading, 28)
                 .padding(.trailing, 16)
                 // 하단 탭바와의 간격을 좁힌다.
@@ -501,12 +525,10 @@ private struct BrowseTab: View {
     let readStore: ReadStore
     /// 보드 글 목록에서 글 탭 → 상세 열기(모음과 동일하게 detail.show).
     let onSelectPost: (Post) -> Void
-    // 검색은 하단 검색 버튼으로(모음과 동일) — 보드별 검색어 공유 + 지금 열어둔
-    // 보드를 셸에 알려 하단 버튼이 그 보드를 검색하게 한다.
+    // 검색은 탭바 role:.search 로(모음과 동일) — 보드별 검색어 공유 + 지금 열어둔
+    // 보드를 셸에 알려 검색 탭이 그 보드를 검색하게 한다.
     @Binding var searchByBoard: [String: String]
     @Binding var browsingBoard: Board?
-    // 검색 버튼 탭 → 셸의 SearchSheet 띄우기(모음과 공유).
-    let onPresentSearch: () -> Void
 
     private var sites: [Site] {
         DrawerSection.all.compactMap { if case .site(let s) = $0 { return s } else { return nil } }
@@ -531,23 +553,21 @@ private struct BrowseTab: View {
             // 보드 탭 → 그 보드 글 목록.
             .navigationDestination(for: Board.self) { board in
                 BoardPostsView(board: board, readStore: readStore, onSelectPost: onSelectPost,
-                               searchByBoard: $searchByBoard, browsingBoard: $browsingBoard,
-                               onPresentSearch: onPresentSearch)
+                               searchByBoard: $searchByBoard, browsingBoard: $browsingBoard)
             }
         }
     }
 }
 
 /// 둘러보기에서 보드를 탭했을 때 그 보드의 글 목록(기본 필터로). 글 탭은
-/// 모음과 동일하게 상세 오버레이를 띄운다. 검색은 모음처럼 하단 검색 버튼이
-/// 담당 — 진입 시 이 보드를 셸의 browsingBoard 로 보고하면 하단 버튼이 뜬다.
+/// 모음과 동일하게 상세 오버레이를 띄운다. 검색은 탭바 role:.search 가 담당 —
+/// 진입 시 이 보드를 셸의 browsingBoard 로 보고하면 검색 탭이 이 보드를 검색한다.
 private struct BoardPostsView: View {
     let board: Board
     let readStore: ReadStore
     let onSelectPost: (Post) -> Void
     @Binding var searchByBoard: [String: String]
     @Binding var browsingBoard: Board?
-    let onPresentSearch: () -> Void
 
     private var query: String? { searchByBoard[board.id] }
 
@@ -557,21 +577,13 @@ private struct BoardPostsView: View {
             // 검색 중엔 필터 해제(모음 검색과 동일).
             filter: query == nil ? board.defaultListFilter : nil,
             searchQuery: query,
-            bottomContentInset: board.supportsSearch ? ArchiveHome.bottomControlsInset : 0,
             readStore: readStore,
             onSelectPost: onSelectPost
         )
         .equatable()
-        // 검색 버튼 — 모음과 같은 하단 우측 떠있는 유리 동그라미.
-        .overlay(alignment: .bottomTrailing) {
-            BoardSearchButton(board: board, searchByBoard: $searchByBoard,
-                              onPresentSearch: onPresentSearch)
-                .padding(.trailing, 16)
-                .padding(.bottom, 8)
-        }
         .navigationTitle(board.name)
         .toolbarTitleDisplayMode(.inline)
-        // 이 보드를 셸에 알려 하단 검색 버튼이 이 보드를 검색하게 한다.
+        // 이 보드를 셸에 알려 탭바 검색이 이 보드를 검색하게 한다.
         .onAppear { browsingBoard = board }
         .onDisappear { if browsingBoard?.id == board.id { browsingBoard = nil } }
     }
@@ -767,34 +779,6 @@ private struct BoardPager: View {
 }
 
 // MARK: - 유리 필터 바 (탭바 위에 떠 있는 Liquid Glass 알약)
-
-// 보드 화면 하단 우측에 떠 있는 검색 버튼 — 보드 메뉴 버튼과 동일한 유리
-// 동그라미 룩(44pt). 검색 중이면 X(해제)로 바뀐다. 필터 바와 같은 하단 행
-// 반대편 끝. 모음(ArchiveHome)·둘러보기(BoardPostsView) 가 공유한다 — 둘 다
-// 탭 안이라 safe area 에 탭바 높이가 포함돼 필터 바와 같은 행에 정렬된다.
-private struct BoardSearchButton: View {
-    let board: Board
-    @Binding var searchByBoard: [String: String]
-    /// 검색 시작(시트 띄우기). 해제는 로컬에서 searchByBoard 만 비운다.
-    let onPresentSearch: () -> Void
-
-    var body: some View {
-        if board.supportsSearch {
-            let active = searchByBoard[board.id] != nil
-            Button {
-                if active { searchByBoard[board.id] = nil } else { onPresentSearch() }
-            } label: {
-                Image(systemName: active ? "xmark" : "magnifyingglass")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(.black)
-                    .frame(width: 44, height: 44)
-                    .glassEffect(.regular, in: .circle)
-            }
-            .tint(.black)
-            .accessibilityLabel(active ? "검색 해제" : "검색")
-        }
-    }
-}
 
 // 우측 모서리에 빼꼼 걸친 "이전 글" 유리 핸들(카톡 미니 브라우저식). keep-alive 로
 // 살아있지만 숨겨둔 마지막 상세(detail.activePost != nil && !isOverlayVisible)가
