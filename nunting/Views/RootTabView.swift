@@ -99,7 +99,7 @@ struct RootTabView: View {
     // activePost 로 funnel 된다. 새 셸은 그 activePost 를 관찰해 상세를 띄운다.
     @State private var detail = DetailOverlayController.shared
 
-    @State private var historyTabState = HistoryTabSelectionState()
+    @State private var rootTabSelectionState = RootTabSelectionState()
     // 모음의 현재 보드 — 페이저/헤더/검색이 공유한다.
     @State private var currentBoardID: String?
     // 보드별 활성 검색어(옛 앱처럼 검색은 보드에 묶임). 하단 검색 버튼과
@@ -130,7 +130,7 @@ struct RootTabView: View {
     // 하단 검색 버튼이 검색할 대상 — 모음에선 현재 보드, 둘러보기에선 열어둔
     // 보드. 그 외 탭에선 없음(버튼도 숨김).
     private var searchContextBoard: Board? {
-        switch historyTabState.selectedTab {
+        switch rootTabSelectionState.selectedTab {
         case 0: return currentBoard
         case 1: return browsingBoard
         default: return nil
@@ -143,16 +143,16 @@ struct RootTabView: View {
             // 모서리에 걸친 유리 탭)이 전역으로 담당한다 — 예전 role:.search 탭바 우측
             // 슬롯이 오른손 한손 도달이 애매해 떠있는 핸들로 옮겼다.
             TabView(selection: Binding(
-                get: { historyTabState.selectedTab },
+                get: { rootTabSelectionState.selectedTab },
                 set: { newValue in
                     // 모음(0) 재탭(이미 모음 선택 상태에서 다시 탭) → 맨 위로
                     // 스크롤 신호. SwiftUI 는 선택된 탭을 재탭해도 selection
                     // setter 를 같은 값으로 호출하므로 여기서 감지한다. 다른
                     // 탭에서 모음으로 "전환"은 재탭이 아니므로 스크롤하지 않는다.
-                    if newValue == 0, historyTabState.selectedTab == 0 {
+                    if newValue == 0, rootTabSelectionState.selectedTab == 0 {
                         scrollTopToken += 1
                     }
-                    historyTabState.selectTab(newValue)
+                    rootTabSelectionState.selectTab(newValue)
                 }
             )) {
                 Tab("모음", systemImage: "tray.full.fill", value: 0) {
@@ -160,7 +160,7 @@ struct RootTabView: View {
                         favorites: favorites,
                         readStore: readStore,
                         onSelectPost: { FootprintLogger.shared.record("post-open"); detail.show($0) },
-                        isActive: historyTabState.selectedTab == 0,
+                        isActive: rootTabSelectionState.selectedTab == 0,
                         searchByBoard: $searchByBoard,
                         currentBoardID: $currentBoardID,
                         onPresentSearch: { showingSearch = true },
@@ -799,26 +799,28 @@ private struct HistoryResumeHandle: View {
 
     var body: some View {
         if let post = detail.activePost, !detail.isOverlayVisible {
-            Button {
-                detail.show(post)
-            } label: {
-                Image(systemName: "clock.arrow.circlepath")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.black)
-                    // 아이콘을 보이는(좌측) 쪽으로 몰아 우측 클립에 안 잘리게.
-                    .frame(width: 34, height: 52, alignment: .leading)
-                    .padding(.leading, 12)
-                    .frame(height: 52)
-                    .glassEffect(.regular, in: UnevenRoundedRectangle(
-                        topLeadingRadius: 18, bottomLeadingRadius: 18,
-                        bottomTrailingRadius: 0, topTrailingRadius: 0,
-                        style: .continuous))
+            ZStack(alignment: .trailing) {
+                Button {
+                    detail.show(post)
+                } label: {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.black)
+                        // 아이콘을 보이는(좌측) 쪽으로 몰아 우측 클립에 안 잘리게.
+                        .frame(width: 34, height: 52, alignment: .leading)
+                        .padding(.leading, 12)
+                        .frame(height: 52)
+                        .glassEffect(.regular, in: UnevenRoundedRectangle(
+                            topLeadingRadius: 18, bottomLeadingRadius: 18,
+                            bottomTrailingRadius: 0, topTrailingRadius: 0,
+                            style: .continuous))
+                }
+                .tint(.black)
+                .accessibilityLabel("이전 글 다시 보기")
+                // 오른쪽 일부를 화면 밖으로 흘린다 — 모서리에 걸친 탭.
+                .offset(x: 12, y: 24)
             }
-            .tint(.black)
-            .accessibilityLabel("이전 글 다시 보기")
-            // 우측 중앙 정렬 후 오른쪽 일부를 화면 밖으로 흘린다 — 모서리에 걸친 탭.
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-            .offset(x: 12, y: 24)
         }
     }
 }
