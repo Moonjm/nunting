@@ -213,7 +213,11 @@ struct RootTabView: View {
                 }
                 .disabled(activeSearchBoard == nil)
             }
-            .sheet(isPresented: $showingSearch) {
+            // 하단 시트가 아니라 전체화면으로 올린다 — 뜨는 순간 탭바까지 덮어
+            // 검색 탭(role:.search) 눌림 피드백을 가린다(작은 시트는 탭바가 보여
+            // "탭전환 깜빡임"처럼 보였다). 히스토리 오버레이가 탭바를 덮어 매끄럽던
+            // 것과 같은 원리.
+            .fullScreenCover(isPresented: $showingSearch) {
                 if let board = searchContextBoard {
                     SearchSheet(
                         board: board,
