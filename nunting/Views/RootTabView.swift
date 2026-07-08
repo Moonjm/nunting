@@ -383,16 +383,17 @@ private struct ArchiveHome: View {
                     baseBottomInset: bottomSafeInset,
                     readStore: readStore,
                     onSelectPost: onSelectPost,
-                    scrollTopToken: scrollTopToken
+                    scrollTopToken: scrollTopToken,
+                    showsBoardNameHeader: true
                 )
                 // 탭바 밑까지 리스트가 깔려 유리 탭바에 콘텐츠가 비치게 한다.
                 .ignoresSafeArea(edges: .bottom)
             }
         }
-        // 헤더 밴드 없이 목록이 상단까지 꽉 차고, 보드 메뉴 버튼만 우상단에 떠
-        // 있는 유리 동그라미로 겹쳐 띄운다. (검색=필터행 버튼, 이전 글=우측 모서리
-        // 유리 핸들로 셸 루트에 전역 배치 — 여기선 안 다룬다.)
-        .overlay(alignment: .topTrailing) { boardMenu }
+        // 목록 맨 위에 스크롤어웨이 보드명 스위처(BoardListView 가 렌더 — 탭하면
+        // 보드 전환 ⌄ 메뉴, Apple News 식)를 얹는다. 예전 우상단 떠있는 유리
+        // 보드메뉴 버튼은 이 타이틀 스위처로 역할이 합쳐져 제거됐다.
+        // (검색=필터행 버튼, 이전 글=우측 모서리 유리 핸들로 셸 루트에 전역 배치.)
         // 탭바가 가리는 하단 안전영역 높이를 측정해 인셋으로 환원.
         .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.bottom } action: { bottomSafeInset = $0 }
         // 모음 화면 배경을 탭바 밑까지 깔아, 떠 있는 유리 탭바가 이 AppSurface 를
@@ -479,36 +480,6 @@ private struct ArchiveHome: View {
                 }
             }
         )
-    }
-
-    // 우상단에 떠 있는 보드 카드 메뉴 버튼 — 검정 아이콘 + 유리 동그라미(하단
-    // 검색 버튼과 동일 룩). 누르면 모음에 담긴 보드(사이트) 목록이 드롭다운으로
-    // 뜨고 선택하면 그 보드로 전환(현재 보드 체크). 목록은 그 밑으로 겹쳐 흐른다.
-    private var boardMenu: some View {
-        Menu {
-            ForEach(boards) { b in
-                Button {
-                    withAnimation(.snappy) { currentBoardID = b.id }
-                } label: {
-                    if b.id == currentBoard?.id {
-                        Label(b.name, systemImage: "checkmark")
-                    } else {
-                        Text(b.name)
-                    }
-                }
-            }
-        } label: {
-            Image(systemName: "rectangle.stack")
-                .font(.body.weight(.semibold))
-                .foregroundStyle(.black)
-                // 하단 검색 버튼(44pt 유리 동그라미)과 크기 맞춤.
-                .frame(width: 44, height: 44)
-                .glassEffect(.regular, in: .circle)
-        }
-        .tint(.black)
-        .accessibilityLabel("보드 선택")
-        .padding(.top, 6)
-        .padding(.trailing, 16)
     }
 
 }
@@ -671,6 +642,8 @@ private struct BoardPager: View {
     let onSelectPost: (Post) -> Void
     // 모음 탭 재탭 시 증가 — 각 페이지(BoardListView)로 내려보내 맨 위로 스크롤.
     let scrollTopToken: Int
+    // 헤더 없는 모음에서 각 페이지 맨 위에 스크롤어웨이 보드명 라지 타이틀을 얹을지.
+    let showsBoardNameHeader: Bool
 
     // 가상 인덱스: 0=헤드 센티넬(boards.last) / 1…n=실제 / n+1=테일 센티넬(boards.first)
     @State private var index = 1
@@ -682,12 +655,21 @@ private struct BoardPager: View {
         baseBottomInset + (bottomControlsBoardIDs.contains(board.id) ? bottomControlsInset : 0)
     }
 
+    // 헤더 스위처(⌄ 메뉴)에서 보드 선택 → 그 보드로 전환(구 우상단 보드메뉴와
+    // 동일 동작). currentBoardID onChange 가 페이저 인덱스·재로딩을 잇는다.
+    private func selectBoard(_ id: String) {
+        withAnimation(.snappy) { currentBoardID = id }
+    }
+
     var body: some View {
         if boards.count <= 1 {
             if let board = boards.first {
                 BoardListView(board: board, filter: filterByBoard[board.id],
                               searchQuery: searchByBoard[board.id],
                               bottomContentInset: inset(board),
+                              showsBoardNameHeader: showsBoardNameHeader,
+                              switchableBoards: boards,
+                              onSelectBoard: selectBoard,
                               reloadToken: reloadTokens[board.id] ?? 0,
                               scrollTopToken: scrollTopToken, readStore: readStore,
                               onSelectPost: onSelectPost)
@@ -718,6 +700,9 @@ private struct BoardPager: View {
         BoardListView(board: board, filter: filterByBoard[board.id],
                       searchQuery: searchByBoard[board.id],
                       bottomContentInset: inset(board),
+                      showsBoardNameHeader: showsBoardNameHeader,
+                      switchableBoards: boards,
+                      onSelectBoard: selectBoard,
                       reloadToken: reloadTokens[board.id] ?? 0,
                       scrollTopToken: scrollTopToken, readStore: readStore,
                       onSelectPost: onSelectPost)

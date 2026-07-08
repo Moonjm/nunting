@@ -7,6 +7,16 @@ struct BoardListView: View, Equatable {
     /// 떠 있는 하단 필터 바가 있을 때, 마지막 글이 그 밑으로 가려지지 않게
     /// 스크롤 콘텐츠 하단에 주는 여백. 바가 없으면 0.
     var bottomContentInset: CGFloat = 0
+    /// 헤더 밴드 없는 모음(ArchiveHome)에서 스크롤 콘텐츠 맨 위에 보드명을 라지
+    /// 타이틀로 얹을지. 핀 고정이 아니라 첫 콘텐츠 행이라 스크롤하면 함께 밀려
+    /// 올라가 사라지고(위로 당기면 재등장), 첫 글 행을 엄지 닿기 쉬운 아래로
+    /// 내린다. 내비바가 있는 둘러보기 목록에선 false(이미 내비바 타이틀이 있음).
+    var showsBoardNameHeader: Bool = false
+    /// 보드명 헤더를 보드 전환 스위처(⌄ 메뉴, Apple News 식)로 쓸 때의 후보 보드
+    /// 목록과 선택 콜백 — showsBoardNameHeader 인 모음에서만 채워 넘긴다. 메뉴는
+    /// 현재 페이지(board)에 체크를 찍는다. 비면 그냥 라벨만(단일 보드).
+    var switchableBoards: [Board] = []
+    var onSelectBoard: (String) -> Void = { _ in }
     /// 보드 전환 시 부모(`BoardPager`)가 증가시켜 강제 재로딩을 트리거한다.
     /// `.task(id:)` 는 같은 보드로 돌아오면 key 가 같아 재실행되지 않으므로,
     /// "보드 전환은 항상 새로 로드" 를 이 토큰으로 보장한다(reload 라 기존
@@ -41,9 +51,14 @@ struct BoardListView: View, Equatable {
             && lhs.searchQuery == rhs.searchQuery
             && lhs.scrollLocked == rhs.scrollLocked
             && lhs.bottomContentInset == rhs.bottomContentInset
+            && lhs.showsBoardNameHeader == rhs.showsBoardNameHeader
+            && lhs.switchableBoards == rhs.switchableBoards
             && lhs.reloadToken == rhs.reloadToken
             && lhs.scrollTopToken == rhs.scrollTopToken
     }
+
+    // 스크롤어웨이 보드명 헤더의 스크롤 타깃 id — 맨 위 스크롤 시 이 헤더로.
+    private static let boardNameHeaderID = "board-name-header"
 
     @State private var loader = BoardListLoader()
 
@@ -98,6 +113,45 @@ struct BoardListView: View, Equatable {
     private var listView: some View {
         ScrollViewReader { proxy in
         List {
+            if showsBoardNameHeader {
+                // 스크롤어웨이 보드명 = 보드 전환 스위처(Apple News/Reddit 식).
+                // 리스트 첫 콘텐츠 행이라 스크롤 시 함께 밀려 사라지고, 쉬는 위치
+                // 에선 첫 글을 아래로 내려 한손 도달 개선. ⌄ 탭 → 모음 보드 목록
+                // 메뉴(현재 페이지 보드에 체크).
+                Menu {
+                    ForEach(switchableBoards) { b in
+                        Button { onSelectBoard(b.id) } label: {
+                            if b.id == board.id {
+                                Label(b.name, systemImage: "checkmark")
+                            } else {
+                                Text(b.name)
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 7) {
+                        Circle()
+                            .fill(board.site.accentColor)
+                            .frame(width: 8, height: 8)
+                        Text(board.name)
+                            .font(.headline)
+                            .lineLimit(1)
+                        Image(systemName: "chevron.down")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .foregroundStyle(.primary)
+                }
+                // Menu 기본 accent 틴트(파란 글씨) 대신 라벨을 내가 지정한 색으로.
+                .tint(.primary)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .listRowInsets(EdgeInsets(top: 10, leading: 20, bottom: 14, trailing: 20))
+                .listRowSeparator(.hidden)
+                // 행 배경을 흰색(기본) 대신 투명 처리 — 뒤 AppSurface 가 비쳐 글
+                // 행들과 일체.
+                .listRowBackground(Color.clear)
+                .id(Self.boardNameHeaderID)
+            }
             ForEach(loader.posts) { post in
                 postRow(post: post)
                     .onAppear {
@@ -185,8 +239,12 @@ struct BoardListView: View, Equatable {
         // 스크롤 대상이 없어 no-op. (보드 전환은 reloadToken 의 목록-비움이
         // 자연히 맨 위에서 다시 그리므로 여기서 따로 스크롤하지 않는다.)
         .onChange(of: scrollTopToken) { _, _ in
-            guard let firstID = loader.posts.first?.id else { return }
-            withAnimation { proxy.scrollTo(firstID, anchor: .top) }
+            // 헤더가 있으면 헤더까지(보드명 재노출) 맨 위로, 없으면 첫 글로.
+            if showsBoardNameHeader {
+                withAnimation { proxy.scrollTo(Self.boardNameHeaderID, anchor: .top) }
+            } else if let firstID = loader.posts.first?.id {
+                withAnimation { proxy.scrollTo(firstID, anchor: .top) }
+            }
         }
         }
     }
