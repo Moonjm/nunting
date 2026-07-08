@@ -17,6 +17,8 @@ struct BoardListView: View, Equatable {
     /// 현재 페이지(board)에 체크를 찍는다. 비면 그냥 라벨만(단일 보드).
     var switchableBoards: [Board] = []
     var onSelectBoard: (String) -> Void = { _ in }
+    /// 스위처 메뉴 하단 "보드 순서 편집" 진입 — 호스트가 재정렬 시트를 띄운다.
+    var onEditOrder: () -> Void = { }
     /// 보드 전환 시 부모(`BoardPager`)가 증가시켜 강제 재로딩을 트리거한다.
     /// `.task(id:)` 는 같은 보드로 돌아오면 key 가 같아 재실행되지 않으므로,
     /// "보드 전환은 항상 새로 로드" 를 이 토큰으로 보장한다(reload 라 기존
@@ -127,6 +129,10 @@ struct BoardListView: View, Equatable {
                                 Text(b.name)
                             }
                         }
+                    }
+                    Divider()
+                    Button { onEditOrder() } label: {
+                        Label("보드 순서 편집", systemImage: "arrow.up.arrow.down")
                     }
                 } label: {
                     HStack(spacing: 7) {

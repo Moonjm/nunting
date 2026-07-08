@@ -347,6 +347,8 @@ private struct ArchiveHome: View {
     // 떠 있는 탭바가 가리는 하단 안전영역 높이(측정). 리스트를 탭바 밑까지
     // 깔되 이만큼 콘텐츠 인셋을 줘 마지막 글 가림을 막는다.
     @State private var bottomSafeInset: CGFloat = 0
+    // 스위처 메뉴 "보드 순서 편집" → 즐겨찾기 재정렬 시트.
+    @State private var showingReorder = false
 
     private var boards: [Board] { favorites.favoriteBoards() }
     private var currentBoard: Board? {
@@ -384,7 +386,8 @@ private struct ArchiveHome: View {
                     readStore: readStore,
                     onSelectPost: onSelectPost,
                     scrollTopToken: scrollTopToken,
-                    showsBoardNameHeader: true
+                    showsBoardNameHeader: true,
+                    onEditOrder: { showingReorder = true }
                 )
                 // 탭바 밑까지 리스트가 깔려 유리 탭바에 콘텐츠가 비치게 한다.
                 .ignoresSafeArea(edges: .bottom)
@@ -443,6 +446,12 @@ private struct ArchiveHome: View {
             FootprintLogger.shared.record("board:\(currentBoard?.name ?? "?")")
         }
         .onChange(of: isActive) { _, active in if active { resetFilterToDefault(currentBoard) } }
+        // 스위처 메뉴 "보드 순서 편집" → 즐겨찾기 재정렬 시트. 순서는
+        // FavoritesStore.move 가 즉시 저장하고, boards(favoriteBoards) 를 읽는
+        // 페이저·스위처가 자동으로 새 순서로 갱신된다.
+        .sheet(isPresented: $showingReorder) {
+            FavoritesReorderSheet(favorites: favorites)
+        }
     }
 
     // 보드의 첫 필터 탭(= defaultListFilter; 없으면 전체=nil)으로 되돌린다.
@@ -644,6 +653,8 @@ private struct BoardPager: View {
     let scrollTopToken: Int
     // 헤더 없는 모음에서 각 페이지 맨 위에 스크롤어웨이 보드명 라지 타이틀을 얹을지.
     let showsBoardNameHeader: Bool
+    // 스위처 메뉴 "보드 순서 편집" 탭 → 호스트(ArchiveHome)가 재정렬 시트 제시.
+    let onEditOrder: () -> Void
 
     // 가상 인덱스: 0=헤드 센티넬(boards.last) / 1…n=실제 / n+1=테일 센티넬(boards.first)
     @State private var index = 1
@@ -670,6 +681,7 @@ private struct BoardPager: View {
                               showsBoardNameHeader: showsBoardNameHeader,
                               switchableBoards: boards,
                               onSelectBoard: selectBoard,
+                              onEditOrder: onEditOrder,
                               reloadToken: reloadTokens[board.id] ?? 0,
                               scrollTopToken: scrollTopToken, readStore: readStore,
                               onSelectPost: onSelectPost)
@@ -703,6 +715,7 @@ private struct BoardPager: View {
                       showsBoardNameHeader: showsBoardNameHeader,
                       switchableBoards: boards,
                       onSelectBoard: selectBoard,
+                      onEditOrder: onEditOrder,
                       reloadToken: reloadTokens[board.id] ?? 0,
                       scrollTopToken: scrollTopToken, readStore: readStore,
                       onSelectPost: onSelectPost)
@@ -809,6 +822,52 @@ private struct HistoryResumeHandle: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
         }
+    }
+}
+
+// 즐겨찾기 보드 순서 편집 시트 — 스위처 메뉴 "보드 순서 편집" 진입. 항상
+// 편집모드라 드래그 핸들이 보이고 .onMove 가 FavoritesStore.move(순서 즉시 저장)로
+// 이어진다. 밀어서 삭제(즐겨찾기 해제)도 지원. 추가는 둘러보기(별표) 담당. 행은
+// 스위처와 통일해 사이트색 점 + 보드명.
+private struct FavoritesReorderSheet: View {
+    let favorites: FavoritesStore
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(favorites.favoriteBoards()) { board in
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(board.site.accentColor)
+                            .frame(width: 8, height: 8)
+                        Text(board.name)
+                    }
+                }
+                .onMove { favorites.move(from: $0, to: $1) }
+                .onDelete { offsets in
+                    let list = favorites.favoriteBoards()
+                    for i in offsets { favorites.toggle(list[i]) }
+                }
+            }
+            // 항상 편집모드 — 드래그 핸들·삭제 컨트롤 상시 노출.
+            .environment(\.editMode, .constant(.active))
+            .navigationTitle("보드 순서 편집")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("완료") { dismiss() }
+                }
+            }
+            .overlay {
+                if favorites.favoriteBoards().isEmpty {
+                    ContentUnavailableView("즐겨찾기한 보드가 없어요", systemImage: "star",
+                                           description: Text("둘러보기에서 ⭐로 추가하세요"))
+                }
+            }
+        }
+        // 기본부터 전체화면(large) — 보드가 많아도 잘림/좁음 없이 다 보이게.
+        .presentationDetents([.large])
     }
 }
 
