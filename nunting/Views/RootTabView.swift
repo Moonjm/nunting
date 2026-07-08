@@ -449,7 +449,7 @@ private struct ArchiveHome: View {
         // 스위처 메뉴 "보드 순서 편집" → 즐겨찾기 재정렬 시트. 순서는
         // FavoritesStore.move 가 즉시 저장하고, boards(favoriteBoards) 를 읽는
         // 페이저·스위처가 자동으로 새 순서로 갱신된다.
-        .sheet(isPresented: $showingReorder) {
+        .fullScreenCover(isPresented: $showingReorder) {
             FavoritesReorderSheet(favorites: favorites)
         }
     }
@@ -703,7 +703,16 @@ private struct BoardPager: View {
                 // 도착한 보드를 새로 불러온다.
                 if old != nil, let id { reloadTokens[id, default: 0] += 1 }
             }
-            .onChange(of: boards.map(\.id)) { _, _ in index = realIndex(currentBoardID) ?? 1 }
+            .onChange(of: boards.map(\.id)) { _, ids in
+                let normalizedID = RootTabSelectionState.normalizedBoardID(
+                    currentBoardID: currentBoardID,
+                    favoriteBoardIDs: ids
+                )
+                if currentBoardID != normalizedID {
+                    currentBoardID = normalizedID
+                }
+                index = realIndex(normalizedID) ?? 1
+            }
             .onAppear { index = realIndex(currentBoardID) ?? 1 }
         }
     }
@@ -866,8 +875,6 @@ private struct FavoritesReorderSheet: View {
                 }
             }
         }
-        // 기본부터 전체화면(large) — 보드가 많아도 잘림/좁음 없이 다 보이게.
-        .presentationDetents([.large])
     }
 }
 

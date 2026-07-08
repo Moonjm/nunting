@@ -12,4 +12,11 @@ struct RootTabSelectionState: Equatable {
     mutating func selectTab(_ newTab: Int) {
         selectedTab = newTab
     }
+
+    static func normalizedBoardID(currentBoardID: String?, favoriteBoardIDs: [String]) -> String? {
+        guard let currentBoardID, favoriteBoardIDs.contains(currentBoardID) else {
+            return favoriteBoardIDs.first
+        }
+        return currentBoardID
+    }
 }
