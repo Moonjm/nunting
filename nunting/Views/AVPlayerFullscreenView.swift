@@ -199,9 +199,13 @@ struct AVPlayerControllerView: UIViewControllerRepresentable {
                 object: item,
                 queue: .main
             ) { [weak self] _ in
-                guard let self, let player = self.player else { return }
-                player.seek(to: .zero)
-                player.play()
+                // queue:.main 이라 항상 메인 액터 — @Sendable 클로저에서 main-actor
+                // 격리된 player 접근을 동기 단언으로 허용(비동기 홉 없음, 동기 span 유지).
+                MainActor.assumeIsolated {
+                    guard let self, let player = self.player else { return }
+                    player.seek(to: .zero)
+                    player.play()
+                }
             }
         }
 
@@ -227,11 +231,14 @@ struct AVPlayerControllerView: UIViewControllerRepresentable {
             statusObservation = item.observe(\.status, options: [.new, .initial]) { [weak self] item, _ in
                 guard item.status == .readyToPlay else { return }
                 DispatchQueue.main.async {
-                    guard let self else { return }
-                    self.player?.play()
-                    self.onReady()
-                    self.statusObservation?.invalidate()
-                    self.statusObservation = nil
+                    // main 큐라 메인 액터 — main-actor 격리된 self 접근을 동기 단언으로 허용.
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        self.player?.play()
+                        self.onReady()
+                        self.statusObservation?.invalidate()
+                        self.statusObservation = nil
+                    }
                 }
             }
         }
