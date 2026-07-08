@@ -138,24 +138,13 @@ struct RootTabView: View {
     }
     var body: some View {
         ZStack {
-            // 보드 검색은 필터 바 행 우측의 떠있는 버튼(BoardSearchButton).
-            // 히스토리는 role:.search 탭 — 시스템이 탭바 오른쪽에 분리 배치(옛 검색
-            // 자리). 탭하면 탭 전환이 아니라 "마지막 본 상세 재노출" 버튼으로 쓴다:
-            // selectedTab 을 건드리지 않고(4 로 바꾸면 tab4 의 빈 Color.clear 가 한
-            // 프레임 노출돼 상세 슬라이드-인 중 깜빡인다) keep-alive 로 살아있는
-            // detail.activePost 만 다시 슬라이드 인한다. 언더레이는 직전 탭 그대로라
-            // 매끄럽다.
+            // 보드 검색은 필터 바 행 우측의 떠있는 버튼(BoardSearchButton). 마지막 본
+            // 상세를 다시 여는 "이전 글"은 이 ZStack 아래쪽 HistoryResumeHandle(우측
+            // 모서리에 걸친 유리 탭)이 전역으로 담당한다 — 예전 role:.search 탭바 우측
+            // 슬롯이 오른손 한손 도달이 애매해 떠있는 핸들로 옮겼다.
             TabView(selection: Binding(
                 get: { historyTabState.selectedTab },
                 set: { newValue in
-                    if newValue == 4 {
-                        // 히스토리 = 마지막 본 상세 재노출. keep-alive 라 activePost
-                        // 가 살아 있으면 show 가 그 뷰를 그대로 슬라이드 인한다(같은
-                        // id → keep-alive 분기). 없으면 무반응(탭도 .disabled). 선택
-                        // 탭은 바꾸지 않는다 — 깜빡임 방지.
-                        if let post = detail.activePost { detail.show(post) }
-                        return
-                    }
                     // 모음(0) 재탭(이미 모음 선택 상태에서 다시 탭) → 맨 위로
                     // 스크롤 신호. SwiftUI 는 선택된 탭을 재탭해도 selection
                     // setter 를 같은 값으로 호출하므로 여기서 감지한다. 다른
@@ -194,15 +183,6 @@ struct RootTabView: View {
                     }
                 }
                 .badge(alertBadge.unread)
-                // 히스토리 — role:.search 로 탭바 오른쪽 분리 슬롯(옛 검색 자리).
-                // 탭하면 전환 대신 마지막 본 상세 오버레이를 그대로 다시 띄운다.
-                // 재노출할 상세가 없으면(이번 세션에 연 글 없음) 비활성 — 글을
-                // 하나라도 열면 activePost 가 채워져 자동 활성(keep-alive 라 이후
-                // 세션 내내 유지). 앱 재실행 시 다시 비활성.
-                Tab("히스토리", systemImage: "clock.arrow.circlepath", value: 4, role: .search) {
-                    Color.clear
-                }
-                .disabled(detail.activePost == nil)
             }
             .sheet(isPresented: $showingSearch) {
                 if let board = searchContextBoard {
@@ -213,6 +193,12 @@ struct RootTabView: View {
                     )
                 }
             }
+            // 이전 글(치워둔 마지막 상세) 되돌리기 핸들 — 우측 모서리에 빼꼼 걸친
+            // 유리 탭(카톡 미니 브라우저식). keep-alive 로 살아있지만 숨겨진 상세가
+            // 있을 때만 전역 노출(어느 탭/보드든), 상세가 보이는 중엔 숨는다. 하단
+            // 탭바·검색 버튼을 피해 오른손 엄지 편한 우측 중앙에 둔다. 예전
+            // role:.search 탭바 우측 슬롯을 대체 — 그 코너가 한손 도달이 애매했다.
+            HistoryResumeHandle(detail: detail)
             // 상세 오버레이 — TabView 위 ZStack 최상단 레이어로 화면 전체(탭바
             // 포함)를 덮는다. show() 가 우측에서 슬라이드 인, 백드래그가 offset 을
             // 추적해 우→ 스와이프로 닫는다. 인앱 글 탭·푸시·받은알림 모두 이 경로.
@@ -404,7 +390,8 @@ private struct ArchiveHome: View {
             }
         }
         // 헤더 밴드 없이 목록이 상단까지 꽉 차고, 보드 메뉴 버튼만 우상단에 떠
-        // 있는 유리 동그라미로 겹쳐 띄운다. (검색=필터행 버튼, 히스토리=하단 탭.)
+        // 있는 유리 동그라미로 겹쳐 띄운다. (검색=필터행 버튼, 이전 글=우측 모서리
+        // 유리 핸들로 셸 루트에 전역 배치 — 여기선 안 다룬다.)
         .overlay(alignment: .topTrailing) { boardMenu }
         // 탭바가 가리는 하단 안전영역 높이를 측정해 인셋으로 환원.
         .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.bottom } action: { bottomSafeInset = $0 }
@@ -440,11 +427,10 @@ private struct ArchiveHome: View {
                 .padding(.bottom, 8)
             }
         }
-        // onAppear 에선 필터를 리셋하지 않는다 — 히스토리(role:.search) 탭 시 탭
-        // 선택이 0→4→0 으로 튕기며(커버 닫을 때 복원) .onAppear 가 재발화되는데,
-        // 거기서 리셋하면 바꿔둔 필터가 첫 탭으로 돌아가고 목록이 재로드된다. 첫
-        // 진입 리셋은 currentBoardID(nil→첫 보드) onChange 가, 탭 재진입 리셋은
-        // isActive onChange 가 담당하므로 onAppear 리셋은 불필요하다.
+        // onAppear 에선 필터를 리셋하지 않는다 — 첫 진입 리셋은 currentBoardID
+        // (nil→첫 보드) onChange 가, 탭 재진입 리셋은 isActive onChange 가 담당하므로
+        // onAppear 리셋은 불필요·중복이다. (상세 오버레이는 ArchiveHome 을 덮을 뿐
+        // 언마운트하지 않아, 이전 글 핸들로 재노출해도 onAppear 는 재발화되지 않는다.)
         .onAppear {
             if currentBoardID == nil { currentBoardID = boards.first?.id }
         }
@@ -799,6 +785,40 @@ private struct BoardSearchButton: View {
             }
             .tint(.black)
             .accessibilityLabel(active ? "검색 해제" : "검색")
+        }
+    }
+}
+
+// 우측 모서리에 빼꼼 걸친 "이전 글" 유리 핸들(카톡 미니 브라우저식). keep-alive 로
+// 살아있지만 숨겨둔 마지막 상세(detail.activePost != nil && !isOverlayVisible)가
+// 있을 때만 나타난다 — 상세를 보는 중이면 되돌릴 게 아니라 보고 있는 것이므로 숨김.
+// 탭하면 그 상세를 그대로 다시 슬라이드 인한다(같은 id → keep-alive 분기라 스크롤·
+// 본문·재생 상태 유지). 오른쪽 절반을 화면 밖으로 흘려 모서리에 걸친 탭처럼 보인다.
+private struct HistoryResumeHandle: View {
+    let detail: DetailOverlayController
+
+    var body: some View {
+        if let post = detail.activePost, !detail.isOverlayVisible {
+            Button {
+                detail.show(post)
+            } label: {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.black)
+                    // 아이콘을 보이는(좌측) 쪽으로 몰아 우측 클립에 안 잘리게.
+                    .frame(width: 34, height: 52, alignment: .leading)
+                    .padding(.leading, 12)
+                    .frame(height: 52)
+                    .glassEffect(.regular, in: UnevenRoundedRectangle(
+                        topLeadingRadius: 18, bottomLeadingRadius: 18,
+                        bottomTrailingRadius: 0, topTrailingRadius: 0,
+                        style: .continuous))
+            }
+            .tint(.black)
+            .accessibilityLabel("이전 글 다시 보기")
+            // 우측 중앙 정렬 후 오른쪽 일부를 화면 밖으로 흘린다 — 모서리에 걸친 탭.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+            .offset(x: 12, y: 24)
         }
     }
 }
