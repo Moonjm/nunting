@@ -26,4 +26,43 @@ final class RootTabSelectionStateTests: XCTestCase {
 
         XCTAssertEqual(state.selectedTab, 4)
     }
+
+    func testNormalizesMissingCurrentBoardToFirstFavorite() {
+        XCTAssertEqual(
+            RootTabSelectionState.normalizedBoardID(
+                currentBoardID: "removed",
+                favoriteBoardIDs: ["first", "second"]
+            ),
+            "first"
+        )
+    }
+
+    func testNormalizesNilCurrentBoardToFirstFavorite() {
+        XCTAssertEqual(
+            RootTabSelectionState.normalizedBoardID(
+                currentBoardID: nil,
+                favoriteBoardIDs: ["first", "second"]
+            ),
+            "first"
+        )
+    }
+
+    func testKeepsCurrentBoardWhenStillFavorite() {
+        XCTAssertEqual(
+            RootTabSelectionState.normalizedBoardID(
+                currentBoardID: "second",
+                favoriteBoardIDs: ["first", "second"]
+            ),
+            "second"
+        )
+    }
+
+    func testNormalizesToNilWhenFavoritesAreEmpty() {
+        XCTAssertNil(
+            RootTabSelectionState.normalizedBoardID(
+                currentBoardID: "removed",
+                favoriteBoardIDs: []
+            )
+        )
+    }
 }
