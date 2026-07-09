@@ -17,7 +17,7 @@ final class BodyImagePrefetcherTests: XCTestCase {
         let ctx = NetworkImage.thumbnailContext(maxPointSize: nil, maxPointWidth: 393, scale: 3)
         let p = BodyImagePrefetcher(urls: urls(3), window: 3, thumbnailContext: ctx)
         let stored = (p.prefetchContext?[.imageThumbnailPixelSize] as? NSValue)?.cgSizeValue
-        XCTAssertEqual(stored, CGSize(width: 1179, height: 65535))
+        XCTAssertEqual(stored, CGSize(width: 1179, height: NetworkImage.tallImageMaxPixelHeight))
 
         let bare = BodyImagePrefetcher(urls: urls(3), window: 3)
         XCTAssertNil(bare.prefetchContext, "컨텍스트 없는 호출부(구형)는 평범한 키 워밍 유지")

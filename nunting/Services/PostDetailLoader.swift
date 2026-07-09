@@ -243,6 +243,13 @@ final class PostDetailLoader {
                 }.value
                 // Result 로 받아 실패를 분류한다 — `try?` 는 "댓글 없는 글"과
                 // "로드 실패"를 구분 불가능하게 뭉갰고, 취소 전파까지 삼켰다.
+                //
+                // 이 async let "클로저" 형태는 실행 위치도 지탱한다: 클로저가
+                // 비격리 자식 태스크라(컴파일 프로브로 확인 — 내부에서 MainActor
+                // 상태 접근이 에러), nonsending 인 `fetchAllComments` 의 댓글
+                // 파싱이 협력 풀에서 돈다. @MainActor 메서드에서 직접 await 로
+                // 바꾸면 파싱이 통째로 메인으로 온다(retryComments 가 실제로
+                // 그랬다) — 리팩터링 시 형태 유지 필수.
                 async let commentsTask: Result<[PostComment], Error>? = {
                     guard parser.commentsURL(for: resolved) != nil else { return nil }
                     do {
@@ -331,12 +338,23 @@ final class PostDetailLoader {
         let fetcher = self.fetcher
         let generation = loadGeneration
         do {
-            let extras = try await parser.fetchAllComments(
-                for: context.post,
-                detailHTML: context.detailHTML
-            ) { url in
-                try await fetcher(url, parser.responseEncoding(for: url))
-            }
+            // async let 자식 태스크로 감싸 파싱을 메인액터 밖으로 보낸다.
+            // approachable concurrency(nonsending) 에선 nonisolated async 인
+            // `fetchAllComments` 가 호출자 executor 에서 돌므로, @MainActor
+            // 메서드에서 직접 await 하면 댓글 SwiftSoup/JSON 파싱이 통째로
+            // 메인에서 돈다(수백 댓글 = 수 초 hang). load() 의 댓글 leg 는
+            // 이미 async let 클로저(비격리 자식)라 협력 풀에서 돌고 있고,
+            // 여기만 직접 호출이라 빠져 있었다. 자식 태스크라 취소 전파는
+            // 그대로 유지된다(Task.detached 와 달리).
+            async let extrasTask: [PostComment] = {
+                try await parser.fetchAllComments(
+                    for: context.post,
+                    detailHTML: context.detailHTML
+                ) { url in
+                    try await fetcher(url, parser.responseEncoding(for: url))
+                }
+            }()
+            let extras = try await extrasTask
             // fetch 사이 새 로드가 더 신선한 본을 커밋했으면(세대 변화) 이
             // 결과는 stale — `current` 로 되돌리지 말고 조용히 버린다.
             guard generation == loadGeneration else { return }
