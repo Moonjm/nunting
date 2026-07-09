@@ -532,14 +532,22 @@ struct NetworkImage: View {
             return [.imageThumbnailPixelSize: NSValue(cgSize: CGSize(width: pixels, height: pixels))]
         }
         if let pointWidth = maxPointWidth {
-            // 높이 65535px: 사실상 무제한이되 ImageIO 가 안전하게 받는 값.
-            // 세로 패널이 높이 캡에 걸리면 비율 유지 축소로 폭까지 깎여
-            // 화면폭 미만이 되므로(=블러), 높이는 절대 실효 캡이 되면 안 됨.
+            // 높이 캡 8192px: 원래 65535(사실상 무제한)였으나, 폭이 이미 화면폭
+            // 이하인 초대형 세로 패널(예: 1000×30000)이 캡을 통째로 우회해
+            // 30MP 풀 디코드가 일어났다 — footprint +400~500MB 순간 스파이크와
+            // 수 초 hang(ImageIO 전역 락이 메인 레이아웃과 경합)의 실측 주범.
+            // 8192 면 통상 세로 패널(800×6000 급)은 무손실 통과하고, 그보다 긴
+            // 병리 케이스만 비율 유지 축소된다(폭도 함께 깎여 다소 소프트해지나,
+            // 탭하면 열리는 전체화면 뷰어의 긴 변 캡이 4096 이라 인라인이 항상
+            // 뷰어보다 선명하다). 디코드 상한 ≈ 화면폭px × 8192 ≈ 40MB.
             let pixels = pointWidth * scale
-            return [.imageThumbnailPixelSize: NSValue(cgSize: CGSize(width: pixels, height: 65535))]
+            return [.imageThumbnailPixelSize: NSValue(cgSize: CGSize(width: pixels, height: Self.tallImageMaxPixelHeight))]
         }
         return nil
     }
+
+    /// 비정방(폭 기준) 박스의 높이 캡 — 계약 테스트와 공유.
+    nonisolated static let tallImageMaxPixelHeight: CGFloat = 8192
 }
 
 private extension View {
