@@ -717,6 +717,68 @@ final class PostDetailLoaderTests: XCTestCase {
         XCTAssertFalse(loader.commentsFailed, "캐시 히트 복원 시 실패 배너 해제")
     }
 
+    // MARK: - 댓글 파싱 실행 위치 (off-MainActor 회귀 네트)
+
+    // approachable concurrency(nonsending) 에선 nonisolated async 인
+    // `fetchAllComments` 가 **호출자의 executor** 에서 돈다 — @MainActor
+    // 메서드에서 직접 await 하면 댓글 SwiftSoup/JSON 파싱이 통째로 메인에서
+    // 돈다(실측 hang 원인). 아래 두 테스트는 fetcher 가 불린 스레드를 기록해
+    // 이를 고정한다: fetcher(@Sendable=nonsending)는 fetchAllComments 의
+    // executor 를 그대로 따르고, 파싱은 fetcher await 복귀 직후 같은 executor
+    // 에서 돌므로 "fetcher 가 메인" ⇔ "파싱이 메인" 의 정확한 프록시다.
+    // async let 자식(비격리) 형태를 직접 await 로 되돌리는 회귀가 나면
+    // 메인 스레드 기록이 잡혀 실패한다.
+
+    func testCommentLegParsesOffMainThreadDuringLoad() async {
+        let recorder = MainThreadRecorder()
+        let loader = PostDetailLoader(
+            fetcher: { [coolenjoyDetailHTML, coolenjoyCommentHTML] url, _ in
+                guard url.absoluteString.contains("comment_view") else {
+                    return coolenjoyDetailHTML
+                }
+                recorder.recordCurrentThread()
+                return coolenjoyCommentHTML
+            },
+            resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) }
+        )
+        let cache = PostDetailCache(capacity: 4)
+
+        await loader.load(post: coolenjoyPost(), cache: cache, renderReadyAt: now())
+
+        XCTAssertGreaterThan(recorder.count, 0, "전제: 댓글 fetch 발생")
+        XCTAssertFalse(recorder.sawMainThread,
+                       "load() 댓글 leg 는 async let 자식(협력 풀)에서 돌아야 함 — 메인이면 파싱 hang 회귀")
+    }
+
+    func testRetryCommentsParsesOffMainThread() async {
+        let failComments = TestFlag(true)
+        let recorder = MainThreadRecorder()
+        let loader = PostDetailLoader(
+            fetcher: { [coolenjoyDetailHTML, coolenjoyCommentHTML] url, _ in
+                guard url.absoluteString.contains("comment_view") else {
+                    return coolenjoyDetailHTML
+                }
+                if failComments.value { throw CommentStubError() }
+                recorder.recordCurrentThread()
+                return coolenjoyCommentHTML
+            },
+            resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) }
+        )
+        let cache = PostDetailCache(capacity: 4)
+        let post = coolenjoyPost()
+
+        await loader.load(post: post, cache: cache, renderReadyAt: now())
+        XCTAssertTrue(loader.commentsFailed, "전제: 첫 로드에서 댓글 실패 → retry 컨텍스트 무장")
+
+        failComments.set(false)
+        await loader.retryComments(cache: cache)
+
+        XCTAssertGreaterThan(recorder.count, 0, "전제: retry 가 댓글 fetch 에 진입")
+        XCTAssertFalse(recorder.sawMainThread,
+                       "retryComments 도 async let 자식(협력 풀)에서 돌아야 함 — 직접 await 로 되돌리면 메인 파싱 회귀")
+        XCTAssertFalse(loader.commentsFailed)
+    }
+
     // MARK: - Initial state
 
     func testInitialIsLoadingTrueBeforeFirstLoadCall() {
@@ -769,6 +831,33 @@ private final class FetchRecorder: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return calls.first
+    }
+}
+
+/// fetcher 가 불린 스레드(메인 여부)를 기록 — 댓글 파싱 실행 위치 회귀 네트용.
+private final class MainThreadRecorder: @unchecked Sendable {
+    private var flags: [Bool] = []
+    private let lock = NSLock()
+
+    /// 호출 시점의 스레드를 기록. `Thread.isMainThread` 는 async 컨텍스트에서
+    /// 사용 금지(컴파일 에러)라 pthread 로 직접 판별한다 — 여기선 "실행이
+    /// 물리적으로 메인 스레드에 있나"가 정확히 묻고 싶은 것이라 적합하다.
+    func recordCurrentThread() {
+        lock.lock()
+        defer { lock.unlock() }
+        flags.append(pthread_main_np() != 0)
+    }
+
+    var sawMainThread: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return flags.contains(true)
+    }
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return flags.count
     }
 }
 

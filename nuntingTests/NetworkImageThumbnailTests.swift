@@ -1,5 +1,6 @@
 import XCTest
 import SDWebImage
+import UIKit
 @testable import nunting
 
 /// `NetworkImage` 의 다운샘플 박스 매핑 계약.
@@ -37,5 +38,55 @@ final class NetworkImageThumbnailTests: XCTestCase {
     func testNoCapsReturnsNilContext() {
         XCTAssertNil(NetworkImage.thumbnailContext(maxPointSize: nil, maxPointWidth: nil, scale: 3),
                      "캡 없음 = 네이티브 해상도 디코드 (context 자체가 nil)")
+    }
+
+    // MARK: - 실제 디코드 검증 (context 값이 아니라 decode output 을 핀)
+
+    /// context 값 매핑만 믿지 않고, 생성한 PNG 를 SDImageIOCoder 로 실제
+    /// 디코드해 출력 비트맵이 박스 계약을 지키는지 확인한다 — 프로덕션과
+    /// 같은 coder 경로(`.imageThumbnailPixelSize` → `decodeThumbnailPixelSize`).
+    private func decodeWithWidthBox(_ png: Data) -> UIImage? {
+        let ctx = NetworkImage.thumbnailContext(maxPointSize: nil, maxPointWidth: 393, scale: 3)
+        guard let box = ctx?[.imageThumbnailPixelSize] as? NSValue else { return nil }
+        return SDImageIOCoder.shared.decodedImage(with: png, options: [
+            .decodeThumbnailPixelSize: box,
+            .decodePreserveAspectRatio: true,  // 파이프라인 기본값을 명시적으로 고정
+        ])
+    }
+
+    private func flatPNG(width: Int, height: Int) -> Data {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let size = CGSize(width: width, height: height)
+        return UIGraphicsImageRenderer(size: size, format: format).pngData { ctx in
+            UIColor.systemBlue.setFill()
+            ctx.fill(CGRect(origin: .zero, size: size))
+        }
+    }
+
+    private func pixelSize(_ image: UIImage) -> CGSize {
+        CGSize(width: image.size.width * image.scale, height: image.size.height * image.scale)
+    }
+
+    func testRealDecodeOfExtremeTallImageIsBoundedByHeightCap() throws {
+        // 폭(300)이 화면폭 캡(1179) 이하라 폭 캡을 우회하는 초대형 세로 패널 —
+        // 높이 캡이 없으면 6MP 통과(실환경에선 30MP 급). 캡 적용 시 비율 유지
+        // 축소로 박스 안에 들어와야 한다.
+        let decoded = try XCTUnwrap(decodeWithWidthBox(flatPNG(width: 300, height: 20000)))
+        let px = pixelSize(decoded)
+        XCTAssertLessThanOrEqual(px.height, NetworkImage.tallImageMaxPixelHeight,
+                                 "초대형 세로 패널의 실제 디코드 높이는 캡 이하")
+        XCTAssertLessThanOrEqual(px.width, 1179, "폭도 박스 안")
+        XCTAssertLessThan(px.height, 20000, "풀 디코드(무캡 회귀) 방지")
+        XCTAssertEqual(px.width / px.height, 300.0 / 20000.0, accuracy: 0.01,
+                       "비율 유지 다운샘플 (왜곡 없음)")
+    }
+
+    func testRealDecodeOfTypicalTallPanelPassesLossless() throws {
+        // 원 설계가 보호하려던 aagag 세로 패널(800×6000) — 높이 캡(8192) 아래라
+        // 다운샘플 없이 원본 해상도 그대로 나와야 한다.
+        let decoded = try XCTUnwrap(decodeWithWidthBox(flatPNG(width: 800, height: 6000)))
+        XCTAssertEqual(pixelSize(decoded), CGSize(width: 800, height: 6000),
+                       "통상 세로 패널은 무손실 통과 (높이 캡이 실효 캡이 되면 안 됨)")
     }
 }
