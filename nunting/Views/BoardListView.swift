@@ -179,6 +179,9 @@ struct BoardListView: View, Equatable {
                 }
                 .padding(.vertical, 12)
                 .listRowSeparator(.hidden)
+                // 글 행과 동일한 배경 — 기본(흰색) 행 배경이면 페이징 중
+                // 스피너 행이 흰 띠로 번쩍인다.
+                .listRowBackground(Color("AppSurface"))
                 .onAppear {
                     guard board.supportsPaging,
                           loader.hasMorePages,
@@ -203,6 +206,7 @@ struct BoardListView: View, Equatable {
                 .buttonStyle(.plain)
                 .padding(.vertical, 12)
                 .listRowSeparator(.hidden)
+                .listRowBackground(Color("AppSurface"))
             } else if shouldShowLoadMorePrompt {
                 Button {
                     Task { await loader.loadMore(board: board, filter: filter, searchQuery: searchQuery) }
@@ -219,6 +223,7 @@ struct BoardListView: View, Equatable {
                 .buttonStyle(.plain)
                 .padding(.vertical, 12)
                 .listRowSeparator(.hidden)
+                .listRowBackground(Color("AppSurface"))
             }
         }
         .listStyle(.plain)
