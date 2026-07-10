@@ -214,32 +214,38 @@ struct ImageViewer: View {
         return CGSize(width: width, height: height)
     }
 
-    /// 더블탭 줌 대상 rect — 탭 지점을 aspectFit 으로 그려진 이미지 영역 안
-    /// 으로 클램프한다. 세로 초대형은 얇은 세로 띠로 그려져서, 레터박스를
-    /// 탭하면 rect 가 이미지 밖(여백)에 잡혀 빈 화면으로 확대됐다.
+    /// 뷰포트에 aspectFit 한 이미지의 표시 크기 — 줌 대상 imageView 의 프레임.
+    /// 뷰포트 크기 뷰를 확대하면 레터박스까지 콘텐츠가 돼 이미지 밖 여백을
+    /// 한없이 패닝하게 되므로(Codex P2), imageView 를 이 크기로 잡는다.
+    nonisolated static func fittedSize(imageSize: CGSize, viewportSize: CGSize) -> CGSize {
+        guard imageSize.width > 0, imageSize.height > 0 else { return viewportSize }
+        let fit = min(viewportSize.width / imageSize.width, viewportSize.height / imageSize.height)
+        return CGSize(width: imageSize.width * fit, height: imageSize.height * fit)
+    }
+
+    /// 1차 → 2차(화질만) 교체 판별 — aspect 가 같아 fit 크기가 사실상 일치.
+    /// 이 경우 줌/오프셋을 보존한 채 이미지만 갈아끼운다(읽던 위치 유지).
+    nonisolated static func isSameFittedSize(_ a: CGSize, _ b: CGSize) -> Bool {
+        abs(a.width - b.width) <= 1 && abs(a.height - b.height) <= 1
+    }
+
+    /// 더블탭 줌 대상 rect — imageView(=fit 된 이미지) 좌표계. 레터박스 탭은
+    /// 이미지 밖 좌표(음수/초과)로 들어오므로 rect 가 이미지 안에 머물게
+    /// 클램프한다. rect 가 이미지보다 큰 축은 이미지 중심으로 폴백.
     nonisolated static func doubleTapZoomRect(
-        tapPoint: CGPoint, imageSize: CGSize, boundsSize: CGSize, targetScale: CGFloat
+        tapPoint: CGPoint, fittedImageSize: CGSize, viewportSize: CGSize, targetScale: CGFloat
     ) -> CGRect {
-        let rectSize = CGSize(width: boundsSize.width / targetScale,
-                              height: boundsSize.height / targetScale)
+        let rectSize = CGSize(width: viewportSize.width / targetScale,
+                              height: viewportSize.height / targetScale)
         var center = tapPoint
-        if imageSize.width > 0, imageSize.height > 0 {
-            // aspectFit 으로 그려진 이미지 rect (imageView 좌표 = bounds 좌표).
-            let fit = min(boundsSize.width / imageSize.width, boundsSize.height / imageSize.height)
-            let drawn = CGSize(width: imageSize.width * fit, height: imageSize.height * fit)
-            let origin = CGPoint(x: (boundsSize.width - drawn.width) / 2,
-                                 y: (boundsSize.height - drawn.height) / 2)
-            // 탭 중심을 "rect 가 이미지 안에 머무는" 범위로 클램프. 이미지가
-            // rect 보다 좁으면(세로 띠) 그 축은 이미지 중심으로 고정된다.
-            center.x = clamp(center.x,
-                             min: origin.x + rectSize.width / 2,
-                             max: origin.x + drawn.width - rectSize.width / 2,
-                             fallback: origin.x + drawn.width / 2)
-            center.y = clamp(center.y,
-                             min: origin.y + rectSize.height / 2,
-                             max: origin.y + drawn.height - rectSize.height / 2,
-                             fallback: origin.y + drawn.height / 2)
-        }
+        center.x = clamp(center.x,
+                         min: rectSize.width / 2,
+                         max: fittedImageSize.width - rectSize.width / 2,
+                         fallback: fittedImageSize.width / 2)
+        center.y = clamp(center.y,
+                         min: rectSize.height / 2,
+                         max: fittedImageSize.height - rectSize.height / 2,
+                         fallback: fittedImageSize.height / 2)
         return CGRect(x: center.x - rectSize.width / 2,
                       y: center.y - rectSize.height / 2,
                       width: rectSize.width, height: rectSize.height)
@@ -293,12 +299,18 @@ private struct ZoomableImageView: UIViewRepresentable {
         imageView.maxBufferSize = 16 * 1024 * 1024
         imageView.contentMode = .scaleAspectFit
         imageView.isUserInteractionEnabled = true
-        imageView.frame = scrollView.bounds
-        imageView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        // 줌 대상 = fit 된 이미지 크기(뷰포트 아님). 뷰포트 크기면 레터박스가
+        // 콘텐츠에 포함돼 확대 후 이미지 밖 여백을 한없이 패닝하게 된다.
+        // 가운데 정렬은 Coordinator.centerImage 의 contentInset 이 담당.
+        let fitted = ImageViewer.fittedSize(imageSize: image.size, viewportSize: viewSize)
+        imageView.frame = CGRect(origin: .zero, size: fitted)
         scrollView.addSubview(imageView)
+        scrollView.contentSize = fitted
 
         context.coordinator.scrollView = scrollView
         context.coordinator.imageView = imageView
+        context.coordinator.lastViewSize = viewSize
+        context.coordinator.centerImage(in: scrollView)
 
         let doubleTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleDoubleTap(_:)))
         doubleTap.numberOfTapsRequired = 2
@@ -310,11 +322,33 @@ private struct ZoomableImageView: UIViewRepresentable {
     func updateUIView(_ scrollView: UIScrollView, context: Context) {
         // 이미지 교체(tall 2차 디코드 포함)나 뷰 크기 변화 모두 상한 재계산.
         scrollView.maximumZoomScale = ImageViewer.maxZoomScale(imageSize: image.size, viewSize: viewSize)
-        guard context.coordinator.imageView?.image !== image else { return }
-        context.coordinator.imageView?.image = image
+        guard let imageView = context.coordinator.imageView else { return }
+
+        let fitted = ImageViewer.fittedSize(imageSize: image.size, viewportSize: viewSize)
+        let viewSizeChanged = context.coordinator.lastViewSize != viewSize
+        context.coordinator.lastViewSize = viewSize
+
+        if imageView.image !== image {
+            // 화질만 바뀌는 교체(1차 → 2차 tall 디코드, aspect 동일)는 줌/
+            // 오프셋을 보존한 채 비트맵만 갈아끼운다 — 사용자가 2차 완료 전에
+            // 확대해 읽기 시작한 위치를 잃지 않게(Codex P2). bounds 는 zoom
+            // transform 의 영향을 받지 않아 fit 크기 비교에 안전하다.
+            if !viewSizeChanged, ImageViewer.isSameFittedSize(imageView.bounds.size, fitted) {
+                imageView.image = image
+                return
+            }
+            imageView.image = image
+        } else if !viewSizeChanged {
+            return
+        }
+        // 신규 이미지 또는 뷰 크기 변화(회전): fit 기준으로 리셋.
         // setZoomScale fires scrollViewDidZoom, which resets isZoomed — no
         // need to push a SwiftUI state mutation from inside updateUIView.
         scrollView.setZoomScale(1, animated: false)
+        imageView.frame = CGRect(origin: .zero, size: fitted)
+        scrollView.contentSize = fitted
+        scrollView.contentOffset = .zero
+        context.coordinator.centerImage(in: scrollView)
     }
 
     func makeCoordinator() -> Coordinator {
@@ -325,6 +359,9 @@ private struct ZoomableImageView: UIViewRepresentable {
         @Binding var isZoomed: Bool
         weak var scrollView: UIScrollView?
         weak var imageView: UIImageView?
+        /// GeometryReader 가 준 뷰포트 크기 — makeUIView 시점엔 scrollView
+        /// bounds 가 아직 0 일 수 있어 센터링 계산은 이 값을 쓴다.
+        var lastViewSize: CGSize = .zero
 
         init(isZoomed: Binding<Bool>) {
             _isZoomed = isZoomed
@@ -345,34 +382,36 @@ private struct ZoomableImageView: UIViewRepresentable {
                 scrollView.setZoomScale(1, animated: true)
                 isZoomed = false
             } else {
+                // imageView = fit 된 이미지 크기이므로 이 좌표가 곧 이미지 좌표.
                 let point = recognizer.location(in: imageView)
-                let imageSize = imageView?.image?.size ?? .zero
-                let bounds = scrollView.bounds
+                let fitted = imageView?.bounds.size ?? .zero
+                let viewport = lastViewSize == .zero ? scrollView.bounds.size : lastViewSize
                 // 세로 초대형은 더블탭 한 번에 "폭맞춤"(웹툰 리더 배율)으로 —
                 // 고정 2.5×는 폭 수십 pt 표시에선 읽기 배율에 한참 못 미친다.
                 var targetScale = min(scrollView.maximumZoomScale, 2.5)
-                if imageSize.height > 0 {
-                    let fitWidth = min(bounds.width, bounds.height * (imageSize.width / imageSize.height))
-                    if fitWidth > 0 {
-                        let widthFill = bounds.width / fitWidth
-                        if widthFill > 2.5 {
-                            targetScale = min(scrollView.maximumZoomScale, widthFill)
-                        }
+                if fitted.width > 0 {
+                    let widthFill = viewport.width / fitted.width
+                    if widthFill > 2.5 {
+                        targetScale = min(scrollView.maximumZoomScale, widthFill)
                     }
                 }
                 // 탭 지점을 이미지 영역으로 클램프 — 레터박스 더블탭이 여백으로
                 // 확대되지 않게(계약은 doubleTapZoomRect 테스트로 핀).
                 let rect = ImageViewer.doubleTapZoomRect(
-                    tapPoint: point, imageSize: imageSize,
-                    boundsSize: bounds.size, targetScale: targetScale)
+                    tapPoint: point, fittedImageSize: fitted,
+                    viewportSize: viewport, targetScale: targetScale)
                 scrollView.zoom(to: rect, animated: true)
                 isZoomed = true
             }
         }
 
-        private func centerImage(in scrollView: UIScrollView) {
+        // makeUIView/updateUIView 에서도 호출 — imageView 가 fit 크기라 정렬은
+        // 전적으로 이 contentInset 이 담당한다. scrollView.bounds 가 아직 0 인
+        // 최초 시점(makeUIView)은 GeometryReader 가 준 lastViewSize 로 계산.
+        func centerImage(in scrollView: UIScrollView) {
             guard let imageView else { return }
-            let bounds = scrollView.bounds.size
+            var bounds = scrollView.bounds.size
+            if bounds == .zero { bounds = lastViewSize }
             let content = imageView.frame.size
             let horizontal = max(0, (bounds.width - content.width) / 2)
             let vertical = max(0, (bounds.height - content.height) / 2)

@@ -63,36 +63,59 @@ final class ImageViewerTallImageTests: XCTestCase {
         XCTAssertEqual(z, 5)
     }
 
-    // MARK: - 더블탭 줌 대상 rect
+    // MARK: - fit 크기 (줌 대상 뷰 = fit 된 이미지)
 
-    /// 세로 초대형은 aspectFit 시 얇은 세로 띠로 그려진다 — 레터박스(여백)를
-    /// 더블탭해도 줌 rect 가 이미지 띠 위로 클램프되어야 한다. 안 하면
-    /// "여백으로 확대"돼 빈 화면이 나온다(기기 실측 버그).
-    func testDoubleTapInLetterboxClampsToImageStrip() {
-        let bounds = CGSize(width: 402, height: 852)
-        // 669×25809: fit 폭 = 852×(669/25809) ≈ 22pt — 띠는 x≈190..212.
-        let rect = ImageViewer.doubleTapZoomRect(
-            tapPoint: CGPoint(x: 30, y: 400), // 왼쪽 여백 탭
+    /// 줌 대상 imageView 는 뷰포트가 아니라 "fit 된 이미지" 크기여야 한다 —
+    /// 뷰포트 크기 뷰를 확대하면 레터박스까지 콘텐츠가 돼 이미지 밖 여백을
+    /// 한없이 패닝하게 된다(Codex P2).
+    func testFittedSize() {
+        let tall = ImageViewer.fittedSize(
             imageSize: CGSize(width: 669, height: 25809),
-            boundsSize: bounds,
+            viewportSize: CGSize(width: 402, height: 852))
+        XCTAssertEqual(tall.height, 852, accuracy: 0.5)
+        XCTAssertEqual(tall.width, 852 * 669 / 25809, accuracy: 0.5)
+
+        let landscape = ImageViewer.fittedSize(
+            imageSize: CGSize(width: 4000, height: 3000),
+            viewportSize: CGSize(width: 402, height: 852))
+        XCTAssertEqual(landscape, CGSize(width: 402, height: 301.5))
+    }
+
+    /// 1차 → 2차(화질만) 교체 판별 — aspect 가 같아 fit 크기가 일치하면
+    /// 줌/오프셋을 보존한 채 이미지만 갈아끼운다(읽던 위치 유지, Codex P2).
+    func testSameFittedSizeDetectsQualitySwap() {
+        XCTAssertTrue(ImageViewer.isSameFittedSize(
+            CGSize(width: 22.09, height: 852), CGSize(width: 22.4, height: 852)))
+        XCTAssertFalse(ImageViewer.isSameFittedSize(
+            CGSize(width: 402, height: 301), CGSize(width: 22, height: 852)))
+    }
+
+    // MARK: - 더블탭 줌 대상 rect (imageView = fit 이미지 좌표계)
+
+    /// 레터박스 탭은 imageView 좌표에서 이미지 밖(음수/초과)으로 들어온다 —
+    /// 줌 rect 가 이미지 위로 클램프되어야 여백으로 확대되지 않는다.
+    func testDoubleTapInLetterboxClampsToImageStrip() {
+        let fitted = CGSize(width: 22.09, height: 852) // 669×25809 fit
+        let rect = ImageViewer.doubleTapZoomRect(
+            tapPoint: CGPoint(x: -160, y: 400), // 왼쪽 여백 탭(이미지 좌표 기준 음수)
+            fittedImageSize: fitted,
+            viewportSize: CGSize(width: 402, height: 852),
             targetScale: 18)
-        // rect 중심 x 가 이미지 띠 중심(bounds.midX)으로 온다.
-        XCTAssertEqual(rect.midX, bounds.width / 2, accuracy: 1.0)
+        XCTAssertEqual(rect.midX, fitted.width / 2, accuracy: 1.0,
+                       "가로는 rect 가 띠보다 넓어 이미지 중심으로 폴백")
         XCTAssertEqual(rect.midY, 400, accuracy: 1.0, "세로 탭 위치는 유지")
     }
 
     func testDoubleTapOnNormalImageKeepsTapCenterOnFittingAxis() {
-        // 일반 가로 사진(402×852 뷰에 그려지면 402×301.5): 가로는 rect 가
-        // 이미지 안에 들어가므로 탭 x 유지, 세로는 2.5× rect(340.8pt)가
-        // 그려진 높이(301.5pt)보다 커서 이미지 중심으로 폴백 — 탭 지점을
-        // 그대로 쓰면 레터박스가 프레임에 섞인다.
+        // fit 402×301.5 이미지: 가로는 2.5× rect(160.8)가 들어가므로 탭 x 유지,
+        // 세로는 rect(340.8)가 이미지보다 커서 이미지 중심(150.75) 폴백.
         let rect = ImageViewer.doubleTapZoomRect(
-            tapPoint: CGPoint(x: 100, y: 300),
-            imageSize: CGSize(width: 4000, height: 3000),
-            boundsSize: CGSize(width: 402, height: 852),
+            tapPoint: CGPoint(x: 100, y: 200),
+            fittedImageSize: CGSize(width: 402, height: 301.5),
+            viewportSize: CGSize(width: 402, height: 852),
             targetScale: 2.5)
         XCTAssertEqual(rect.midX, 100, accuracy: 1.0)
-        XCTAssertEqual(rect.midY, 426, accuracy: 1.0, "세로축은 이미지 중심(852/2 근방 아님 — 드로잉 rect 중심)")
+        XCTAssertEqual(rect.midY, 150.75, accuracy: 1.0)
     }
 
     func testZoomScaleHardCap() {
