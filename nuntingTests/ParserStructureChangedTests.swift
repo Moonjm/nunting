@@ -54,6 +54,25 @@ final class ParserStructureChangedTests: XCTestCase {
         assertStructureChanged { try AagagParser().parseDetail(html: garbage, post: .fixture(site: .aagag)) }
     }
 
+    // 직접 브라우징 4사이트 — 프로덕션 throw 는 있었지만 회귀 테스트가 없어,
+    // 리팩터링이 조용히 빈-글 동작으로 격하시킬 수 있었다. 여기 고정.
+
+    func testClienThrowsOnMissingContainer() {
+        assertStructureChanged { try ClienParser().parseDetail(html: garbage, post: .fixture(site: .clien)) }
+    }
+
+    func testCoolenjoyThrowsOnMissingContainer() {
+        assertStructureChanged { try CoolenjoyParser().parseDetail(html: garbage, post: .fixture(site: .coolenjoy)) }
+    }
+
+    func testInvenThrowsOnMissingContainer() {
+        assertStructureChanged { try InvenParser().parseDetail(html: garbage, post: .fixture(site: .inven)) }
+    }
+
+    func testPpomppuThrowsOnMissingContainer() {
+        assertStructureChanged { try PpomppuParser().parseDetail(html: garbage, post: .fixture(site: .ppomppu)) }
+    }
+
     // MARK: - deletion stays graceful (no throw)
 
     private func assertDeletionNotice(

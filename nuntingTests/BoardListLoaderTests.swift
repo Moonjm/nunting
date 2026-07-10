@@ -34,8 +34,14 @@ final class BoardListLoaderTests: XCTestCase {
     /// 테스트 로더는 전부 temp 디스크 스냅샷 스토어를 쓴다 — 기본 init 의
     /// 실제 앱 컨테이너 파일을 읽고 쓰면 테스트 실행 간 오염이 생긴다
     /// (이전 실행이 남긴 스냅샷이 다음 실행의 cold-path 단언을 깨뜨림).
+    /// 텔레메트리도 no-op 주입 — 기본값(.shared)은 실서버로 업로드한다.
     private func makeLoader(fetcher: @escaping BoardListLoader.Fetcher) -> BoardListLoader {
-        BoardListLoader(fetcher: fetcher, snapshotStore: tempSnapshotStore())
+        BoardListLoader(
+            fetcher: fetcher, snapshotStore: tempSnapshotStore(), telemetry: noopTelemetry())
+    }
+
+    private func noopTelemetry() -> ParserFailureTelemetry {
+        ParserFailureTelemetry(sender: { _, _, _ in })
     }
 
     // MARK: - taskKey
@@ -346,6 +352,90 @@ final class BoardListLoaderTests: XCTestCase {
 
         XCTAssertEqual(attempts.value, 1,
                        "clien 이라도 검색 아닌 일반 list 의 400 은 retry 안 함")
+    }
+
+    // MARK: - 빈 목록 센티널 (structureChanged)
+
+    /// 실질 페이지 크기(임계 이상)인데 목록 셀렉터가 0건 매칭되는 HTML —
+    /// 사이트 목록 마크업 개편 시나리오.
+    private var fullSizeRowlessHTML: String {
+        "<html><body>"
+            + String(repeating: "<div class=\"redesigned\">내용</div>\n", count: 600)
+            + "</body></html>"
+    }
+
+    func testEmptyParseOnFullSizePageSurfacesStructureChanged() async {
+        let store = tempSnapshotStore()
+        let fetchCount = TestCounter()
+        let loader = BoardListLoader(
+            fetcher: { [fullSizeRowlessHTML] _, _, _, _ in
+                fetchCount.increment()
+                return fullSizeRowlessHTML
+            },
+            snapshotStore: store,
+            telemetry: noopTelemetry()
+        )
+
+        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil)
+
+        XCTAssertEqual(loader.errorMessage.map { $0.contains("구조가 바뀐") }, true,
+                       "실질 크기 페이지의 0건 파싱은 빈 보드가 아니라 structureChanged 에러")
+        XCTAssertTrue(loader.posts.isEmpty)
+
+        let snap = await store.load()
+        XCTAssertNil(snap, "structureChanged 는 멀쩡한 콜드 스타트 스냅샷을 덮어쓰면 안 됨")
+
+        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil)
+        XCTAssertEqual(fetchCount.value, 2,
+                       "structureChanged 는 loadedKey 미설정 — 재진입 시 재시도해야 함")
+    }
+
+    func testEmptyParseOnSmallPageIsGenuinelyEmptyBoard() async {
+        let fetchCount = TestCounter()
+        let loader = makeLoader(fetcher: { _, _, _, _ in
+            fetchCount.increment()
+            return "<html><body></body></html>"
+        })
+
+        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil)
+
+        XCTAssertNil(loader.errorMessage, "임계 미만 크기의 0건은 정상 빈 보드로 커밋")
+        XCTAssertTrue(loader.posts.isEmpty)
+
+        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil)
+        XCTAssertEqual(fetchCount.value, 1, "정상 커밋이므로 loadedKey 가드로 재진입 noop")
+    }
+
+    func testStructureChangedSentinelReportsListTelemetry() async {
+        let exp = expectation(description: "telemetry sent")
+        nonisolated(unsafe) var recorded: (site: String, phase: String)?
+        let telemetry = ParserFailureTelemetry(sender: { site, phase, _ in
+            recorded = (site, phase)
+            exp.fulfill()
+        })
+        let loader = BoardListLoader(
+            fetcher: { [fullSizeRowlessHTML] _, _, _, _ in fullSizeRowlessHTML },
+            snapshotStore: tempSnapshotStore(),
+            telemetry: telemetry
+        )
+
+        await loader.refresh(board: .clienNews, filter: nil, searchQuery: nil)
+
+        await fulfillment(of: [exp], timeout: 2)
+        XCTAssertEqual(recorded?.site, "clien")
+        XCTAssertEqual(recorded?.phase, "list")
+    }
+
+    func testEmptySearchResultOnFullSizePageIsNotStructureChanged() async {
+        let loader = makeLoader(fetcher: { [fullSizeRowlessHTML] _, _, _, _ in
+            fullSizeRowlessHTML
+        })
+
+        await loader.refresh(board: .clienNews, filter: nil, searchQuery: "존재하지않는검색어")
+
+        XCTAssertNil(loader.errorMessage,
+                     "검색 0건은 실질 크기 페이지여도 정상 결과 — 센티널 제외")
+        XCTAssertTrue(loader.posts.isEmpty)
     }
 }
 

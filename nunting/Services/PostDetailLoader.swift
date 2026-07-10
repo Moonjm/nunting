@@ -64,6 +64,8 @@ final class PostDetailLoader {
     private let resolver: Resolver
     private let warmHTML: WarmHTML
     private let challenger: Challenger
+    /// structureChanged 파손을 서버로 집계 (에러 표시와 별개의 관측 신호).
+    private let telemetry: ParserFailureTelemetry
     /// 댓글 재시도에 필요한 입력(디스패치 후 resolved Post + 이미 받아 둔
     /// detail HTML). 댓글 실패 시에만 채워진다.
     private var commentRetryContext: (post: Post, detailHTML: String)?
@@ -84,12 +86,14 @@ final class PostDetailLoader {
         },
         challenger: @escaping Challenger = { url in
             await BotCheckCoordinator.shared.challenge(url: url)
-        }
+        },
+        telemetry: ParserFailureTelemetry = .shared
     ) {
         self.fetcher = fetcher
         self.resolver = resolver
         self.warmHTML = warmHTML
         self.challenger = challenger
+        self.telemetry = telemetry
     }
 
     // MARK: - Public API
@@ -129,6 +133,10 @@ final class PostDetailLoader {
         commentsFailed = false
         commentRetryContext = nil
         defer { isLoading = false }
+        // 텔레메트리 귀속 사이트. 애객 미러는 리다이렉트가 풀리면 실제 파서는
+        // 소스 사이트 것이 돌므로, dispatch 이후 resolved.site 로 갱신해
+        // structureChanged 가 엉뚱한 사이트(aagag)로 집계되지 않게 한다.
+        var telemetrySite = post.site
         do {
             let dispatch = try await resolveDispatchedPost(post)
             try Task.checkCancellation()
@@ -155,6 +163,7 @@ final class PostDetailLoader {
                 return
 
             case .parser(let resolved, let prefetched):
+                telemetrySite = resolved.site
                 let parser = try ParserFactory.parser(for: resolved.site)
                 // var: 아래 애객 인터스티셜 안전망에서 재요청 본으로 교체될 수 있다.
                 var html: String
@@ -320,6 +329,9 @@ final class PostDetailLoader {
             return
         } catch {
             errorMessage = error.localizedDescription
+            if case ParserError.structureChanged(let changeDetail) = error {
+                telemetry.report(site: telemetrySite, phase: .detail, detail: changeDetail)
+            }
         }
     }
 

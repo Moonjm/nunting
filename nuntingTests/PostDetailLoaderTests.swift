@@ -59,6 +59,12 @@ final class PostDetailLoaderTests: XCTestCase {
 
     private func now() -> ContinuousClock.Instant { ContinuousClock.now }
 
+    /// structureChanged 를 유발하는 테스트는 반드시 이걸 주입 — 기본값(.shared)
+    /// 은 실서버로 업로드한다.
+    private func noopTelemetry() -> ParserFailureTelemetry {
+        ParserFailureTelemetry(sender: { _, _, _ in })
+    }
+
     // MARK: - Cache short-circuit
 
     func testCacheHitRestoresInstantlyAndSkipsFetch() async {
@@ -113,6 +119,33 @@ final class PostDetailLoaderTests: XCTestCase {
         XCTAssertNil(loader.errorMessage)
         XCTAssertNotNil(cache.get(id: post.id),
                         "성공 시 cache.put 으로 결과 저장")
+    }
+
+    func testStructureChangedReportsDetailTelemetry() async {
+        let exp = expectation(description: "telemetry sent")
+        nonisolated(unsafe) var recorded: (site: String, phase: String)?
+        let telemetry = ParserFailureTelemetry(sender: { site, phase, _ in
+            recorded = (site, phase)
+            exp.fulfill()
+        })
+        let loader = PostDetailLoader(
+            fetcher: { _, _ in
+                // 본문 컨테이너도 삭제 안내도 없는 "구조 깨짐" 응답 —
+                // BobaeParser 가 structureChanged 를 던진다
+                // (ParserStructureChangedTests 와 동일 시나리오).
+                "<html><body><div>nothing here</div></body></html>"
+            },
+            resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) },
+            telemetry: telemetry
+        )
+        let cache = PostDetailCache(capacity: 4)
+
+        await loader.load(post: bobaePost(), cache: cache, renderReadyAt: now())
+
+        await fulfillment(of: [exp], timeout: 2)
+        XCTAssertEqual(recorded?.site, "bobae")
+        XCTAssertEqual(recorded?.phase, "detail")
+        XCTAssertNotNil(loader.errorMessage, "텔레메트리는 에러 표시를 대체하지 않는다")
     }
 
     func testFetcherErrorSurfacesErrorMessageAndSkipsCache() async {
@@ -247,7 +280,8 @@ final class PostDetailLoaderTests: XCTestCase {
                 recorder.record(url: url, encoding: encoding)
                 return "<html></html>"
             },
-            resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) }
+            resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) },
+            telemetry: noopTelemetry()  // 빈 HTML → PpomppuParser structureChanged
         )
         let cache = PostDetailCache(capacity: 4)
         let post = Post(
@@ -283,7 +317,8 @@ final class PostDetailLoaderTests: XCTestCase {
             resolver: { url in
                 resolverCalled.increment()
                 return Networking.ResolvedRedirect(url: url, prefetchedBody: nil)
-            }
+            },
+            telemetry: noopTelemetry()  // 빈 HTML → AagagParser structureChanged
         )
         let cache = PostDetailCache(capacity: 4)
         let post = Post(
@@ -322,7 +357,8 @@ final class PostDetailLoaderTests: XCTestCase {
             },
             resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) },
             warmHTML: { _ in nil },
-            challenger: { _ in challengeCount.increment() }
+            challenger: { _ in challengeCount.increment() },
+            telemetry: noopTelemetry()  // 재요청 본문도 AagagParser structureChanged
         )
         let cache = PostDetailCache(capacity: 4)
 
@@ -362,7 +398,8 @@ final class PostDetailLoaderTests: XCTestCase {
             fetcher: { _, _ in "<html>짧음</html>" },
             resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) },
             warmHTML: { _ in nil },
-            challenger: { _ in challengeCount.increment() }
+            challenger: { _ in challengeCount.increment() },
+            telemetry: noopTelemetry()  // 짧은 본문 → AagagParser structureChanged
         )
         let cache = PostDetailCache(capacity: 4)
         let post = Post(

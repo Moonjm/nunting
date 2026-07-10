@@ -13,10 +13,12 @@ import (
 )
 
 // validMetricKinds POST /me/metrics 의 ?kind= 허용값. metric = MXMetricPayload
-// (종료 사유 카운트 등 집계), diagnostic = MXDiagnosticPayload(크래시 콜스택 등).
-var validMetricKinds = map[string]bool{"metric": true, "diagnostic": true}
+// (종료 사유 카운트 등 집계), diagnostic = MXDiagnosticPayload(크래시 콜스택 등),
+// parser = iOS ParserFailureTelemetry 의 structureChanged 집계({site, phase, detail}
+// 작은 JSON) — 사이트 마크업 개편을 기기 밖에서 관측하기 위한 채널.
+var validMetricKinds = map[string]bool{"metric": true, "diagnostic": true, "parser": true}
 
-// POST /me/metrics?kind=metric|diagnostic
+// POST /me/metrics?kind=metric|diagnostic|parser
 //
 // 본문은 MetricKit 의 jsonRepresentation() 을 가공 없이 보낸 raw JSON. 서버는
 // kind 검증 + JSON 유효성만 확인하고 그대로 저장한다(해석은 adminMetrics 가).
