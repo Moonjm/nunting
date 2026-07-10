@@ -32,6 +32,9 @@ final class ParserFailureTelemetry {
     enum Phase: String {
         case list
         case detail
+        /// 본문은 성공했지만 댓글 API/마크업이 깨진 경우 — Etoland 처럼 댓글
+        /// 경로가 본문과 독립적으로 파손되는 사이트를 구분해 집계한다.
+        case comments
     }
 
     /// fire-and-forget — 호출부(로더)는 결과를 기다리지 않는다. 반환 Task 는

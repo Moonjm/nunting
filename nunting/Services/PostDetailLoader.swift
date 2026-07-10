@@ -306,6 +306,12 @@ final class PostDetailLoader {
                     if !Task.isCancelled, !Self.isCancellation(error) {
                         commentsFailed = true
                         commentRetryContext = (resolved, parsedHTML)
+                        // 댓글 leg 는 Result 로 소비돼 outer catch 의 리포트에
+                        // 도달하지 않는다 — 구조 변경이면 여기서 직접 리포트.
+                        if case ParserError.structureChanged(let changeDetail) = error {
+                            telemetry.report(
+                                site: resolved.site, phase: .comments, detail: changeDetail)
+                        }
                     }
                 case nil:
                     break
@@ -379,7 +385,14 @@ final class PostDetailLoader {
             }
             cache.put(id: context.post.id, detail: updated)
         } catch {
-            // 취소면 조용히 끝, 그 외 재실패면 배너 유지 — 둘 다 상태 변화 없음.
+            // 취소면 조용히 끝, 그 외 재실패면 배너 유지 — 상태 변화는 없지만
+            // 재시도에서 처음 드러난 구조 변경(첫 실패는 네트워크 에러였던
+            // 경우)은 리포트한다. 같은 파손의 반복은 세션 dedup 이 거른다.
+            if !Self.isCancellation(error),
+               case ParserError.structureChanged(let changeDetail) = error {
+                telemetry.report(
+                    site: context.post.site, phase: .comments, detail: changeDetail)
+            }
             return
         }
     }
