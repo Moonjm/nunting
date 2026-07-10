@@ -197,6 +197,16 @@ final class AlertSubscriptionService {
         _ = try await post("/me/metrics?kind=\(kind)", jsonBody: json)
     }
 
+    /// 파서 structureChanged 발생을 서버로 집계. 서버는 `kind` 를 검증 없이
+    /// `metric_payloads` 에 저장하므로 서버 수정 없이 기존 metrics 채널에 싣는다
+    /// (`kind=parser`, payload `{site, phase, detail}`). 호출은
+    /// `ParserFailureTelemetry` 가 세션 dedup 후 위임한다.
+    func reportParserFailure(site: String, phase: String, detail: String) async throws {
+        let payload = ["site": site, "phase": phase, "detail": detail]
+        let body = try JSONEncoder().encode(payload)
+        _ = try await post("/me/metrics?kind=parser", jsonBody: body)
+    }
+
     /// 메모리 footprint 샘플 배치를 서버로 전송. FootprintLogger 가 버퍼가 차거나
     /// 백그라운드/메모리경고 시 호출. 서버는 저장하고 admin 뷰가 타임라인으로 렌더.
     func reportFootprint(_ samples: [FootprintSampleDTO]) async throws {

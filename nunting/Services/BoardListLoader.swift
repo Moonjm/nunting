@@ -68,6 +68,8 @@ final class BoardListLoader {
     /// 콜드 스타트용 디스크 스냅샷. 세션 첫 refresh(인메모리 캐시가 빈
     /// 상태)에서 key 일치 시 복원, 첫 페이지 성공마다 갱신.
     private let snapshotStore: BoardListSnapshotStore
+    /// 빈 목록 센티널이 structureChanged 로 판정한 파손을 서버로 집계.
+    private let telemetry: ParserFailureTelemetry
 
     init(
         fetcher: @escaping Fetcher = { url, encoding, userAgent, handlesCookies in
@@ -83,10 +85,12 @@ final class BoardListLoader {
                 cachePolicy: .reloadIgnoringLocalCacheData
             )
         },
-        snapshotStore: BoardListSnapshotStore = BoardListSnapshotStore()
+        snapshotStore: BoardListSnapshotStore = BoardListSnapshotStore(),
+        telemetry: ParserFailureTelemetry = .shared
     ) {
         self.fetcher = fetcher
         self.snapshotStore = snapshotStore
+        self.telemetry = telemetry
     }
 
     // MARK: - Public API
@@ -229,6 +233,25 @@ final class BoardListLoader {
         }
     }
 
+    // MARK: - 빈 목록 센티널
+
+    /// 목록 0건을 "구조 변경 의심"으로 판정하는 최소 HTML 크기. 실사이트의
+    /// 목록 페이지는 빈 보드라도 헤더/네비 포함 수십 KB — 임계 이상인데 0건
+    /// 파싱이면 빈 보드가 아니라 목록 셀렉터 rot 일 확률이 압도적이다. 임계
+    /// 미만(에러 페이지·빈 응답 수준)은 기존대로 빈 보드로 커밋.
+    nonisolated static let emptyListSuspicionMinBytes = 10 * 1024
+
+    /// 검색은 0건이 정상 결과라 제외. 필터는 포함 — 활성 보드의 1페이지가
+    /// 필터로도 완전히 비는 일은 사실상 없고, 오판이어도 재시도 가능한 에러
+    /// 상태라 회복된다.
+    nonisolated static func isEmptyListSuspicious(
+        parsedCount: Int, htmlBytes: Int, searchQuery: String?
+    ) -> Bool {
+        parsedCount == 0
+            && htmlBytes >= emptyListSuspicionMinBytes
+            && searchQuery?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
+    }
+
     // MARK: - Private
 
     private func load(board: Board, filter: BoardFilter?, searchQuery: String?) async {
@@ -247,6 +270,18 @@ final class BoardListLoader {
             try Task.checkCancellation()
             let parsed = try await Self.parseListOffMain(html: html, board: board)
             guard key == currentKey else { return }
+            if Self.isEmptyListSuspicious(
+                parsedCount: parsed.count, htmlBytes: html.utf8.count, searchQuery: searchQuery
+            ) {
+                // 커밋하지 않는다: loadedKey 미설정(재진입 시 재시도), 스냅샷
+                // 저장 생략(멀쩡한 콜드 스타트 재료 보존), posts 는 건드리지
+                // 않아 pull-to-refresh 는 이전 목록을 유지한 채 에러만 띄운다.
+                errorMessage = ParserError.structureChanged("목록 0건").localizedDescription
+                telemetry.report(
+                    site: board.site, phase: .list,
+                    detail: "\(board.id) 목록 0건 (\(html.utf8.count)B)")
+                return
+            }
             posts = parsed
             seenIDs = Set(parsed.map(\.id))
             currentPage = 1

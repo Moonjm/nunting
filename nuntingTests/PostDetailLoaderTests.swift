@@ -59,6 +59,22 @@ final class PostDetailLoaderTests: XCTestCase {
 
     private func now() -> ContinuousClock.Instant { ContinuousClock.now }
 
+    /// 댓글 API 가 있는 사이트의 fixture — `/b/<boTable>/view/<slug>` 형태라
+    /// EtolandParser 의 commentsURL 이 non-nil (EtolandCommentErrorTests 와 동일).
+    private func etolandPost(id: String = "etoland-1") -> Post {
+        Post.fixture(
+            id: id,
+            site: .etoland,
+            url: URL(string: "https://etoland.co.kr/b/free/view/12345")!
+        )
+    }
+
+    /// structureChanged 를 유발하는 테스트는 반드시 이걸 주입 — 기본값(.shared)
+    /// 은 실서버로 업로드한다.
+    private func noopTelemetry() -> ParserFailureTelemetry {
+        ParserFailureTelemetry(sender: { _, _, _ in })
+    }
+
     // MARK: - Cache short-circuit
 
     func testCacheHitRestoresInstantlyAndSkipsFetch() async {
@@ -113,6 +129,101 @@ final class PostDetailLoaderTests: XCTestCase {
         XCTAssertNil(loader.errorMessage)
         XCTAssertNotNil(cache.get(id: post.id),
                         "성공 시 cache.put 으로 결과 저장")
+    }
+
+    func testStructureChangedReportsDetailTelemetry() async {
+        let exp = expectation(description: "telemetry sent")
+        nonisolated(unsafe) var recorded: (site: String, phase: String)?
+        let telemetry = ParserFailureTelemetry(sender: { site, phase, _ in
+            recorded = (site, phase)
+            exp.fulfill()
+        })
+        let loader = PostDetailLoader(
+            fetcher: { _, _ in
+                // 본문 컨테이너도 삭제 안내도 없는 "구조 깨짐" 응답 —
+                // BobaeParser 가 structureChanged 를 던진다
+                // (ParserStructureChangedTests 와 동일 시나리오).
+                "<html><body><div>nothing here</div></body></html>"
+            },
+            resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) },
+            telemetry: telemetry
+        )
+        let cache = PostDetailCache(capacity: 4)
+
+        await loader.load(post: bobaePost(), cache: cache, renderReadyAt: now())
+
+        await fulfillment(of: [exp], timeout: 2)
+        XCTAssertEqual(recorded?.site, "bobae")
+        XCTAssertEqual(recorded?.phase, "detail")
+        XCTAssertNotNil(loader.errorMessage, "텔레메트리는 에러 표시를 대체하지 않는다")
+    }
+
+    func testCommentStructureChangedReportsCommentsTelemetry() async {
+        // 본문은 graceful 삭제 안내로 파싱 성공, 댓글 API 응답은 디코드 불가 →
+        // EtolandParser.fetchAllComments 가 structureChanged throw. 댓글 leg 는
+        // Result 로 소비돼 outer catch 에 안 오므로, 실패 분기에서 직접
+        // 리포트해야 한다 (phase: comments).
+        let exp = expectation(description: "telemetry sent")
+        nonisolated(unsafe) var recorded: (site: String, phase: String)?
+        let telemetry = ParserFailureTelemetry(sender: { site, phase, _ in
+            recorded = (site, phase)
+            exp.fulfill()
+        })
+        let fetchCount = TestCounter()
+        let loader = PostDetailLoader(
+            fetcher: { _, _ in
+                // 1번째 fetch = 상세 본문, 이후 = 댓글 API.
+                fetchCount.incrementAndGet() == 1
+                    ? "<html><body>삭제되거나 이동된 게시물입니다.</body></html>"
+                    : "not json at all"
+            },
+            resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) },
+            telemetry: telemetry
+        )
+        let cache = PostDetailCache(capacity: 4)
+
+        await loader.load(post: etolandPost(), cache: cache, renderReadyAt: now())
+
+        await fulfillment(of: [exp], timeout: 2)
+        XCTAssertEqual(recorded?.site, "etoland")
+        XCTAssertEqual(recorded?.phase, "comments")
+        XCTAssertTrue(loader.commentsFailed, "텔레메트리는 재시도 배너를 대체하지 않는다")
+        XCTAssertNil(loader.errorMessage, "본문은 성공 — 댓글 실패가 본문 에러로 승격되면 안 됨")
+    }
+
+    func testRetryCommentsStructureChangedReportsTelemetry() async {
+        // 첫 댓글 실패가 일반 네트워크 에러(리포트 대상 아님)여도, 재시도에서
+        // structureChanged 가 처음 드러나면 리포트돼야 한다 — retryComments 의
+        // catch 가 조용히 삼키던 경로.
+        struct NetError: Error {}
+        let exp = expectation(description: "telemetry sent")
+        nonisolated(unsafe) var recorded: (site: String, phase: String)?
+        let telemetry = ParserFailureTelemetry(sender: { site, phase, _ in
+            recorded = (site, phase)
+            exp.fulfill()
+        })
+        let fetchCount = TestCounter()
+        let loader = PostDetailLoader(
+            fetcher: { _, _ in
+                switch fetchCount.incrementAndGet() {
+                case 1: return "<html><body>삭제되거나 이동된 게시물입니다.</body></html>"
+                case 2: throw NetError()  // load 의 댓글 leg — 일반 실패, 리포트 없음
+                default: return "not json at all"  // 재시도 — structureChanged
+                }
+            },
+            resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) },
+            telemetry: telemetry
+        )
+        let cache = PostDetailCache(capacity: 4)
+        await loader.load(post: etolandPost(), cache: cache, renderReadyAt: now())
+        XCTAssertTrue(loader.commentsFailed, "전제: 첫 로드의 댓글 leg 는 일반 실패")
+
+        await loader.retryComments(cache: cache)
+
+        await fulfillment(of: [exp], timeout: 2)
+        XCTAssertEqual(recorded?.site, "etoland")
+        XCTAssertEqual(recorded?.phase, "comments")
+        XCTAssertTrue(loader.commentsFailed, "재시도 실패 배너 유지")
     }
 
     func testFetcherErrorSurfacesErrorMessageAndSkipsCache() async {
@@ -247,7 +358,8 @@ final class PostDetailLoaderTests: XCTestCase {
                 recorder.record(url: url, encoding: encoding)
                 return "<html></html>"
             },
-            resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) }
+            resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) },
+            telemetry: noopTelemetry()  // 빈 HTML → PpomppuParser structureChanged
         )
         let cache = PostDetailCache(capacity: 4)
         let post = Post(
@@ -283,7 +395,8 @@ final class PostDetailLoaderTests: XCTestCase {
             resolver: { url in
                 resolverCalled.increment()
                 return Networking.ResolvedRedirect(url: url, prefetchedBody: nil)
-            }
+            },
+            telemetry: noopTelemetry()  // 빈 HTML → AagagParser structureChanged
         )
         let cache = PostDetailCache(capacity: 4)
         let post = Post(
@@ -322,7 +435,8 @@ final class PostDetailLoaderTests: XCTestCase {
             },
             resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) },
             warmHTML: { _ in nil },
-            challenger: { _ in challengeCount.increment() }
+            challenger: { _ in challengeCount.increment() },
+            telemetry: noopTelemetry()  // 재요청 본문도 AagagParser structureChanged
         )
         let cache = PostDetailCache(capacity: 4)
 
@@ -362,7 +476,8 @@ final class PostDetailLoaderTests: XCTestCase {
             fetcher: { _, _ in "<html>짧음</html>" },
             resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) },
             warmHTML: { _ in nil },
-            challenger: { _ in challengeCount.increment() }
+            challenger: { _ in challengeCount.increment() },
+            telemetry: noopTelemetry()  // 짧은 본문 → AagagParser structureChanged
         )
         let cache = PostDetailCache(capacity: 4)
         let post = Post(

@@ -179,6 +179,29 @@ final class AlertSubscriptionServiceTests: XCTestCase {
             // ok — 다른 AlertSubscriptionError로 떨어지면 의도 어긋남
         }
     }
+
+    /// reportParserFailure → POST /me/metrics?kind=parser + {site, phase, detail}.
+    /// 서버는 kind 를 검증 없이 저장하므로(admin 뷰가 해석) 서버 수정 없이
+    /// 기존 metrics 채널에 파서 실패 집계를 싣는다.
+    func testReportParserFailurePostsToMetricsWithParserKind() async throws {
+        let stub = StubHTTPRequester()
+        await stub.setNext(status: 204, body: "")
+        let service = AlertSubscriptionService(
+            baseURL: URL(string: "http://example.com")!,
+            requester: stub,
+            uuidStore: InMemoryUUIDStore(value: "nnt_test")
+        )
+
+        try await service.reportParserFailure(site: "clien", phase: "list", detail: "목록 0건")
+
+        let recorded = await stub.lastRequest()
+        XCTAssertEqual(recorded?.url?.absoluteString, "http://example.com/me/metrics?kind=parser")
+        XCTAssertEqual(recorded?.httpMethod, "POST")
+        let body = String(data: recorded?.httpBody ?? Data(), encoding: .utf8) ?? ""
+        XCTAssertTrue(body.contains(#""site":"clien""#), "body: \(body)")
+        XCTAssertTrue(body.contains(#""phase":"list""#), "body: \(body)")
+        XCTAssertTrue(body.contains("목록 0건"), "body: \(body)")
+    }
 }
 
 // MARK: - Test stubs

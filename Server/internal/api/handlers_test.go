@@ -363,6 +363,28 @@ func TestPostMetricsStoresPayload(t *testing.T) {
 	}
 }
 
+// kind=parser — iOS ParserFailureTelemetry 가 올리는 structureChanged 집계.
+// {site, phase, detail} 작은 JSON 이며 metric/diagnostic 과 같은 경로로 저장된다.
+func TestPostMetricsAcceptsParserKind(t *testing.T) {
+	srv, store := newTestServer(t)
+	defer srv.Close()
+	defer store.Close()
+
+	body := `{"site":"clien","phase":"list","detail":"clien-news 목록 0건 (24000B)"}`
+	code, resp := do(t, "POST", srv.URL+"/me/metrics?kind=parser", "nnt_x", body)
+	if code != 200 {
+		t.Fatalf("post parser metric: want 200, got %d body=%q", code, resp)
+	}
+
+	rows, err := store.ListMetricPayloads(t.Context(), 10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Kind != "parser" {
+		t.Fatalf("unexpected rows: %+v", rows)
+	}
+}
+
 func TestPostMetricsRejectsBadKindAndJSON(t *testing.T) {
 	srv, store := newTestServer(t)
 	defer srv.Close()
