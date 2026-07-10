@@ -139,15 +139,55 @@ struct ImageViewer: View {
             // buffer. Static images are unaffected (single-frame SDAnimatedImage).
             .animatedImageClass: SDAnimatedImage.self,
         ]
-        return await withCheckedContinuation { continuation in
-            SDWebImageManager.shared.loadImage(
-                with: url.atsSafe,
-                options: [.retryFailed],
-                context: context,
-                progress: nil
-            ) { uiImage, _, _, _, _, _ in
-                continuation.resume(returning: uiImage)
+        // task 취소를 SD operation 에 연결 — 안 하면 뷰어를 닫아도 20MP 2차
+        // 디코드가 끝까지 돈다(취소는 대입만 막았음). SD 는 cancel 시에도
+        // completion 을 (cancelled 에러로) 호출하므로 continuation 은 누수 없이
+        // nil 로 재개된다(실측: onFailure 로 전달되는 SD 2002 cancelled).
+        let box = OperationBox()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let operation = SDWebImageManager.shared.loadImage(
+                    with: url.atsSafe,
+                    options: [.retryFailed],
+                    context: context,
+                    progress: nil
+                ) { uiImage, _, _, _, _, _ in
+                    continuation.resume(returning: uiImage)
+                }
+                box.store(operation)
             }
+        } onCancel: {
+            box.cancel()
+        }
+    }
+
+    /// loadImage 의 operation 을 task 취소에 연결하는 스레드 안전 보관함 —
+    /// onCancel 은 임의 스레드에서 불리고 store(메인)와 순서 보장이 없으므로,
+    /// "취소가 먼저 온 뒤 등록된 operation 도 즉시 취소" 를 락으로 보장한다.
+    /// internal 인 이유: 이 레이스 계약을 단위 테스트로 핀.
+    /// nonisolated: View 중첩 타입은 MainActor 를 상속하는데, onCancel 은
+    /// 임의 스레드에서 부른다 — 격리 대신 내부 락으로 지킨다.
+    nonisolated final class OperationBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var operation: (any SDWebImageOperation)?
+        private var isCancelled = false
+
+        func store(_ operation: (any SDWebImageOperation)?) {
+            lock.lock()
+            defer { lock.unlock() }
+            if isCancelled {
+                operation?.cancel()
+            } else {
+                self.operation = operation
+            }
+        }
+
+        func cancel() {
+            lock.lock()
+            defer { lock.unlock() }
+            isCancelled = true
+            operation?.cancel()
+            operation = nil
         }
     }
 

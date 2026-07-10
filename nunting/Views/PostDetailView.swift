@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import SDWebImage
 struct PostDetailView: View, Equatable {
     let post: Post
     let readStore: ReadStore
@@ -247,14 +248,31 @@ struct PostDetailView: View, Equatable {
             // 버그의 창을 연 회귀). 입력(containerWidth/displayScale)을 같은
             // 소스에서 가져와 같은 함수로 만든다.
             let containerWidth = DetailOverlayController.shared.containerWidth
+            let maxPointWidth: CGFloat? = containerWidth > 0 ? containerWidth : nil
+            // 파서 aspect 를 아는 극단 세로형은 표시 로드가 처음부터 tall 박스
+            // 라, 그 이미지만 tall 컨텍스트로 워밍해야 캐시 키가 일치한다.
+            // (tall 박스 = 높이 > 8192 로 판별 — 표준 박스와 같은 컨텍스트는
+            // 맵에 안 넣어 배치 워밍을 유지.)
+            var contextByURL: [URL: [SDWebImageContextOption: Any]] = [:]
+            for block in (loader.detail?.blocks ?? []) {
+                if case .image(let url, _, let aspect) = block.kind, let aspect,
+                   let ctx = NetworkImage.thumbnailContext(
+                       maxPointSize: nil, maxPointWidth: maxPointWidth,
+                       aspect: aspect, scale: displayScale),
+                   let box = (ctx[.imageThumbnailPixelSize] as? NSValue)?.cgSizeValue,
+                   box.height > NetworkImage.tallImageMaxPixelHeight {
+                    contextByURL[url.atsSafe] = ctx
+                }
+            }
             let prefetcher = BodyImagePrefetcher(
                 urls: urls,
                 skipPrefetch: prefetchSkipURLs,
                 thumbnailContext: NetworkImage.thumbnailContext(
                     maxPointSize: nil,
-                    maxPointWidth: containerWidth > 0 ? containerWidth : nil,
+                    maxPointWidth: maxPointWidth,
                     scale: displayScale
-                )
+                ),
+                contextByURL: contextByURL
             )
             // Warm the head right away. The first image is eager (above the
             // fold), so its look-ahead shouldn't depend on whether its
