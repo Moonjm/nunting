@@ -23,6 +23,27 @@ final class BodyImagePrefetcherTests: XCTestCase {
         XCTAssertNil(bare.prefetchContext, "컨텍스트 없는 호출부(구형)는 평범한 키 워밍 유지")
     }
 
+    /// 파서 aspect 를 아는 극단 세로형은 표시 로드가 처음부터 tall 박스를
+    /// 쓰므로, 프리페치도 같은 tall 컨텍스트로 워밍해야 캐시 키가 일치한다
+    /// (Codex P2 — 표준 박스로 워밍하면 look-ahead 가 통째로 무효).
+    /// 맵에 없는 URL 은 종전 공유 컨텍스트 유지.
+    func testPerURLContextForKnownTallImages() {
+        let std = NetworkImage.thumbnailContext(maxPointSize: nil, maxPointWidth: 393, scale: 3)
+        let tall = NetworkImage.thumbnailContext(
+            maxPointSize: nil, maxPointWidth: 393, aspect: 1.0 / 30.0, scale: 3)
+        let p = BodyImagePrefetcher(
+            urls: urls(3), window: 3,
+            thumbnailContext: std,
+            contextByURL: [url(1): tall!])
+
+        let tallBox = (p.prefetchContext(for: url(1))?[.imageThumbnailPixelSize] as? NSValue)?.cgSizeValue
+        XCTAssertEqual(tallBox?.height, NetworkImage.tallImageHardMaxPixelHeight,
+                       "맵에 있는 URL 은 tall 박스로 워밍")
+        let stdBox = (p.prefetchContext(for: url(0))?[.imageThumbnailPixelSize] as? NSValue)?.cgSizeValue
+        XCTAssertEqual(stdBox, CGSize(width: 1179, height: NetworkImage.tallImageMaxPixelHeight),
+                       "맵에 없는 URL 은 공유 컨텍스트")
+    }
+
     func testClaimsWindowAheadOfVisibleIndex() {
         let p = BodyImagePrefetcher(urls: urls(10), window: 3)
         // Visible index 0 → warm 1, 2, 3.

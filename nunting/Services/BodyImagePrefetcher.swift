@@ -49,6 +49,12 @@ final class BodyImagePrefetcher {
     /// 같은 결의 키-일치 불변식. internal 인 이유: 테스트가 이 불변식을 핀.
     let prefetchContext: [SDWebImageContextOption: Any]?
 
+    /// 이미지별 override 컨텍스트(키는 `atsSafe` URL) — 파서 aspect 를 아는
+    /// 극단 세로형은 표시 로드가 처음부터 tall 박스를 쓰므로, 공유 컨텍스트
+    /// (표준 박스)로 워밍하면 캐시 키가 어긋나 look-ahead 가 무효가 된다.
+    /// 해당 이미지만 tall 컨텍스트로 워밍한다.
+    let contextByURL: [URL: [SDWebImageContextOption: Any]]
+
     init(
         // 룩어헤드 2장. 한때 메모리 선형 증가 때문에 3→2→1 로 줄였지만, 그 선형
         // 증가의 진짜 원인은 SwiftSoup 파싱 누수였고(2.13.5 업그레이드로 해결),
@@ -58,12 +64,20 @@ final class BodyImagePrefetcher {
         urls: [URL],
         window: Int = 2,
         skipPrefetch: Set<URL> = [],
-        thumbnailContext: [SDWebImageContextOption: Any]? = nil
+        thumbnailContext: [SDWebImageContextOption: Any]? = nil,
+        contextByURL: [URL: [SDWebImageContextOption: Any]] = [:]
     ) {
         self.urls = urls
         self.window = window
         self.skipPrefetch = skipPrefetch
         self.prefetchContext = thumbnailContext
+        self.contextByURL = contextByURL
+    }
+
+    /// URL 별 워밍 컨텍스트 — override 맵 우선, 없으면 공유 컨텍스트.
+    /// internal 인 이유: 표시 로드와의 키-일치 불변식을 테스트가 핀.
+    func prefetchContext(for url: URL) -> [SDWebImageContextOption: Any]? {
+        contextByURL[url.atsSafe] ?? prefetchContext
     }
 
     /// The image at `index` became visible — warm the next `window` URLs that
@@ -75,7 +89,15 @@ final class BodyImagePrefetcher {
         guard !fresh.isEmpty else { return }
         // `.lowPriority` yields the 4 downloader slots to on-screen loads;
         // prefetch only consumes otherwise-idle capacity.
-        _ = prefetcher.prefetchURLs(fresh, options: .lowPriority, context: prefetchContext, progress: nil, completed: nil)
+        // override 컨텍스트(tall 박스) 이미지는 개별 발행 — prefetchURLs 는
+        // 배치당 컨텍스트 하나라, 섞으면 캐시 키가 표시 로드와 어긋난다.
+        let standard = fresh.filter { contextByURL[$0] == nil }
+        if !standard.isEmpty {
+            _ = prefetcher.prefetchURLs(standard, options: .lowPriority, context: prefetchContext, progress: nil, completed: nil)
+        }
+        for url in fresh where contextByURL[url] != nil {
+            _ = prefetcher.prefetchURLs([url], options: .lowPriority, context: contextByURL[url], progress: nil, completed: nil)
+        }
     }
 
     /// The not-yet-requested `atsSafe` URLs in the `window` ahead of

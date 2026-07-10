@@ -158,6 +158,10 @@ struct NetworkImage: View {
     @State private var hasBeenVisible = false
     @State private var didReportVisible = false
     @State private var measuredAspect: CGFloat?
+    /// 1차 디코드가 높이 캡(8192)에 실제로 닿았는지 — 측정 aspect 기반 tall
+    /// 리마운트의 발동 조건. 좁지만 작은 이미지(예: 100×1000)는 환산 높이가
+    /// 8192 를 넘어도 이미 native 완전 디코드라 재디코드가 순수 낭비다.
+    @State private var measuredDecodeHitHeightCap = false
     @State private var measuredNaturalPointWidth: CGFloat?
     @State private var failed = false
     /// Current viewport intersection for `releasesWhenOffscreen` images.
@@ -222,11 +226,20 @@ struct NetworkImage: View {
                 // so the rest of the post stays blank), whereas `WebImage` goes
                 // through `SDWebImageManager`, which honours the option (~0.1 s,
                 // static still). Verified by direct timing — see commit msg.
-                if decodesFirstFrameOnly {
-                    staticBodyImage
-                } else {
-                    animatedBodyImage
+                Group {
+                    if decodesFirstFrameOnly {
+                        staticBodyImage
+                    } else {
+                        animatedBodyImage
+                    }
                 }
+                // 디코드 박스가 바뀌면 강제 리마운트 — SDWebImageSwiftUI 는 URL
+                // 이 같으면 context 변경만으로 재디코드하지 않는다. 파서가
+                // aspect 를 안 주는 보드(aagag 등)의 극단 세로형은 1차 디코드의
+                // measuredAspect 가 tall 재배분을 발동시키는 순간 키가 딱 한 번
+                // 바뀌어(std 박스 → tall 박스) 선명한 2차 디코드로 교체된다.
+                // 데이터는 디스크 캐시에 있어 네트워크 재요청은 없다.
+                .id(decodeBoxID)
             } else {
                 // Placeholder for two cases, both frame-pinned by
                 // `effectiveAspect` so the swap never resizes the row:
@@ -354,10 +367,27 @@ struct NetworkImage: View {
     private func handleLoadSuccess(_ image: PlatformImage) {
         let aspect: CGFloat? = (image.size.height > 0) ? image.size.width / image.size.height : nil
         let naturalPointWidth = image.size.width * image.scale
+        let decodedPixels = CGSize(width: image.size.width * image.scale,
+                                   height: image.size.height * image.scale)
         DispatchQueue.main.async {
             if measuredAspect == nil, let aspect { measuredAspect = aspect }
-            if measuredNaturalPointWidth == nil { measuredNaturalPointWidth = naturalPointWidth }
+            if Self.decodeWasHeightCapped(decodedPixels: decodedPixels) {
+                measuredDecodeHitHeightCap = true
+            }
+            // 갱신 규칙은 resolvedNaturalWidth 참조 — "한 번만" 래치하면 극단
+            // 세로형의 1차(다운샘플) 폭이 고정돼 2차 선명 디코드 후에도
+            // clampsToNaturalWidth 가 프레임을 1차 폭에 묶는다.
+            measuredNaturalPointWidth = Self.resolvedNaturalWidth(
+                current: measuredNaturalPointWidth, incoming: naturalPointWidth)
         }
+    }
+
+    /// natural width 갱신 규칙 — 더 큰(선명한) 디코드가 오면 따라 커지고,
+    /// 더 작은 값(다운샘플 1차 재발화 등)으로는 되돌아가지 않는다. 다운샘플
+    /// 디코드의 "natural" 은 원본이 아니라 디코드 폭이므로 max 가 원본에 가장
+    /// 근접한 추정치다.
+    nonisolated static func resolvedNaturalWidth(current: CGFloat?, incoming: CGFloat) -> CGFloat {
+        max(current ?? 0, incoming)
     }
 
     private func handleLoadFailure(_ error: Error) {
@@ -525,19 +555,37 @@ struct NetworkImage: View {
         .buttonStyle(.plain)
     }
 
+    /// 디코드 박스의 identity 키. tall 재배분 박스(높이 > 8192)일 때만 크기를
+    /// 키에 반영 — 그 외 경로는 전부 "std" 로 고정한다. containerWidth 가
+    /// 0→측정값으로 바뀌거나 native↔legacy 박스가 오가는 일반 케이스에서
+    /// 리마운트(=전체 재디코드)가 발생하면 안 되기 때문. tall 박스는 조건상
+    /// 높이가 항상 8192 초과라 이 판별로 정확히 구분된다.
+    private var decodeBoxID: String {
+        guard let box = (thumbnailContext?[.imageThumbnailPixelSize] as? NSValue)?.cgSizeValue,
+              box.height > Self.tallImageMaxPixelHeight
+        else { return "std" }
+        return "tall-\(Int(box.width))x\(Int(box.height))"
+    }
+
     private var thumbnailContext: [SDWebImageContextOption: Any]? {
         Self.thumbnailContext(
             maxPointSize: thumbnailMaxPointSize,
             maxPointWidth: thumbnailMaxPointWidth,
+            // 실제 지식이 있는 aspect 만 — fallbackAspect(1:1 예약값)를 넣으면
+            // 극단 세로형이 정사각으로 오판돼 tall 재배분이 망가진다. 측정
+            // aspect 는 1차 디코드가 높이 캡에 닿았을 때만 — 안 닿았으면 이미
+            // native 완전 디코드라 tall 전환(리마운트+재디코드)이 순수 낭비.
+            aspect: aspectRatio ?? (measuredDecodeHitHeightCap ? measuredAspect : nil),
             scale: displayScale
         )
     }
 
     /// 다운샘플 박스 매핑 — internal static 이라 박스 모양 계약(정사각 우선,
-    /// 비정방은 높이 무제한)을 단위 테스트로 고정할 수 있다.
+    /// 비정방은 aspect 인지 버짓 박스)을 단위 테스트로 고정할 수 있다.
     nonisolated static func thumbnailContext(
         maxPointSize: CGFloat?,
         maxPointWidth: CGFloat?,
+        aspect: CGFloat? = nil,
         scale: CGFloat
     ) -> [SDWebImageContextOption: Any]? {
         // Pixel cap on the long edge — square `CGSize` because SD treats
@@ -552,18 +600,37 @@ struct NetworkImage: View {
             // 이하인 초대형 세로 패널(예: 1000×30000)이 캡을 통째로 우회해
             // 30MP 풀 디코드가 일어났다 — footprint +400~500MB 순간 스파이크와
             // 수 초 hang(ImageIO 전역 락이 메인 레이아웃과 경합)의 실측 주범.
-            // 8192 면 통상 세로 패널(800×6000 급)은 무손실 통과하고, 그보다 긴
-            // 병리 케이스만 비율 유지 축소된다(폭도 함께 깎여 다소 소프트해지나,
-            // 탭하면 열리는 전체화면 뷰어의 긴 변 캡이 4096 이라 인라인이 항상
-            // 뷰어보다 선명하다). 디코드 상한 ≈ 화면폭px × 8192 ≈ 40MB.
+            // 8192 면 통상 세로 패널(800×6000 급)은 무손실 통과한다.
             let pixels = pointWidth * scale
+            // 극단 세로형(native-width 디코드에 8192 초과 높이 필요)이고 aspect
+            // 를 알면, 같은 픽셀 버짓(화면폭px×8192 ≈ 종전 worst-case 40MB) 안
+            // 에서 폭↓·높이↑ 재배분한다. 고정 박스는 aspect 비율로 폭까지 깎아
+            // (예: 800×24000 → 273px 폭) 화면폭 대비 4배+ 업스케일 — 글자가
+            // 뭉개지는 실사용 화질 버그(aagag 이슈 짤)였다. 재배분 후 546px 폭
+            // — 완전 native 는 아니나 2배 선명, 메모리 상한은 동일.
+            if let aspect, aspect > 0, pixels / aspect > Self.tallImageMaxPixelHeight {
+                let budget = pixels * Self.tallImageMaxPixelHeight
+                let width = min(pixels, (budget * aspect).squareRoot())
+                let height = min(width / aspect, Self.tallImageHardMaxPixelHeight)
+                return [.imageThumbnailPixelSize: NSValue(cgSize: CGSize(width: width, height: height))]
+            }
             return [.imageThumbnailPixelSize: NSValue(cgSize: CGSize(width: pixels, height: Self.tallImageMaxPixelHeight))]
         }
         return nil
     }
 
-    /// 비정방(폭 기준) 박스의 높이 캡 — 계약 테스트와 공유.
+    /// 1차 디코드가 기본 높이 캡에 닿았는지(=원본이 더 큼) — 뷰어의
+    /// `needsTallRedecode` 와 같은 결. -2 는 다운샘플 반올림 여유.
+    nonisolated static func decodeWasHeightCapped(decodedPixels: CGSize) -> Bool {
+        decodedPixels.height >= tallImageMaxPixelHeight - 2
+    }
+
+    /// 비정방(폭 기준) 박스의 기본 높이 캡 — 계약 테스트와 공유.
     nonisolated static let tallImageMaxPixelHeight: CGFloat = 8192
+
+    /// aspect 인지 tall 재배분 시의 높이 hard max. 8192 의 2 배 — 버짓이 픽셀
+    /// 총량을 이미 묶으므로(폭이 그만큼 좁아짐) 메모리 상한은 그대로다.
+    nonisolated static let tallImageHardMaxPixelHeight: CGFloat = 16384
 }
 
 private extension View {

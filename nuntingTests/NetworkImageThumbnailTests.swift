@@ -40,6 +40,71 @@ final class NetworkImageThumbnailTests: XCTestCase {
                      "캡 없음 = 네이티브 해상도 디코드 (context 자체가 nil)")
     }
 
+    // MARK: - aspect 인지 tall 박스 (화질 재배분)
+
+    /// 극단 세로형(예: 800×24000, aspect 1/30)은 고정 (폭, 8192) 박스가 폭을
+    /// 8192/24000 비율로 같이 깎아 273px 로 디코드했다 — 화면폭으로 4.4배
+    /// 업스케일되며 글자가 뭉개지는 실사용 화질 버그(aagag 이슈 짤).
+    /// aspect 를 알면 같은 픽셀 버짓(폭px×8192) 안에서 폭↓·높이↑ 재배분한다.
+    func testTallAspectReallocatesBudgetToHeight() throws {
+        let ctx = NetworkImage.thumbnailContext(
+            maxPointSize: nil, maxPointWidth: 402, aspect: 1.0 / 30.0, scale: 3)
+        let size = try XCTUnwrap((ctx?[.imageThumbnailPixelSize] as? NSValue)?.cgSizeValue)
+
+        XCTAssertEqual(size.height, NetworkImage.tallImageHardMaxPixelHeight,
+                       "높이를 hard max(16384)까지 벌린다")
+        // 폭 = min(화면폭, sqrt(버짓×aspect)) — 1206×8192 버짓에서 ≈574.
+        XCTAssertEqual(size.width, (1206.0 * 8192.0 / 30.0).squareRoot(), accuracy: 1.0)
+        XCTAssertLessThanOrEqual(size.width * size.height, 1206.0 * 8192.0 * 1.01,
+                                 "총픽셀은 종전 worst-case(폭px×8192) 이하 유지")
+    }
+
+    /// 통상 세로 패널(800×6000급)·일반 사진은 aspect 를 알아도 종전 박스 유지 —
+    /// native-width 디코드에 8192 가 이미 충분하므로 동작 변화 없음.
+    func testNonExtremeAspectKeepsLegacyBox() {
+        let ctx = NetworkImage.thumbnailContext(
+            maxPointSize: nil, maxPointWidth: 402, aspect: 4.0 / 3.0, scale: 3)
+        let size = (ctx?[.imageThumbnailPixelSize] as? NSValue)?.cgSizeValue
+        XCTAssertEqual(size, CGSize(width: 1206, height: NetworkImage.tallImageMaxPixelHeight))
+    }
+
+    /// aspect 미상(파서 미제공 + 미디코드)은 종전과 동일한 legacy 박스.
+    func testNilAspectKeepsLegacyBox() {
+        let ctx = NetworkImage.thumbnailContext(
+            maxPointSize: nil, maxPointWidth: 402, aspect: nil, scale: 3)
+        let size = (ctx?[.imageThumbnailPixelSize] as? NSValue)?.cgSizeValue
+        XCTAssertEqual(size, CGSize(width: 1206, height: NetworkImage.tallImageMaxPixelHeight))
+    }
+
+    // MARK: - 측정 aspect 로 tall 전환하는 조건
+
+    /// 측정 aspect 기반 tall 리마운트는 1차 디코드가 실제로 높이 캡(8192)에
+    /// 닿았을 때만 — 100×1000 같은 좁지만 작은 이미지는 이미 native 로 완전
+    /// 디코드됐는데도 환산 높이(화면폭/aspect)가 8192 를 넘어 tall 판정되면
+    /// 불필요한 리마운트 + 중복 디코드가 된다(Codex P2).
+    func testDecodeWasHeightCapped() {
+        XCTAssertTrue(NetworkImage.decodeWasHeightCapped(
+            decodedPixels: CGSize(width: 273, height: 8192)))
+        XCTAssertTrue(NetworkImage.decodeWasHeightCapped(
+            decodedPixels: CGSize(width: 699, height: 8191)), "반올림 여유(-2) 포함")
+        XCTAssertFalse(NetworkImage.decodeWasHeightCapped(
+            decodedPixels: CGSize(width: 100, height: 1000)), "native 완전 디코드 — 캡 안 닿음")
+    }
+
+    // MARK: - natural width 갱신 규칙
+
+    /// 극단 세로형은 1차(흐린) 디코드 폭이 natural width 로 래치되면
+    /// clampsToNaturalWidth 가 2차 선명 디코드 후에도 프레임을 1차 폭
+    /// (예: 212pt)에 묶는다 — "본문에서 가로가 꽉 안 참" 기기 실측 버그.
+    /// 더 큰(선명한) 디코드가 오면 natural width 도 따라 커져야 한다.
+    func testNaturalWidthGrowsWithSharperDecode() {
+        XCTAssertEqual(NetworkImage.resolvedNaturalWidth(current: nil, incoming: 212), 212)
+        XCTAssertEqual(NetworkImage.resolvedNaturalWidth(current: 212, incoming: 425), 425,
+                       "2차 디코드가 더 크면 갱신")
+        XCTAssertEqual(NetworkImage.resolvedNaturalWidth(current: 425, incoming: 212), 425,
+                       "더 작은 값(캐시된 1차 등)으로 되돌아가면 안 됨")
+    }
+
     // MARK: - 실제 디코드 검증 (context 값이 아니라 decode output 을 핀)
 
     /// context 값 매핑만 믿지 않고, 생성한 PNG 를 SDImageIOCoder 로 실제
