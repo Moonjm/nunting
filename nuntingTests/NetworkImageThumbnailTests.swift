@@ -76,6 +76,20 @@ final class NetworkImageThumbnailTests: XCTestCase {
         XCTAssertEqual(size, CGSize(width: 1206, height: NetworkImage.tallImageMaxPixelHeight))
     }
 
+    // MARK: - natural width 갱신 규칙
+
+    /// 극단 세로형은 1차(흐린) 디코드 폭이 natural width 로 래치되면
+    /// clampsToNaturalWidth 가 2차 선명 디코드 후에도 프레임을 1차 폭
+    /// (예: 212pt)에 묶는다 — "본문에서 가로가 꽉 안 참" 기기 실측 버그.
+    /// 더 큰(선명한) 디코드가 오면 natural width 도 따라 커져야 한다.
+    func testNaturalWidthGrowsWithSharperDecode() {
+        XCTAssertEqual(NetworkImage.resolvedNaturalWidth(current: nil, incoming: 212), 212)
+        XCTAssertEqual(NetworkImage.resolvedNaturalWidth(current: 212, incoming: 425), 425,
+                       "2차 디코드가 더 크면 갱신")
+        XCTAssertEqual(NetworkImage.resolvedNaturalWidth(current: 425, incoming: 212), 425,
+                       "더 작은 값(캐시된 1차 등)으로 되돌아가면 안 됨")
+    }
+
     // MARK: - 실제 디코드 검증 (context 값이 아니라 decode output 을 핀)
 
     /// context 값 매핑만 믿지 않고, 생성한 PNG 를 SDImageIOCoder 로 실제

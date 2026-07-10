@@ -174,6 +174,45 @@ struct ImageViewer: View {
         return CGSize(width: width, height: height)
     }
 
+    /// 더블탭 줌 대상 rect — 탭 지점을 aspectFit 으로 그려진 이미지 영역 안
+    /// 으로 클램프한다. 세로 초대형은 얇은 세로 띠로 그려져서, 레터박스를
+    /// 탭하면 rect 가 이미지 밖(여백)에 잡혀 빈 화면으로 확대됐다.
+    nonisolated static func doubleTapZoomRect(
+        tapPoint: CGPoint, imageSize: CGSize, boundsSize: CGSize, targetScale: CGFloat
+    ) -> CGRect {
+        let rectSize = CGSize(width: boundsSize.width / targetScale,
+                              height: boundsSize.height / targetScale)
+        var center = tapPoint
+        if imageSize.width > 0, imageSize.height > 0 {
+            // aspectFit 으로 그려진 이미지 rect (imageView 좌표 = bounds 좌표).
+            let fit = min(boundsSize.width / imageSize.width, boundsSize.height / imageSize.height)
+            let drawn = CGSize(width: imageSize.width * fit, height: imageSize.height * fit)
+            let origin = CGPoint(x: (boundsSize.width - drawn.width) / 2,
+                                 y: (boundsSize.height - drawn.height) / 2)
+            // 탭 중심을 "rect 가 이미지 안에 머무는" 범위로 클램프. 이미지가
+            // rect 보다 좁으면(세로 띠) 그 축은 이미지 중심으로 고정된다.
+            center.x = clamp(center.x,
+                             min: origin.x + rectSize.width / 2,
+                             max: origin.x + drawn.width - rectSize.width / 2,
+                             fallback: origin.x + drawn.width / 2)
+            center.y = clamp(center.y,
+                             min: origin.y + rectSize.height / 2,
+                             max: origin.y + drawn.height - rectSize.height / 2,
+                             fallback: origin.y + drawn.height / 2)
+        }
+        return CGRect(x: center.x - rectSize.width / 2,
+                      y: center.y - rectSize.height / 2,
+                      width: rectSize.width, height: rectSize.height)
+    }
+
+    /// min > max(이미지가 rect 보다 작은 축)면 fallback(이미지 중심)으로.
+    private nonisolated static func clamp(
+        _ v: CGFloat, min lower: CGFloat, max upper: CGFloat, fallback: CGFloat
+    ) -> CGFloat {
+        guard lower <= upper else { return fallback }
+        return Swift.min(Swift.max(v, lower), upper)
+    }
+
     /// 동적 최대 줌 — aspectFit(줌 1) 기준 폭맞춤까지 필요한 배율의 2배.
     /// 세로 초대형은 fit 이 폭을 수십 pt 로 만들어 종전 고정 5×로는 "확대가
     /// 중간에 끝나" 읽을 수 없었다. 일반 사진은 종전 5× 유지, 상한 60.
@@ -267,12 +306,13 @@ private struct ZoomableImageView: UIViewRepresentable {
                 isZoomed = false
             } else {
                 let point = recognizer.location(in: imageView)
+                let imageSize = imageView?.image?.size ?? .zero
+                let bounds = scrollView.bounds
                 // 세로 초대형은 더블탭 한 번에 "폭맞춤"(웹툰 리더 배율)으로 —
                 // 고정 2.5×는 폭 수십 pt 표시에선 읽기 배율에 한참 못 미친다.
                 var targetScale = min(scrollView.maximumZoomScale, 2.5)
-                if let img = imageView?.image, img.size.height > 0 {
-                    let bounds = scrollView.bounds
-                    let fitWidth = min(bounds.width, bounds.height * (img.size.width / img.size.height))
+                if imageSize.height > 0 {
+                    let fitWidth = min(bounds.width, bounds.height * (imageSize.width / imageSize.height))
                     if fitWidth > 0 {
                         let widthFill = bounds.width / fitWidth
                         if widthFill > 2.5 {
@@ -280,16 +320,11 @@ private struct ZoomableImageView: UIViewRepresentable {
                         }
                     }
                 }
-                let size = CGSize(
-                    width: scrollView.bounds.width / targetScale,
-                    height: scrollView.bounds.height / targetScale
-                )
-                let rect = CGRect(
-                    x: point.x - size.width / 2,
-                    y: point.y - size.height / 2,
-                    width: size.width,
-                    height: size.height
-                )
+                // 탭 지점을 이미지 영역으로 클램프 — 레터박스 더블탭이 여백으로
+                // 확대되지 않게(계약은 doubleTapZoomRect 테스트로 핀).
+                let rect = ImageViewer.doubleTapZoomRect(
+                    tapPoint: point, imageSize: imageSize,
+                    boundsSize: bounds.size, targetScale: targetScale)
                 scrollView.zoom(to: rect, animated: true)
                 isZoomed = true
             }

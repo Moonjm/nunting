@@ -365,8 +365,20 @@ struct NetworkImage: View {
         let naturalPointWidth = image.size.width * image.scale
         DispatchQueue.main.async {
             if measuredAspect == nil, let aspect { measuredAspect = aspect }
-            if measuredNaturalPointWidth == nil { measuredNaturalPointWidth = naturalPointWidth }
+            // 갱신 규칙은 resolvedNaturalWidth 참조 — "한 번만" 래치하면 극단
+            // 세로형의 1차(다운샘플) 폭이 고정돼 2차 선명 디코드 후에도
+            // clampsToNaturalWidth 가 프레임을 1차 폭에 묶는다.
+            measuredNaturalPointWidth = Self.resolvedNaturalWidth(
+                current: measuredNaturalPointWidth, incoming: naturalPointWidth)
         }
+    }
+
+    /// natural width 갱신 규칙 — 더 큰(선명한) 디코드가 오면 따라 커지고,
+    /// 더 작은 값(다운샘플 1차 재발화 등)으로는 되돌아가지 않는다. 다운샘플
+    /// 디코드의 "natural" 은 원본이 아니라 디코드 폭이므로 max 가 원본에 가장
+    /// 근접한 추정치다.
+    nonisolated static func resolvedNaturalWidth(current: CGFloat?, incoming: CGFloat) -> CGFloat {
+        max(current ?? 0, incoming)
     }
 
     private func handleLoadFailure(_ error: Error) {

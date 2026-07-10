@@ -63,6 +63,38 @@ final class ImageViewerTallImageTests: XCTestCase {
         XCTAssertEqual(z, 5)
     }
 
+    // MARK: - 더블탭 줌 대상 rect
+
+    /// 세로 초대형은 aspectFit 시 얇은 세로 띠로 그려진다 — 레터박스(여백)를
+    /// 더블탭해도 줌 rect 가 이미지 띠 위로 클램프되어야 한다. 안 하면
+    /// "여백으로 확대"돼 빈 화면이 나온다(기기 실측 버그).
+    func testDoubleTapInLetterboxClampsToImageStrip() {
+        let bounds = CGSize(width: 402, height: 852)
+        // 669×25809: fit 폭 = 852×(669/25809) ≈ 22pt — 띠는 x≈190..212.
+        let rect = ImageViewer.doubleTapZoomRect(
+            tapPoint: CGPoint(x: 30, y: 400), // 왼쪽 여백 탭
+            imageSize: CGSize(width: 669, height: 25809),
+            boundsSize: bounds,
+            targetScale: 18)
+        // rect 중심 x 가 이미지 띠 중심(bounds.midX)으로 온다.
+        XCTAssertEqual(rect.midX, bounds.width / 2, accuracy: 1.0)
+        XCTAssertEqual(rect.midY, 400, accuracy: 1.0, "세로 탭 위치는 유지")
+    }
+
+    func testDoubleTapOnNormalImageKeepsTapCenterOnFittingAxis() {
+        // 일반 가로 사진(402×852 뷰에 그려지면 402×301.5): 가로는 rect 가
+        // 이미지 안에 들어가므로 탭 x 유지, 세로는 2.5× rect(340.8pt)가
+        // 그려진 높이(301.5pt)보다 커서 이미지 중심으로 폴백 — 탭 지점을
+        // 그대로 쓰면 레터박스가 프레임에 섞인다.
+        let rect = ImageViewer.doubleTapZoomRect(
+            tapPoint: CGPoint(x: 100, y: 300),
+            imageSize: CGSize(width: 4000, height: 3000),
+            boundsSize: CGSize(width: 402, height: 852),
+            targetScale: 2.5)
+        XCTAssertEqual(rect.midX, 100, accuracy: 1.0)
+        XCTAssertEqual(rect.midY, 426, accuracy: 1.0, "세로축은 이미지 중심(852/2 근방 아님 — 드로잉 rect 중심)")
+    }
+
     func testZoomScaleHardCap() {
         // 병리적 세로비라도 상한 60 — UIScrollView 줌 폭주 방지.
         let z = ImageViewer.maxZoomScale(
