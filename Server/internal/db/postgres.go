@@ -200,7 +200,9 @@ type KeywordSub struct {
 
 func (s *Store) ListKeywords(ctx context.Context, uuid string) ([]KeywordSub, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT keyword, exclude, enabled FROM keyword_subs WHERE uuid = $1 ORDER BY keyword`, uuid)
+		// COLLATE "C": libc 로케일 정렬은 플랫폼마다 달라(특히 macOS 는 한글이
+		// 가나다순이 아님) 코드포인트 순으로 고정 — 완성형 한글은 곧 가나다순.
+		`SELECT keyword, exclude, enabled FROM keyword_subs WHERE uuid = $1 ORDER BY keyword COLLATE "C"`, uuid)
 	if err != nil {
 		return nil, err
 	}
