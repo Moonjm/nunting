@@ -72,6 +72,12 @@ struct BoardListView: View, Equatable {
     // 스크롤어웨이 보드명 헤더의 스크롤 타깃 id — 맨 위 스크롤 시 이 헤더로.
     private static let boardNameHeaderID = "board-name-header"
 
+    /// `.task(id:)` 의 키 — 요청 키에 활성 상태를 접합해, 활성화 플립이 task
+    /// 재시작(=지연 로드 기회)이 되게 한다. static 이라 계약을 단위 테스트로 핀.
+    nonisolated static func taskID(key: String, isActive: Bool) -> String {
+        isActive ? key + "|active" : key
+    }
+
     @State private var loader = BoardListLoader()
 
     var body: some View {
@@ -101,10 +107,18 @@ struct BoardListView: View, Equatable {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .task(id: BoardListLoader.taskKey(board: board, filter: filter, searchQuery: searchQuery)) {
+        // id 에 활성 상태 포함 — 활성화(false→true)가 task 를 재시작시킨다.
+        // 토큰 bump 없이 활성화되는 경로(페이저 분기 재생성 후 onAppear 의
+        // index 동기화 등)에서도 미로드 페이지가 깨어나 fetch 한다. 이미
+        // 로드된 보드는 refresh 의 loadedKey 멱등으로 no-op. 비활성화 시엔
+        // 떠나는 페이지의 in-flight refresh/프리페치가 취소된다(의도 —
+        // "이전 보드 prefetch 중단"과 동일).
+        .task(id: Self.taskID(
+            key: BoardListLoader.taskKey(board: board, filter: filter, searchQuery: searchQuery),
+            isActive: isActive
+        )) {
             // 비활성 페이지(페이저 센티널·이웃)는 materialize fetch 를 건너뛴다.
-            // 이 페이지가 나중에 활성화되면 도착 경로(reloadToken 리로드)가
-            // fresh 로드를 담당한다 — 여기서 로드하면 이중 fetch.
+            // 활성화되면 위 id 변경으로 이 task 가 재실행돼 로드한다.
             guard isActive else { return }
             await loader.refresh(board: board, filter: filter, searchQuery: searchQuery)
             // 목록이 자리잡은 뒤 상위 글 detail HTML 을 .utility 로 워밍 —
@@ -116,6 +130,10 @@ struct BoardListView: View, Equatable {
         // 단락을 우회 + 기존 목록 유지). 첫 진입은 위 .task 가 담당하므로 토큰
         // 변경 때만 동작.
         .onChange(of: reloadToken) { _, _ in
+            // 센티널은 실제 끝 보드와 같은 board.id 토큰을 받으므로, 끝 보드
+            // 도착 시 이 onChange 가 센티널에서도 발화한다 — 비활성이면 스킵
+            // (안 하면 센티널이 중복 목록 요청을 쏜다, Codex P2).
+            guard isActive else { return }
             // 보드 전환은 목록을 비우고 스피너 — 먼 보드(헐렸다 재생성)와 동일한
             // "새로고침 중" 피드백. 비우면서 자연히 맨 위에서 다시 그려진다.
             Task { await loader.reload(board: board, filter: filter, searchQuery: searchQuery, clearingList: true) }

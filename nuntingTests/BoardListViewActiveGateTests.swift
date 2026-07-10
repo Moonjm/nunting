@@ -29,6 +29,20 @@ final class BoardListViewActiveGateTests: XCTestCase {
         XCTAssertTrue(view(isActive: true) == view(isActive: true))
     }
 
+    /// 활성화(false→true)는 `.task(id:)` 를 재시작시켜야 한다 — id 에 활성
+    /// 상태가 빠지면, 비활성으로 materialize 된 페이지가 토큰 bump 없이
+    /// 활성화되는 경로(페이저 분기 재생성 등)에서 영영 미로드로 갇힌다
+    /// (Codex P2). refresh 가 loadedKey 멱등이라 재시작 자체는 로드된
+    /// 보드에서 no-op.
+    func testTaskIDChangesOnActivation() {
+        let key = BoardListLoader.taskKey(board: .clienNews, filter: nil, searchQuery: nil)
+        XCTAssertNotEqual(BoardListView.taskID(key: key, isActive: false),
+                          BoardListView.taskID(key: key, isActive: true),
+                          "활성 상태가 task id 에 반영되지 않으면 활성화가 로드를 못 깨운다")
+        XCTAssertEqual(BoardListView.taskID(key: key, isActive: true),
+                       BoardListView.taskID(key: key, isActive: true))
+    }
+
     /// 파라미터 기본값은 true — 페이저 밖 호출부(둘러보기/단일 보드)는 종전처럼
     /// materialize 즉시 로드해야 한다.
     func testDefaultIsActive() {
