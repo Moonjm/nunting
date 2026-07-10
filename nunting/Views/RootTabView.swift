@@ -705,11 +705,17 @@ private struct BoardPager: View {
             }
         } else {
             TabView(selection: $index) {
-                page(boards.last!, tag: 0)
-                ForEach(Array(boards.enumerated()), id: \.offset) { i, board in
-                    page(board, tag: i + 1)
+                // 센티널은 항상 비활성 — 도달 즉시 반대편 실제 페이지로 점프하므로
+                // 여기서 fetch 하면 순수 낭비(드래그 중엔 스피너로 노출).
+                page(boards.last!, tag: 0, isActive: false)
+                // board.id 키잉 — 종전 \.offset(위치) 키잉은 즐겨찾기 순서 변경 시
+                // 살아남은 뷰 @State(로더)가 그 자리의 '다른 보드'에 붙는 오염을
+                // 낳았다. 보드 identity 를 따라가면 재정렬해도 상태가 보드와 함께
+                // 이동한다(tag 는 위치 기반 그대로 — 선택 인덱스 수학과 분리).
+                ForEach(Array(boards.enumerated()), id: \.element.id) { i, board in
+                    page(board, tag: i + 1, isActive: index == i + 1)
                 }
-                page(boards.first!, tag: boards.count + 1)
+                page(boards.first!, tag: boards.count + 1, isActive: false)
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
             .onChange(of: index) { _, idx in handleIndex(idx) }
@@ -733,9 +739,10 @@ private struct BoardPager: View {
         }
     }
 
-    @ViewBuilder private func page(_ board: Board, tag: Int) -> some View {
+    @ViewBuilder private func page(_ board: Board, tag: Int, isActive: Bool) -> some View {
         BoardListView(board: board, filter: filterByBoard[board.id],
                       searchQuery: searchByBoard[board.id],
+                      isActive: isActive,
                       bottomContentInset: inset(board),
                       showsBoardNameHeader: showsBoardNameHeader,
                       switchableBoards: boards,

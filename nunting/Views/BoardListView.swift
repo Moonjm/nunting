@@ -3,6 +3,13 @@ struct BoardListView: View, Equatable {
     let board: Board
     var filter: BoardFilter? = nil
     var searchQuery: String? = nil
+    /// 페이저(BoardPager)에서 이 페이지가 현재 선택 페이지인지. 비활성 페이지
+    /// (센티널·이웃)는 materialize 돼도 `.task` 가 fetch 를 건너뛴다 — 안 볼
+    /// 보드의 목록 fetch + 상세 프리페치 낭비와, 도착 시 reloadToken 리로드와의
+    /// 이중 fetch 방지(§3.2). 활성화로의 로드는 도착 시 토큰 리로드가 담당
+    /// (fresh-우선 정책과 동일 경로). 페이저 밖 호출부는 기본값 true — 종전대로
+    /// materialize 즉시 로드.
+    var isActive: Bool = true
     var scrollLocked: Bool = false
     /// 떠 있는 하단 필터 바가 있을 때, 마지막 글이 그 밑으로 가려지지 않게
     /// 스크롤 콘텐츠 하단에 주는 여백. 바가 없으면 0.
@@ -51,6 +58,9 @@ struct BoardListView: View, Equatable {
         lhs.board == rhs.board
             && lhs.filter == rhs.filter
             && lhs.searchQuery == rhs.searchQuery
+            // isActive 누락 금지 — .equatable() 이 body 재평가를 끊으므로,
+            // 빠지면 활성화 플립이 전파되지 않아 페이지가 placeholder 에 갇힌다.
+            && lhs.isActive == rhs.isActive
             && lhs.scrollLocked == rhs.scrollLocked
             && lhs.bottomContentInset == rhs.bottomContentInset
             && lhs.showsBoardNameHeader == rhs.showsBoardNameHeader
@@ -66,7 +76,12 @@ struct BoardListView: View, Equatable {
 
     var body: some View {
         Group {
-            if loader.isLoading && loader.posts.isEmpty {
+            if !isActive && loader.posts.isEmpty {
+                // 비활성 페이지는 fetch 를 안 했으므로 빈 목록이 정상 — 드래그로
+                // 살짝 노출될 때 "글이 없습니다" 로 오표시하지 않고 스피너.
+                // 활성화(도착)되면 토큰 리로드가 스피너를 이어받아 로드한다.
+                loadingView
+            } else if loader.isLoading && loader.posts.isEmpty {
                 loadingView
             } else if let errorMessage = loader.errorMessage, loader.posts.isEmpty {
                 ContentUnavailableView("불러오기 실패", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
@@ -87,6 +102,10 @@ struct BoardListView: View, Equatable {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task(id: BoardListLoader.taskKey(board: board, filter: filter, searchQuery: searchQuery)) {
+            // 비활성 페이지(페이저 센티널·이웃)는 materialize fetch 를 건너뛴다.
+            // 이 페이지가 나중에 활성화되면 도착 경로(reloadToken 리로드)가
+            // fresh 로드를 담당한다 — 여기서 로드하면 이중 fetch.
+            guard isActive else { return }
             await loader.refresh(board: board, filter: filter, searchQuery: searchQuery)
             // 목록이 자리잡은 뒤 상위 글 detail HTML 을 .utility 로 워밍 —
             // 탭 시 RTT 제거. 보드 전환 시 .task(id:) 취소가 그대로 전파돼
