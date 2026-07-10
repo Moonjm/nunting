@@ -155,6 +155,23 @@ final class BoardListLoader {
         await load(board: board, filter: filter, searchQuery: searchQuery)
     }
 
+    /// 페이저 페이지 활성화(도착)의 **단일** 로딩 경로 — `BoardListView` 의
+    /// `.task(id: taskID(key, isActive))` 재시작이 유일한 호출부다.
+    /// - 미로드 key: `refresh` (콜드 스타트 디스크 스냅샷 SWR 포함)
+    /// - 로드된 key(재방문): `reload(clearingList: true)` — "보드 전환은 항상
+    ///   새로 로드" 정책 그대로.
+    /// 종전엔 활성화 task 의 refresh 와 reloadToken bump 의 reload 가 병행해
+    /// 첫 방문 보드를 두 번 fetch 했다(Codex P2) — 경로를 여기 하나로 합쳐
+    /// 도착당 정확히 1회가 되게 한다.
+    func activate(board: Board, filter: BoardFilter?, searchQuery: String?) async {
+        let key = Self.taskKey(board: board, filter: filter, searchQuery: searchQuery)
+        if loadedKey == key {
+            await reload(board: board, filter: filter, searchQuery: searchQuery, clearingList: true)
+        } else {
+            await refresh(board: board, filter: filter, searchQuery: searchQuery)
+        }
+    }
+
     /// Drive from the view's `.refreshable` modifier (pull-to-refresh)
     /// and from board-switch reload-token bumps. Bypasses the `loadedKey`
     /// short-circuit so a manual refresh always re-fetches even if the

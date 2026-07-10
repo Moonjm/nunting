@@ -3,6 +3,13 @@ struct BoardListView: View, Equatable {
     let board: Board
     var filter: BoardFilter? = nil
     var searchQuery: String? = nil
+    /// 페이저(BoardPager)에서 이 페이지가 현재 선택 페이지인지. 비활성 페이지
+    /// (센티널·이웃)는 materialize 돼도 `.task` 가 fetch 를 건너뛴다 — 안 볼
+    /// 보드의 목록 fetch + 상세 프리페치 낭비 방지(§3.2). 활성화(도착) 로드는
+    /// isActive 플립의 `.task` 재시작 → `loader.activate` 가 단일 경로로 담당
+    /// (첫 로드=refresh, 재방문=fresh reload). 페이저 밖 호출부는 기본값 true
+    /// — 종전대로 materialize 즉시 로드.
+    var isActive: Bool = true
     var scrollLocked: Bool = false
     /// 떠 있는 하단 필터 바가 있을 때, 마지막 글이 그 밑으로 가려지지 않게
     /// 스크롤 콘텐츠 하단에 주는 여백. 바가 없으면 0.
@@ -19,13 +26,8 @@ struct BoardListView: View, Equatable {
     var onSelectBoard: (String) -> Void = { _ in }
     /// 스위처 메뉴 하단 "보드 순서 편집" 진입 — 호스트가 재정렬 시트를 띄운다.
     var onEditOrder: () -> Void = { }
-    /// 보드 전환 시 부모(`BoardPager`)가 증가시켜 강제 재로딩을 트리거한다.
-    /// `.task(id:)` 는 같은 보드로 돌아오면 key 가 같아 재실행되지 않으므로,
-    /// "보드 전환은 항상 새로 로드" 를 이 토큰으로 보장한다(reload 라 기존
-    /// 목록은 유지한 채 갱신 → 깜빡임 없음).
-    var reloadToken: Int = 0
     /// 모음 탭 재탭 시 부모가 증가시켜 목록을 맨 위로 스크롤하게 한다.
-    /// reloadToken 과 같은 토큰 패턴 — 값이 바뀐 페이지만 onChange 가 발화한다.
+    /// 토큰 패턴 — 값이 바뀐 페이지만 onChange 가 발화한다.
     var scrollTopToken: Int = 0
     /// Returns `true` when `DetailBackDrag` has just observed any
     /// horizontal-dominant movement. Row taps consult this so a tiny `→`
@@ -51,22 +53,35 @@ struct BoardListView: View, Equatable {
         lhs.board == rhs.board
             && lhs.filter == rhs.filter
             && lhs.searchQuery == rhs.searchQuery
+            // isActive 누락 금지 — .equatable() 이 body 재평가를 끊으므로,
+            // 빠지면 활성화 플립이 전파되지 않아 페이지가 placeholder 에 갇힌다.
+            && lhs.isActive == rhs.isActive
             && lhs.scrollLocked == rhs.scrollLocked
             && lhs.bottomContentInset == rhs.bottomContentInset
             && lhs.showsBoardNameHeader == rhs.showsBoardNameHeader
             && lhs.switchableBoards == rhs.switchableBoards
-            && lhs.reloadToken == rhs.reloadToken
             && lhs.scrollTopToken == rhs.scrollTopToken
     }
 
     // 스크롤어웨이 보드명 헤더의 스크롤 타깃 id — 맨 위 스크롤 시 이 헤더로.
     private static let boardNameHeaderID = "board-name-header"
 
+    /// `.task(id:)` 의 키 — 요청 키에 활성 상태를 접합해, 활성화 플립이 task
+    /// 재시작(=지연 로드 기회)이 되게 한다. static 이라 계약을 단위 테스트로 핀.
+    nonisolated static func taskID(key: String, isActive: Bool) -> String {
+        isActive ? key + "|active" : key
+    }
+
     @State private var loader = BoardListLoader()
 
     var body: some View {
         Group {
-            if loader.isLoading && loader.posts.isEmpty {
+            if !isActive && loader.posts.isEmpty {
+                // 비활성 페이지는 fetch 를 안 했으므로 빈 목록이 정상 — 드래그로
+                // 살짝 노출될 때 "글이 없습니다" 로 오표시하지 않고 스피너.
+                // 활성화(도착)되면 .task 재시작(activate)이 스피너를 이어받는다.
+                loadingView
+            } else if loader.isLoading && loader.posts.isEmpty {
                 loadingView
             } else if let errorMessage = loader.errorMessage, loader.posts.isEmpty {
                 ContentUnavailableView("불러오기 실패", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
@@ -86,20 +101,24 @@ struct BoardListView: View, Equatable {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .task(id: BoardListLoader.taskKey(board: board, filter: filter, searchQuery: searchQuery)) {
-            await loader.refresh(board: board, filter: filter, searchQuery: searchQuery)
+        // id 에 활성 상태 포함 — 활성화(false→true)가 task 를 재시작시켜
+        // `activate` 를 부른다. 이 task 가 도착 로딩의 **유일한** 경로다:
+        // 종전의 reloadToken bump 경로와 병행하면 첫 방문 보드가 두 번
+        // fetch 됐다(Codex P2, 토큰 메커니즘 자체를 제거). 재방문 도착은
+        // activate 내부에서 fresh reload 로 처리("전환은 항상 새로 로드").
+        // 비활성화 시엔 떠나는 페이지의 in-flight 로드/프리페치가 취소된다
+        // (의도 — "이전 보드 prefetch 중단"과 동일). 센티널·이웃 페이지는
+        // materialize 돼도 guard 가 fetch 를 건너뛴다.
+        .task(id: Self.taskID(
+            key: BoardListLoader.taskKey(board: board, filter: filter, searchQuery: searchQuery),
+            isActive: isActive
+        )) {
+            guard isActive else { return }
+            await loader.activate(board: board, filter: filter, searchQuery: searchQuery)
             // 목록이 자리잡은 뒤 상위 글 detail HTML 을 .utility 로 워밍 —
             // 탭 시 RTT 제거. 보드 전환 시 .task(id:) 취소가 그대로 전파돼
             // 이전 보드 prefetch 는 중단된다.
             await DetailPrefetcher.shared.prefetch(posts: Array(loader.posts.prefix(3)))
-        }
-        // 보드 전환 시 토큰이 바뀌면 강제로 새로 불러온다(reload 는 loadedKey
-        // 단락을 우회 + 기존 목록 유지). 첫 진입은 위 .task 가 담당하므로 토큰
-        // 변경 때만 동작.
-        .onChange(of: reloadToken) { _, _ in
-            // 보드 전환은 목록을 비우고 스피너 — 먼 보드(헐렸다 재생성)와 동일한
-            // "새로고침 중" 피드백. 비우면서 자연히 맨 위에서 다시 그려진다.
-            Task { await loader.reload(board: board, filter: filter, searchQuery: searchQuery, clearingList: true) }
         }
     }
 
@@ -247,7 +266,7 @@ struct BoardListView: View, Equatable {
         }
         // 모음 탭 재탭 신호 → 첫 글로 맨 위 스크롤(같은 보드라 reload 없음).
         // 보이지 않는(다른 보드) 페이지도 발화하지만 무해하고, 빈 목록은
-        // 스크롤 대상이 없어 no-op. (보드 전환은 reloadToken 의 목록-비움이
+        // 스크롤 대상이 없어 no-op. (보드 전환은 activate 의 목록-비움이
         // 자연히 맨 위에서 다시 그리므로 여기서 따로 스크롤하지 않는다.)
         .onChange(of: scrollTopToken) { _, _ in
             // 헤더가 있으면 헤더까지(보드명 재노출) 맨 위로, 없으면 첫 글로.

@@ -94,6 +94,41 @@ final class BoardListLoaderTests: XCTestCase {
         XCTAssertFalse(loader.isLoading)
     }
 
+    // MARK: - activate (페이저 도착의 단일 로딩 경로)
+
+    /// 첫 활성화(미로드 key)는 refresh 경로 — 정확히 1회 fetch. 활성화 task 와
+    /// 토큰 리로드가 병행하던 이중 fetch(Codex P2)를 loader 계약으로 차단.
+    func testActivateFirstVisitFetchesExactlyOnce() async {
+        let fetchCount = TestCounter()
+        let loader = makeLoader(fetcher: { [clienHTML] _, _, _, _ in
+            fetchCount.increment()
+            return clienHTML
+        })
+
+        await loader.activate(board: .clienNews, filter: nil, searchQuery: nil)
+
+        XCTAssertEqual(fetchCount.value, 1, "도착당 fetch 는 정확히 1회")
+        XCTAssertEqual(loader.posts.count, 2)
+    }
+
+    /// 재방문(이미 로드된 key)은 fresh reload — "보드 전환은 항상 새로 로드"
+    /// 정책 유지. refresh 였다면 loadedKey 가드로 0회가 됐을 것.
+    func testActivateRevisitReloadsFresh() async {
+        let fetchCount = TestCounter()
+        let loader = makeLoader(fetcher: { [clienHTML] _, _, _, _ in
+            fetchCount.increment()
+            return clienHTML
+        })
+
+        await loader.activate(board: .clienNews, filter: nil, searchQuery: nil)
+        XCTAssertEqual(fetchCount.value, 1)
+
+        await loader.activate(board: .clienNews, filter: nil, searchQuery: nil)
+
+        XCTAssertEqual(fetchCount.value, 2, "재방문 도착은 fresh 재요청이어야 한다")
+        XCTAssertEqual(loader.posts.count, 2)
+    }
+
     // MARK: - Idempotency
 
     func testRefreshRefireWithSameKeyIsNoOp() async {

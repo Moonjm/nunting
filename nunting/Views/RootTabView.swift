@@ -117,7 +117,7 @@ struct RootTabView: View {
     // 재디자인 #120 에서 새 셸로 이관 누락됐던 걸 복원).
     @State private var botCheck = BotCheckCoordinator.shared
     // 모음(0) 탭 재탭 시 증가 — 상세가 떠 있으면 상세 본문을, 아니면 현재
-    // 보드 목록을 맨 위로 스크롤하는 신호. reloadToken 과 같은 토큰 패턴으로
+    // 보드 목록을 맨 위로 스크롤하는 신호. 토큰 패턴으로
     // ArchiveHome/BoardPager/BoardListView·PostDetailScreen 까지 내려간다.
     @State private var scrollTopToken = 0
 
@@ -673,10 +673,9 @@ private struct BoardPager: View {
     let onEditOrder: () -> Void
 
     // 가상 인덱스: 0=헤드 센티넬(boards.last) / 1…n=실제 / n+1=테일 센티넬(boards.first)
+    // 전환 시 재로딩은 별도 토큰 없이 BoardListView 의 isActive 플립이 담당
+    // (.task 재시작 → loader.activate — 도착당 정확히 1회 로드).
     @State private var index = 1
-    // 보드별 재로딩 토큰 — 다른 보드로 전환해 들어올 때 그 보드 토큰을 올려
-    // BoardListView 가 새로 불러오게 한다(첫 진입 제외).
-    @State private var reloadTokens: [String: Int] = [:]
 
     private func inset(_ board: Board) -> CGFloat {
         baseBottomInset + (bottomControlsBoardIDs.contains(board.id) ? bottomControlsInset : 0)
@@ -698,27 +697,30 @@ private struct BoardPager: View {
                               switchableBoards: boards,
                               onSelectBoard: selectBoard,
                               onEditOrder: onEditOrder,
-                              reloadToken: reloadTokens[board.id] ?? 0,
                               scrollTopToken: scrollTopToken, readStore: readStore,
                               onSelectPost: onSelectPost)
                     .equatable()
             }
         } else {
             TabView(selection: $index) {
-                page(boards.last!, tag: 0)
-                ForEach(Array(boards.enumerated()), id: \.offset) { i, board in
-                    page(board, tag: i + 1)
+                // 센티널은 항상 비활성 — 도달 즉시 반대편 실제 페이지로 점프하므로
+                // 여기서 fetch 하면 순수 낭비(드래그 중엔 스피너로 노출).
+                page(boards.last!, tag: 0, isActive: false)
+                // board.id 키잉 — 종전 \.offset(위치) 키잉은 즐겨찾기 순서 변경 시
+                // 살아남은 뷰 @State(로더)가 그 자리의 '다른 보드'에 붙는 오염을
+                // 낳았다. 보드 identity 를 따라가면 재정렬해도 상태가 보드와 함께
+                // 이동한다(tag 는 위치 기반 그대로 — 선택 인덱스 수학과 분리).
+                ForEach(Array(boards.enumerated()), id: \.element.id) { i, board in
+                    page(board, tag: i + 1, isActive: index == i + 1)
                 }
-                page(boards.first!, tag: boards.count + 1)
+                page(boards.first!, tag: boards.count + 1, isActive: false)
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
             .onChange(of: index) { _, idx in handleIndex(idx) }
-            .onChange(of: currentBoardID) { old, id in
-                syncFromID(id)
-                // 첫 진입(nil→첫 보드)은 .task 가 로드하므로 제외, 그 외 전환은
-                // 도착한 보드를 새로 불러온다.
-                if old != nil, let id { reloadTokens[id, default: 0] += 1 }
-            }
+            // 도착 보드의 로드는 페이지의 isActive 플립(.task 재시작 →
+            // loader.activate)이 담당 — 여기서 토큰을 올려 리로드를 병행하면
+            // 첫 방문 보드가 두 번 fetch 된다(Codex P2 로 토큰 경로 제거).
+            .onChange(of: currentBoardID) { _, id in syncFromID(id) }
             .onChange(of: boards.map(\.id)) { _, ids in
                 let normalizedID = RootTabSelectionState.normalizedBoardID(
                     currentBoardID: currentBoardID,
@@ -733,15 +735,15 @@ private struct BoardPager: View {
         }
     }
 
-    @ViewBuilder private func page(_ board: Board, tag: Int) -> some View {
+    @ViewBuilder private func page(_ board: Board, tag: Int, isActive: Bool) -> some View {
         BoardListView(board: board, filter: filterByBoard[board.id],
                       searchQuery: searchByBoard[board.id],
+                      isActive: isActive,
                       bottomContentInset: inset(board),
                       showsBoardNameHeader: showsBoardNameHeader,
                       switchableBoards: boards,
                       onSelectBoard: selectBoard,
                       onEditOrder: onEditOrder,
-                      reloadToken: reloadTokens[board.id] ?? 0,
                       scrollTopToken: scrollTopToken, readStore: readStore,
                       onSelectPost: onSelectPost)
             .equatable()
