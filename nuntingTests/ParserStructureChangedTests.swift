@@ -108,6 +108,31 @@ final class ParserStructureChangedTests: XCTestCase {
         assertDeletionNotice(try EtolandParser().parseDetail(html: html, post: .fixture(site: .etoland)))
     }
 
+    /// 실측(2026-07-10) 이토랜드 삭제 글: 안내 문구가 body 텍스트가 아니라
+    /// `__next_f.push` flight payload 안의 `alert("삭제된 게시글입니다.")` 로만
+    /// 온다. SwiftSoup `text()` 는 script 내용을 제외하므로 키워드 폴백이
+    /// 못 잡고 structureChanged 오탐이 났던 케이스 — raw HTML 검사로 잡아야 한다.
+    func testEtolandScriptAlertDeletionReturnsNotice() throws {
+        let html = #"""
+        <html><body><div id="__next"></div>
+        <script>self.__next_f.push([1,"6:[\"$\",\"$L1d\",null,{\"dangerouslySetInnerHTML\":{\"__html\":\"alert(\\\"삭제된 게시글입니다.\\\");history.back();if(window.opener){window.close();}\"}}]\n"])</script>
+        </body></html>
+        """#
+        assertDeletionNotice(try EtolandParser().parseDetail(html: html, post: .fixture(site: .etoland)))
+    }
+
+    /// 실측(2026-07-10) 이토랜드 없는-글 변형: Next.js 에러 화면 문구
+    /// ("페이지가 존재하지 않거나 이동되었을 수 있습니다")가 flight payload
+    /// script 에만 실려 온다. 위와 같은 이유로 raw HTML 검사 대상.
+    func testEtolandFlightNotFoundReturnsNotice() throws {
+        let html = #"""
+        <html><body><div id="__next"></div>
+        <script>self.__next_f.push([1,"{\"className\":\"md:title-s\",\"children\":[\"페이지가 존재하지 않거나 이동되었을 수 있습니다.\"]}"])</script>
+        </body></html>
+        """#
+        assertDeletionNotice(try EtolandParser().parseDetail(html: html, post: .fixture(site: .etoland)))
+    }
+
     func testBobaeDeletionReturnsNotice() throws {
         let html = "<html><body><script>alert('삭제된 글 입니다.');history.back();</script></body></html>"
         assertDeletionNotice(try BobaeParser().parseDetail(html: html, post: .fixture(site: .bobae)))
@@ -117,5 +142,18 @@ final class ParserStructureChangedTests: XCTestCase {
         // No AAGAG_AA.content script + deletion keyword → notice, not throw.
         let html = "<html><body>삭제되었거나 존재하지 않는 게시물입니다.</body></html>"
         assertDeletionNotice(try AagagParser().parseDetail(html: html, post: .fixture(site: .aagag)))
+    }
+
+    /// 실측(2026-07-10) 인벤 삭제/없는 글: 302 없이 200 으로 목록 셸 페이지가
+    /// 오고(`mo-board-view` 부재), 본문 텍스트에 "요청하신 페이지를 찾을 수
+    /// 없습니다." 안내가 있다. structureChanged 오탐이 아니라 notice 처리 대상.
+    func testInvenNotFoundPageReturnsNotice() throws {
+        let html = """
+        <html><body>
+        <section class='mobile-board-top-module'><h4><a>웹진</a></h4></section>
+        <div class="articleError">요청하신 페이지를 찾을 수 없습니다.<br>서비스 이용에 불편을 드려 죄송합니다.</div>
+        </body></html>
+        """
+        assertDeletionNotice(try InvenParser().parseDetail(html: html, post: .fixture(site: .inven)))
     }
 }

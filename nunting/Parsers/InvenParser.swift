@@ -72,6 +72,22 @@ public struct InvenParser: BoardParser {
     public nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
         guard let section = try doc.select("section.mo-board-view").first() else {
+            // Deleted/nonexistent posts don't 404 or redirect — inven
+            // answers 200 with the board's shell page (no `mo-board-view`)
+            // and a visible "요청하신 페이지를 찾을 수 없습니다." notice
+            // (verified against the live site, 2026-07-10). That's a valid
+            // response, not a markup change, so surface a notice instead
+            // of the structureChanged banner + telemetry.
+            if try doc.text().contains("페이지를 찾을 수 없습니다") {
+                return PostDetail(
+                    post: post,
+                    blocks: [.text("삭제되거나 없는 게시물입니다.")],
+                    fullDateText: nil,
+                    viewCount: nil,
+                    source: nil,
+                    comments: []
+                )
+            }
             throw ParserError.structureChanged("mo-board-view 없음")
         }
 

@@ -39,13 +39,24 @@ public struct EtolandParser: BoardParser {
             // Deletion/relocation is a valid response — show a notice. Any
             // other reason the article wrapper is gone means the markup
             // changed; throw so the user sees the "구조가 바뀐 것 같아요" signal
-            // instead of a silently blank post. The keyword set is unverified
-            // against a real etoland deletion sample — throw is the safe
-            // fallback (informative banner, not a blank). Broaden the keywords
-            // here if a real deleted post ever shows "구조가 바뀜" by mistake.
+            // instead of a silently blank post.
+            //
+            // Real deleted/not-found pages (sampled 2026-07-10) carry the
+            // notice ONLY inside <script> flight payloads —
+            // `alert("삭제된 게시글입니다.")` or the Next.js error screen's
+            // "페이지가 존재하지 않거나 이동되었을 수 있습니다" — which
+            // SwiftSoup's `text()` excludes (script content is a DataNode).
+            // So scan the raw HTML for those two exact phrases in addition
+            // to the visible-text keyword check; the phrases are specific
+            // enough not to collide with post bodies rendered into HTML
+            // (a post merely *quoting* them would be a false notice, but
+            // only when the article wrapper is already missing).
             let body = try doc.text()
+            let scriptBorneNotice = html.contains("삭제된 게시글입니다")
+                || html.contains("존재하지 않거나 이동되었")
             guard body.contains("삭제") || body.contains("이동")
-                || body.contains("존재하지") || body.contains("없는 게시물") else {
+                || body.contains("존재하지") || body.contains("없는 게시물")
+                || scriptBorneNotice else {
                 throw ParserError.structureChanged("etoland article 없음")
             }
             return PostDetail(
