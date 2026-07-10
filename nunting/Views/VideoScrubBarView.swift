@@ -25,7 +25,7 @@ final class VideoScrubBarView: UIView, InlineVideoScrubBarMarking {
     weak var player: AVPlayer? {
         didSet {
             if oldValue === player { return }
-            removeTimeObserverFromPreviousPlayer(oldValue)
+            removeTimeObserver()
             installTimeObserver()
             updateFill()
         }
@@ -50,7 +50,18 @@ final class VideoScrubBarView: UIView, InlineVideoScrubBarMarking {
     /// `addPeriodicTimeObserver` returns an `Any` token; held so
     /// `removeTimeObserver` can pair off correctly when the player
     /// changes or the bar is torn down.
-    private var timeObserverToken: Any?
+    /// `nonisolated(unsafe)`: Swift 6 treats `deinit` as nonisolated
+    /// even on a main-actor UIView, so the final pair-off couldn't
+    /// touch a main-actor property. No real race: writes happen only
+    /// on the main actor, and deinit's read runs after the last
+    /// reference is gone (same pattern as
+    /// `AVPlayerFullscreenView.endObservation`).
+    nonisolated(unsafe) private var timeObserverToken: Any?
+    /// The player `timeObserverToken` was installed on. `player`
+    /// itself is unreadable from the nonisolated deinit (its `didSet`
+    /// pins it to the main actor), so the removal path tracks its own
+    /// weak reference, recorded at install time.
+    nonisolated(unsafe) private weak var observedPlayer: AVPlayer?
     /// `true` between drag/pan `.began` and `.ended`. While true the
     /// fill renders from `dragProgress` instead of the player's clock,
     /// so the scrub feels live (no lag while the player processes the
@@ -111,7 +122,7 @@ final class VideoScrubBarView: UIView, InlineVideoScrubBarMarking {
     }
 
     deinit {
-        removeTimeObserverFromPreviousPlayer(player)
+        removeTimeObserver()
     }
 
     /// Once the view is in a window the superview chain is settled, so
@@ -251,19 +262,32 @@ final class VideoScrubBarView: UIView, InlineVideoScrubBarMarking {
         // sub-quarter-second movement on something that thin. Higher
         // rates (10-30 Hz) wake the main thread for no visual gain.
         let interval = CMTime(seconds: 0.25, preferredTimescale: 600)
+        observedPlayer = player
         timeObserverToken = player.addPeriodicTimeObserver(
             forInterval: interval,
             queue: .main
         ) { [weak self] _ in
-            guard let self, !self.isDragging else { return }
-            self.updateFill()
+            // `queue: .main` guarantees this block runs on the main
+            // queue, so `assumeIsolated` is a static promotion from
+            // the observer's `@Sendable` signature into MainActor
+            // context — no hop, no deferred runloop tick (same pattern
+            // as `AVPlayerInlineView.endObservation`).
+            MainActor.assumeIsolated {
+                guard let self, !self.isDragging else { return }
+                self.updateFill()
+            }
         }
     }
 
-    private func removeTimeObserverFromPreviousPlayer(_ previous: AVPlayer?) {
-        if let token = timeObserverToken, let previous {
-            previous.removeTimeObserver(token)
+    /// Nonisolated so both call sites compile under Swift 6: the
+    /// main-actor `player.didSet` and the nonisolated `deinit`. Only
+    /// touches the `nonisolated(unsafe)` pair above plus AVPlayer's
+    /// thread-safe `removeTimeObserver`.
+    private nonisolated func removeTimeObserver() {
+        if let token = timeObserverToken, let observedPlayer {
+            observedPlayer.removeTimeObserver(token)
         }
         timeObserverToken = nil
+        observedPlayer = nil
     }
 }
