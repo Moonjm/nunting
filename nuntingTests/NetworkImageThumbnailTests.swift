@@ -76,6 +76,21 @@ final class NetworkImageThumbnailTests: XCTestCase {
         XCTAssertEqual(size, CGSize(width: 1206, height: NetworkImage.tallImageMaxPixelHeight))
     }
 
+    // MARK: - 측정 aspect 로 tall 전환하는 조건
+
+    /// 측정 aspect 기반 tall 리마운트는 1차 디코드가 실제로 높이 캡(8192)에
+    /// 닿았을 때만 — 100×1000 같은 좁지만 작은 이미지는 이미 native 로 완전
+    /// 디코드됐는데도 환산 높이(화면폭/aspect)가 8192 를 넘어 tall 판정되면
+    /// 불필요한 리마운트 + 중복 디코드가 된다(Codex P2).
+    func testDecodeWasHeightCapped() {
+        XCTAssertTrue(NetworkImage.decodeWasHeightCapped(
+            decodedPixels: CGSize(width: 273, height: 8192)))
+        XCTAssertTrue(NetworkImage.decodeWasHeightCapped(
+            decodedPixels: CGSize(width: 699, height: 8191)), "반올림 여유(-2) 포함")
+        XCTAssertFalse(NetworkImage.decodeWasHeightCapped(
+            decodedPixels: CGSize(width: 100, height: 1000)), "native 완전 디코드 — 캡 안 닿음")
+    }
+
     // MARK: - natural width 갱신 규칙
 
     /// 극단 세로형은 1차(흐린) 디코드 폭이 natural width 로 래치되면

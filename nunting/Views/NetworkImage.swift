@@ -158,6 +158,10 @@ struct NetworkImage: View {
     @State private var hasBeenVisible = false
     @State private var didReportVisible = false
     @State private var measuredAspect: CGFloat?
+    /// 1차 디코드가 높이 캡(8192)에 실제로 닿았는지 — 측정 aspect 기반 tall
+    /// 리마운트의 발동 조건. 좁지만 작은 이미지(예: 100×1000)는 환산 높이가
+    /// 8192 를 넘어도 이미 native 완전 디코드라 재디코드가 순수 낭비다.
+    @State private var measuredDecodeHitHeightCap = false
     @State private var measuredNaturalPointWidth: CGFloat?
     @State private var failed = false
     /// Current viewport intersection for `releasesWhenOffscreen` images.
@@ -363,8 +367,13 @@ struct NetworkImage: View {
     private func handleLoadSuccess(_ image: PlatformImage) {
         let aspect: CGFloat? = (image.size.height > 0) ? image.size.width / image.size.height : nil
         let naturalPointWidth = image.size.width * image.scale
+        let decodedPixels = CGSize(width: image.size.width * image.scale,
+                                   height: image.size.height * image.scale)
         DispatchQueue.main.async {
             if measuredAspect == nil, let aspect { measuredAspect = aspect }
+            if Self.decodeWasHeightCapped(decodedPixels: decodedPixels) {
+                measuredDecodeHitHeightCap = true
+            }
             // 갱신 규칙은 resolvedNaturalWidth 참조 — "한 번만" 래치하면 극단
             // 세로형의 1차(다운샘플) 폭이 고정돼 2차 선명 디코드 후에도
             // clampsToNaturalWidth 가 프레임을 1차 폭에 묶는다.
@@ -563,8 +572,10 @@ struct NetworkImage: View {
             maxPointSize: thumbnailMaxPointSize,
             maxPointWidth: thumbnailMaxPointWidth,
             // 실제 지식이 있는 aspect 만 — fallbackAspect(1:1 예약값)를 넣으면
-            // 극단 세로형이 정사각으로 오판돼 tall 재배분이 망가진다.
-            aspect: aspectRatio ?? measuredAspect,
+            // 극단 세로형이 정사각으로 오판돼 tall 재배분이 망가진다. 측정
+            // aspect 는 1차 디코드가 높이 캡에 닿았을 때만 — 안 닿았으면 이미
+            // native 완전 디코드라 tall 전환(리마운트+재디코드)이 순수 낭비.
+            aspect: aspectRatio ?? (measuredDecodeHitHeightCap ? measuredAspect : nil),
             scale: displayScale
         )
     }
@@ -606,6 +617,12 @@ struct NetworkImage: View {
             return [.imageThumbnailPixelSize: NSValue(cgSize: CGSize(width: pixels, height: Self.tallImageMaxPixelHeight))]
         }
         return nil
+    }
+
+    /// 1차 디코드가 기본 높이 캡에 닿았는지(=원본이 더 큼) — 뷰어의
+    /// `needsTallRedecode` 와 같은 결. -2 는 다운샘플 반올림 여유.
+    nonisolated static func decodeWasHeightCapped(decodedPixels: CGSize) -> Bool {
+        decodedPixels.height >= tallImageMaxPixelHeight - 2
     }
 
     /// 비정방(폭 기준) 박스의 기본 높이 캡 — 계약 테스트와 공유.
