@@ -91,14 +91,14 @@ struct PostDetailView: View, Equatable {
         }
     }
 
-    /// `atsSafe` URLs of heavy animated-WebP body images (the ones with a
-    /// blur-up poster → rendered first-frame-only inline). The prefetcher must
-    /// skip these: a full-decode prefetch of a 354-frame webp blocks the shared
-    /// serial decode queue for ~14s. Matches `NetworkImage`'s
-    /// `decodesFirstFrameOnly: posterURL != nil` gate.
+    /// `atsSafe` URLs of body images rendered first-frame-only inline. The
+    /// prefetcher must skip these: a full-decode prefetch of a 354-frame webp
+    /// blocks the shared serial decode queue for ~14s. Must stay in sync with
+    /// the inline gate — both call `NetworkImage.rendersFirstFrameOnly`.
     private var prefetchSkipURLs: Set<URL> {
         Set((loader.detail?.blocks ?? []).compactMap {
-            if case .image(let url, let posterURL, _) = $0.kind, posterURL != nil {
+            if case .image(let url, let posterURL, _) = $0.kind,
+               NetworkImage.rendersFirstFrameOnly(url: url, posterURL: posterURL) {
                 return url.atsSafe
             }
             return nil
@@ -414,23 +414,16 @@ struct PostDetailView: View, Equatable {
                             url: url,
                             aspectRatio: aspectRatio,
                             posterURL: posterURL,
-                            // A poster is attached only to heavy humoruniv
-                            // direct-attach WebP (animated 짤방). Those also get
-                            // first-frame-only inline decode: full-animation
-                            // decode is ~14s and blocks the shared serial decode
-                            // queue, freezing every image below it. Static
-                            // inline + tap-to-play (fullscreen) instead.
-                            //
-                            // KNOWN SCOPE LIMIT: this gate is humoruniv-only by
-                            // design — `posterURL` is set solely by HumorParser
-                            // (the one board with a thumbnail proxy to source a
-                            // poster from). A large animated WebP from another
-                            // board (Clien/Etoland/…) has `posterURL == nil`, so
-                            // it still goes through `AnimatedImage` and would
-                            // reproduce the freeze. Not yet observed elsewhere;
-                            // if it surfaces, decouple first-frame-only from
-                            // poster availability (its own block flag).
-                            decodesFirstFrameOnly: posterURL != nil,
+                            // Heavy animated WebP gets first-frame-only inline
+                            // decode: full-animation decode is ~14s and blocks
+                            // the shared serial decode queue, freezing every
+                            // image below it. Static inline + tap-to-play
+                            // (fullscreen) instead. The predicate covers the
+                            // poster-backed humoruniv 짤방 (기존) and — §3.1
+                            // 일반화 — any `.webp` body image from other boards;
+                            // see `rendersFirstFrameOnly` for the trade-offs.
+                            decodesFirstFrameOnly: NetworkImage.rendersFirstFrameOnly(
+                                url: url, posterURL: posterURL),
                             thumbnailMaxPointWidth: containerWidth > 0 ? containerWidth : nil,
                             // Eager-load the first body image: it's above the
                             // fold on open, so skip the viewport gate and let

@@ -49,7 +49,8 @@ struct NetworkImage: View {
     /// that to a single-frame decode (~40 ms): the feed shows a static frame
     /// instantly and the queue is freed. The animation is still viewable —
     /// tapping opens the fullscreen `ImageViewer`, which decodes + plays it on
-    /// demand. Small inline GIFs/WebP keep animating (this stays `false`).
+    /// demand. Small inline GIFs keep animating (this stays `false`); body
+    /// callers decide via `rendersFirstFrameOnly` (poster-backed or `.webp`).
     var decodesFirstFrameOnly: Bool = false
 
     /// Long-edge cap in *points*. Multiplied by `displayScale` to derive
@@ -407,6 +408,21 @@ struct NetworkImage: View {
         fallbackAspect: CGFloat?
     ) -> CGFloat? {
         aspectRatio ?? measuredAspect ?? fallbackAspect
+    }
+
+    /// 인라인 first-frame-only 게이트 — 본문 이미지 호출부(PostDetailView)와
+    /// 프리페치 skip 목록(BodyImagePrefetcher 입력)이 공유하는 단일 판정.
+    ///
+    /// 대형 애니메이션 WebP 를 `AnimatedImage` 로 열면 전 프레임 직렬 디코드
+    /// (354프레임 ≈ 14s)가 `SDImageCache` 직렬 큐를 점유해 아래 이미지 전부가
+    /// blank 로 멈춘다(#82). 종전엔 `posterURL != nil`(HumorParser 전용)로만
+    /// 판정해 다른 보드의 대형 WebP 는 프리즈가 재발했다(improvement-review
+    /// §3.1) — URL 확장자 `.webp` 로 일반화한다. 정적 webp 는 first-frame 으로
+    /// 그려도 시각 결과가 동일하고(1프레임), 애니메이션 webp 는 인라인 정지컷
+    /// + 탭 → 전체화면 재생으로 강등. GIF 는 프리즈 실측이 없어 인라인
+    /// 애니메이션 유지. 확장자 없는 URL 은 판별 불가 — 종전 동작(best-effort).
+    nonisolated static func rendersFirstFrameOnly(url: URL, posterURL: URL?) -> Bool {
+        posterURL != nil || url.pathExtension.lowercased() == "webp"
     }
 
     nonisolated static func shouldShowHeavyImage(
