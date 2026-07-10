@@ -30,10 +30,14 @@ struct ImageViewer: View {
             Color.black.ignoresSafeArea()
 
             if let image {
-                ZoomableImageView(image: image, isZoomed: $isZoomed)
-                    .offset(y: isZoomed ? 0 : dismissOffset)
-                    .simultaneousGesture(dismissDrag)
-                    .ignoresSafeArea()
+                // GeometryReader 로 뷰 크기를 prop 으로 — updateUIView 시점에
+                // bounds 가 아직 0 인 레이스 없이 동적 max zoom 을 계산한다.
+                GeometryReader { geo in
+                    ZoomableImageView(image: image, viewSize: geo.size, isZoomed: $isZoomed)
+                }
+                .offset(y: isZoomed ? 0 : dismissOffset)
+                .simultaneousGesture(dismissDrag)
+                .ignoresSafeArea()
             } else if failed {
                 Image(systemName: "photo")
                     .font(.largeTitle)
@@ -93,8 +97,39 @@ struct ImageViewer: View {
         // unnecessarily. 4096 covers every iPhone/iPad retina class
         // with headroom for pinch-to-zoom.
         let maxPixelSize = min(max(2400 * displayScale, 1024), 4096)
+        let result = await decode(boxPixels: CGSize(width: maxPixelSize, height: maxPixelSize))
+
+        guard !Task.isCancelled else { return }
+        guard let result else {
+            failed = true
+            return
+        }
+
+        // 극단 세로형(웹툰형 짤)이 정사각 박스에 깎였으면 tall 버짓 박스로 2차
+        // 디코드 — 1차 결과의 aspect(다운샘플은 비율 보존)로 원본 비례를 안다.
+        // 정사각 4096 박스는 800×24000 을 137px 폭으로 뭉갰다(인라인보다 흐림).
+        // 뷰어는 동시 1장이라 20MP(≈80MB) 버짓으로 통상 세로 짤은 native 폭.
+        let px = CGSize(width: result.size.width * result.scale,
+                        height: result.size.height * result.scale)
+        if Self.needsTallRedecode(decodedPixels: px, firstPassBoxEdge: maxPixelSize) {
+            let box = Self.tallDecodeBoxPixels(aspect: px.width / px.height, displayScale: displayScale)
+            image = result // 2차 디코드 동안 1차 결과 먼저 표시(스피너 대신).
+            if let sharp = await decode(boxPixels: box), !Task.isCancelled {
+                image = sharp
+            }
+            return
+        }
+        image = result
+    }
+
+    /// SDWebImageManager.loadImage handles fetch + decode + memory / disk
+    /// cache. The `imageThumbnailPixelSize` context derives a separate cache
+    /// key per box, so the viewer's decodes are their own cache namespace —
+    /// same isolation the legacy `cacheVariant: "viewer"` provided (tall 2차
+    /// 디코드도 박스가 달라 1차와 캐시 충돌 없음).
+    private func decode(boxPixels: CGSize) async -> UIImage? {
         let context: [SDWebImageContextOption: Any] = [
-            .imageThumbnailPixelSize: NSValue(cgSize: CGSize(width: maxPixelSize, height: maxPixelSize)),
+            .imageThumbnailPixelSize: NSValue(cgSize: boxPixels),
             // Decode animated WebP/GIF as a *lazy* `SDAnimatedImage` (frames
             // decoded on demand during playback) instead of the default path,
             // which materialises every frame into `UIImage.images` up front —
@@ -104,14 +139,7 @@ struct ImageViewer: View {
             // buffer. Static images are unaffected (single-frame SDAnimatedImage).
             .animatedImageClass: SDAnimatedImage.self,
         ]
-
-        // SDWebImageManager.loadImage handles fetch + decode + memory /
-        // disk cache. The `imageThumbnailPixelSize` context derives a
-        // separate cache key from the inline-body entry (which decodes
-        // at native resolution), so the viewer's thumbnail decode is
-        // its own cache namespace — same isolation the legacy
-        // `cacheVariant: "viewer"` provided.
-        let result: UIImage? = await withCheckedContinuation { continuation in
+        return await withCheckedContinuation { continuation in
             SDWebImageManager.shared.loadImage(
                 with: url.atsSafe,
                 options: [.retryFailed],
@@ -121,19 +149,47 @@ struct ImageViewer: View {
                 continuation.resume(returning: uiImage)
             }
         }
+    }
 
-        guard !Task.isCancelled else { return }
+    // MARK: - tall 이미지 계약 (단위 테스트로 핀)
 
-        if let result {
-            image = result
-        } else {
-            failed = true
-        }
+    /// 1차(정사각 박스) 디코드가 높이 캡에 닿았고(=원본이 박스보다 큼) 극단
+    /// 세로형(폭/높이 < 1/4)일 때만 2차 재디코드. 캡에 안 닿았으면 이미
+    /// native 디코드라 다시 할 게 없다.
+    nonisolated static func needsTallRedecode(decodedPixels: CGSize, firstPassBoxEdge: CGFloat) -> Bool {
+        guard decodedPixels.width > 0, decodedPixels.height > 0 else { return false }
+        let aspect = decodedPixels.width / decodedPixels.height
+        return aspect < 0.25 && decodedPixels.height >= firstPassBoxEdge - 2
+    }
+
+    /// tall 2차 디코드 박스 — 버짓 20MP(RGBA ≈ 80MB, 뷰어 단일 이미지 한정)를
+    /// aspect 에 맞춰 배분: 폭 = min(정사각 캡, sqrt(버짓×aspect)), 높이는
+    /// hard max 24576 안. 통상 세로 짤(800×24000 = 19.2MP)은 native 통과.
+    nonisolated static func tallDecodeBoxPixels(aspect: CGFloat, displayScale: CGFloat) -> CGSize {
+        let budget: CGFloat = 20_000_000
+        let hardMaxHeight: CGFloat = 24_576
+        let widthCap = min(max(2400 * displayScale, 1024), 4096)
+        let width = min(widthCap, (budget * aspect).squareRoot())
+        let height = min(width / aspect, hardMaxHeight)
+        return CGSize(width: width, height: height)
+    }
+
+    /// 동적 최대 줌 — aspectFit(줌 1) 기준 폭맞춤까지 필요한 배율의 2배.
+    /// 세로 초대형은 fit 이 폭을 수십 pt 로 만들어 종전 고정 5×로는 "확대가
+    /// 중간에 끝나" 읽을 수 없었다. 일반 사진은 종전 5× 유지, 상한 60.
+    nonisolated static func maxZoomScale(imageSize: CGSize, viewSize: CGSize) -> CGFloat {
+        guard imageSize.width > 0, imageSize.height > 0,
+              viewSize.width > 0, viewSize.height > 0 else { return 5 }
+        let fit = min(viewSize.width / imageSize.width, viewSize.height / imageSize.height)
+        let widthFill = viewSize.width / imageSize.width
+        guard fit > 0 else { return 5 }
+        return min(max(5, widthFill / fit * 2), 60)
     }
 }
 
 private struct ZoomableImageView: UIViewRepresentable {
     let image: UIImage
+    let viewSize: CGSize
     @Binding var isZoomed: Bool
 
     func makeUIView(context: Context) -> UIScrollView {
@@ -141,7 +197,9 @@ private struct ZoomableImageView: UIViewRepresentable {
         scrollView.backgroundColor = .clear
         scrollView.delegate = context.coordinator
         scrollView.minimumZoomScale = 1
-        scrollView.maximumZoomScale = 5
+        // 세로 초대형은 aspectFit 이 폭을 수십 pt 로 만들므로 이미지/뷰 비율
+        // 기반 동적 상한 — updateUIView 가 실제 크기로 갱신한다.
+        scrollView.maximumZoomScale = ImageViewer.maxZoomScale(imageSize: image.size, viewSize: viewSize)
         scrollView.bouncesZoom = true
         scrollView.showsHorizontalScrollIndicator = false
         scrollView.showsVerticalScrollIndicator = false
@@ -171,6 +229,8 @@ private struct ZoomableImageView: UIViewRepresentable {
     }
 
     func updateUIView(_ scrollView: UIScrollView, context: Context) {
+        // 이미지 교체(tall 2차 디코드 포함)나 뷰 크기 변화 모두 상한 재계산.
+        scrollView.maximumZoomScale = ImageViewer.maxZoomScale(imageSize: image.size, viewSize: viewSize)
         guard context.coordinator.imageView?.image !== image else { return }
         context.coordinator.imageView?.image = image
         // setZoomScale fires scrollViewDidZoom, which resets isZoomed — no
@@ -207,7 +267,19 @@ private struct ZoomableImageView: UIViewRepresentable {
                 isZoomed = false
             } else {
                 let point = recognizer.location(in: imageView)
-                let targetScale = min(scrollView.maximumZoomScale, 2.5)
+                // 세로 초대형은 더블탭 한 번에 "폭맞춤"(웹툰 리더 배율)으로 —
+                // 고정 2.5×는 폭 수십 pt 표시에선 읽기 배율에 한참 못 미친다.
+                var targetScale = min(scrollView.maximumZoomScale, 2.5)
+                if let img = imageView?.image, img.size.height > 0 {
+                    let bounds = scrollView.bounds
+                    let fitWidth = min(bounds.width, bounds.height * (img.size.width / img.size.height))
+                    if fitWidth > 0 {
+                        let widthFill = bounds.width / fitWidth
+                        if widthFill > 2.5 {
+                            targetScale = min(scrollView.maximumZoomScale, widthFill)
+                        }
+                    }
+                }
                 let size = CGSize(
                     width: scrollView.bounds.width / targetScale,
                     height: scrollView.bounds.height / targetScale
