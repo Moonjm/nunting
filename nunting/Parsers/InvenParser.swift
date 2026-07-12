@@ -239,9 +239,14 @@ public struct InvenParser: BoardParser {
     /// returns the untouched upload (measured: 360×687 → 1080×2061 comment,
     /// 800×369 → 2796×1290 body), so the fullscreen viewer gets full
     /// resolution instead of a blurry thumbnail. Stickers ship without a
-    /// query and pass through unchanged. Internal for the unit test.
+    /// query and pass through unchanged. Gated to inven.co.kr-family hosts
+    /// (`upload3.inven.co.kr` 등) — 본문엔 외부 이미지도 삽입되는데, 남의
+    /// 서버의 `MW` 쿼리는 정당한 파라미터(서명 포함 가능)일 수 있다.
+    /// Internal for the unit test.
     nonisolated static func strippingResizeParam(_ url: URL) -> URL {
-        guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+        guard let host = url.host?.lowercased(),
+              host == "inven.co.kr" || host.hasSuffix(".inven.co.kr"),
+              var comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let items = comps.queryItems,
               items.contains(where: { $0.name == "MW" })
         else { return url }

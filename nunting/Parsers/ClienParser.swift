@@ -346,9 +346,13 @@ public struct ClienParser: BoardParser {
     /// 480 → 740, the largest no-round-trip variant: sources ≤740px come back
     /// at native size (measured), larger ones at 740 instead of 480 — a 1.5×
     /// improvement for the fullscreen viewer with zero extra requests.
-    /// Internal for the unit test.
+    /// Gated to clien.net-family hosts(`edgio.clien.net` 등) — 본문엔 외부
+    /// 이미지도 삽입되는데, 남의 서버가 우연히 같은 `scale` 쿼리를 쓰면
+    /// 치환이 다른 리소스/에러를 만들 수 있다. Internal for the unit test.
     nonisolated static func upgradingScaleWidth(_ url: URL) -> URL {
-        guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+        guard let host = url.host?.lowercased(),
+              host == "clien.net" || host.hasSuffix(".clien.net"),
+              var comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let items = comps.queryItems,
               items.contains(where: { $0.name == "scale" && $0.value == "width:480" })
         else { return url }

@@ -42,6 +42,28 @@ final class CommentImageOriginalTests: XCTestCase {
         )
     }
 
+    func testInvenLeavesExternalHostMWQueryUntouched() throws {
+        // 외부 호스트 이미지의 `MW` 쿼리는 그 서버의 정당한 파라미터(서명
+        // 포함 가능)일 수 있다 — 인벤 계열 호스트가 아니면 건드리지 않는다.
+        let url = URL(string: "https://cdn.example.com/img/photo.jpg?MW=800&sig=abc")!
+        XCTAssertEqual(
+            InvenParser.strippingResizeParam(url).absoluteString,
+            "https://cdn.example.com/img/photo.jpg?MW=800&sig=abc",
+            "인벤 업로드 호스트가 아닌 URL 은 MW 쿼리를 보존해야 함"
+        )
+    }
+
+    func testClienLeavesExternalHostScaleQueryUntouched() throws {
+        // 외부 호스트가 우연히 `scale=width:480` 쿼리를 쓰는 경우 — 클리앙
+        // CDN 이 아니면 치환하지 않는다(다른 리소스/에러 방지).
+        let url = URL(string: "https://images.example.com/a.png?scale=width:480")!
+        XCTAssertEqual(
+            ClienParser.upgradingScaleWidth(url).absoluteString,
+            "https://images.example.com/a.png?scale=width:480",
+            "클리앙 CDN 호스트가 아닌 URL 은 scale 쿼리를 보존해야 함"
+        )
+    }
+
     func testInvenStickerWithoutQueryUnchanged() throws {
         // 스티커는 쿼리 없이 옴 — 변형 없이 그대로 통과해야 한다.
         let json = """
