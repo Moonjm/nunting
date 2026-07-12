@@ -298,7 +298,16 @@ struct NetworkImage: View {
     /// `http://` (carisyou, some tistory mirrors) otherwise flooded the retry
     /// placeholder after the SD migration.
     private var animatedBodyImage: some View {
-        AnimatedImage(url: url.atsSafe, context: thumbnailContext) {
+        // 오염 선제 제거: 구버전(first-frame 정지컷 경로)이 메모리 캐시에
+        // 남긴 정지 UIImage 를 같은 키로 집어가면 움짤이 정지컷으로 고착된다.
+        // SDWebImage 의 `.matchAnimatedImageClass` 는 디스크 조회 블록의
+        // #3523 메모리 재확인이 클래스 체크 없이 오염 엔트리를 재획득해
+        // 무력(실측)이고, onSuccess 감지 → identity 리마운트 방식은 재로드
+        // 이미지가 뷰에 실리지 않는 타이밍 이슈가 있어(실측) 로드 시작 전
+        // 제거가 유일하게 결정적이다. body 평가마다 불리지만 NSCache 조회
+        // 1회 + idempotent 라 무해하다.
+        Self.purgePoisonedMemoryEntry(for: url.atsSafe, context: thumbnailContext)
+        return AnimatedImage(url: url.atsSafe, context: thumbnailContext) {
             loadingPlaceholder
         }
         .onSuccess { image, _, _ in handleLoadSuccess(image) }
@@ -314,6 +323,23 @@ struct NetworkImage: View {
         .scaledToFit()
     }
 
+    /// 메모리 캐시의 오염(정지 UIImage) 엔트리 선제 제거 — `.webp` URL 의
+    /// 애니메이션 로드 경로는 정적 webp 도 1프레임 `SDAnimatedImage` 로
+    /// 돌려주므로, 같은 키에 `SDAnimatedImage` 가 아닌 엔트리가 있다는 건
+    /// first-frame 정지컷 경로(구버전/외부)가 남긴 잔재다. 지우면 다음
+    /// 로드가 디스크 원본에서 lazy 재디코드한다(네트워크 재요청 없음).
+    /// 유닛 테스트용 internal.
+    nonisolated static func purgePoisonedMemoryEntry(
+        for url: URL, context: [SDWebImageContextOption: Any]?
+    ) {
+        guard url.pathExtension.lowercased() == "webp",
+              let key = SDWebImageManager.shared.cacheKey(for: url, context: context),
+              let cached = SDImageCache.shared.imageFromMemoryCache(forKey: key),
+              !(cached is SDAnimatedImage)
+        else { return }
+        SDImageCache.shared.removeImageFromMemory(forKey: key)
+    }
+
     /// Shared `.onSuccess` handler for the body-image path.
     ///
     /// SDWebImage decodes UIImages at the device scale (≈3 on retina), so
@@ -325,6 +351,14 @@ struct NetworkImage: View {
     /// past the in-flight render (SD can fire `.onSuccess` synchronously on a
     /// memory-cache hit, which would trip "Modifying state during view update").
     private func handleLoadSuccess(_ image: PlatformImage) {
+        // 오염 자가치유: 구버전(first-frame 정지컷 경로)이 메모리 캐시에 남긴
+        // 정지 UIImage 를 같은 키로 집어온 경우다. SDWebImage 의
+        // `.matchAnimatedImageClass` 는 디스크 조회 블록의 #3523 메모리
+        // 재확인이 클래스 체크 없이 오염 엔트리를 재획득해 무력(실측) —
+        // 여기서 감지해 메모리 엔트리를 지우고 identity 변경으로 1회
+        // 리로드한다(디스크 원본에서 lazy 재디코드, 네트워크 재요청 없음).
+        // webp 는 애니메이션 경로에서 정적이어도 SDAnimatedImage(1프레임)로
+        // 오므로 UIImage 결과 = 오염 히트, 오탐 없음.
         let aspect: CGFloat? = (image.size.height > 0) ? image.size.width / image.size.height : nil
         let naturalPointWidth = image.size.width * image.scale
         let decodedPixels = CGSize(width: image.size.width * image.scale,
