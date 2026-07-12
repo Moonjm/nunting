@@ -141,11 +141,6 @@ struct RootTabView: View {
         guard let board = searchContextBoard, board.supportsSearch else { return nil }
         return board
     }
-    // 그 보드에 검색어가 걸려 있는지 — 검색 탭 아이콘 🔍/✕ 토글 + 탭 동작 분기용.
-    private var isSearchActive: Bool {
-        guard let board = activeSearchBoard else { return false }
-        return searchByBoard[board.id] != nil
-    }
     var body: some View {
         ZStack {
             // 보드 검색은 탭바 오른쪽 role:.search 탭(iOS 26 유리 탭바가 분리 배치).
@@ -156,15 +151,14 @@ struct RootTabView: View {
                 get: { rootTabSelectionState.selectedTab },
                 set: { newValue in
                     // 검색 탭(role:.search, value 4) — 탭 전환이 아니라 검색 동작.
-                    // 검색어가 걸려 있으면 해제, 아니면 검색 시트를 연다. selectedTab
-                    // 은 건드리지 않는다(빈 Color.clear 노출·언더레이 교체 방지).
+                    // 항상 검색 시트를 연다(검색 중이면 SearchSheet 가 현재 검색어
+                    // 프리필로 열려 수정). 해제는 검색 활성 칩의 ✕ 담당 — 예전
+                    // "검색 중 재탭=즉시 해제" 토글은 시트를 기대한 탭에 검색이
+                    // 조용히 풀리는 모드 함정이라 제거. selectedTab 은 건드리지
+                    // 않는다(빈 Color.clear 노출·언더레이 교체 방지).
                     if newValue == 4 {
-                        if let board = activeSearchBoard {
-                            if searchByBoard[board.id] != nil {
-                                searchByBoard[board.id] = nil
-                            } else {
-                                showingSearch = true
-                            }
+                        if activeSearchBoard != nil {
+                            showingSearch = true
                         }
                         return
                     }
@@ -207,9 +201,9 @@ struct RootTabView: View {
                 }
                 .badge(alertBadge.unread)
                 // 검색 — iOS 26 유리 탭바 우측 분리 슬롯. 탭하면 전환 대신 현재 보드
-                // 검색 시트를 열고(위 setter 인터셉트), 검색 중이면 아이콘이 ✕(해제)로
-                // 바뀐다. 검색 지원 보드가 없으면(알림 탭·비검색 보드) 비활성.
-                Tab("검색", systemImage: isSearchActive ? "xmark" : "magnifyingglass",
+                // 검색 시트를 연다(위 setter 인터셉트; 검색 중이면 현재 검색어 프리필).
+                // 검색 지원 보드가 없으면(알림 탭·비검색 보드) 비활성.
+                Tab("검색", systemImage: "magnifyingglass",
                     value: 4, role: .search) {
                     Color.clear
                 }
@@ -912,8 +906,8 @@ private struct FavoritesReorderSheet: View {
 // 검색 활성 칩 — 검색이 걸린 동안 필터 바 자리(하단 좌측)에 뜨는 유리 캡슐.
 // 목록이 검색 결과로 바뀌어도 검색어가 화면 어디에도 안 보이던 문제의 해법:
 // 지금 무슨 검색어의 결과인지 상시 표시하고, 본체 탭=SearchSheet 재오픈(현재
-// 검색어 프리필 → 수정), ✕=해제. 탭바 검색 탭의 ✕(즉시 해제)와 달리 여기선
-// 검색어를 지우지 않고 고칠 수 있다.
+// 검색어 프리필 → 수정), ✕=해제. 해제는 이 ✕가 유일한 경로 — 탭바 검색 탭은
+// 항상 시트 열기라(모드 함정 방지) 지우는 역할을 하지 않는다.
 private struct SearchActiveChip: View {
     let query: String
     let onEdit: () -> Void
