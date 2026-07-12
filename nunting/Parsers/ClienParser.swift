@@ -214,7 +214,11 @@ public struct ClienParser: BoardParser {
         let width = CGFloat(Double(try element.attr("data-img-width")) ?? 0)
         let height = CGFloat(Double(try element.attr("data-img-height")) ?? 0)
         let aspectRatio = width > 0 && height > 0 ? width / height : nil
-        return (url, aspectRatio)
+        // Body uploads ship the same `?scale=width:480` CDN resize as comment
+        // attachments (measured 480×931 vs 850×1650 original) — apply the
+        // 480→740 upgrade here too. External images carry no scale query and
+        // pass through unchanged.
+        return (Self.upgradingScaleWidth(url), aspectRatio)
     }
 
     nonisolated private static let imageExtensions: Set<String> = [
@@ -334,16 +338,21 @@ public struct ClienParser: BoardParser {
         return results
     }
 
-    /// Clien comment attachments always ship `?scale=width:480` — a server
+    /// Clien uploads (body images and comment attachments alike) always ship
+    /// `?scale=width:480` — a server
     /// resize the CDN only honours for widths 480 and 740 (bare URLs and any
     /// other width 302 to the error page; the true original needs a signed
     /// token from `/service/api/ori/imgView`, a per-open round-trip). Rewrite
     /// 480 → 740, the largest no-round-trip variant: sources ≤740px come back
     /// at native size (measured), larger ones at 740 instead of 480 — a 1.5×
     /// improvement for the fullscreen viewer with zero extra requests.
-    /// Internal for the unit test.
+    /// Gated to clien.net-family hosts(`edgio.clien.net` 등) — 본문엔 외부
+    /// 이미지도 삽입되는데, 남의 서버가 우연히 같은 `scale` 쿼리를 쓰면
+    /// 치환이 다른 리소스/에러를 만들 수 있다. Internal for the unit test.
     nonisolated static func upgradingScaleWidth(_ url: URL) -> URL {
-        guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+        guard let host = url.host?.lowercased(),
+              host == "clien.net" || host.hasSuffix(".clien.net"),
+              var comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let items = comps.queryItems,
               items.contains(where: { $0.name == "scale" && $0.value == "width:480" })
         else { return url }

@@ -566,7 +566,10 @@ public struct AagagParser: BoardParser {
             var bestType: String? = nil
             var bestByte = oriByte
             for type in ["webp", "jpg"] {
-                guard let byte = byteCount(o[type]), byte < bestByte else { continue }
+                guard let entry = o[type] as? [String: Any],
+                      let byte = byteCount(entry), byte < bestByte,
+                      !isPixelDownsized(entry, original: json)
+                else { continue }
                 bestType = type
                 bestByte = byte
             }
@@ -579,6 +582,22 @@ public struct AagagParser: BoardParser {
             return absolutize(urlString)
         }
         return "https://i.aagag.com/\(q).jpg"
+    }
+
+    /// The `/o/` optimizer caps output width at ~966px and a downsized
+    /// variant self-reports its own `width`/`height` in the `o` entry while
+    /// the payload top level keeps the original's (measured: `/o/IoLxC.webp`
+    /// 966×721 vs bucket-root original 1031×770). A byte-smaller pick that is
+    /// also pixel-smaller trades fullscreen-zoom resolution for bandwidth —
+    /// skip it. Entries without their own dimensions are pure recompressions
+    /// (same pixels) and stay eligible.
+    nonisolated private func isPixelDownsized(_ entry: [String: Any], original json: [String: Any]) -> Bool {
+        func dim(_ dict: [String: Any], _ key: String) -> Int? {
+            (dict[key] as? NSNumber)?.intValue
+        }
+        if let ow = dim(json, "width"), let vw = dim(entry, "width"), vw < ow { return true }
+        if let oh = dim(json, "height"), let vh = dim(entry, "height"), vh < oh { return true }
+        return false
     }
 
     /// `byte` field from an `o`-map encoding entry (`{"byte": 15354}`).

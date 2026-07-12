@@ -11,6 +11,14 @@ public struct HumorParser: BoardParser {
         pattern: #"comment_mp4_expand\s*\(\s*'[^']*'\s*,\s*'([^']+)'"#,
         options: []
     )
+    /// Animated-GIF comment attachments carry the original URL only as the
+    /// second `comment_thumb_expand('id','원본','썸네일')` argument inside an
+    /// `<a href="javascript:…">` wrapper — the `<img>` itself has no
+    /// `img_file_url` and points at the timg proxy (static JPEG re-encode).
+    nonisolated private static let thumbExpandRegex = try! NSRegularExpression(
+        pattern: #"comment_thumb_expand\s*\(\s*'[^']*'\s*,\s*'([^']+)'"#,
+        options: []
+    )
     /// Source markers that identify non-content chrome (loading bars, UI icons,
     /// reaction buttons, AI 너굴맨 / "안심맨" decoy that humoruniv injects
     /// before every uploaded body image to thwart hot-linking — surfacing it
@@ -243,8 +251,15 @@ public struct HumorParser: BoardParser {
     }
 
     nonisolated private func parseMp4Click(_ onclick: String) throws -> URL? {
-        let ns = onclick as NSString
-        guard let match = Self.mp4ExpandRegex.firstMatch(in: onclick, range: NSRange(location: 0, length: ns.length)),
+        expandArgumentURL(in: onclick, matching: Self.mp4ExpandRegex)
+    }
+
+    /// Pull the first captured `comment_*_expand` argument (the original
+    /// media URL) out of an onclick/href JS call and promote it to an
+    /// absolute http(s) URL.
+    nonisolated private func expandArgumentURL(in js: String, matching regex: NSRegularExpression) -> URL? {
+        let ns = js as NSString
+        guard let match = regex.firstMatch(in: js, range: NSRange(location: 0, length: ns.length)),
               match.numberOfRanges >= 2
         else { return nil }
         var raw = ns.substring(with: match.range(at: 1))
@@ -352,8 +367,23 @@ public struct HumorParser: BoardParser {
     /// Iterate every <img> in the wrapper so the progress bar doesn't shadow
     /// the real attachment, prefer img_file_url (untransformed original) over
     /// the thumb proxy for zoom quality, and skip the loading-bar decoy.
+    ///
+    /// Animated-GIF attachments ship differently: no `img_file_url` at all —
+    /// the original lives only in `<a href="javascript:comment_thumb_expand(
+    /// 'id','//down…/r_r….gif','//timg…thumb.php?…')">` wrapping the proxy
+    /// `<img>`. Try that href first (measured: the proxy is a static 17KB
+    /// JPEG re-encode of frame 1; the original is the 2MB animated GIF,
+    /// served without hotlink protection).
     nonisolated private func extractCommentSticker(in li: Element) -> URL? {
-        firstImageURL(
+        if let anchors = try? li.select(".comment_file a[href*=comment_thumb_expand]") {
+            for a in anchors {
+                if let href = try? a.attr("href"),
+                   let url = expandArgumentURL(in: href, matching: Self.thumbExpandRegex) {
+                    return url
+                }
+            }
+        }
+        return firstImageURL(
             in: li,
             selector: ".comment_file img",
             attributes: ["img_file_url", "data-original", "src"],
