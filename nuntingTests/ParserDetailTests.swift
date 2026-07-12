@@ -1180,6 +1180,52 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertTrue(prose.contains("보상"))
     }
 
+    func testInvenBodyImageStripsResizeParam() throws {
+        // Real shape from inven.co.kr/board/maple/5974/6859907 — Inven serves
+        // body images through the same `?MW=` server resize as comments
+        // (measured: 800×369 with the param, 2796×1290 without). Comments
+        // already strip it via `strippingResizeParam`; the body walker must
+        // too, or the fullscreen viewer zooms into an 800px upscale.
+        let html = """
+        <html><body>
+        <section class="mo-board-view">
+          <div class="date">2026-07-11 12:00</div>
+          <div class="hit"><span>1234</span></div>
+          <div class="bbs-con">
+            <div id="imageCollectDiv" class="contentBody">
+              <div id="powerbbsContent">
+                <div><img src="https://upload3.inven.co.kr/upload/2026/07/11/bbs/i1441904973.png?MW=800" /></div>
+                <div><img src="https://upload3.inven.co.kr/upload/2026/07/11/bbs/i9999999999.png" /></div>
+              </div>
+            </div>
+          </div>
+        </section>
+        </body></html>
+        """
+        let parser = InvenParser()
+        let post = Post.fixture(
+            id: "inven-maple-5974-6859907",
+            site: .inven,
+            boardID: "inven-maple",
+            url: URL(string: "https://www.inven.co.kr/board/maple/5974/6859907")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+
+        let images = detail.blocks.imageURLs
+        XCTAssertEqual(images.count, 2)
+        XCTAssertEqual(
+            images.first?.absoluteString,
+            "https://upload3.inven.co.kr/upload/2026/07/11/bbs/i1441904973.png",
+            "본문 이미지의 MW 리사이즈 파라미터는 제거되어 원본을 가리켜야 함"
+        )
+        XCTAssertEqual(
+            images.last?.absoluteString,
+            "https://upload3.inven.co.kr/upload/2026/07/11/bbs/i9999999999.png",
+            "쿼리 없는 이미지는 그대로 통과"
+        )
+    }
+
     func testInvenNonYoutubeIframeIsDropped() throws {
         // Only YouTube iframes promote to an embed block — generic third-party
         // iframes (ad slots, twitter widgets, anything we don't know how to
