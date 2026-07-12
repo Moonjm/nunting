@@ -105,7 +105,14 @@ struct RootTabView: View {
     // 보드별 활성 검색어(옛 앱처럼 검색은 보드에 묶임). 하단 검색 버튼과
     // 모음 목록/배너가 공유하므로 셸 레벨에 둔다.
     @State private var searchByBoard: [String: String] = [:]
-    @State private var showingSearch = false
+    // 검색 시트가 뜬 보드(nil=닫힘). Bool 대신 item 으로 여는 이유: 시트가
+    // 떠 있는 동안 보드를 캡처해 고정 — 아래 탭 재동기화 중 searchContextBoard
+    // 가 잠깐 nil 이 돼도 시트 내용이 비지 않는다.
+    @State private var searchSheetBoard: Board?
+    // 검색 시트가 role:.search 탭 탭으로 열렸는지 — 그 경우에만 닫힐 때
+    // 네이티브 탭바 선택 재동기화(아래 onChange)가 필요하다. 칩으로 열면
+    // 탭바를 건드린 적이 없으므로 불필요.
+    @State private var searchTabNeedsResync = false
     // 둘러보기에서 현재 열어둔 보드(글 목록). nil = 사이트 목록/미진입.
     @State private var browsingBoard: Board?
     // 상세 오버레이 백드래그(우→ 스와이프 닫기) 상태기계.
@@ -155,10 +162,13 @@ struct RootTabView: View {
                     // 프리필로 열려 수정). 해제는 검색 활성 칩의 ✕ 담당 — 예전
                     // "검색 중 재탭=즉시 해제" 토글은 시트를 기대한 탭에 검색이
                     // 조용히 풀리는 모드 함정이라 제거. selectedTab 은 건드리지
-                    // 않는다(빈 Color.clear 노출·언더레이 교체 방지).
+                    // 않는다(빈 Color.clear 노출·언더레이 교체 방지). 대신 네이티브
+                    // 탭바는 이미 검색 탭으로 넘어가 있으므로 시트가 닫힐 때
+                    // 재동기화가 필요하다 — 플래그를 세워 둔다.
                     if newValue == 4 {
-                        if activeSearchBoard != nil {
-                            showingSearch = true
+                        if let board = activeSearchBoard {
+                            searchSheetBoard = board
+                            searchTabNeedsResync = true
                         }
                         return
                     }
@@ -181,14 +191,14 @@ struct RootTabView: View {
                         searchByBoard: $searchByBoard,
                         currentBoardID: $currentBoardID,
                         scrollTopToken: scrollTopToken,
-                        onEditSearch: { showingSearch = true }
+                        onEditSearch: { searchSheetBoard = $0 }
                     )
                 }
                 Tab("둘러보기", systemImage: "square.grid.2x2", value: 1) {
                     BrowseTab(catalog: catalog, favorites: favorites,
                               readStore: readStore, onSelectPost: { FootprintLogger.shared.record("post-open"); detail.show($0) },
                               searchByBoard: $searchByBoard, browsingBoard: $browsingBoard,
-                              onEditSearch: { showingSearch = true })
+                              onEditSearch: { searchSheetBoard = $0 })
                 }
                 Tab("알림", systemImage: "bell", value: 2) {
                     NavigationStack {
@@ -213,13 +223,30 @@ struct RootTabView: View {
             // 검색 탭(role:.search) 눌림 피드백을 가린다(작은 시트는 탭바가 보여
             // "탭전환 깜빡임"처럼 보였다). 히스토리 오버레이가 탭바를 덮어 매끄럽던
             // 것과 같은 원리.
-            .fullScreenCover(isPresented: $showingSearch) {
-                if let board = searchContextBoard {
-                    SearchSheet(
-                        board: board,
-                        initialQuery: searchByBoard[board.id] ?? "",
-                        onSubmit: { searchByBoard[board.id] = $0 }
-                    )
+            .fullScreenCover(item: $searchSheetBoard) { board in
+                SearchSheet(
+                    board: board,
+                    initialQuery: searchByBoard[board.id] ?? "",
+                    onSubmit: { searchByBoard[board.id] = $0 }
+                )
+            }
+            // 검색 탭으로 열린 시트가 닫힐 때 네이티브 탭바 선택 재동기화.
+            // role:.search 탭을 탭한 순간 네이티브 탭바는 검색 탭으로 넘어가는데,
+            // 위 setter 인터셉트는 selectedTab 을 안 바꾸므로 SwiftUI 는 값이
+            // 그대로(0/1)라 네이티브를 되돌릴 변화가 없다고 본다 → 시트를 닫으면
+            // 빈 검색 탭(Color.clear)이 남는다. (예전엔 제출 시 탭 아이콘 🔍/✕
+            // 교체가 탭바를 재구성해 우연히 재동기화됐던 것 — 아이콘 고정으로
+            // 사라진 우연.) 선택을 4로 한 프레임 인정했다가 원래 탭으로 되돌려
+            // 실제 값 변화(4→원래 탭)로 네이티브 선택을 다시 맞춘다. 그 한 프레임은
+            // 커버가 아직 화면을 덮고 있는 dismiss 초입이라 보이지 않는다.
+            .onChange(of: searchSheetBoard) { _, board in
+                guard board == nil, searchTabNeedsResync else { return }
+                searchTabNeedsResync = false
+                let current = rootTabSelectionState.selectedTab
+                rootTabSelectionState.selectTab(4)
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(50))
+                    rootTabSelectionState.selectTab(current)
                 }
             }
             // 이전 글(치워둔 마지막 상세) 되돌리기 핸들 — 우측 모서리에 빼꼼 걸친
@@ -369,8 +396,8 @@ private struct ArchiveHome: View {
     @Binding var currentBoardID: String?
     // 모음 탭 재탭 시 증가 — 현재 보드 목록을 맨 위로 스크롤하는 신호.
     let scrollTopToken: Int
-    /// 검색 활성 칩 탭 → 셸이 SearchSheet 를 현재 검색어 프리필로 다시 연다.
-    let onEditSearch: () -> Void
+    /// 검색 활성 칩 탭 → 셸이 이 보드의 SearchSheet 를 현재 검색어 프리필로 연다.
+    let onEditSearch: (Board) -> Void
 
     @State private var filterByBoard: [String: BoardFilter] = [:]
     // 떠 있는 탭바가 가리는 하단 안전영역 높이(측정). 리스트를 탭바 밑까지
@@ -452,7 +479,7 @@ private struct ArchiveHome: View {
                         // 검색어의 결과를 보는 중인지 표시 + 탭=수정, ✕=해제.
                         SearchActiveChip(
                             query: query,
-                            onEdit: onEditSearch,
+                            onEdit: { onEditSearch(board) },
                             onClear: { searchByBoard[board.id] = nil }
                         )
                         .layoutPriority(1)
@@ -543,8 +570,8 @@ private struct BrowseTab: View {
     // 보드를 셸에 알려 검색 탭이 그 보드를 검색하게 한다.
     @Binding var searchByBoard: [String: String]
     @Binding var browsingBoard: Board?
-    /// 검색 활성 칩 탭 → 셸이 SearchSheet 를 현재 검색어 프리필로 다시 연다.
-    let onEditSearch: () -> Void
+    /// 검색 활성 칩 탭 → 셸이 이 보드의 SearchSheet 를 현재 검색어 프리필로 연다.
+    let onEditSearch: (Board) -> Void
 
     private var sites: [Site] {
         DrawerSection.all.compactMap { if case .site(let s) = $0 { return s } else { return nil } }
@@ -585,8 +612,8 @@ private struct BoardPostsView: View {
     let onSelectPost: (Post) -> Void
     @Binding var searchByBoard: [String: String]
     @Binding var browsingBoard: Board?
-    /// 검색 활성 칩 탭 → 셸이 SearchSheet 를 현재 검색어 프리필로 다시 연다.
-    let onEditSearch: () -> Void
+    /// 검색 활성 칩 탭 → 셸이 이 보드의 SearchSheet 를 현재 검색어 프리필로 연다.
+    let onEditSearch: (Board) -> Void
 
     private var query: String? { searchByBoard[board.id] }
 
@@ -611,7 +638,7 @@ private struct BoardPostsView: View {
                 HStack(alignment: .center, spacing: 8) {
                     SearchActiveChip(
                         query: query,
-                        onEdit: onEditSearch,
+                        onEdit: { onEditSearch(board) },
                         onClear: { searchByBoard[board.id] = nil }
                     )
                     .layoutPriority(1)
