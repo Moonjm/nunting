@@ -38,21 +38,6 @@ struct NetworkImage: View {
     /// `nil` (every non-humoruniv caller today) → spinner over plain surface.
     var posterURL: URL? = nil
 
-    /// When `true`, the inline decode is forced to the first frame only
-    /// (`SDWebImageDecodeFirstFrameOnly`) — a static still, no animation.
-    ///
-    /// Why: a heavy animated WebP (the humoruniv 짤방 case — 354 frames /
-    /// 720×1280 / 15 MB) decodes ALL frames at load (~41 ms/frame on device =
-    /// ~14 s, ~1.2 GB if held). Worse, that decode runs on SDImageCache's
-    /// *serial* ioQueue, so it blocks every image queued behind it — the post
-    /// below the 짤방 stays blank for the full ~14 s. First-frame-only collapses
-    /// that to a single-frame decode (~40 ms): the feed shows a static frame
-    /// instantly and the queue is freed. The animation is still viewable —
-    /// tapping opens the fullscreen `ImageViewer`, which decodes + plays it on
-    /// demand. Small inline GIFs keep animating (this stays `false`); body
-    /// callers decide via `rendersFirstFrameOnly` (poster-backed or `.webp`).
-    var decodesFirstFrameOnly: Bool = false
-
     /// Long-edge cap in *points*. Multiplied by `displayScale` to derive
     /// the pixel cap SD's `imageThumbnailPixelSize` expects, so callers
     /// pass the same units the legacy `maxDimension` param used. `nil`
@@ -217,22 +202,15 @@ struct NetworkImage: View {
                     Color.clear
                 }
             } else if showsHeavyImage {
-                // Heavy animated WebP (humoruniv 짤방) renders through `WebImage`
-                // with first-frame-only decode; everything else animates inline
-                // via `AnimatedImage`. The split exists because
-                // `SDAnimatedImageView` (AnimatedImage's backing view) ignores
-                // `.decodeFirstFrameOnly` and decodes the whole 354-frame
-                // animation (~14 s, blocking SDImageCache's serial decode queue
-                // so the rest of the post stays blank), whereas `WebImage` goes
-                // through `SDWebImageManager`, which honours the option (~0.1 s,
-                // static still). Verified by direct timing — see commit msg.
-                Group {
-                    if decodesFirstFrameOnly {
-                        staticBodyImage
-                    } else {
-                        animatedBodyImage
-                    }
-                }
+                // 모든 본문 이미지(대형 애니메이션 WebP 포함)를 `AnimatedImage`
+                // 로 렌더한다. 종전엔 heavy webp 를 first-frame 정지컷으로
+                // 강등했는데(#82), 직접 타이밍 재측정 결과 14s 프리즈의 진범은
+                // `animatedImageClass` 없이 도는 디코드(프리페처 경로)의 전
+                // 프레임 실체화였다 — 287프레임/13.6MB 실측: lazy 27ms vs
+                // 실체화 9,032ms. `AnimatedImage` 는 항상 lazy
+                // `SDAnimatedImage` 로 열므로(뷰어와 동일 경로) 인라인 재생이
+                // 안전하다. 프리페치 제외는 `skipsPrefetch` 가 계속 담당.
+                animatedBodyImage
                 // 디코드 박스가 바뀌면 강제 리마운트 — SDWebImageSwiftUI 는 URL
                 // 이 같으면 context 변경만으로 재디코드하지 않는다. 파서가
                 // aspect 를 안 주는 보드(aagag 등)의 극단 세로형은 1차 디코드의
@@ -320,7 +298,16 @@ struct NetworkImage: View {
     /// `http://` (carisyou, some tistory mirrors) otherwise flooded the retry
     /// placeholder after the SD migration.
     private var animatedBodyImage: some View {
-        AnimatedImage(url: url.atsSafe, context: thumbnailContext) {
+        // 오염 선제 제거: 구버전(first-frame 정지컷 경로)이 메모리 캐시에
+        // 남긴 정지 UIImage 를 같은 키로 집어가면 움짤이 정지컷으로 고착된다.
+        // SDWebImage 의 `.matchAnimatedImageClass` 는 디스크 조회 블록의
+        // #3523 메모리 재확인이 클래스 체크 없이 오염 엔트리를 재획득해
+        // 무력(실측)이고, onSuccess 감지 → identity 리마운트 방식은 재로드
+        // 이미지가 뷰에 실리지 않는 타이밍 이슈가 있어(실측) 로드 시작 전
+        // 제거가 유일하게 결정적이다. body 평가마다 불리지만 NSCache 조회
+        // 1회 + idempotent 라 무해하다.
+        Self.purgePoisonedMemoryEntry(for: url.atsSafe, context: thumbnailContext)
+        return AnimatedImage(url: url.atsSafe, context: thumbnailContext) {
             loadingPlaceholder
         }
         .onSuccess { image, _, _ in handleLoadSuccess(image) }
@@ -336,25 +323,24 @@ struct NetworkImage: View {
         .scaledToFit()
     }
 
-    /// Heavy-animated-WebP body view: first-frame-only static still via
-    /// `WebImage`. See the call-site comment for why this can't be
-    /// `AnimatedImage`. No `maxBufferSize`/`purgeable` — there's no animation
-    /// buffer to manage.
-    private var staticBodyImage: some View {
-        WebImage(
-            url: url.atsSafe,
-            options: [.decodeFirstFrameOnly],
-            context: thumbnailContext
-        ) { image in
-            image.resizable().scaledToFit()
-        } placeholder: {
-            loadingPlaceholder
-        }
-        .onSuccess { image, _, _ in handleLoadSuccess(image) }
-        .onFailure { error in handleLoadFailure(error) }
+    /// 메모리 캐시의 오염(정지 UIImage) 엔트리 선제 제거 — `.webp` URL 의
+    /// 애니메이션 로드 경로는 정적 webp 도 1프레임 `SDAnimatedImage` 로
+    /// 돌려주므로, 같은 키에 `SDAnimatedImage` 가 아닌 엔트리가 있다는 건
+    /// first-frame 정지컷 경로(구버전/외부)가 남긴 잔재다. 지우면 다음
+    /// 로드가 디스크 원본에서 lazy 재디코드한다(네트워크 재요청 없음).
+    /// 유닛 테스트용 internal.
+    nonisolated static func purgePoisonedMemoryEntry(
+        for url: URL, context: [SDWebImageContextOption: Any]?
+    ) {
+        guard url.pathExtension.lowercased() == "webp",
+              let key = SDWebImageManager.shared.cacheKey(for: url, context: context),
+              let cached = SDImageCache.shared.imageFromMemoryCache(forKey: key),
+              !(cached is SDAnimatedImage)
+        else { return }
+        SDImageCache.shared.removeImageFromMemory(forKey: key)
     }
 
-    /// Shared `.onSuccess` handler for both body-image paths.
+    /// Shared `.onSuccess` handler for the body-image path.
     ///
     /// SDWebImage decodes UIImages at the device scale (≈3 on retina), so
     /// `image.size.width` is the *point* width = pixel width / scale.
@@ -365,6 +351,14 @@ struct NetworkImage: View {
     /// past the in-flight render (SD can fire `.onSuccess` synchronously on a
     /// memory-cache hit, which would trip "Modifying state during view update").
     private func handleLoadSuccess(_ image: PlatformImage) {
+        // 오염 자가치유: 구버전(first-frame 정지컷 경로)이 메모리 캐시에 남긴
+        // 정지 UIImage 를 같은 키로 집어온 경우다. SDWebImage 의
+        // `.matchAnimatedImageClass` 는 디스크 조회 블록의 #3523 메모리
+        // 재확인이 클래스 체크 없이 오염 엔트리를 재획득해 무력(실측) —
+        // 여기서 감지해 메모리 엔트리를 지우고 identity 변경으로 1회
+        // 리로드한다(디스크 원본에서 lazy 재디코드, 네트워크 재요청 없음).
+        // webp 는 애니메이션 경로에서 정적이어도 SDAnimatedImage(1프레임)로
+        // 오므로 UIImage 결과 = 오염 히트, 오탐 없음.
         let aspect: CGFloat? = (image.size.height > 0) ? image.size.width / image.size.height : nil
         let naturalPointWidth = image.size.width * image.scale
         let decodedPixels = CGSize(width: image.size.width * image.scale,
@@ -440,18 +434,19 @@ struct NetworkImage: View {
         aspectRatio ?? measuredAspect ?? fallbackAspect
     }
 
-    /// 인라인 first-frame-only 게이트 — 본문 이미지 호출부(PostDetailView)와
-    /// 프리페치 skip 목록(BodyImagePrefetcher 입력)이 공유하는 단일 판정.
+    /// 본문 이미지 프리페치 제외 판정 — BodyImagePrefetcher 입력(PostDetailView
+    /// 의 skip 목록) 전용.
     ///
-    /// 대형 애니메이션 WebP 를 `AnimatedImage` 로 열면 전 프레임 직렬 디코드
-    /// (354프레임 ≈ 14s)가 `SDImageCache` 직렬 큐를 점유해 아래 이미지 전부가
-    /// blank 로 멈춘다(#82). 종전엔 `posterURL != nil`(HumorParser 전용)로만
-    /// 판정해 다른 보드의 대형 WebP 는 프리즈가 재발했다(improvement-review
-    /// §3.1) — URL 확장자 `.webp` 로 일반화한다. 정적 webp 는 first-frame 으로
-    /// 그려도 시각 결과가 동일하고(1프레임), 애니메이션 webp 는 인라인 정지컷
-    /// + 탭 → 전체화면 재생으로 강등. GIF 는 프리즈 실측이 없어 인라인
-    /// 애니메이션 유지. 확장자 없는 URL 은 판별 불가 — 종전 동작(best-effort).
-    nonisolated static func rendersFirstFrameOnly(url: URL, posterURL: URL?) -> Bool {
+    /// `SDWebImagePrefetcher` 는 `animatedImageClass` 없이 디코드하므로
+    /// 애니메이션 WebP 의 전 프레임을 즉시 실체화한다 — 287프레임/13.6MB
+    /// 실측 9,032ms(시뮬레이터)가 `SDImageCache` 직렬 큐를 점유해 아래
+    /// 이미지 전부가 blank 로 멈춘다(#82 의 14s 프리즈 진범). 인라인 렌더는
+    /// `AnimatedImage` 가 lazy `SDAnimatedImage`(같은 파일 27ms, 뷰어와 동일
+    /// 경로)로 열므로 게이트하지 않는다 — 이 판정은 프리페치에만 쓴다.
+    /// poster-backed(웃대 짤방) 또는 `.webp` 확장자가 스킵 대상. GIF 는
+    /// 프리즈 실측이 없어 종전대로 프리페치. 확장자 없는 URL 은 판별 불가
+    /// — best-effort 로 프리페치에 포함.
+    nonisolated static func skipsPrefetch(url: URL, posterURL: URL?) -> Bool {
         posterURL != nil || url.pathExtension.lowercased() == "webp"
     }
 
