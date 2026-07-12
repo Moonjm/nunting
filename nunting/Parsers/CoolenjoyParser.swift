@@ -152,22 +152,26 @@ public struct CoolenjoyParser: BoardParser {
     /// nariya 에디터는 textarea 원문에 첨부 이미지를 `[URL]` 브래킷 토큰으로,
     /// 이모티콘을 `{emo:파일명:폭}` 토큰으로 남긴다. sticker 로 승격한 이미지
     /// 토큰과 이모티콘 토큰을 걷어내지 않으면 캡션에 원문 그대로 노출된다.
-    /// 토큰만 있던 줄은 통째로 비워 줄바꿈 잔해도 남기지 않는다. 두 번째
-    /// 이후 이미지의 `[URL]` 토큰은 남긴다 — sticker 슬롯이 하나뿐이라
-    /// 지우면 그 이미지의 존재 자체가 사라진다. 유닛 테스트용 internal.
+    /// 토큰 제거로 비게 된 줄만 드롭하고, 원래 비어 있던 줄(문단 구분)은
+    /// 보존한다. 두 번째 이후 이미지의 `[URL]` 토큰은 남긴다 — sticker
+    /// 슬롯이 하나뿐이라 지우면 그 이미지의 존재 자체가 사라진다. 유닛
+    /// 테스트용 internal.
     nonisolated static func strippingAttachmentTokens(_ text: String, stickerURL: URL?) -> String {
-        var working = text
-        if let sticker = stickerURL {
-            working = working.replacingOccurrences(of: "[\(sticker.absoluteString)]", with: "")
+        let lines = text.components(separatedBy: .newlines).compactMap { line -> String? in
+            var stripped = line
+            if let sticker = stickerURL {
+                stripped = stripped.replacingOccurrences(of: "[\(sticker.absoluteString)]", with: "")
+            }
+            stripped = stripped.replacingOccurrences(
+                of: #"\{emo:[^}]*\}"#, with: "", options: .regularExpression
+            )
+            let trimmed = stripped.trimmingCharacters(in: .whitespaces)
+            let wasBlank = line.trimmingCharacters(in: .whitespaces).isEmpty
+            if trimmed.isEmpty && !wasBlank { return nil }
+            return trimmed
         }
-        working = working.replacingOccurrences(
-            of: #"\{emo:[^}]*\}"#, with: "", options: .regularExpression
-        )
-        return working
-            .components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n")
+        return lines.joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     public nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {

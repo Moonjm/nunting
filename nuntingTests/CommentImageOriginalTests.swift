@@ -251,6 +251,44 @@ final class CommentImageOriginalTests: XCTestCase {
         )
     }
 
+    func testCoolenjoyPreservesDeliberateBlankLinesInComment() throws {
+        // 토큰 정리가 문단 사이 의도적 빈 줄까지 지우면 안 된다 — 토큰
+        // 제거로 비게 된 줄만 드롭하고, 원래 비어 있던 줄은 보존.
+        XCTAssertEqual(
+            CoolenjoyParser.strippingAttachmentTokens("첫 문단\n\n둘째 문단", stickerURL: nil),
+            "첫 문단\n\n둘째 문단",
+            "첨부·이모티콘 없는 댓글의 빈 줄은 그대로 남아야 함"
+        )
+        let sticker = URL(string: "https://photo.coolenjoy.co.kr/data/editor/2607/cmt_1_a_b.jpeg")!
+        XCTAssertEqual(
+            CoolenjoyParser.strippingAttachmentTokens(
+                "[\(sticker.absoluteString)]\n\n캡션 위\n\n캡션 아래",
+                stickerURL: sticker
+            ),
+            "캡션 위\n\n캡션 아래",
+            "토큰 줄은 드롭하되 문단 구분 빈 줄은 보존"
+        )
+    }
+
+    func testPpomppuLeavesExternalHostMobileVariantUntouched() throws {
+        // 외부 호스트가 우연히 같은 경로/파일명 패턴을 써도 건드리지 않는다.
+        let url = URL(string: "https://cdn.example.com/zboard/data3/2026/0712/m_20260712101248_abc.png")!
+        XCTAssertEqual(
+            PpomppuParser.strippingMobileVariantPrefix(url).absoluteString,
+            "https://cdn.example.com/zboard/data3/2026/0712/m_20260712101248_abc.png",
+            "뽐뿌 계열 호스트가 아닌 URL 은 m_ 접두사를 보존해야 함"
+        )
+    }
+
+    func testPpomppuLeavesExternalHostCommentWidthVariantUntouched() throws {
+        // 댓글 `_550w` 스트립도 동일 — 뽐뿌 계열 호스트가 아니면 보존.
+        let url = URL(string: "https://cdn.example.com/zboard/data3/comment/16/foo_15633116_550w?v=1")!
+        XCTAssertEqual(
+            PpomppuParser.strippingCommentWidthVariant(url).absoluteString,
+            "https://cdn.example.com/zboard/data3/comment/16/foo_15633116_550w?v=1"
+        )
+    }
+
     func testCoolenjoyEmoticonOnlyCommentHasNoSticker() throws {
         // 이모티콘만 있는 댓글 — 이모티콘은 sticker 로 승격하지 않는다.
         let html = """

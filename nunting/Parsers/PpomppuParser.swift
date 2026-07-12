@@ -303,10 +303,13 @@ public struct PpomppuParser: BoardParser {
     /// 원본은 두 경로가 바이트 동일이라 blind strip 이 안전하다. 파일명이
     /// `m_{14자리 타임스탬프}_` 기계 생성 패턴일 때만 벗겨 사용자 파일명
     /// (`m_photo.jpg` 류) 오탐을 막는다. 댓글 첨부는 별도 `_550w` 변형
-    /// (`strippingCommentWidthVariant`)을 쓰므로 여긴 본문 전용. 유닛 테스트용
-    /// internal.
+    /// (`strippingCommentWidthVariant`)을 쓰므로 여긴 본문 전용. 외부 호스트가
+    /// 우연히 같은 경로/파일명 패턴을 쓸 수 있으니 ppomppu.co.kr 계열 호스트
+    /// (`cdn2/cdn3.ppomppu.co.kr` 등)로 게이트한다. 유닛 테스트용 internal.
     nonisolated static func strippingMobileVariantPrefix(_ url: URL) -> URL {
-        guard url.path.contains("/zboard/data3/") else { return url }
+        guard let host = url.host?.lowercased(),
+              host == "ppomppu.co.kr" || host.hasSuffix(".ppomppu.co.kr"),
+              url.path.contains("/zboard/data3/") else { return url }
         let last = url.lastPathComponent
         guard last.range(of: #"^m_\d{14}_"#, options: .regularExpression) != nil,
               var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
@@ -393,9 +396,13 @@ public struct PpomppuParser: BoardParser {
     /// thumbnail. Scoped to `/zboard/data3/comment/` paths, whose filenames
     /// are machine-generated (`{board}_{cmtno}`), so a trailing `_\d+w` can
     /// only be the variant marker. Query (cache-buster `?v=`) is preserved.
+    /// Gated to ppomppu.co.kr-family hosts — memo HTML 에 외부 이미지가
+    /// 섞일 수 있고, 남의 서버의 `_NNNw` 파일명은 정당한 이름일 수 있다.
     /// Internal for the unit test.
     nonisolated static func strippingCommentWidthVariant(_ url: URL) -> URL {
-        guard url.path.contains("/zboard/data3/comment/") else { return url }
+        guard let host = url.host?.lowercased(),
+              host == "ppomppu.co.kr" || host.hasSuffix(".ppomppu.co.kr"),
+              url.path.contains("/zboard/data3/comment/") else { return url }
         let last = url.lastPathComponent
         guard let range = last.range(of: #"_\d+w$"#, options: .regularExpression)
         else { return url }
