@@ -105,7 +105,14 @@ struct RootTabView: View {
     // 보드별 활성 검색어(옛 앱처럼 검색은 보드에 묶임). 하단 검색 버튼과
     // 모음 목록/배너가 공유하므로 셸 레벨에 둔다.
     @State private var searchByBoard: [String: String] = [:]
-    @State private var showingSearch = false
+    // 검색 시트가 뜬 보드(nil=닫힘). Bool 대신 item 으로 여는 이유: 시트가
+    // 떠 있는 동안 보드를 캡처해 고정 — 아래 탭 재동기화 중 searchContextBoard
+    // 가 잠깐 nil 이 돼도 시트 내용이 비지 않는다.
+    @State private var searchSheetBoard: Board?
+    // 검색 시트가 role:.search 탭 탭으로 열렸는지 — 그 경우에만 닫힐 때
+    // 네이티브 탭바 선택 재동기화(아래 onChange)가 필요하다. 칩으로 열면
+    // 탭바를 건드린 적이 없으므로 불필요.
+    @State private var searchTabNeedsResync = false
     // 둘러보기에서 현재 열어둔 보드(글 목록). nil = 사이트 목록/미진입.
     @State private var browsingBoard: Board?
     // 상세 오버레이 백드래그(우→ 스와이프 닫기) 상태기계.
@@ -141,11 +148,6 @@ struct RootTabView: View {
         guard let board = searchContextBoard, board.supportsSearch else { return nil }
         return board
     }
-    // 그 보드에 검색어가 걸려 있는지 — 검색 탭 아이콘 🔍/✕ 토글 + 탭 동작 분기용.
-    private var isSearchActive: Bool {
-        guard let board = activeSearchBoard else { return false }
-        return searchByBoard[board.id] != nil
-    }
     var body: some View {
         ZStack {
             // 보드 검색은 탭바 오른쪽 role:.search 탭(iOS 26 유리 탭바가 분리 배치).
@@ -156,15 +158,17 @@ struct RootTabView: View {
                 get: { rootTabSelectionState.selectedTab },
                 set: { newValue in
                     // 검색 탭(role:.search, value 4) — 탭 전환이 아니라 검색 동작.
-                    // 검색어가 걸려 있으면 해제, 아니면 검색 시트를 연다. selectedTab
-                    // 은 건드리지 않는다(빈 Color.clear 노출·언더레이 교체 방지).
+                    // 항상 검색 시트를 연다(검색 중이면 SearchSheet 가 현재 검색어
+                    // 프리필로 열려 수정). 해제는 검색 활성 칩의 ✕ 담당 — 예전
+                    // "검색 중 재탭=즉시 해제" 토글은 시트를 기대한 탭에 검색이
+                    // 조용히 풀리는 모드 함정이라 제거. selectedTab 은 건드리지
+                    // 않는다(빈 Color.clear 노출·언더레이 교체 방지). 대신 네이티브
+                    // 탭바는 이미 검색 탭으로 넘어가 있으므로 시트가 닫힐 때
+                    // 재동기화가 필요하다 — 플래그를 세워 둔다.
                     if newValue == 4 {
                         if let board = activeSearchBoard {
-                            if searchByBoard[board.id] != nil {
-                                searchByBoard[board.id] = nil
-                            } else {
-                                showingSearch = true
-                            }
+                            searchSheetBoard = board
+                            searchTabNeedsResync = true
                         }
                         return
                     }
@@ -186,13 +190,15 @@ struct RootTabView: View {
                         isActive: rootTabSelectionState.selectedTab == 0,
                         searchByBoard: $searchByBoard,
                         currentBoardID: $currentBoardID,
-                        scrollTopToken: scrollTopToken
+                        scrollTopToken: scrollTopToken,
+                        onEditSearch: { searchSheetBoard = $0 }
                     )
                 }
                 Tab("둘러보기", systemImage: "square.grid.2x2", value: 1) {
                     BrowseTab(catalog: catalog, favorites: favorites,
                               readStore: readStore, onSelectPost: { FootprintLogger.shared.record("post-open"); detail.show($0) },
-                              searchByBoard: $searchByBoard, browsingBoard: $browsingBoard)
+                              searchByBoard: $searchByBoard, browsingBoard: $browsingBoard,
+                              onEditSearch: { searchSheetBoard = $0 })
                 }
                 Tab("알림", systemImage: "bell", value: 2) {
                     NavigationStack {
@@ -205,9 +211,9 @@ struct RootTabView: View {
                 }
                 .badge(alertBadge.unread)
                 // 검색 — iOS 26 유리 탭바 우측 분리 슬롯. 탭하면 전환 대신 현재 보드
-                // 검색 시트를 열고(위 setter 인터셉트), 검색 중이면 아이콘이 ✕(해제)로
-                // 바뀐다. 검색 지원 보드가 없으면(알림 탭·비검색 보드) 비활성.
-                Tab("검색", systemImage: isSearchActive ? "xmark" : "magnifyingglass",
+                // 검색 시트를 연다(위 setter 인터셉트; 검색 중이면 현재 검색어 프리필).
+                // 검색 지원 보드가 없으면(알림 탭·비검색 보드) 비활성.
+                Tab("검색", systemImage: "magnifyingglass",
                     value: 4, role: .search) {
                     Color.clear
                 }
@@ -217,13 +223,30 @@ struct RootTabView: View {
             // 검색 탭(role:.search) 눌림 피드백을 가린다(작은 시트는 탭바가 보여
             // "탭전환 깜빡임"처럼 보였다). 히스토리 오버레이가 탭바를 덮어 매끄럽던
             // 것과 같은 원리.
-            .fullScreenCover(isPresented: $showingSearch) {
-                if let board = searchContextBoard {
-                    SearchSheet(
-                        board: board,
-                        initialQuery: searchByBoard[board.id] ?? "",
-                        onSubmit: { searchByBoard[board.id] = $0 }
-                    )
+            .fullScreenCover(item: $searchSheetBoard) { board in
+                SearchSheet(
+                    board: board,
+                    initialQuery: searchByBoard[board.id] ?? "",
+                    onSubmit: { searchByBoard[board.id] = $0 }
+                )
+            }
+            // 검색 탭으로 열린 시트가 닫힐 때 네이티브 탭바 선택 재동기화.
+            // role:.search 탭을 탭한 순간 네이티브 탭바는 검색 탭으로 넘어가는데,
+            // 위 setter 인터셉트는 selectedTab 을 안 바꾸므로 SwiftUI 는 값이
+            // 그대로(0/1)라 네이티브를 되돌릴 변화가 없다고 본다 → 시트를 닫으면
+            // 빈 검색 탭(Color.clear)이 남는다. (예전엔 제출 시 탭 아이콘 🔍/✕
+            // 교체가 탭바를 재구성해 우연히 재동기화됐던 것 — 아이콘 고정으로
+            // 사라진 우연.) 선택을 4로 한 프레임 인정했다가 원래 탭으로 되돌려
+            // 실제 값 변화(4→원래 탭)로 네이티브 선택을 다시 맞춘다. 그 한 프레임은
+            // 커버가 아직 화면을 덮고 있는 dismiss 초입이라 보이지 않는다.
+            .onChange(of: searchSheetBoard) { _, board in
+                guard board == nil, searchTabNeedsResync else { return }
+                searchTabNeedsResync = false
+                let current = rootTabSelectionState.selectedTab
+                rootTabSelectionState.selectTab(4)
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(50))
+                    rootTabSelectionState.selectTab(current)
                 }
             }
             // 이전 글(치워둔 마지막 상세) 되돌리기 핸들 — 우측 모서리에 빼꼼 걸친
@@ -373,6 +396,8 @@ private struct ArchiveHome: View {
     @Binding var currentBoardID: String?
     // 모음 탭 재탭 시 증가 — 현재 보드 목록을 맨 위로 스크롤하는 신호.
     let scrollTopToken: Int
+    /// 검색 활성 칩 탭 → 셸이 이 보드의 SearchSheet 를 현재 검색어 프리필로 연다.
+    let onEditSearch: (Board) -> Void
 
     @State private var filterByBoard: [String: BoardFilter] = [:]
     // 떠 있는 탭바가 가리는 하단 안전영역 높이(측정). 리스트를 탭바 밑까지
@@ -390,11 +415,12 @@ private struct ArchiveHome: View {
     }
     // 떠 있는 하단 컨트롤(필터 바/검색 버튼)이 가리는 높이만큼 목록 하단에 줄 여백.
     static let bottomControlsInset: CGFloat = 60
-    // 지금 하단에 떠 있는 컨트롤(필터 바)이 있는 보드 id 집합 — 그만큼 목록 하단
-    // 인셋. 검색은 탭바 role:.search 로 옮겨 더는 하단에 안 뜨므로 필터 바만 센다.
+    // 지금 하단에 떠 있는 컨트롤이 있는 보드 id 집합 — 그만큼 목록 하단 인셋.
+    // 검색 중엔 검색 활성 칩이, 아니면 (필터 보드 한정) 필터 바가 떠 있으므로
+    // 검색 중인 보드도 센다.
     private var bottomControlsBoardIDs: Set<String> {
         Set(boards.filter { board in
-            showsFilterBar(board) && searchByBoard[board.id] == nil
+            searchByBoard[board.id] != nil || showsFilterBar(board)
         }.map(\.id))
     }
 
@@ -442,14 +468,25 @@ private struct ArchiveHome: View {
         // 필터 바(좌, 내용에 맞게 hug)를 띄운다. Spacer 가 남은 폭을 채워 필터 바를
         // 좌측 정렬로 유지한다(검색은 탭바 role:.search 로 옮겨 여기선 안 띄운다).
         .overlay(alignment: .bottom) {
-            if let board = currentBoard, currentQuery == nil, showsFilterBar(board) {
+            if let board = currentBoard, currentQuery != nil || showsFilterBar(board) {
                 HStack(alignment: .center, spacing: 8) {
                     // layoutPriority: 캡슐과 Spacer 가 둘 다 flexible 이라 우선순위
                     // 없으면 캡슐이 가용폭 절반만 받아 hug 가 깨진다. 우선순위를 주면
                     // 전체 가용폭을 먼저 받아 min(가용,내용)으로 줄어든다 — 인벤
                     // 4칩=hug, 애객 11칩=가용폭 캡 후 스크롤.
-                    GlassFilterBar(board: board, selection: filterBinding(board.id))
+                    if let query = currentQuery {
+                        // 검색 중엔 필터 바 자리에 검색 활성 칩 — 지금 무슨
+                        // 검색어의 결과를 보는 중인지 표시 + 탭=수정, ✕=해제.
+                        SearchActiveChip(
+                            query: query,
+                            onEdit: { onEditSearch(board) },
+                            onClear: { searchByBoard[board.id] = nil }
+                        )
                         .layoutPriority(1)
+                    } else {
+                        GlassFilterBar(board: board, selection: filterBinding(board.id))
+                            .layoutPriority(1)
+                    }
                     Spacer(minLength: 0)
                 }
                 // 필터 바 시작 위치는 원래대로 좌측 28pt, 우측 여백 16pt.
@@ -533,6 +570,8 @@ private struct BrowseTab: View {
     // 보드를 셸에 알려 검색 탭이 그 보드를 검색하게 한다.
     @Binding var searchByBoard: [String: String]
     @Binding var browsingBoard: Board?
+    /// 검색 활성 칩 탭 → 셸이 이 보드의 SearchSheet 를 현재 검색어 프리필로 연다.
+    let onEditSearch: (Board) -> Void
 
     private var sites: [Site] {
         DrawerSection.all.compactMap { if case .site(let s) = $0 { return s } else { return nil } }
@@ -557,7 +596,8 @@ private struct BrowseTab: View {
             // 보드 탭 → 그 보드 글 목록.
             .navigationDestination(for: Board.self) { board in
                 BoardPostsView(board: board, readStore: readStore, onSelectPost: onSelectPost,
-                               searchByBoard: $searchByBoard, browsingBoard: $browsingBoard)
+                               searchByBoard: $searchByBoard, browsingBoard: $browsingBoard,
+                               onEditSearch: onEditSearch)
             }
         }
     }
@@ -572,6 +612,8 @@ private struct BoardPostsView: View {
     let onSelectPost: (Post) -> Void
     @Binding var searchByBoard: [String: String]
     @Binding var browsingBoard: Board?
+    /// 검색 활성 칩 탭 → 셸이 이 보드의 SearchSheet 를 현재 검색어 프리필로 연다.
+    let onEditSearch: (Board) -> Void
 
     private var query: String? { searchByBoard[board.id] }
 
@@ -581,12 +623,32 @@ private struct BoardPostsView: View {
             // 검색 중엔 필터 해제(모음 검색과 동일).
             filter: query == nil ? board.defaultListFilter : nil,
             searchQuery: query,
+            // 검색 중엔 하단에 검색 활성 칩이 떠 있으므로 마지막 글 가림 방지 인셋.
+            bottomContentInset: query == nil ? 0 : ArchiveHome.bottomControlsInset,
             readStore: readStore,
             onSelectPost: onSelectPost
         )
         .equatable()
         .navigationTitle(board.name)
         .toolbarTitleDisplayMode(.inline)
+        // 모음과 동일한 검색 활성 칩 — 여기(둘러보기 글 목록)도 검색을 걸면
+        // 목록이 결과로 바뀌는데 검색어가 화면에 안 보이는 문제가 같다.
+        .overlay(alignment: .bottom) {
+            if let query {
+                HStack(alignment: .center, spacing: 8) {
+                    SearchActiveChip(
+                        query: query,
+                        onEdit: { onEditSearch(board) },
+                        onClear: { searchByBoard[board.id] = nil }
+                    )
+                    .layoutPriority(1)
+                    Spacer(minLength: 0)
+                }
+                .padding(.leading, 28)
+                .padding(.trailing, 16)
+                .padding(.bottom, 8)
+            }
+        }
         // 이 보드를 셸에 알려 탭바 검색이 이 보드를 검색하게 한다.
         .onAppear { browsingBoard = board }
         .onDisappear { if browsingBoard?.id == board.id { browsingBoard = nil } }
@@ -865,6 +927,54 @@ private struct FavoritesReorderSheet: View {
                 }
             }
         }
+    }
+}
+
+// 검색 활성 칩 — 검색이 걸린 동안 필터 바 자리(하단 좌측)에 뜨는 유리 캡슐.
+// 목록이 검색 결과로 바뀌어도 검색어가 화면 어디에도 안 보이던 문제의 해법:
+// 지금 무슨 검색어의 결과인지 상시 표시하고, 본체 탭=SearchSheet 재오픈(현재
+// 검색어 프리필 → 수정), ✕=해제. 해제는 이 ✕가 유일한 경로 — 탭바 검색 탭은
+// 항상 시트 열기라(모드 함정 방지) 지우는 역할을 하지 않는다.
+private struct SearchActiveChip: View {
+    let query: String
+    let onEdit: () -> Void
+    let onClear: () -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button(action: onEdit) {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(query)
+                        .font(.footnote.weight(.semibold))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .foregroundStyle(.primary)
+                }
+                .padding(.leading, 14)
+                .padding(.trailing, 6)
+                .padding(.vertical, 9)
+                // 본체 히트 영역을 패딩까지 확장 — 짧은 검색어도 탭하기 쉽게.
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("검색어 수정: \(query)")
+
+            Button(action: onClear) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 2)
+                    .padding(.trailing, 12)
+                    .padding(.vertical, 9)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("검색 해제")
+        }
+        .glassEffect(.regular, in: .capsule)
     }
 }
 
