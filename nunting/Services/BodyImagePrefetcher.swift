@@ -21,16 +21,17 @@ final class BodyImagePrefetcher {
     /// `imageBecameVisible(at:)` is a position in this list.
     private let urls: [URL]
     private let window: Int
-    /// `atsSafe` URLs that must never be prefetched — the heavy animated-WebP
-    /// 짤방 (humoruniv direct-attach). Prefetching warms the cache via a *full*
-    /// decode (no first-frame option), which for a 354-frame / 15 MB webp is
-    /// ~14 s on `SDImageCache`'s **serial** decode queue — and that one decode
-    /// blocks every other image queued behind it, so the whole post below the
-    /// 짤방 stays blank for ~14 s (observed: pds#1412160). These images render
-    /// inline as a cheap first-frame still on demand instead (see
-    /// `NetworkImage.decodesFirstFrameOnly`), so there's nothing worth warming.
-    /// They still occupy their slot in `urls` (index math / dedup unchanged) —
-    /// only the prefetch fetch is suppressed.
+    /// `atsSafe` URLs that must never be prefetched — animated-WebP 짤방
+    /// (poster-backed 웃대 직접첨부 + `.webp` 확장자 일반). Prefetching warms
+    /// the cache via a decode **without** `animatedImageClass`, which
+    /// materialises every frame — 287-frame / 13.6 MB webp measured 9,032 ms
+    /// (simulator) on `SDImageCache`'s **serial** decode queue — and that one
+    /// decode blocks every other image queued behind it, so the whole post
+    /// below the 짤방 stays blank (observed: pds#1412160, ~14 s on device).
+    /// The inline render itself is safe — `AnimatedImage` opens the same file
+    /// as a lazy `SDAnimatedImage` in ~27 ms (see
+    /// `NetworkImage.skipsPrefetch`) — so only the prefetch is suppressed.
+    /// They still occupy their slot in `urls` (index math / dedup unchanged).
     private let skipPrefetch: Set<URL>
     /// A dedicated instance (not `.shared`) so `cancel()` only drops this
     /// screen's prefetch tokens, never another consumer's. Note the

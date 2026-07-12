@@ -92,14 +92,14 @@ struct PostDetailView: View, Equatable {
         }
     }
 
-    /// `atsSafe` URLs of body images rendered first-frame-only inline. The
-    /// prefetcher must skip these: a full-decode prefetch of a 354-frame webp
-    /// blocks the shared serial decode queue for ~14s. Must stay in sync with
-    /// the inline gate — both call `NetworkImage.rendersFirstFrameOnly`.
+    /// `atsSafe` URLs the prefetcher must skip: `SDWebImagePrefetcher` 는
+    /// `animatedImageClass` 없이 디코드해 애니메이션 webp 의 전 프레임을
+    /// 실체화한다(287프레임/13.6MB 실측 ~9s) — 공유 직렬 디코드 큐가 그만큼
+    /// 멈춘다. 인라인 렌더는 lazy 라 게이트가 없고, 프리페치만 제외한다.
     private var prefetchSkipURLs: Set<URL> {
         Set((loader.detail?.blocks ?? []).compactMap {
             if case .image(let url, let posterURL, _) = $0.kind,
-               NetworkImage.rendersFirstFrameOnly(url: url, posterURL: posterURL) {
+               NetworkImage.skipsPrefetch(url: url, posterURL: posterURL) {
                 return url.atsSafe
             }
             return nil
@@ -432,16 +432,6 @@ struct PostDetailView: View, Equatable {
                             url: url,
                             aspectRatio: aspectRatio,
                             posterURL: posterURL,
-                            // Heavy animated WebP gets first-frame-only inline
-                            // decode: full-animation decode is ~14s and blocks
-                            // the shared serial decode queue, freezing every
-                            // image below it. Static inline + tap-to-play
-                            // (fullscreen) instead. The predicate covers the
-                            // poster-backed humoruniv 짤방 (기존) and — §3.1
-                            // 일반화 — any `.webp` body image from other boards;
-                            // see `rendersFirstFrameOnly` for the trade-offs.
-                            decodesFirstFrameOnly: NetworkImage.rendersFirstFrameOnly(
-                                url: url, posterURL: posterURL),
                             thumbnailMaxPointWidth: containerWidth > 0 ? containerWidth : nil,
                             // Eager-load the first body image: it's above the
                             // fold on open, so skip the viewport gate and let
