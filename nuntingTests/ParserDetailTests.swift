@@ -241,6 +241,49 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertEqual(images.first?.1 ?? 0, CGFloat(1600.0 / 900.0), accuracy: CGFloat(0.0001))
     }
 
+    func testClienBodyImageUpgradesScaleWidth480To740() throws {
+        // Real shape from clien.net park post 19225331 — the mobile markup
+        // ships body images as `?scale=width:480` (CDN honours only 480/740;
+        // bare URLs 302 to the error page). Comments already upgrade 480→740
+        // via `upgradingScaleWidth`; the body path must too, or the viewer
+        // zooms into the 480px variant (measured 480×931 vs original 850×1650).
+        let html = """
+        <html><body>
+        <div class="post_article">
+            <p>
+              <img src="https://edgio.clien.net/F01/2026/7/15774289/32dce718f323a7.jpg?scale=width:480"
+                   data-img-width="850"
+                   data-img-height="1650">
+            </p>
+            <p><img src="https://cdn.example.com/external.jpg"></p>
+        </div>
+        <div class="post_date">2026-07-12 11:30</div>
+        </body></html>
+        """
+        let parser = ClienParser()
+        let post = Post.fixture(
+            id: "clien-body-scale-width",
+            site: .clien,
+            boardID: "clien-park",
+            url: URL(string: "https://m.clien.net/service/board/park/19225331")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+        let images = detail.blocks.imageURLs
+
+        XCTAssertEqual(images.count, 2)
+        XCTAssertEqual(
+            images.first?.absoluteString,
+            "https://edgio.clien.net/F01/2026/7/15774289/32dce718f323a7.jpg?scale=width:740",
+            "본문 이미지의 scale=width:480은 CDN이 허용하는 최대 무토큰 변형인 740으로 올려야 함"
+        )
+        XCTAssertEqual(
+            images.last?.absoluteString,
+            "https://cdn.example.com/external.jpg",
+            "scale 쿼리 없는 외부 이미지는 그대로 통과"
+        )
+    }
+
     func testClienWalkerCompositionPreservesSourceMediaEmbedAndBlankLines() throws {
         let html = """
         <html><body>
@@ -356,6 +399,47 @@ final class ParserDetailTests: XCTestCase {
             "https://cdn2.ppomppu.co.kr/zboard/data3/2026/0502/foo.jpg"
         )
         XCTAssertTrue(videos.isEmpty)
+    }
+
+    func testPpomppuBodyImageStripsMobileVariantPrefix() throws {
+        // Real shape from m.ppomppu.co.kr (freeboard, 2026-07-12) — the mobile
+        // markup serves body uploads as an `m_`-prefixed 600px-wide variant
+        // (`m_20260712101248_….png`, 600×815) while the original lives at the
+        // prefix-less path (960×1305; the site's own PpomImgViewer onclick
+        // always references the prefix-less name). Same class as the Inven
+        // `?MW=` / comment `_550w` strips — drop the prefix so the viewer
+        // decodes full resolution.
+        let html = """
+        <html><body>
+        <div class="bbs view">
+            <div class="cont" id="KH_Content">
+                <p><img name="zb_target_resize" src="//cdn2.ppomppu.co.kr/zboard/data3/2026/0712/m_20260712101248_1rGUKNgD2D.png" data-size="960x1305" /></p>
+                <p><img src="//cdn2.ppomppu.co.kr/zboard/data3/2026/0502/foo.jpg" /></p>
+            </div>
+        </div>
+        </body></html>
+        """
+        let parser = PpomppuParser()
+        let post = Post.fixture(
+            id: "ppomppu-m-variant",
+            site: .ppomppu,
+            boardID: "ppomppu-freeboard",
+            url: URL(string: "https://m.ppomppu.co.kr/new/bbs_view.php?id=freeboard&no=1")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+        let images = detail.blocks.imageURLs
+        XCTAssertEqual(images.count, 2)
+        XCTAssertEqual(
+            images.first?.absoluteString,
+            "https://cdn2.ppomppu.co.kr/zboard/data3/2026/0712/20260712101248_1rGUKNgD2D.png",
+            "본문 이미지의 m_ 모바일 변형 접두사는 제거되어 원본을 가리켜야 함"
+        )
+        XCTAssertEqual(
+            images.last?.absoluteString,
+            "https://cdn2.ppomppu.co.kr/zboard/data3/2026/0502/foo.jpg",
+            "m_ 접두사 없는 이미지는 그대로 통과"
+        )
     }
 
     func testPpomppuDetailViewCountStopsBeforeTrailingDateDigits() throws {
@@ -515,6 +599,56 @@ final class ParserDetailTests: XCTestCase {
             detail.blocks.imageURLs.map(\.absoluteString),
             ["https://i.aagag.com/o/KeW2Q.webp"],
             "smaller webp variant present → /o/{q}.webp, matching aagag's renderer"
+        )
+    }
+
+    func testAagagStillImageSkipsPixelDownsizedOptimizedVariant() throws {
+        // Real payload shape measured live (2026-07-12): the `/o/` optimizer
+        // caps width at ~966px, and a downsized variant self-reports its own
+        // `width`/`height` in the `o` entry while the payload top level keeps
+        // the original's. `/o/IoLxC.webp` = 966×721 vs bucket root `IoLxC.jpg`
+        // = 1031×770 — byte-smaller but pixel-lossy, so the fullscreen viewer
+        // zooms into an upscale. A variant that is byte-smaller AND
+        // pixel-smaller must be skipped in favour of the original.
+        let html = #"""
+        <html><body>
+        <h1 class="title">downsized optimized variant</h1>
+        <script>
+        AAGAG_AA.content = "[sTag]{\"m\":\"img\",\"q\":\"IoLxC\",\"width\":1031,\"height\":770,\"byte\":261377,\"o\":{\"ori\":{\"byte\":261377},\"webp\":{\"byte\":21730,\"width\":966,\"height\":721},\"jpg\":{\"byte\":98416,\"width\":966,\"height\":721}}}[/sTag]";
+        </script>
+        </body></html>
+        """#
+        let parser = AagagParser()
+        let post = Post.fixture(site: .aagag, url: URL(string: "https://aagag.com/issue/?idx=2")!)
+
+        let detail = try parser.parseDetail(html: html, post: post)
+        XCTAssertEqual(
+            detail.blocks.imageURLs.map(\.absoluteString),
+            ["https://i.aagag.com/IoLxC.jpg"],
+            "픽셀 다운사이즈된 /o/ 변형은 건너뛰고 버킷 루트 원본을 가리켜야 함"
+        )
+    }
+
+    func testAagagStillImageKeepsOptimizedVariantWhenSamePixels() throws {
+        // Counterpart — a variant that self-reports the SAME dimensions as the
+        // original (pure recompression, e.g. FMAwZ 910×942 → 910×942 webp) is
+        // still the right pick: identical pixels, 8-12× fewer bytes.
+        let html = #"""
+        <html><body>
+        <h1 class="title">same-pixel recompression</h1>
+        <script>
+        AAGAG_AA.content = "[sTag]{\"m\":\"img\",\"q\":\"FMAwZ\",\"width\":910,\"height\":942,\"byte\":92913,\"o\":{\"ori\":{\"byte\":92913},\"webp\":{\"byte\":76424,\"width\":910,\"height\":942}}}[/sTag]";
+        </script>
+        </body></html>
+        """#
+        let parser = AagagParser()
+        let post = Post.fixture(site: .aagag, url: URL(string: "https://aagag.com/issue/?idx=3")!)
+
+        let detail = try parser.parseDetail(html: html, post: post)
+        XCTAssertEqual(
+            detail.blocks.imageURLs.map(\.absoluteString),
+            ["https://i.aagag.com/o/FMAwZ.webp"],
+            "같은 픽셀의 재압축 변형은 그대로 /o/ 선택 유지"
         )
     }
 

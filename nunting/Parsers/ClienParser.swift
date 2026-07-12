@@ -214,7 +214,11 @@ public struct ClienParser: BoardParser {
         let width = CGFloat(Double(try element.attr("data-img-width")) ?? 0)
         let height = CGFloat(Double(try element.attr("data-img-height")) ?? 0)
         let aspectRatio = width > 0 && height > 0 ? width / height : nil
-        return (url, aspectRatio)
+        // Body uploads ship the same `?scale=width:480` CDN resize as comment
+        // attachments (measured 480×931 vs 850×1650 original) — apply the
+        // 480→740 upgrade here too. External images carry no scale query and
+        // pass through unchanged.
+        return (Self.upgradingScaleWidth(url), aspectRatio)
     }
 
     nonisolated private static let imageExtensions: Set<String> = [
@@ -334,7 +338,8 @@ public struct ClienParser: BoardParser {
         return results
     }
 
-    /// Clien comment attachments always ship `?scale=width:480` — a server
+    /// Clien uploads (body images and comment attachments alike) always ship
+    /// `?scale=width:480` — a server
     /// resize the CDN only honours for widths 480 and 740 (bare URLs and any
     /// other width 302 to the error page; the true original needs a signed
     /// token from `/service/api/ori/imgView`, a per-open round-trip). Rewrite

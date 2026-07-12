@@ -293,6 +293,29 @@ public struct PpomppuParser: BoardParser {
         imageURL(from: element,
                  attributes: ["data-original", "data-src", "src"],
                  skipMarkers: ["lazyloading", "/images/gif_load"])
+            .map(Self.strippingMobileVariantPrefix)
+    }
+
+    /// 모바일 본문 마크업은 업로드 이미지를 `m_` 접두사 600px 폭 변형으로
+    /// 내려준다(`…/data3/2026/0712/m_20260712101248_….png`, 실측 600×815).
+    /// 원본은 접두사 없는 경로에 있고(실측 960×1305; 사이트 자체 PpomImgViewer
+    /// onclick 이 항상 접두사 없는 파일명을 참조하므로 존재가 보장), 600px 이하
+    /// 원본은 두 경로가 바이트 동일이라 blind strip 이 안전하다. 파일명이
+    /// `m_{14자리 타임스탬프}_` 기계 생성 패턴일 때만 벗겨 사용자 파일명
+    /// (`m_photo.jpg` 류) 오탐을 막는다. 댓글 첨부는 별도 `_550w` 변형
+    /// (`strippingCommentWidthVariant`)을 쓰므로 여긴 본문 전용. 유닛 테스트용
+    /// internal.
+    nonisolated static func strippingMobileVariantPrefix(_ url: URL) -> URL {
+        guard url.path.contains("/zboard/data3/") else { return url }
+        let last = url.lastPathComponent
+        guard last.range(of: #"^m_\d{14}_"#, options: .regularExpression) != nil,
+              var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        else { return url }
+        var path = comps.path
+        guard path.hasSuffix(last) else { return url }
+        path.removeLast(last.count)
+        comps.path = path + last.dropFirst(2)
+        return comps.url ?? url
     }
 
     nonisolated private func dealAnchor(from view: Element) throws -> (url: URL, label: String)? {

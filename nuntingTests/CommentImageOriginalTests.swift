@@ -9,6 +9,9 @@ import XCTest
 ///     제거 시 원본(실측 7/7 성공, 958~1200px).
 ///   - 클리앙: `?scale=width:480` 고정. CDN 허용값은 480/740 뿐(쿼리 제거는
 ///     302 차단)이라 740 치환이 무왕복 최대(원본이 740 이하면 원본 그대로 옴).
+///   - 웃대: 움짤(GIF) 첨부는 img_file_url 없이 timg 썸네일 프록시(정지
+///     JPEG)만 img 에 실림 — 원본은 comment_thumb_expand href 둘째 인자
+///     (실측 2026-07-12, 무보호 200).
 final class CommentImageOriginalTests: XCTestCase {
 
     func testInvenStripsResizeQueryFromCommentImage() throws {
@@ -118,6 +121,74 @@ final class CommentImageOriginalTests: XCTestCase {
         XCTAssertEqual(
             ClienParser.upgradingScaleWidth(url).absoluteString,
             "https://edgio.clien.net/F03/1/a.png?scale=width:740&foo=bar"
+        )
+    }
+
+    func testHumorCommentGIFAttachmentExtractsOriginalFromThumbExpand() throws {
+        // 실측 마크업(2026-07-12): 움짤(GIF) 댓글 첨부는 img 에 img_file_url
+        // 속성이 없고, 원본 URL 이 `<a href="javascript:comment_thumb_expand(
+        // 'id','원본','썸네일')">` 의 둘째 인자에만 있다. 이걸 안 뽑으면 timg
+        // 썸네일 프록시(정지 JPEG, 실측 17KB)가 나가고 원본 애니메이션
+        // GIF(실측 2MB, 무보호 200)는 버려진다.
+        let html = """
+        <html><body>
+        <div id="read_subject_div"><h2><a>제목</a></h2></div>
+        <div id="comment"><ul>
+          <li id="comment_li_515096502">
+            <div class="nick"><span class="hu_nick_txt">닉</span></div>
+            <span class="etc">2026-07-12 10:00</span>
+            <div class="comment_body">
+              <div class="comment_text">움짤</div>
+              <div class="comment_file">
+                <a href="javascript:comment_thumb_expand('cmt515096502','//down.humoruniv.com/board/data/comment/r_r269078001_abc.gif','//timg.humoruniv.com/thumb.php?url=//down.humoruniv.com/board/data/comment/r_r269078001_abc.gif?SIZE=236x196?WEBP')">
+                  <img class="comment_thumb_img" src="//timg.humoruniv.com/thumb.php?url=//down.humoruniv.com/board/data/comment/r_r269078001_abc.gif?SIZE=236x196?WEBP">
+                </a>
+              </div>
+            </div>
+          </li>
+        </ul></div>
+        </body></html>
+        """
+        let detail = try HumorParser().parseDetail(
+            html: html,
+            post: .fixture(site: .humor, url: URL(string: "https://m.humoruniv.com/board/read.html?table=pds&number=1")!)
+        )
+        XCTAssertEqual(
+            detail.comments.first?.stickerURL?.absoluteString,
+            "https://down.humoruniv.com/board/data/comment/r_r269078001_abc.gif",
+            "comment_thumb_expand href 의 둘째 인자(원본 GIF)여야 함 — timg 프록시 아님"
+        )
+    }
+
+    func testHumorCommentImgFileURLAttachmentStillPreferred() throws {
+        // 기존 처리 가드 — img_compress 첨부는 img_file_url(원본)을 그대로.
+        let html = """
+        <html><body>
+        <div id="read_subject_div"><h2><a>제목</a></h2></div>
+        <div id="comment"><ul>
+          <li id="comment_li_515096503">
+            <div class="nick"><span class="hu_nick_txt">닉2</span></div>
+            <span class="etc">2026-07-12 10:01</span>
+            <div class="comment_body">
+              <div class="comment_text">사진</div>
+              <div class="comment_file">
+                <img src='/images/loading_bar2.gif'>
+                <img class="img_compress"
+                     src="//timg.humoruniv.com/thumb.php?url=//down.humoruniv.com/board/data/comment/photo1.png"
+                     img_file_url="//down.humoruniv.com/board/data/comment/photo1.png">
+              </div>
+            </div>
+          </li>
+        </ul></div>
+        </body></html>
+        """
+        let detail = try HumorParser().parseDetail(
+            html: html,
+            post: .fixture(site: .humor, url: URL(string: "https://m.humoruniv.com/board/read.html?table=pds&number=2")!)
+        )
+        XCTAssertEqual(
+            detail.comments.first?.stickerURL?.absoluteString,
+            "https://down.humoruniv.com/board/data/comment/photo1.png"
         )
     }
 
