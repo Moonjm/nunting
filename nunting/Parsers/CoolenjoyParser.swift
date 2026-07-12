@@ -109,12 +109,27 @@ public struct CoolenjoyParser: BoardParser {
                 let dateText = try article.select("time").first()?.text()
                     .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-                let content = try article.select("textarea[id^=save_comment_]").first()?.text()
+                // 업로드 이미지는 렌더된 `div.cmt_contents` 안 bare `<img
+                // class="img-fluid">` 로만 옴(실측 2026-07-12, 29/29 article
+                // 에 cmt_contents 존재). textarea 만 읽던 시절엔 이미지가
+                // 통째로 사라졌다. 이모티콘(`/nariya/skin/emo/`)은 사용자
+                // 첨부가 아니므로 건너뛴다. article 전체가 아니라
+                // cmt_contents 로 좁히는 이유: 프로필 사진(.pf_img)·레벨
+                // 배지(header) 등 chrome 이미지가 바깥에 산다.
+                let stickerURL = firstImageURL(
+                    in: article,
+                    selector: ".cmt_contents img",
+                    attributes: ["src", "data-src"],
+                    skipMarkers: ["/nariya/skin/emo/"]
+                )
+
+                let rawContent = try article.select("textarea[id^=save_comment_]").first()?.text()
                     .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let content = Self.strippingAttachmentTokens(rawContent, stickerURL: stickerURL)
                 // Keep author-only comments (empty body, no media) — they
                 // still render as an author line. Drop only the genuinely
-                // empty row (no content and no nickname).
-                guard !content.isEmpty || !author.isEmpty else { continue }
+                // empty row (no content, no nickname, no attachment).
+                guard !content.isEmpty || !author.isEmpty || stickerURL != nil else { continue }
 
                 let likeText = try article.select("b[id^=c_g]").first()?.text()
                     .trimmingCharacters(in: .whitespacesAndNewlines) ?? "0"
@@ -126,11 +141,33 @@ public struct CoolenjoyParser: BoardParser {
                     dateText: dateText,
                     content: content,
                     likeCount: likeCount,
-                    isReply: false
+                    isReply: false,
+                    stickerURL: stickerURL
                 ))
             }
             return results
         }
+    }
+
+    /// nariya 에디터는 textarea 원문에 첨부 이미지를 `[URL]` 브래킷 토큰으로,
+    /// 이모티콘을 `{emo:파일명:폭}` 토큰으로 남긴다. sticker 로 승격한 이미지
+    /// 토큰과 이모티콘 토큰을 걷어내지 않으면 캡션에 원문 그대로 노출된다.
+    /// 토큰만 있던 줄은 통째로 비워 줄바꿈 잔해도 남기지 않는다. 두 번째
+    /// 이후 이미지의 `[URL]` 토큰은 남긴다 — sticker 슬롯이 하나뿐이라
+    /// 지우면 그 이미지의 존재 자체가 사라진다. 유닛 테스트용 internal.
+    nonisolated static func strippingAttachmentTokens(_ text: String, stickerURL: URL?) -> String {
+        var working = text
+        if let sticker = stickerURL {
+            working = working.replacingOccurrences(of: "[\(sticker.absoluteString)]", with: "")
+        }
+        working = working.replacingOccurrences(
+            of: #"\{emo:[^}]*\}"#, with: "", options: .regularExpression
+        )
+        return working
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
     }
 
     public nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {

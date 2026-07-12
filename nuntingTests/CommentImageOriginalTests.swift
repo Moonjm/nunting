@@ -192,6 +192,79 @@ final class CommentImageOriginalTests: XCTestCase {
         )
     }
 
+    func testCoolenjoyCommentImageExtractedFromCmtContents() throws {
+        // 실측 마크업(comment_view.php, freeboard2 2889828 / c_2889832,
+        // 2026-07-12): 댓글 이미지는 `div.cmt_contents` 안 bare `<img
+        // class="img-fluid">` 로 렌더되는데 파서는 textarea 캡션 텍스트만
+        // 읽어서 이미지가 통째로 사라지고, 캡션엔 `[URL]`·`{emo:…}` 토큰이
+        // 원문 그대로 노출됐다. cmt_contents 에서 이모티콘(/nariya/skin/emo/)
+        // 을 건너뛴 첫 이미지를 sticker 로 뽑고 토큰은 캡션에서 걷어낸다.
+        let html = """
+        <html><body><article id="c_2889832">
+          <a class="sv_member" title="스타이너 자기소개">스타이너</a>
+          <time datetime="2026-07-11T23:12:00+09:00">26-07-11 23:12</time>
+          <div class="cmt_contents" >
+            <img src="https://photo.coolenjoy.co.kr/data/editor/2607/cmt_991586235_iwHpJ3cL_cd74cb53b5918dd70e4b2ca777f267f1a6c631ea.jpeg" alt="" class="img-fluid">
+            <br/>
+            <br/>레이저 나가는 앵경 추천
+            <br/><img src="https://coolenjoy.net/nariya/skin/emo/onion-100.gif" width="50" alt="" />
+          </div>
+          <b id="c_g2889832" class="orangered">1</b>
+          <textarea id="save_comment_2889832" style="display:none">[https://photo.coolenjoy.co.kr/data/editor/2607/cmt_991586235_iwHpJ3cL_cd74cb53b5918dd70e4b2ca777f267f1a6c631ea.jpeg]
+          레이저 나가는 앵경 추천
+          {emo:onion-100.gif:50}</textarea>
+        </article></body></html>
+        """
+        let comments = try CoolenjoyParser().parseComments(html: html)
+        XCTAssertEqual(comments.count, 1)
+        XCTAssertEqual(
+            comments.first?.stickerURL?.absoluteString,
+            "https://photo.coolenjoy.co.kr/data/editor/2607/cmt_991586235_iwHpJ3cL_cd74cb53b5918dd70e4b2ca777f267f1a6c631ea.jpeg",
+            "cmt_contents 의 사용자 업로드 이미지가 sticker 로 추출돼야 함(이모티콘 제외)"
+        )
+        XCTAssertEqual(
+            comments.first?.content,
+            "레이저 나가는 앵경 추천",
+            "캡션에서 [URL] 첨부 토큰과 {emo:…} 토큰은 제거"
+        )
+    }
+
+    func testCoolenjoyEmoticonOnlyCommentHasNoSticker() throws {
+        // 이모티콘만 있는 댓글 — 이모티콘은 sticker 로 승격하지 않는다.
+        let html = """
+        <html><body><article id="c_10">
+          <a class="sv_member" title="철수 자기소개">철수</a>
+          <div class="cmt_contents" >
+            ㅋㅋㅋ <img src="https://coolenjoy.net/nariya/skin/emo/onion-55.gif" width="50" alt="" />
+          </div>
+          <textarea id="save_comment_10">ㅋㅋㅋ {emo:onion-55.gif:50}</textarea>
+        </article></body></html>
+        """
+        let comments = try CoolenjoyParser().parseComments(html: html)
+        XCTAssertEqual(comments.count, 1)
+        XCTAssertNil(comments.first?.stickerURL)
+        XCTAssertEqual(comments.first?.content, "ㅋㅋㅋ")
+    }
+
+    func testCoolenjoyImageOnlyCommentSurvivesEmptyCaption() throws {
+        // 캡션 없이 이미지만 단 댓글 — 드롭되지 않고 sticker 만 달려야 한다.
+        let html = """
+        <html><body><article id="c_11">
+          <div class="cmt_contents" >
+            <img src="https://photo.coolenjoy.co.kr/data/editor/2607/cmt_1_ab_ff.jpeg" class="img-fluid">
+          </div>
+          <textarea id="save_comment_11">[https://photo.coolenjoy.co.kr/data/editor/2607/cmt_1_ab_ff.jpeg]</textarea>
+        </article></body></html>
+        """
+        let comments = try CoolenjoyParser().parseComments(html: html)
+        XCTAssertEqual(comments.count, 1)
+        XCTAssertEqual(
+            comments.first?.stickerURL?.absoluteString,
+            "https://photo.coolenjoy.co.kr/data/editor/2607/cmt_1_ab_ff.jpeg"
+        )
+        XCTAssertTrue(comments.first?.content.isEmpty == true)
+    }
+
     func testClienImageWithoutScaleQueryUnchanged() throws {
         let html = """
         <html><body>
