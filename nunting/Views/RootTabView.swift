@@ -186,13 +186,15 @@ struct RootTabView: View {
                         isActive: rootTabSelectionState.selectedTab == 0,
                         searchByBoard: $searchByBoard,
                         currentBoardID: $currentBoardID,
-                        scrollTopToken: scrollTopToken
+                        scrollTopToken: scrollTopToken,
+                        onEditSearch: { showingSearch = true }
                     )
                 }
                 Tab("둘러보기", systemImage: "square.grid.2x2", value: 1) {
                     BrowseTab(catalog: catalog, favorites: favorites,
                               readStore: readStore, onSelectPost: { FootprintLogger.shared.record("post-open"); detail.show($0) },
-                              searchByBoard: $searchByBoard, browsingBoard: $browsingBoard)
+                              searchByBoard: $searchByBoard, browsingBoard: $browsingBoard,
+                              onEditSearch: { showingSearch = true })
                 }
                 Tab("알림", systemImage: "bell", value: 2) {
                     NavigationStack {
@@ -373,6 +375,8 @@ private struct ArchiveHome: View {
     @Binding var currentBoardID: String?
     // 모음 탭 재탭 시 증가 — 현재 보드 목록을 맨 위로 스크롤하는 신호.
     let scrollTopToken: Int
+    /// 검색 활성 칩 탭 → 셸이 SearchSheet 를 현재 검색어 프리필로 다시 연다.
+    let onEditSearch: () -> Void
 
     @State private var filterByBoard: [String: BoardFilter] = [:]
     // 떠 있는 탭바가 가리는 하단 안전영역 높이(측정). 리스트를 탭바 밑까지
@@ -390,11 +394,12 @@ private struct ArchiveHome: View {
     }
     // 떠 있는 하단 컨트롤(필터 바/검색 버튼)이 가리는 높이만큼 목록 하단에 줄 여백.
     static let bottomControlsInset: CGFloat = 60
-    // 지금 하단에 떠 있는 컨트롤(필터 바)이 있는 보드 id 집합 — 그만큼 목록 하단
-    // 인셋. 검색은 탭바 role:.search 로 옮겨 더는 하단에 안 뜨므로 필터 바만 센다.
+    // 지금 하단에 떠 있는 컨트롤이 있는 보드 id 집합 — 그만큼 목록 하단 인셋.
+    // 검색 중엔 검색 활성 칩이, 아니면 (필터 보드 한정) 필터 바가 떠 있으므로
+    // 검색 중인 보드도 센다.
     private var bottomControlsBoardIDs: Set<String> {
         Set(boards.filter { board in
-            showsFilterBar(board) && searchByBoard[board.id] == nil
+            searchByBoard[board.id] != nil || showsFilterBar(board)
         }.map(\.id))
     }
 
@@ -442,14 +447,25 @@ private struct ArchiveHome: View {
         // 필터 바(좌, 내용에 맞게 hug)를 띄운다. Spacer 가 남은 폭을 채워 필터 바를
         // 좌측 정렬로 유지한다(검색은 탭바 role:.search 로 옮겨 여기선 안 띄운다).
         .overlay(alignment: .bottom) {
-            if let board = currentBoard, currentQuery == nil, showsFilterBar(board) {
+            if let board = currentBoard, currentQuery != nil || showsFilterBar(board) {
                 HStack(alignment: .center, spacing: 8) {
                     // layoutPriority: 캡슐과 Spacer 가 둘 다 flexible 이라 우선순위
                     // 없으면 캡슐이 가용폭 절반만 받아 hug 가 깨진다. 우선순위를 주면
                     // 전체 가용폭을 먼저 받아 min(가용,내용)으로 줄어든다 — 인벤
                     // 4칩=hug, 애객 11칩=가용폭 캡 후 스크롤.
-                    GlassFilterBar(board: board, selection: filterBinding(board.id))
+                    if let query = currentQuery {
+                        // 검색 중엔 필터 바 자리에 검색 활성 칩 — 지금 무슨
+                        // 검색어의 결과를 보는 중인지 표시 + 탭=수정, ✕=해제.
+                        SearchActiveChip(
+                            query: query,
+                            onEdit: onEditSearch,
+                            onClear: { searchByBoard[board.id] = nil }
+                        )
                         .layoutPriority(1)
+                    } else {
+                        GlassFilterBar(board: board, selection: filterBinding(board.id))
+                            .layoutPriority(1)
+                    }
                     Spacer(minLength: 0)
                 }
                 // 필터 바 시작 위치는 원래대로 좌측 28pt, 우측 여백 16pt.
@@ -533,6 +549,8 @@ private struct BrowseTab: View {
     // 보드를 셸에 알려 검색 탭이 그 보드를 검색하게 한다.
     @Binding var searchByBoard: [String: String]
     @Binding var browsingBoard: Board?
+    /// 검색 활성 칩 탭 → 셸이 SearchSheet 를 현재 검색어 프리필로 다시 연다.
+    let onEditSearch: () -> Void
 
     private var sites: [Site] {
         DrawerSection.all.compactMap { if case .site(let s) = $0 { return s } else { return nil } }
@@ -557,7 +575,8 @@ private struct BrowseTab: View {
             // 보드 탭 → 그 보드 글 목록.
             .navigationDestination(for: Board.self) { board in
                 BoardPostsView(board: board, readStore: readStore, onSelectPost: onSelectPost,
-                               searchByBoard: $searchByBoard, browsingBoard: $browsingBoard)
+                               searchByBoard: $searchByBoard, browsingBoard: $browsingBoard,
+                               onEditSearch: onEditSearch)
             }
         }
     }
@@ -572,6 +591,8 @@ private struct BoardPostsView: View {
     let onSelectPost: (Post) -> Void
     @Binding var searchByBoard: [String: String]
     @Binding var browsingBoard: Board?
+    /// 검색 활성 칩 탭 → 셸이 SearchSheet 를 현재 검색어 프리필로 다시 연다.
+    let onEditSearch: () -> Void
 
     private var query: String? { searchByBoard[board.id] }
 
@@ -581,12 +602,32 @@ private struct BoardPostsView: View {
             // 검색 중엔 필터 해제(모음 검색과 동일).
             filter: query == nil ? board.defaultListFilter : nil,
             searchQuery: query,
+            // 검색 중엔 하단에 검색 활성 칩이 떠 있으므로 마지막 글 가림 방지 인셋.
+            bottomContentInset: query == nil ? 0 : ArchiveHome.bottomControlsInset,
             readStore: readStore,
             onSelectPost: onSelectPost
         )
         .equatable()
         .navigationTitle(board.name)
         .toolbarTitleDisplayMode(.inline)
+        // 모음과 동일한 검색 활성 칩 — 여기(둘러보기 글 목록)도 검색을 걸면
+        // 목록이 결과로 바뀌는데 검색어가 화면에 안 보이는 문제가 같다.
+        .overlay(alignment: .bottom) {
+            if let query {
+                HStack(alignment: .center, spacing: 8) {
+                    SearchActiveChip(
+                        query: query,
+                        onEdit: onEditSearch,
+                        onClear: { searchByBoard[board.id] = nil }
+                    )
+                    .layoutPriority(1)
+                    Spacer(minLength: 0)
+                }
+                .padding(.leading, 28)
+                .padding(.trailing, 16)
+                .padding(.bottom, 8)
+            }
+        }
         // 이 보드를 셸에 알려 탭바 검색이 이 보드를 검색하게 한다.
         .onAppear { browsingBoard = board }
         .onDisappear { if browsingBoard?.id == board.id { browsingBoard = nil } }
@@ -865,6 +906,54 @@ private struct FavoritesReorderSheet: View {
                 }
             }
         }
+    }
+}
+
+// 검색 활성 칩 — 검색이 걸린 동안 필터 바 자리(하단 좌측)에 뜨는 유리 캡슐.
+// 목록이 검색 결과로 바뀌어도 검색어가 화면 어디에도 안 보이던 문제의 해법:
+// 지금 무슨 검색어의 결과인지 상시 표시하고, 본체 탭=SearchSheet 재오픈(현재
+// 검색어 프리필 → 수정), ✕=해제. 탭바 검색 탭의 ✕(즉시 해제)와 달리 여기선
+// 검색어를 지우지 않고 고칠 수 있다.
+private struct SearchActiveChip: View {
+    let query: String
+    let onEdit: () -> Void
+    let onClear: () -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button(action: onEdit) {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(query)
+                        .font(.footnote.weight(.semibold))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .foregroundStyle(.primary)
+                }
+                .padding(.leading, 14)
+                .padding(.trailing, 6)
+                .padding(.vertical, 9)
+                // 본체 히트 영역을 패딩까지 확장 — 짧은 검색어도 탭하기 쉽게.
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("검색어 수정: \(query)")
+
+            Button(action: onClear) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 2)
+                    .padding(.trailing, 12)
+                    .padding(.vertical, 9)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("검색 해제")
+        }
+        .glassEffect(.regular, in: .capsule)
     }
 }
 
