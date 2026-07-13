@@ -433,8 +433,11 @@ func TestAdminMetricsRequiresKey(t *testing.T) {
 	if err := store.UpsertUser(t.Context(), "nnt_x"); err != nil {
 		t.Fatalf("upsert user: %v", err)
 	}
+	// 키는 실제 MetricKit jsonRepresentation() 과 동일하게 복수형
+	// "applicationExitMetrics" — 단수형 픽스처를 쓰면 실기기 payload 와 달라
+	// 파서의 키 불일치를 못 잡는다(실제로 그렇게 놓친 전적).
 	if err := store.InsertMetricPayload(t.Context(), "nnt_x", "metric",
-		`{"applicationExitMetric":{"foregroundExitData":{"cumulativeMemoryResourceLimitExitCount":5}}}`); err != nil {
+		`{"applicationExitMetrics":{"foregroundExitData":{"cumulativeMemoryResourceLimitExitCount":5}}}`); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 

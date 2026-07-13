@@ -113,12 +113,15 @@ type exitData struct {
 }
 
 type metricPayloadJSON struct {
-	TimeStampEnd          string `json:"timeStampEnd"`
-	AppVersion            string `json:"appVersion"`
+	TimeStampEnd string `json:"timeStampEnd"`
+	AppVersion   string `json:"appVersion"`
+	// 실기기 jsonRepresentation() 의 키는 복수형 "applicationExitMetrics"
+	// (MXMetricPayload 프로퍼티명 applicationExitMetric 과 다름 — 단수형으로
+	// 디코드하면 전부 nil 이라 종료 카운트가 항상 0 으로 렌더됐다).
 	ApplicationExitMetric *struct {
 		Foreground exitData `json:"foregroundExitData"`
 		Background exitData `json:"backgroundExitData"`
-	} `json:"applicationExitMetric"`
+	} `json:"applicationExitMetrics"`
 }
 
 // diagnosticPayloadJSON 은 MXDiagnosticPayload 중 crash/hang 만 요약한다.
