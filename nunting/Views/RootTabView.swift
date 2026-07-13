@@ -510,6 +510,10 @@ private struct ArchiveHome: View {
             // footprint 타임라인 태깅 — 어느 보드에서 메모리가 치솟는지 보려고.
             FootprintLogger.shared.record("board:\(currentBoard?.name ?? "?")")
         }
+        // 보드 전환(스와이프·스위처 메뉴·센티널 랩어라운드) 촉각 확인 — 특히
+        // 무한순환의 끝→처음 점프는 시각적 끊김이 없어 촉각이 유일한 전환 신호.
+        // 첫 진입(nil→첫 보드)은 사용자 행동이 아니므로 제외.
+        .sensoryFeedback(.selection, trigger: currentBoardID) { old, _ in old != nil }
         .onChange(of: isActive) { _, active in if active { resetFilterToDefault(currentBoard) } }
         // 스위처 메뉴 "보드 순서 편집" → 즐겨찾기 재정렬 시트. 순서는
         // FavoritesStore.move 가 즉시 저장하고, boards(favoriteBoards) 를 읽는
@@ -522,6 +526,13 @@ private struct ArchiveHome: View {
     // 보드의 첫 필터 탭(= defaultListFilter; 없으면 전체=nil)으로 되돌린다.
     private func resetFilterToDefault(_ board: Board?) {
         guard let board else { return }
+        // 검색이 걸려 있는 보드는 리셋하지 않는다 — 검색은 선택된 필터 스코프
+        // 안에서 실행되므로(인벤 my=chu+svalue, 애객 site=단일+word 실측 확인),
+        // 여기서 필터를 기본값으로 되돌리면 검색 결과가 사용자 몰래 다른
+        // 스코프(애객은 기본 필터가 없어 전체)로 바뀐다. 특히 검색 탭 시트
+        // 닫힘의 탭바 재동기화(selectedTab 0→4→0)가 isActive 재진입 리셋을
+        // 오발화시켜 "필터 걸고 검색했는데 전체에서 검색됨" 회귀를 냈었다.
+        guard searchByBoard[board.id] == nil else { return }
         filterByBoard[board.id] = board.defaultListFilter
     }
 
@@ -620,7 +631,8 @@ private struct BoardPostsView: View {
     var body: some View {
         BoardListView(
             board: board,
-            // 검색 중엔 필터 해제(모음 검색과 동일).
+            // 검색 중엔 필터 해제 — 둘러보기엔 필터 UI 가 없어 검색은 보드 전체
+            // 대상이다. (모음은 반대로 선택된 필터 스코프를 유지한 채 검색한다.)
             filter: query == nil ? board.defaultListFilter : nil,
             searchQuery: query,
             // 검색 중엔 하단에 검색 활성 칩이 떠 있으므로 마지막 글 가림 방지 인셋.
@@ -857,32 +869,40 @@ private struct HistoryResumeHandle: View {
     let detail: DetailOverlayController
 
     var body: some View {
-        if let post = detail.activePost, !detail.isOverlayVisible {
-            ZStack(alignment: .trailing) {
+        // 컨테이너(ZStack)는 상시 유지하고 내용만 조건부 — `if` 가 뷰 최상위면
+        // 등장/퇴장 트랜지션이 붙을 곳이 없어 상세를 닫는 순간 핸들이 뚝 나타난다.
+        let visible = detail.activePost != nil && !detail.isOverlayVisible
+        ZStack(alignment: .trailing) {
+            if visible, let post = detail.activePost {
                 Button {
                     detail.show(post)
                 } label: {
                     Image(systemName: "clock.arrow.circlepath")
                         .font(.title2.weight(.semibold))
-                        .foregroundStyle(.black)
+                        // 유리는 뒤 콘텐츠 따라 어두워질 수 있어 하드코딩(.black)
+                        // 대신 .primary — 다크 배경 위에서도 대비 유지.
+                        .foregroundStyle(.primary)
                         // 보이는 히트/아이콘 영역 — 아이콘은 이 안에서 가운데라
                         // 좌우 여백이 고르게 남는다(우측이 화면 모서리에 안 붙음).
                         .frame(width: 50, height: 60)
                         // trailing 여백은 아래 offset 으로 화면 밖에 흘려 모서리에
                         // 걸친 탭처럼 — 유리 배경이 화면 끝까지 이어진다.
                         .padding(.trailing, 16)
-                        .glassEffect(.regular, in: UnevenRoundedRectangle(
+                        // interactive: 누르는 동안 유리가 반응(눌림 피드백).
+                        .glassEffect(.regular.interactive(), in: UnevenRoundedRectangle(
                             topLeadingRadius: 22, bottomLeadingRadius: 22,
                             bottomTrailingRadius: 0, topTrailingRadius: 0,
                             style: .continuous))
                 }
-                .tint(.black)
                 .accessibilityLabel("이전 글 다시 보기")
                 // trailing 여백(16)만큼 화면 밖으로 흘린다 — 모서리에 걸친 탭.
                 .offset(x: 16, y: 24)
+                // 모서리 밖에서 슬라이드 인/아웃 — 상세 닫힘과 함께 뚝 나타나지 않게.
+                .transition(.move(edge: .trailing).combined(with: .opacity))
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: visible)
     }
 }
 
@@ -974,7 +994,8 @@ private struct SearchActiveChip: View {
             .buttonStyle(.plain)
             .accessibilityLabel("검색 해제")
         }
-        .glassEffect(.regular, in: .capsule)
+        // interactive: 누르는 동안 유리가 반응(눌림 피드백).
+        .glassEffect(.regular.interactive(), in: .capsule)
     }
 }
 
@@ -982,6 +1003,10 @@ private struct GlassFilterBar: View {
     let board: Board
     @Binding var selection: BoardFilter?
     @State private var contentWidth: CGFloat = 0
+    // 칩 탭으로 필터가 실제로 바뀔 때만 증가하는 햅틱 트리거. selection 값을
+    // 직접 트리거로 쓰면 보드 전환의 기본값 리셋(filterByBoard 직접 쓰기)에도
+    // 울리므로, 사용자 탭 지점에서만 올린다.
+    @State private var hapticToken = 0
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -996,10 +1021,12 @@ private struct GlassFilterBar: View {
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
         }
         .frame(maxWidth: contentWidth == 0 ? nil : contentWidth)
-        .glassEffect(.regular, in: .capsule)
+        // interactive: 누르는 동안 유리가 반응(눌림 피드백).
+        .glassEffect(.regular.interactive(), in: .capsule)
         // 스크롤 시 선택 칩(파란 배경)이 캡슐의 둥근 양끝 밖으로 새지 않게
         // 콘텐츠를 캡슐 모양으로 클리핑.
         .clipShape(.capsule)
+        .sensoryFeedback(.selection, trigger: hapticToken)
     }
 
     private struct Item: Identifiable {
@@ -1024,18 +1051,28 @@ private struct GlassFilterBar: View {
         return [all] + board.filters.map { Item(id: $0.id, label: $0.name, filter: $0) }
     }
 
+    // onTapGesture+Text 가 아니라 진짜 Button — 접근성 버튼 트레이트가 자동으로
+    // 붙고(목록 행과 동일 수준), 선택 상태는 isSelected 트레이트로 노출된다.
     private func chip(label: String, filter: BoardFilter?) -> some View {
         let isSelected = selection?.id == filter?.id
-        return Text(label)
-            .font(.footnote.weight(isSelected ? .semibold : .regular))
-            .padding(.horizontal, 11)
-            .padding(.vertical, 5)
-            .background(
-                isSelected ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.clear),
-                in: Capsule()
-            )
-            .foregroundStyle(isSelected ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
-            .contentShape(Capsule())
-            .onTapGesture { withAnimation(.easeInOut(duration: 0.15)) { selection = filter } }
+        return Button {
+            // 같은 칩 재탭은 no-op(햅틱도 없음) — 바인딩 setter 의 재탭 가드와 짝.
+            guard !isSelected else { return }
+            hapticToken += 1
+            withAnimation(.easeInOut(duration: 0.15)) { selection = filter }
+        } label: {
+            Text(label)
+                .font(.footnote.weight(isSelected ? .semibold : .regular))
+                .padding(.horizontal, 11)
+                .padding(.vertical, 5)
+                .background(
+                    isSelected ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.clear),
+                    in: Capsule()
+                )
+                .foregroundStyle(isSelected ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
