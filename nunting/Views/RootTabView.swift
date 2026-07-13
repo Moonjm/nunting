@@ -526,6 +526,13 @@ private struct ArchiveHome: View {
     // 보드의 첫 필터 탭(= defaultListFilter; 없으면 전체=nil)으로 되돌린다.
     private func resetFilterToDefault(_ board: Board?) {
         guard let board else { return }
+        // 검색이 걸려 있는 보드는 리셋하지 않는다 — 검색은 선택된 필터 스코프
+        // 안에서 실행되므로(인벤 my=chu+svalue, 애객 site=단일+word 실측 확인),
+        // 여기서 필터를 기본값으로 되돌리면 검색 결과가 사용자 몰래 다른
+        // 스코프(애객은 기본 필터가 없어 전체)로 바뀐다. 특히 검색 탭 시트
+        // 닫힘의 탭바 재동기화(selectedTab 0→4→0)가 isActive 재진입 리셋을
+        // 오발화시켜 "필터 걸고 검색했는데 전체에서 검색됨" 회귀를 냈었다.
+        guard searchByBoard[board.id] == nil else { return }
         filterByBoard[board.id] = board.defaultListFilter
     }
 
@@ -624,7 +631,8 @@ private struct BoardPostsView: View {
     var body: some View {
         BoardListView(
             board: board,
-            // 검색 중엔 필터 해제(모음 검색과 동일).
+            // 검색 중엔 필터 해제 — 둘러보기엔 필터 UI 가 없어 검색은 보드 전체
+            // 대상이다. (모음은 반대로 선택된 필터 스코프를 유지한 채 검색한다.)
             filter: query == nil ? board.defaultListFilter : nil,
             searchQuery: query,
             // 검색 중엔 하단에 검색 활성 칩이 떠 있으므로 마지막 글 가림 방지 인셋.
