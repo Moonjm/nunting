@@ -207,6 +207,14 @@ final class AlertSubscriptionService {
         _ = try await post("/me/metrics?kind=parser", jsonBody: body)
     }
 
+    /// 인앱 HangWatchdog 의 hang 리포트를 기존 metrics 채널(kind=hang)로 업로드.
+    /// MetricKit diagnostic(hang 콜스택)은 Xcode 설치 빌드에 전달되지 않아 직접
+    /// 수집한 대체 채널 — 서버 admin 뷰가 duration·label·스택을 렌더한다.
+    func reportHang(_ report: HangReportDTO) async throws {
+        let body = try JSONEncoder().encode(report)
+        _ = try await post("/me/metrics?kind=hang", jsonBody: body)
+    }
+
     /// 메모리 footprint 샘플 배치를 서버로 전송. FootprintLogger 가 버퍼가 차거나
     /// 백그라운드/메모리경고 시 호출. 서버는 저장하고 admin 뷰가 타임라인으로 렌더.
     func reportFootprint(_ samples: [FootprintSampleDTO]) async throws {

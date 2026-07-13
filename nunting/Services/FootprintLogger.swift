@@ -54,7 +54,10 @@ final class FootprintLogger {
     }
 
     /// 이벤트 기록 — 라벨 있는 한 점을 항상 남긴다.
+    /// 같은 라벨을 HangWatchdog 브레드크럼으로도 공유 — hang 리포트의 "직전 동작"이
+    /// 이 이벤트 지점들(보드 전환·글 열기·scenePhase)과 같은 어휘를 쓰게 한다.
     func record(_ label: String) {
+        HangWatchdog.shared.noteEvent(label)
         append(label: label, mb: MemoryFootprint.currentMB())
         if buffer.count >= flushThreshold { flush() }
     }

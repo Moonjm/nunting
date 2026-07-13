@@ -654,3 +654,55 @@ func TestAdminMetricsFootprintDeltaPerDevice(t *testing.T) {
 		t.Errorf("cross-device delta leaked (+590), body=%q", body)
 	}
 }
+
+// kind=hang — iOS HangWatchdog(인앱 메인스레드 감시)이 올리는 hang 리포트.
+// MetricKit diagnostic 이 Xcode 설치 빌드에 안 와서 만든 직접 수집 채널.
+func TestPostMetricsAcceptsHangKind(t *testing.T) {
+	srv, store := newTestServer(t)
+	defer srv.Close()
+	defer store.Close()
+
+	body := `{"ts":1752000000,"durationMs":3120,"label":"post:open",` +
+		`"samples":[{"atMs":1000,"frames":["0 nunting decode + 12","1 nunting layout + 4"]}]}`
+	code, resp := do(t, "POST", srv.URL+"/me/metrics?kind=hang", "nnt_x", body)
+	if code != 200 {
+		t.Fatalf("post hang metric: want 200, got %d body=%q", code, resp)
+	}
+
+	rows, err := store.ListMetricPayloads(t.Context(), 10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Kind != "hang" {
+		t.Fatalf("unexpected rows: %+v", rows)
+	}
+}
+
+func TestAdminMetricsSummarizesHang(t *testing.T) {
+	t.Setenv("NUNTING_ADMIN_KEY", "s3cret")
+	store := dbtest.New(t)
+	defer store.Close()
+	srv := httptest.NewServer(NewRouter(store))
+	defer srv.Close()
+
+	if err := store.UpsertUser(t.Context(), "nnt_x"); err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+	hang := `{"ts":1752000000,"durationMs":3120,"label":"post:open",` +
+		`"samples":[{"atMs":1000,"frames":["0 nunting decode + 12"]},{"atMs":2000,"frames":["0 nunting layout + 4"]}]}`
+	if err := store.InsertMetricPayload(t.Context(), "nnt_x", "hang", hang); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	code, body := do(t, "GET", srv.URL+"/admin/metrics?key=s3cret", "", "")
+	if code != 200 {
+		t.Fatalf("admin: want 200, got %d", code)
+	}
+	// hangs 카드가 1 로 집계되고, 요약에 지속시간·라벨이 노출돼야 한다.
+	if !strings.Contains(body, "hangs") || !strings.Contains(body, ">1<") {
+		t.Errorf("hang count card missing, body=%q", body)
+	}
+	if !strings.Contains(body, "3.1s") || !strings.Contains(body, "post:open") {
+		t.Errorf("hang summary missing duration/label, body=%q", body)
+	}
+}

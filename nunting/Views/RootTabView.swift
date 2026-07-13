@@ -316,7 +316,10 @@ struct RootTabView: View {
                 // 백그라운드 진입 시 footprint 버퍼 flush — 이게 없으면 버퍼가
                 // 서버로 안 가고 suspend 때 유실된다(구 셸 제거 때 누락됐던 배선).
                 FootprintLogger.shared.onBackground()
+                // suspend 된 메인 큐를 hang 으로 오인하지 않게 워치독 정지.
+                HangWatchdog.shared.pause()
             case .active:
+                HangWatchdog.shared.resume()
                 FootprintLogger.shared.record("scenePhase:active")
                 Networking.prewarmConnections()
                 ImageWarmup.warm()

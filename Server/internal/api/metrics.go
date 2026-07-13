@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/Moonjm/nunting/server/internal/db"
 )
@@ -16,7 +17,11 @@ import (
 // (종료 사유 카운트 등 집계), diagnostic = MXDiagnosticPayload(크래시 콜스택 등),
 // parser = iOS ParserFailureTelemetry 의 structureChanged 집계({site, phase, detail}
 // 작은 JSON) — 사이트 마크업 개편을 기기 밖에서 관측하기 위한 채널.
-var validMetricKinds = map[string]bool{"metric": true, "diagnostic": true, "parser": true}
+// hang = iOS HangWatchdog 의 메인스레드 hang 리포트({ts, durationMs, label, samples[]})
+// — MetricKit diagnostic 이 Xcode 설치 빌드에 전달되지 않아 만든 직접 수집 채널.
+var validMetricKinds = map[string]bool{
+	"metric": true, "diagnostic": true, "parser": true, "hang": true,
+}
 
 // POST /me/metrics?kind=metric|diagnostic|parser
 //
@@ -140,6 +145,16 @@ type diagnosticPayloadJSON struct {
 	HangDiagnostics []json.RawMessage `json:"hangDiagnostics"`
 }
 
+// hangPayloadJSON 은 iOS HangWatchdog 리포트(kind=hang). 키는 Swift HangReportDTO 와 합의.
+type hangPayloadJSON struct {
+	DurationMs int    `json:"durationMs"`
+	Label      string `json:"label"`
+	Samples    []struct {
+		AtMs   int      `json:"atMs"`
+		Frames []string `json:"frames"`
+	} `json:"samples"`
+}
+
 // metricsSummary 상단 강조 박스 — 전체 payload 누적.
 type metricsSummary struct {
 	ForegroundOOM  int // foreground memory limit (앱 쓰는 중 OOM kill — 가장 흔한 "그냥 꺼짐")
@@ -244,6 +259,8 @@ func buildMetricsPage(rows []db.MetricPayloadRow) metricsPage {
 			vr.Summary = summarizeMetric(row.Payload, &page.Summary)
 		case "diagnostic":
 			vr.Summary = summarizeDiagnostic(row.Payload, &page.Summary)
+		case "hang":
+			vr.Summary = summarizeHang(row.Payload, &page.Summary)
 		}
 		if vr.Summary == "" {
 			vr.Summary = "—"
@@ -302,6 +319,43 @@ func summarizeDiagnostic(payload string, sum *metricsSummary) string {
 	}
 	if len(d.HangDiagnostics) > 0 {
 		return "hang"
+	}
+	return ""
+}
+
+// summarizeHang HangWatchdog 리포트 한 건을 "hang 3.1s @ post:open (2 samples ·
+// top: <최심 앱 프레임>)" 형태로 요약하고 hangs 카드에 집계한다. 스택 전체는 raw
+// JSON details 로 본다.
+func summarizeHang(payload string, sum *metricsSummary) string {
+	var h hangPayloadJSON
+	if err := json.Unmarshal([]byte(payload), &h); err != nil {
+		return ""
+	}
+	sum.Hangs++
+	s := "hang " + strconv.FormatFloat(float64(h.DurationMs)/1000, 'f', 1, 64) + "s"
+	if h.Label != "" {
+		s += " @ " + h.Label
+	}
+	if n := len(h.Samples); n > 0 {
+		s += " (" + strconv.Itoa(n) + " samples"
+		if top := topFrame(h.Samples[0].Frames); top != "" {
+			s += " · top: " + top
+		}
+		s += ")"
+	}
+	return s
+}
+
+// topFrame 스택에서 원인 특정에 쓸 대표 프레임 — 첫 앱(nunting) 프레임을 고르고,
+// 없으면(전부 시스템 프레임이면) 최상단 프레임을 쓴다.
+func topFrame(frames []string) string {
+	for _, f := range frames {
+		if strings.Contains(f, "nunting") {
+			return f
+		}
+	}
+	if len(frames) > 0 {
+		return frames[0]
 	}
 	return ""
 }
