@@ -17,7 +17,7 @@ nonisolated struct HangReportDTO: Encodable, Sendable {
 /// 메인 스레드 hang 을 직접 감지·기록하는 워치독.
 ///
 /// 배경: MetricKit 의 hang 콜스택(`MXHangDiagnostic`)은 TestFlight/App Store 배포
-/// 빌드에서만 전달된다 — 이 앱처럼 Xcode 설치로만 쓰는 빌드에는 영원히 안 온다
+/// 빌드에서만 전달된다 — 이 앱처럼 Xcode 설치로만 쓰는 빌드에는 영원히 안 옴
 /// (서버 로그 전 기간에서 kind=diagnostic 수신 0건으로 실증). 일일 집계 히스토그램은
 /// 오지만 건수·시간 분포뿐이라 "어디서 막혔나"를 못 본다. 그래서 FootprintLogger 와
 /// 같은 직접 수집 방식으로: 전용 스레드가 메인 큐에 ping 을 던지고, pong 이 임계
@@ -30,6 +30,12 @@ nonisolated struct HangReportDTO: Encodable, Sendable {
 /// - 루프 갭 자가 점검 — 워치독 스레드 자신도 오래 못 돈 시간(프로세스 전체 suspend,
 ///   디버거 일시정지)은 진행 중 ping 을 버린다. 진짜 hang 은 메인만 멈추고 워치독은
 ///   계속 돌므로 구분된다.
+///
+/// 캡처와 리포트의 직렬화: 캡처는 raw 주소 워크(µs 단위)만 하고 즉시 락 안에 커밋,
+/// 느린 심볼화(ms 단위)는 리포트 확정 후 백그라운드 태스크에서 한다. 그래도 남는
+/// 워크~커밋 사이 틈은 `captureInFlight` 가드로 막는다 — pong 이 그 틈에 도착하면
+/// 리포트를 파킹해 뒀다가 캡처 커밋 쪽에서 확정한다. 임계 직후에 끝나는 hang 의
+/// 유일한 샘플이 리포트에서 빠지는 레이스 방지.
 ///
 /// 격리: 앱 기본 격리가 MainActor 라 타입을 `nonisolated` 로 열고, 가변 상태는 전부
 /// `OSAllocatedUnfairLock` 안에 둔다(워치독 스레드·메인 스레드 양쪽에서 접근).
@@ -46,6 +52,19 @@ nonisolated final class HangWatchdog: Sendable {
         }
     })
 
+    /// 심볼화 전의 스택 샘플 — 캡처 시점엔 raw 주소만 커밋한다.
+    private struct RawSample: Sendable {
+        let atMs: Int
+        let addresses: [UInt64]
+    }
+
+    /// pong 이 확정한 hang 의 메타데이터. 캡처가 진행 중이면 커밋을 기다리며 파킹된다.
+    private struct PendingHang: Sendable {
+        let ts: Int
+        let durationMs: Int
+        let label: String
+    }
+
     private struct State {
         var running = false
         var paused = false
@@ -54,9 +73,12 @@ nonisolated final class HangWatchdog: Sendable {
         var onReport: @Sendable (HangReportDTO) -> Void
         // 진행 중 ping. nil 이면 다음 틱에 새 ping 을 보낸다.
         var pingSentAt: TimeInterval?
-        var samples: [HangSampleDTO] = []
+        var samples: [RawSample] = []
         var nextSampleIndex = 0
         var lastTick: TimeInterval = 0
+        // 스택 워크~커밋 사이 틈에 pong 이 도착했을 때의 직렬화 (헤더 주석 참조).
+        var captureInFlight = false
+        var pendingReport: PendingHang?
     }
 
     private let state: OSAllocatedUnfairLock<State>
@@ -106,6 +128,7 @@ nonisolated final class HangWatchdog: Sendable {
         state.withLock {
             $0.running = false
             $0.pingSentAt = nil
+            $0.pendingReport = nil
         }
     }
 
@@ -115,6 +138,7 @@ nonisolated final class HangWatchdog: Sendable {
             $0.paused = true
             $0.pingSentAt = nil
             $0.samples = []
+            $0.pendingReport = nil
         }
     }
 
@@ -153,17 +177,24 @@ nonisolated final class HangWatchdog: Sendable {
             if gap > max(1.0, pingInterval * 10) {
                 s.pingSentAt = nil
                 s.samples = []
+                s.pendingReport = nil
                 return .none
             }
             guard let sentAt = s.pingSentAt else {
+                // 직전 hang 의 캡처/리포트 확정이 끝나기 전엔 새 ping 을 미룬다
+                // (samples 리셋이 파킹된 리포트의 샘플을 지우지 않게).
+                guard !s.captureInFlight, s.pendingReport == nil else { return .none }
                 s.pingSentAt = now
                 s.samples = []
                 s.nextSampleIndex = 0
                 return .sendPing
             }
             let elapsed = now - sentAt
-            if s.nextSampleIndex < sampleOffsets.count, elapsed >= sampleOffsets[s.nextSampleIndex] {
+            if !s.captureInFlight,
+               s.nextSampleIndex < sampleOffsets.count,
+               elapsed >= sampleOffsets[s.nextSampleIndex] {
                 s.nextSampleIndex += 1
+                s.captureInFlight = true
                 return .capture(port: s.mainThreadPort, atMs: Int(elapsed * 1000))
             }
             return .none
@@ -175,10 +206,21 @@ nonisolated final class HangWatchdog: Sendable {
         case .sendPing:
             DispatchQueue.main.async { [weak self] in self?.pong() }
         case .capture(let port, let atMs):
-            // 캡처(suspend+워크+심볼화)는 락 밖에서 — pong 이 락에서 대기하지 않게.
-            let frames = ThreadBacktrace.capture(thread: port)
-            guard !frames.isEmpty else { return }
-            state.withLock { $0.samples.append(HangSampleDTO(atMs: atMs, frames: frames)) }
+            // raw 워크만 락 밖에서(µs 단위) — 심볼화는 리포트 확정 후로 미룬다.
+            let addresses = ThreadBacktrace.rawAddresses(thread: port)
+            let parked: (PendingHang, [RawSample])? = state.withLock { s in
+                s.captureInFlight = false
+                if !addresses.isEmpty {
+                    s.samples.append(RawSample(atMs: atMs, addresses: addresses))
+                }
+                // 워크 중 메인이 풀려 pong 이 리포트를 파킹해 뒀다면 지금 확정.
+                guard let pending = s.pendingReport else { return nil }
+                s.pendingReport = nil
+                let samples = s.samples
+                s.samples = []
+                return (pending, samples)
+            }
+            if let (pending, samples) = parked { emit(pending, samples) }
         }
     }
 
@@ -187,23 +229,51 @@ nonisolated final class HangWatchdog: Sendable {
     /// 메인 큐가 ping 에 응답하는 순간 — 임계를 넘겼었다면 hang 이 방금 끝난 것이다.
     private func pong() {
         let now = ProcessInfo.processInfo.systemUptime
-        let report: HangReportDTO? = state.withLock { s in
-            defer {
+        let ready: (PendingHang, [RawSample])? = state.withLock { s in
+            guard let sentAt = s.pingSentAt, s.running, !s.paused else {
                 s.pingSentAt = nil
+                return nil
+            }
+            s.pingSentAt = nil
+            let elapsed = now - sentAt
+            guard elapsed >= threshold else {
                 s.samples = []
                 s.nextSampleIndex = 0
+                return nil
             }
-            guard let sentAt = s.pingSentAt, s.running, !s.paused else { return nil }
-            let elapsed = now - sentAt
-            guard elapsed >= threshold else { return nil }
-            return HangReportDTO(
+            let pending = PendingHang(
                 ts: Int(Date().timeIntervalSince1970),
                 durationMs: Int(elapsed * 1000),
-                label: s.label,
-                samples: s.samples
+                label: s.label
             )
+            if s.captureInFlight {
+                // 캡처가 워크~커밋 사이 — 커밋 쪽(tick)에서 확정하게 파킹.
+                s.pendingReport = pending
+                return nil
+            }
+            let samples = s.samples
+            s.samples = []
+            return (pending, samples)
         }
-        guard let report else { return }
-        state.withLock { $0.onReport }(report)
+        if let (pending, samples) = ready { emit(pending, samples) }
+    }
+
+    // MARK: - Report
+
+    /// 심볼화(ms 단위) + 업로드 핸들러 호출 — 메인/워치독 어느 쪽 hot path 에도
+    /// 얹지 않게 유틸리티 태스크에서 한다.
+    private func emit(_ pending: PendingHang, _ samples: [RawSample]) {
+        let handler = state.withLock { $0.onReport }
+        Task.detached(priority: .utility) {
+            let report = HangReportDTO(
+                ts: pending.ts,
+                durationMs: pending.durationMs,
+                label: pending.label,
+                samples: samples.map {
+                    HangSampleDTO(atMs: $0.atMs, frames: ThreadBacktrace.symbolicate($0.addresses))
+                }
+            )
+            handler(report)
+        }
     }
 }

@@ -68,6 +68,31 @@ final class HangWatchdogTests: XCTestCase {
         XCTAssertFalse(report.samples[0].frames.isEmpty, "샘플 프레임이 빔")
     }
 
+    /// 임계 직후에 끝나는 hang — 캡처(스택 워크~커밋)와 pong 이 경합해도 유일한
+    /// 샘플이 리포트에서 빠지면 안 된다(Codex P2 레이스 회귀 카나리).
+    func testNearThresholdHangKeepsItsSample() {
+        let reportBox = OSAllocatedUnfairLock<HangReportDTO?>(initialState: nil)
+        let exp = expectation(description: "near-threshold report")
+        let watchdog = HangWatchdog(
+            pingInterval: 0.05,
+            threshold: 0.2,
+            onReport: { report in
+                reportBox.withLock { $0 = report }
+                exp.fulfill()
+            }
+        )
+        watchdog.start()
+        defer { watchdog.stop() }
+
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
+        // 첫 샘플 시점(0.2s) 직후에 풀리는 블록.
+        Thread.sleep(forTimeInterval: 0.28)
+
+        wait(for: [exp], timeout: 3)
+        guard let report = reportBox.withLock({ $0 }) else { return XCTFail("리포트 없음") }
+        XCTAssertFalse(report.samples.isEmpty, "임계 직후 종료 hang 의 샘플이 유실됨")
+    }
+
     /// 메인 스레드가 정상 응답하면 리포트가 없어야 한다.
     func testNoReportWhenResponsive() {
         let reported = OSAllocatedUnfairLock<Bool>(initialState: false)
