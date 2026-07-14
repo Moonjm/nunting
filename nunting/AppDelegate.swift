@@ -37,6 +37,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // 어느 동작에서 메모리가 치솟는지 실시간 타임라인을 서버로 모은다.
         FootprintLogger.shared.start()
 
+        // hang 워치독 — MetricKit diagnostic(hang 콜스택)은 Xcode 설치 빌드에 오지
+        // 않으므로, 메인 스레드 1초+ 정지를 직접 감지해 스택 샘플을 서버로 올린다.
+        HangWatchdog.shared.start()
+
         return true
     }
 
