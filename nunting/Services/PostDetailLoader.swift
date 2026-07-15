@@ -137,6 +137,10 @@ final class PostDetailLoader {
         // 소스 사이트 것이 돌므로, dispatch 이후 resolved.site 로 갱신해
         // structureChanged 가 엉뚱한 사이트(aagag)로 집계되지 않게 한다.
         var telemetrySite = post.site
+        // 리포트 detail 에 붙일 글 URL — "bbs.view 없음" 같은 detail 만으로는
+        // 서버 데이터에서 삭제글인지 진짜 구조 변경인지 판별할 수 없었다
+        // (2026-07-15 뽐뿌 케이스). 사이트와 같은 이유로 resolved 로 갱신.
+        var telemetryURL = post.url
         do {
             let dispatch = try await resolveDispatchedPost(post)
             try Task.checkCancellation()
@@ -164,6 +168,7 @@ final class PostDetailLoader {
 
             case .parser(let resolved, let prefetched):
                 telemetrySite = resolved.site
+                telemetryURL = resolved.url
                 let parser = try ParserFactory.parser(for: resolved.site)
                 // var: 아래 애객 인터스티셜 안전망에서 재요청 본으로 교체될 수 있다.
                 var html: String
@@ -310,7 +315,8 @@ final class PostDetailLoader {
                         // 도달하지 않는다 — 구조 변경이면 여기서 직접 리포트.
                         if case ParserError.structureChanged(let changeDetail) = error {
                             telemetry.report(
-                                site: resolved.site, phase: .comments, detail: changeDetail)
+                                site: resolved.site, phase: .comments,
+                                detail: "\(changeDetail) (\(resolved.url.absoluteString))")
                         }
                     }
                 case nil:
@@ -336,7 +342,9 @@ final class PostDetailLoader {
         } catch {
             errorMessage = error.localizedDescription
             if case ParserError.structureChanged(let changeDetail) = error {
-                telemetry.report(site: telemetrySite, phase: .detail, detail: changeDetail)
+                telemetry.report(
+                    site: telemetrySite, phase: .detail,
+                    detail: "\(changeDetail) (\(telemetryURL.absoluteString))")
             }
         }
     }
@@ -391,7 +399,8 @@ final class PostDetailLoader {
             if !Self.isCancellation(error),
                case ParserError.structureChanged(let changeDetail) = error {
                 telemetry.report(
-                    site: context.post.site, phase: .comments, detail: changeDetail)
+                    site: context.post.site, phase: .comments,
+                    detail: "\(changeDetail) (\(context.post.url.absoluteString))")
             }
             return
         }

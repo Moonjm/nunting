@@ -133,9 +133,9 @@ final class PostDetailLoaderTests: XCTestCase {
 
     func testStructureChangedReportsDetailTelemetry() async {
         let exp = expectation(description: "telemetry sent")
-        nonisolated(unsafe) var recorded: (site: String, phase: String)?
-        let telemetry = ParserFailureTelemetry(sender: { site, phase, _ in
-            recorded = (site, phase)
+        nonisolated(unsafe) var recorded: (site: String, phase: String, detail: String)?
+        let telemetry = ParserFailureTelemetry(sender: { site, phase, detail in
+            recorded = (site, phase, detail)
             exp.fulfill()
         })
         let loader = PostDetailLoader(
@@ -155,6 +155,9 @@ final class PostDetailLoaderTests: XCTestCase {
         await fulfillment(of: [exp], timeout: 2)
         XCTAssertEqual(recorded?.site, "bobae")
         XCTAssertEqual(recorded?.phase, "detail")
+        XCTAssertTrue(
+            recorded?.detail.contains("https://m.bobaedream.co.kr/board/bbs_view/freeb/bobae-1") == true,
+            "detail 에 글 URL 포함 — 서버 데이터만으로 재현/판별 가능해야 한다 (got: \(recorded?.detail ?? "nil"))")
         XCTAssertNotNil(loader.errorMessage, "텔레메트리는 에러 표시를 대체하지 않는다")
     }
 
@@ -164,9 +167,9 @@ final class PostDetailLoaderTests: XCTestCase {
         // Result 로 소비돼 outer catch 에 안 오므로, 실패 분기에서 직접
         // 리포트해야 한다 (phase: comments).
         let exp = expectation(description: "telemetry sent")
-        nonisolated(unsafe) var recorded: (site: String, phase: String)?
-        let telemetry = ParserFailureTelemetry(sender: { site, phase, _ in
-            recorded = (site, phase)
+        nonisolated(unsafe) var recorded: (site: String, phase: String, detail: String)?
+        let telemetry = ParserFailureTelemetry(sender: { site, phase, detail in
+            recorded = (site, phase, detail)
             exp.fulfill()
         })
         let fetchCount = TestCounter()
@@ -187,6 +190,9 @@ final class PostDetailLoaderTests: XCTestCase {
         await fulfillment(of: [exp], timeout: 2)
         XCTAssertEqual(recorded?.site, "etoland")
         XCTAssertEqual(recorded?.phase, "comments")
+        XCTAssertTrue(
+            recorded?.detail.contains("https://etoland.co.kr/b/free/view/12345") == true,
+            "detail 에 글 URL 포함 (got: \(recorded?.detail ?? "nil"))")
         XCTAssertTrue(loader.commentsFailed, "텔레메트리는 재시도 배너를 대체하지 않는다")
         XCTAssertNil(loader.errorMessage, "본문은 성공 — 댓글 실패가 본문 에러로 승격되면 안 됨")
     }
@@ -197,9 +203,9 @@ final class PostDetailLoaderTests: XCTestCase {
         // catch 가 조용히 삼키던 경로.
         struct NetError: Error {}
         let exp = expectation(description: "telemetry sent")
-        nonisolated(unsafe) var recorded: (site: String, phase: String)?
-        let telemetry = ParserFailureTelemetry(sender: { site, phase, _ in
-            recorded = (site, phase)
+        nonisolated(unsafe) var recorded: (site: String, phase: String, detail: String)?
+        let telemetry = ParserFailureTelemetry(sender: { site, phase, detail in
+            recorded = (site, phase, detail)
             exp.fulfill()
         })
         let fetchCount = TestCounter()
@@ -223,6 +229,9 @@ final class PostDetailLoaderTests: XCTestCase {
         await fulfillment(of: [exp], timeout: 2)
         XCTAssertEqual(recorded?.site, "etoland")
         XCTAssertEqual(recorded?.phase, "comments")
+        XCTAssertTrue(
+            recorded?.detail.contains("https://etoland.co.kr/b/free/view/12345") == true,
+            "detail 에 글 URL 포함 (got: \(recorded?.detail ?? "nil"))")
         XCTAssertTrue(loader.commentsFailed, "재시도 실패 배너 유지")
     }
 
