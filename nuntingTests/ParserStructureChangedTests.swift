@@ -144,6 +144,16 @@ final class ParserStructureChangedTests: XCTestCase {
         assertDeletionNotice(try AagagParser().parseDetail(html: html, post: .fixture(site: .aagag)))
     }
 
+    /// 실측(2026-07-16) 뽐뿌 삭제/없는 글: 200 으로 80바이트 본문
+    /// `<script>alert("존재하지 않는 글입니다.")</script><script>history.back()</script>`
+    /// 만 온다. 안내 문구가 script 안에만 있어 키워드 폴백 대상이 아니고,
+    /// bbs.view 부재로 structureChanged 오탐이 나던 케이스 (7/15·16 parser
+    /// 텔레메트리 "bbs.view 없음"의 정체).
+    func testPpomppuDeletionReturnsNotice() throws {
+        let html = #"<script>alert("존재하지 않는 글입니다.")</script><script>history.back()</script>"#
+        assertDeletionNotice(try PpomppuParser().parseDetail(html: html, post: .fixture(site: .ppomppu)))
+    }
+
     /// 실측(2026-07-10) 인벤 삭제/없는 글: 302 없이 200 으로 목록 셸 페이지가
     /// 오고(`mo-board-view` 부재), 본문 텍스트에 "요청하신 페이지를 찾을 수
     /// 없습니다." 안내가 있다. structureChanged 오탐이 아니라 notice 처리 대상.

@@ -81,6 +81,22 @@ public struct PpomppuParser: BoardParser {
     public nonisolated func parseDetail(html: String, post: Post) throws -> PostDetail {
         let doc = try SwiftSoup.parse(html)
         guard let view = try doc.select("div.bbs.view, div.bbs_view, div.view").first() else {
+            // 삭제/없는 글은 200 으로 `<script>alert("존재하지 않는 글입니다.")
+            // </script><script>history.back()</script>` 만 온다(실측 2026-07-16).
+            // 안내가 script 안에만 있어 `.text()` 기반 키워드 폴백은 못 잡는다 —
+            // raw HTML 로 검사해 graceful notice 로 처리한다. 본문 컨테이너가
+            // 있는 정상 글은 이 분기에 오지 않으므로, 글 내용에 같은 문구가
+            // 인용돼도 오탐하지 않는다.
+            if html.contains("존재하지 않는 글") || html.contains("삭제된 게시물") {
+                return PostDetail(
+                    post: post,
+                    blocks: [.text("삭제되었거나 존재하지 않는 글입니다.")],
+                    fullDateText: nil,
+                    viewCount: nil,
+                    source: nil,
+                    comments: []
+                )
+            }
             throw ParserError.structureChanged("bbs.view 없음")
         }
 
