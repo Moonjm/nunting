@@ -57,6 +57,8 @@ struct PostDetailView: View, Equatable {
     @Environment(\.displayScale) private var displayScale
 
     @State private var loader = PostDetailLoader()
+    /// 온디바이스 AI 요약 (프로토타입). 미지원 기기에선 카드가 아예 안 뜬다.
+    @State private var summarizer = PostSummarizer()
     @State private var selectedImage: ImageViewerItem?
     @State private var webItem: WebBrowserItem?
     /// True from the moment the user commits a fullscreen-cover dismiss
@@ -151,6 +153,12 @@ struct PostDetailView: View, Equatable {
 
                     Divider()
 
+                    // 온디바이스 AI 요약 (프로토타입) — 본문이 로드된 뒤에만.
+                    // 댓글까지 입력에 쓰므로 detail 스냅샷을 그대로 넘긴다.
+                    if PostSummarizer.isAvailable, let detail = loader.detail {
+                        PostSummaryCard(summarizer: summarizer, detail: detail)
+                    }
+
                     articleContent
 
                     if let comments = loader.detail?.comments, !comments.isEmpty {
@@ -222,6 +230,9 @@ struct PostDetailView: View, Equatable {
             return presentInBrowser(url) ? .handled : .systemAction
         })
         .task(id: post.id) {
+            // 오버레이 keep-alive 로 뷰 인스턴스가 글 전환을 넘어 살아남으므로,
+            // 이전 글의 요약이 새 글에 붙지 않게 글 단위로 리셋한다.
+            summarizer.reset()
             readStore.markRead(post)
             // Viewing the post by any route (feed tap, push-banner tap,
             // in-app alert-list tap) clears its keyword-alert banner from
