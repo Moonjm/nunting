@@ -66,7 +66,18 @@ public struct HumorParser: BoardParser {
             // response — show a notice. Any other reason the detail markup is
             // gone means it changed; throw so the user sees the "구조가 바뀐 것
             // 같아요" signal instead of a silently blank post.
-            guard body.contains("삭제/이동된") || body.contains("삭제된 게시물") else {
+            //
+            // 리다이렉트는 HTTP 30x 가 아니라 **JS**(`location.replace(
+            // 'msg.html?…&mode=112')`)로 온다(실측 2026-07-18, 406바이트 본문).
+            // URLSession 은 JS 를 실행하지 않아 msg.html 의 "삭제/이동된 게시물
+            // 입니다." 문구에 도달하지 못하고, 리다이렉트 URL 도 script 안이라
+            // `.text()` 키워드로는 못 잡는다 — raw HTML 에서 msg.html 리다이렉트
+            // 를 함께 검사한다(뽐뿌의 script-alert raw 검사와 같은 관례). 본문
+            // 컨테이너가 있는 정상 글은 이 분기에 오지 않으므로, 글 내용에
+            // msg.html 이 인용돼도 오탐하지 않는다.
+            guard body.contains("삭제/이동된") || body.contains("삭제된 게시물")
+                || html.contains("location.replace('msg.html")
+            else {
                 throw ParserError.structureChanged("read_subject_div 없음")
             }
             return PostDetail(
