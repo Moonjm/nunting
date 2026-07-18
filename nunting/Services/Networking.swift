@@ -111,6 +111,10 @@ struct Networking {
         /// 보드 목록처럼 "항상 최신"이 중요한 호출은 `.reloadIgnoringLocalCacheData`
         /// 를 넘겨 URLSession HTTP 캐시를 우회한다(전환 시 stale 목록 방지).
         cachePolicy: URLRequest.CachePolicy = .useProtocolCachePolicy,
+        /// Referer 헤더 — 이를 요구하는 GET 엔드포인트용(`postForm` 의 referer
+        /// 와 같은 계약). 다모앙 댓글 API 가 page≥2 를 무-Referer 요청에
+        /// 403 으로 거절하는 게 현재 유일한 수요처.
+        referer: URL? = nil,
         session: URLSession = Networking.session
     ) async throws -> String {
         let retry: @Sendable () async throws -> String = {
@@ -120,6 +124,7 @@ struct Networking {
                 userAgent: userAgent,
                 handlesCookies: handlesCookies,
                 cachePolicy: cachePolicy,
+                referer: referer,
                 session: session
             )
         }
@@ -130,6 +135,7 @@ struct Networking {
                 userAgent: userAgent,
                 handlesCookies: handlesCookies,
                 cachePolicy: cachePolicy,
+                referer: referer,
                 session: session
             )
             return try await applyBotCheckGuard(url: url, body: html, retry: retry)
@@ -152,6 +158,7 @@ struct Networking {
         userAgent: String?,
         handlesCookies: Bool,
         cachePolicy: URLRequest.CachePolicy,
+        referer: URL? = nil,
         session: URLSession
     ) async throws -> String {
         var request = URLRequest(url: url)
@@ -159,6 +166,9 @@ struct Networking {
         request.cachePolicy = cachePolicy
         if let userAgent {
             request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        }
+        if let referer {
+            request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer")
         }
         request.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
         request.setValue("ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7", forHTTPHeaderField: "Accept-Language")

@@ -86,7 +86,7 @@ nonisolated public struct Board: Identifiable, Hashable, Sendable {
             "page"
         case .inven:
             "p"
-        case .humor, .bobae, .slr, .ddanzi, .cook82, .etoland:
+        case .humor, .bobae, .slr, .ddanzi, .cook82, .etoland, .damoang:
             // Mirror-only dispatch targets — no direct browsing, no paging.
             nil
         }
@@ -104,7 +104,7 @@ nonisolated public struct Board: Identifiable, Hashable, Sendable {
             "svalue"
         case .aagag:
             "word"
-        case .humor, .bobae, .slr, .ddanzi, .cook82, .etoland:
+        case .humor, .bobae, .slr, .ddanzi, .cook82, .etoland, .damoang:
             nil
         }
     }
@@ -117,7 +117,7 @@ nonisolated public struct Board: Identifiable, Hashable, Sendable {
             return defaultSearchQueryName(for: site)
         case .ppomppu, .aagag:
             return provided ?? defaultSearchQueryName(for: site)
-        case .humor, .bobae, .slr, .ddanzi, .cook82, .etoland:
+        case .humor, .bobae, .slr, .ddanzi, .cook82, .etoland, .damoang:
             return nil
         }
     }
@@ -131,7 +131,7 @@ nonisolated public struct Board: Identifiable, Hashable, Sendable {
             return [("sfl", "wr_subject")]
         case .inven:
             return [("stype", "subject")]
-        case .ppomppu, .aagag, .humor, .bobae, .slr, .ddanzi, .cook82, .etoland:
+        case .ppomppu, .aagag, .humor, .bobae, .slr, .ddanzi, .cook82, .etoland, .damoang:
             return []
         }
     }
@@ -140,7 +140,7 @@ nonisolated public struct Board: Identifiable, Hashable, Sendable {
         switch site {
         case .clien:
             return "/service/search"
-        case .coolenjoy, .inven, .ppomppu, .aagag, .humor, .bobae, .slr, .ddanzi, .cook82, .etoland:
+        case .coolenjoy, .inven, .ppomppu, .aagag, .humor, .bobae, .slr, .ddanzi, .cook82, .etoland, .damoang:
             return listPath
         }
     }
@@ -149,7 +149,7 @@ nonisolated public struct Board: Identifiable, Hashable, Sendable {
         switch site {
         case .clien:
             URL(string: "https://m.clien.net")!
-        case .coolenjoy, .inven, .ppomppu, .aagag, .humor, .bobae, .slr, .ddanzi, .cook82, .etoland:
+        case .coolenjoy, .inven, .ppomppu, .aagag, .humor, .bobae, .slr, .ddanzi, .cook82, .etoland, .damoang:
             site.baseURL
         }
     }
@@ -166,7 +166,7 @@ nonisolated public struct Board: Identifiable, Hashable, Sendable {
         switch site {
         case .clien where isSearching:
             "p"
-        case .clien, .coolenjoy, .inven, .ppomppu, .aagag, .humor, .bobae, .slr, .ddanzi, .cook82, .etoland:
+        case .clien, .coolenjoy, .inven, .ppomppu, .aagag, .humor, .bobae, .slr, .ddanzi, .cook82, .etoland, .damoang:
             pageQueryName
         }
     }
@@ -176,7 +176,7 @@ nonisolated public struct Board: Identifiable, Hashable, Sendable {
         case .clien:
             // Clien uses zero-based offsets: page 2 => po/p=1.
             page - 1
-        case .coolenjoy, .inven, .ppomppu, .aagag, .humor, .bobae, .slr, .ddanzi, .cook82, .etoland:
+        case .coolenjoy, .inven, .ppomppu, .aagag, .humor, .bobae, .slr, .ddanzi, .cook82, .etoland, .damoang:
             page
         }
     }
@@ -228,6 +228,7 @@ extension Board {
             BoardFilter(id: "src-humor",   name: "웃대",  queryItems: ["site": "humor",   "select": "single"]),
             BoardFilter(id: "src-ddanzi",  name: "딴지",  queryItems: ["site": "ddanzi",  "select": "single"]),
             BoardFilter(id: "src-slrclub", name: "SLR",   queryItems: ["site": "slrclub", "select": "single"]),
+            BoardFilter(id: "src-damoang", name: "다뫙",  queryItems: ["site": "damoang", "select": "single"]),
         ],
         searchQueryName: "word",
         pageQueryName: "page"

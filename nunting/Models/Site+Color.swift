@@ -13,6 +13,8 @@ extension Site {
         case .ddanzi: Color(red: 0xDE/255.0, green: 0xCD/255.0, blue: 0xAF/255.0)
         case .cook82: Color(red: 0x37/255.0, green: 0x83/255.0, blue: 0x2D/255.0)
         case .etoland: Color(red: 0x72/255.0, green: 0xCA/255.0, blue: 0x47/255.0)
+        // `AagagSourceTag` 의 다뫙 뱃지 색과 동일 계열(짙은 회색).
+        case .damoang: Color(red: 0x38/255.0, green: 0x38/255.0, blue: 0x38/255.0)
         }
     }
 }

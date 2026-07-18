@@ -20,6 +20,8 @@ nonisolated public enum Site: String, CaseIterable, Identifiable, Codable, Senda
     case cook82
     /// Aagag mirror-only target. Routes etoland.co.kr redirects to `EtolandParser`.
     case etoland
+    /// Aagag mirror-only target. Routes damoang.net redirects to `DamoangParser`.
+    case damoang
 
     public nonisolated var id: String { rawValue }
 
@@ -36,6 +38,7 @@ nonisolated public enum Site: String, CaseIterable, Identifiable, Codable, Senda
         case .ddanzi: "딴지일보"
         case .cook82: "82쿡"
         case .etoland: "이토랜드"
+        case .damoang: "다모앙"
         }
     }
 
@@ -52,6 +55,7 @@ nonisolated public enum Site: String, CaseIterable, Identifiable, Codable, Senda
         case .ddanzi: URL(string: "https://www.ddanzi.com")!
         case .cook82: URL(string: "https://www.82cook.com")!
         case .etoland: URL(string: "https://etoland.co.kr")!
+        case .damoang: URL(string: "https://damoang.net")!
         }
     }
 
@@ -82,6 +86,7 @@ nonisolated public enum Site: String, CaseIterable, Identifiable, Codable, Senda
         if Site.host(host, matches: "ddanzi.com") { return .ddanzi }
         if Site.host(host, matches: "82cook.com") { return .cook82 }
         if Site.host(host, matches: "etoland.co.kr") { return .etoland }
+        if Site.host(host, matches: "damoang.net") { return .damoang }
         return nil
     }
 

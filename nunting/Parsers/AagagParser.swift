@@ -158,9 +158,9 @@ public struct AagagParser: BoardParser {
     /// Cloudflare/bot-check gate). Each URL below is the exact shape the
     /// source-site parser already handles (verified against live Aagag
     /// redirects, 2026-07); the board segment is the board Aagag mirrors for
-    /// that source. Sources we don't parse (damoang, mlbpark, ou, ruli,
-    /// fmkorea) and native `issue_…` rows return nil and keep the mirror URL,
-    /// so `PostDetailLoader` still resolves them via the redirect.
+    /// that source. Sources we don't parse (mlbpark, ou, ruli, fmkorea) and
+    /// native `issue_…` rows return nil and keep the mirror URL, so
+    /// `PostDetailLoader` still resolves them via the redirect.
     ///
     /// If Aagag ever changes which board it mirrors, the hardcoded board here
     /// goes stale (wrong/404 detail) — an accepted single-user trade-off:
@@ -190,6 +190,7 @@ public struct AagagParser: BoardParser {
         case "ddanzi":  string = "https://www.ddanzi.com/free/\(id)"
         case "slrclub": string = "https://m.slrclub.com/v/free/\(id)"
         case "etoland": string = "https://etoland.co.kr/b/etohumor07/view/-\(id)"
+        case "damoang": string = "https://damoang.net/free/\(id)"
         default:        return nil
         }
         return URL(string: string)
