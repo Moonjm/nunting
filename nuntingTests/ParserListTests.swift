@@ -230,16 +230,16 @@ final class ParserListTests: XCTestCase {
         XCTAssertEqual(url("slrclub_41680774"), "https://m.slrclub.com/v/free/41680774")
         XCTAssertEqual(url("etoland_9167644"), "https://etoland.co.kr/b/etohumor07/view/-9167644",
                        "etoland slug 은 앞에 '-' 가 붙는다")
+        XCTAssertEqual(url("damoang_6739140"), "https://damoang.net/free/6739140")
     }
 
     func testAagagDirectSourceURLKeepsMirrorForUnparsedSourcesAndIssueRows() {
-        // 파서 없는 소스(fmkorea/mlbpark/ruli/ou/damoang), 네이티브 issue 행,
+        // 파서 없는 소스(fmkorea/mlbpark/ruli/ou), 네이티브 issue 행,
         // 비정상 ss 는 재작성하지 않고 nil → 호출부가 미러 URL 을 유지한다.
         XCTAssertNil(AagagParser.directSourceURL(fromSS: "fmkorea_8357468318"))
         XCTAssertNil(AagagParser.directSourceURL(fromSS: "mlbpark_202505100103952145"))
         XCTAssertNil(AagagParser.directSourceURL(fromSS: "ruli_70605703"))
         XCTAssertNil(AagagParser.directSourceURL(fromSS: "ou_2037169"))
-        XCTAssertNil(AagagParser.directSourceURL(fromSS: "damoang_12345"))
         XCTAssertNil(AagagParser.directSourceURL(fromSS: "issue_1541343"))
         XCTAssertNil(AagagParser.directSourceURL(fromSS: "clien_"), "id 없는 ss")
         XCTAssertNil(AagagParser.directSourceURL(fromSS: "noseparator"))
