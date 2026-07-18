@@ -103,6 +103,30 @@ final class ParserStructureChangedTests: XCTestCase {
         assertDeletionNotice(try HumorParser().parseDetail(html: html, post: .fixture(site: .humor)))
     }
 
+    /// 실측(2026-07-18) 웃대 삭제/이동 글: 200 으로 406바이트 본문 — 안내
+    /// 페이지로의 **JS 리다이렉트**(`location.replace('msg.html?…&mode=112')`)
+    /// 만 온다. URLSession 은 JS 를 실행하지 않아 msg.html 의 "삭제/이동된
+    /// 게시물 입니다." 문구에 도달하지 못하고, 리다이렉트 URL 이 script 안에만
+    /// 있어 `.text()` 키워드 폴백도 못 잡는다 → read_subject_div 부재로
+    /// structureChanged 오탐 (7/17 parser 텔레메트리의 정체). raw HTML 의
+    /// msg.html 리다이렉트를 감지해 notice 처리해야 한다.
+    func testHumorJSRedirectDeletionReturnsNotice() throws {
+        let html = """
+        <html>
+            <head>
+                <meta http-equiv='cache-control' content='no-cache, no-store, must-revalidate'>
+                <script>
+                    setTimeout( function(){
+                        location.replace('msg.html?table=pds&number=1418030&comment_number=&mode=112');
+                    }, 0 );
+                </script>
+            </head>
+            <body></body>
+        </html>
+        """
+        assertDeletionNotice(try HumorParser().parseDetail(html: html, post: .fixture(site: .humor)))
+    }
+
     func testEtolandDeletionReturnsNotice() throws {
         let html = "<html><body>삭제되거나 이동된 게시물입니다.</body></html>"
         assertDeletionNotice(try EtolandParser().parseDetail(html: html, post: .fixture(site: .etoland)))
