@@ -158,6 +158,11 @@ final class PostDetailLoaderTests: XCTestCase {
         XCTAssertTrue(
             recorded?.detail.contains("https://m.bobaedream.co.kr/board/bbs_view/freeb/bobae-1") == true,
             "detail 에 글 URL 포함 — 서버 데이터만으로 재현/판별 가능해야 한다 (got: \(recorded?.detail ?? "nil"))")
+        // 일시적 이상 응답(2026-07-18 쿨엔 단발)은 리포트 시점 본문 없이는
+        // 사후 판별 불가 — 길이+프리픽스 지문이 detail 에 함께 실려야 한다.
+        XCTAssertTrue(
+            recorded?.detail.contains("len=49, head=<html><body><div>nothing here</div></body></html>") == true,
+            "detail 에 응답 본문 지문 포함 (got: \(recorded?.detail ?? "nil"))")
         XCTAssertNotNil(loader.errorMessage, "텔레메트리는 에러 표시를 대체하지 않는다")
     }
 

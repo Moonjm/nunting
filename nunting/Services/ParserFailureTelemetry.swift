@@ -37,6 +37,19 @@ final class ParserFailureTelemetry {
         case comments
     }
 
+    /// structureChanged 리포트에 실을 응답 본문 지문 — 원문 길이 + 공백을
+    /// 한 칸으로 접은 raw HTML 앞 200자. 일시적 이상 응답(순간 인터스티셜·
+    /// 에러 페이지, 2026-07-18 쿨엔 단발 케이스)은 리포트 시점의 본문 없이는
+    /// "봇체크/삭제 안내/진짜 구조 변경"을 사후 판별할 수 없다 — #145 가
+    /// detail 에 글 URL 을 붙인 것과 같은 진단력 보강, 본문 레벨 판.
+    nonisolated static func bodyFingerprint(_ html: String) -> String {
+        let head = html
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .prefix(200)
+        return "len=\(html.count), head=\(head)"
+    }
+
     /// fire-and-forget — 호출부(로더)는 결과를 기다리지 않는다. 반환 Task 는
     /// 테스트가 전송 완료를 결정적으로 기다리는 용도. 세션 내 중복이면 nil.
     @discardableResult
