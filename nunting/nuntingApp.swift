@@ -27,9 +27,17 @@ struct nuntingApp: App {
         // background music just by scrolling into view — mixing keeps that
         // music going. A fullscreen video the user explicitly opened still
         // outputs sound (it just plays over the music rather than killing it).
+        // 백그라운드 태스크로 옮긴 이유: `setActive` 는 mediaserverd 로의
+        // 동기 IPC 라 iOS 26+ 가 메인스레드 호출에 UI 정지 경고를 찍는다
+        // (AVAudioSession_iOS.mm:978). 평소엔 수 ms 지만 mediaserverd 가
+        // 바쁘면 런치 프레임을 먹을 수 있다 — HangWatchdog 까지 두고 메인
+        // 정지를 잡는 앱이 런치에서 자초할 이유가 없다. 첫 영상 재생은
+        // 사용자가 목록→상세로 이동한 뒤라(수 초 뒤) 완료 순서 race 없음.
         #if os(iOS)
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
-        try? AVAudioSession.sharedInstance().setActive(true)
+        Task.detached(priority: .utility) {
+            try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
+            try? AVAudioSession.sharedInstance().setActive(true)
+        }
         #endif
 
         // Register libwebp coder + cache budgets BEFORE the first
