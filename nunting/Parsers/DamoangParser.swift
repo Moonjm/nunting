@@ -163,17 +163,66 @@ public struct DamoangParser: BoardParser {
         let response = try JSONDecoder().decode(CommentResponse.self, from: data)
         guard response.success else { return CommentPage(comments: [], totalPages: 1) }
         let comments = response.data.comments.map { raw in
-            PostComment(
+            // 앙티콘 숏코드(`{emo:파일명}`)를 sticker 로 승격하고 텍스트에서
+            // 제거 — 안 하면 "{emo:…}" 가 본문에 그대로 보인다.
+            let (content, emoticonURL) = Self.extractEmoticon(fromHTML: raw.content)
+            return PostComment(
                 id: "damoang-c-\(raw.id)",
                 author: raw.author,
                 dateText: Self.displayDate(fromISO: raw.created_at),
-                content: renderCommentText(fromHTML: raw.content),
+                content: renderCommentText(fromHTML: content),
                 likeCount: raw.likes,
                 isReply: raw.depth > 0,
-                stickerURL: commentImageURL(fromHTML: raw.content)
+                stickerURL: commentImageURL(fromHTML: content) ?? emoticonURL
             )
         }
         return CommentPage(comments: comments, totalPages: max(1, response.data.total_pages))
+    }
+
+    /// 앙티콘(다모앙 자체 이모티콘) 숏코드 — API content 에 `{emo:파일명}`
+    /// 또는 `{emo:파일명:사이즈}` 로 온다(실측 2026-07-19 free/6745192).
+    /// 사이트는 클라이언트 JS 가 `/emoticons/파일명` 이미지로 변환한다 —
+    /// 같은 규칙으로 첫 숏코드를 sticker URL 로 승격하고, 텍스트에서는
+    /// 유효한 숏코드를 전부 제거한다(PostComment 의 attachment 슬롯이
+    /// 하나라 이미지로는 첫 개만 살린다).
+    ///
+    /// 파일명 검증은 사이트 변환기와 동일: 이미지 확장자 화이트리스트 +
+    /// 경로 탈출 문자(`/`, `\`, `..`) 거부 — 비정상 숏코드는 변환하지 않고
+    /// 원문 텍스트로 남긴다.
+    nonisolated static func extractEmoticon(fromHTML html: String) -> (html: String, sticker: URL?) {
+        guard html.contains("{emo:") else { return (html, nil) }
+        let ns = html as NSString
+        let matches = emoShortcodeRegex.matches(in: html, range: NSRange(location: 0, length: ns.length))
+        var sticker: URL? = nil
+        var cleaned = html
+        // 뒤에서부터 치환해 range 유효성 유지.
+        for m in matches.reversed() {
+            let name = ns.substring(with: m.range(at: 1))
+            guard isValidEmoticonName(name) else { continue }
+            cleaned = (cleaned as NSString).replacingCharacters(in: m.range, with: "")
+            // 문서 순서상 첫 유효 숏코드를 sticker 로 — reversed 순회라
+            // 마지막 대입이 첫 매치가 된다.
+            if let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+               let url = URL(string: "https://damoang.net/emoticons/\(encoded)") {
+                sticker = url
+            }
+        }
+        return (cleaned, sticker)
+    }
+
+    nonisolated private static let emoShortcodeRegex = try! NSRegularExpression(
+        // 파일명(콜론 제외) + 선택적 `:사이즈` — 사이즈는 URL 에 안 쓴다.
+        pattern: #"\{emo:([^}:]+)(?::\d+)?\}"#
+    )
+
+    nonisolated private static let emoticonExtensions: Set<String> = ["gif", "png", "jpg", "jpeg", "webp"]
+
+    nonisolated private static func isValidEmoticonName(_ name: String) -> Bool {
+        guard !name.isEmpty,
+              !name.contains("/"), !name.contains("\\"), !name.contains("..")
+        else { return false }
+        let ext = (name as NSString).pathExtension.lowercased()
+        return emoticonExtensions.contains(ext)
     }
 
     /// 댓글 본문 HTML 의 첫 `<img>` 를 sticker 로 승격 — 텍스트 flatten
