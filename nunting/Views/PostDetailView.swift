@@ -58,7 +58,12 @@ struct PostDetailView: View, Equatable {
 
     @State private var loader = PostDetailLoader()
     /// 온디바이스 AI 요약 (프로토타입). 미지원 기기에선 카드가 아예 안 뜬다.
+    /// 글 전환 감지는 summarizer 가 postID 로 자체 수행 — 뷰 쪽 reset 호출은
+    /// 카드 태스크와의 실행 순서 레이스("요약 중" 멈춤)를 만들므로 두지 않는다.
     @State private var summarizer = PostSummarizer()
+    /// pull-to-refresh 마다 증가 — 같은 post.id 라도 본문/댓글이 교체됐을 수
+    /// 있으므로 요약 태스크를 다시 발화시키는 키 성분.
+    @State private var summaryRefreshTick = 0
     @State private var selectedImage: ImageViewerItem?
     @State private var webItem: WebBrowserItem?
     /// True from the moment the user commits a fullscreen-cover dismiss
@@ -161,7 +166,10 @@ struct PostDetailView: View, Equatable {
                     if PostSummarizer.isAvailable, let detail = loader.detail,
                        PostSummaryPrompt.qualifiesForAutoSummary(detail) {
                         PostSummaryCard(summarizer: summarizer, detail: detail)
-                            .task(id: post.id) {
+                            // tick 포함 키: 새로고침은 post.id 가 그대로라
+                            // id 만으론 재발화가 없다 — invalidate 후 tick 이
+                            // 올라가면 새 detail 로 재생성한다.
+                            .task(id: "\(post.id)#\(summaryRefreshTick)") {
                                 await summarizer.summarizeIfNeeded(postID: post.id) {
                                     loader.detail
                                 }
@@ -239,9 +247,6 @@ struct PostDetailView: View, Equatable {
             return presentInBrowser(url) ? .handled : .systemAction
         })
         .task(id: post.id) {
-            // 오버레이 keep-alive 로 뷰 인스턴스가 글 전환을 넘어 살아남으므로,
-            // 이전 글의 요약이 새 글에 붙지 않게 글 단위로 리셋한다.
-            summarizer.reset()
             readStore.markRead(post)
             // Viewing the post by any route (feed tap, push-banner tap,
             // in-app alert-list tap) clears its keyword-alert banner from
@@ -361,6 +366,11 @@ struct PostDetailView: View, Equatable {
             renderReadyAt: ContinuousClock.now,
             forceFresh: true
         )
+        // 새로고침은 post.id 그대로 본문/댓글을 교체할 수 있다 — 낡은 요약
+        // 캐시를 버리고 tick 으로 카드 태스크를 재발화해 새 detail 로
+        // 재생성한다.
+        summarizer.invalidate(postID: post.id)
+        summaryRefreshTick += 1
     }
 
 

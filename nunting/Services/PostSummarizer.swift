@@ -100,11 +100,17 @@ final class PostSummarizer {
     /// 캐시 상한 — 초과 시 통째 비움. LRU 를 갖출 만큼 크지 않은 프로토타입.
     private static let cacheCap = 50
 
-    /// 세대 토큰 — `reset()`(글 전환)마다 증가. keep-alive 로 살아남은 낡은
+    /// 세대 토큰 — 글 전환/무효화마다 증가. keep-alive 로 살아남은 낡은
     /// 태스크(폴링 대기·모델 스트리밍 중)가 전환 이후에 상태/캐시를 밀어
     /// 넣는 레이스를 막는다: 모든 await 재개 지점에서 자기 세대를 비교해,
     /// 밀렸으면 어떤 쓰기도 없이 조용히 종료한다.
     private var generation = 0
+    /// 마지막으로 요약을 시작한 글. 뷰의 reset 태스크와 카드 태스크는 실행
+    /// 순서가 보장되지 않으므로, 전환 감지를 외부 reset 에 맡기지 않고
+    /// `summarizeIfNeeded` 가 postID 변화로 직접 한다 — reset 이 늦게 와도
+    /// (혹은 안 와도) 새 글 태스크가 이전 non-idle 상태에 막혀 "요약 중"
+    /// 으로 멈추는 일이 없다.
+    private var currentPostID: String?
 
     /// 생성 시임 — `(프롬프트, 스냅샷 콜백) → 완성 요약`. 프로덕션은 아래
     /// `liveGenerate`(FoundationModels 세션), 테스트는 결정적 fake 를 주입해
@@ -148,6 +154,13 @@ final class PostSummarizer {
     /// - 본문 commit 직후엔 댓글이 병합 전이라, 한 박자 뒤 최신 스냅샷을
     ///   읽어야 반응 요약까지 실린다.
     func summarizeIfNeeded(postID: String, latestDetail: () -> PostDetail?) async {
+        // 글 전환 자체 감지 — 이전 글의 non-idle 상태/진행 중 태스크를
+        // 무효화하고 새 글로 넘어간다 (`currentPostID` 주석 참조).
+        if currentPostID != postID {
+            currentPostID = postID
+            generation += 1
+            state = .idle
+        }
         if let cached = completed[postID] {
             state = .done(cached)
             return
@@ -159,6 +172,9 @@ final class PostSummarizer {
         var matched: PostDetail?
         for _ in 0..<maxPolls {
             try? await Task.sleep(for: pollInterval)
+            // 카드가 사라지거나 id 가 바뀌면 SwiftUI 가 .task 를 취소한다 —
+            // sleep 의 throw 를 try? 로 삼키므로 여기서 명시적으로 끊는다.
+            if Task.isCancelled { return }
             guard gen == generation else { return } // 글 전환됨 — 쓰기 금지
             if let d = latestDetail(), d.post.id == postID {
                 matched = d
@@ -172,18 +188,32 @@ final class PostSummarizer {
         }
 
         await run(detail: detail, gen: gen)
-        guard gen == generation else { return }
-        if case .done(let text) = state {
-            if completed.count >= Self.cacheCap { completed.removeAll() }
-            completed[postID] = text
-        }
+        cacheIfDone(postID: postID, gen: gen)
     }
 
     /// 실패 카드의 "다시 시도" — 화면에 떠 있는 카드의 detail 로 즉시 재생성.
+    /// 성공하면 summarizeIfNeeded 와 동일하게 캐시한다 — 안 하면 다른 글
+    /// 갔다 재진입할 때 같은 글을 또 생성한다.
     func retry(detail: PostDetail) async {
         guard state != .idle, !isStreaming else { return }
+        let gen = generation
         state = .streaming("")
-        await run(detail: detail, gen: generation)
+        await run(detail: detail, gen: gen)
+        cacheIfDone(postID: detail.post.id, gen: gen)
+    }
+
+    /// pull-to-refresh 등으로 같은 post.id 의 본문/댓글이 교체된 경우 —
+    /// 캐시를 버리고 다음 summarizeIfNeeded 가 새 detail 로 재생성하게 한다.
+    func invalidate(postID: String) {
+        completed.removeValue(forKey: postID)
+        generation += 1
+        state = .idle
+    }
+
+    private func cacheIfDone(postID: String, gen: Int) {
+        guard gen == generation, case .done(let text) = state else { return }
+        if completed.count >= Self.cacheCap { completed.removeAll() }
+        completed[postID] = text
     }
 
     private var isStreaming: Bool {

@@ -111,6 +111,69 @@ final class PostSummarizerLifecycleTests: XCTestCase {
         XCTAssertEqual(sut.state, .idle)
     }
 
+    // MARK: - P1: 외부 reset 순서에 의존하지 않는 글 전환
+
+    /// 뷰의 reset 태스크와 카드 태스크는 실행 순서가 보장되지 않는다 —
+    /// reset 이 아직 안 불린 상태(이전 글 done)에서 새 글 태스크가 먼저
+    /// 돌아도, postID 변화를 자체 감지해 전환하고 생성해야 한다.
+    /// (기존엔 non-idle 을 보고 반환 → 이후 reset → 재실행 없음 → "요약 중"
+    /// 멈춤.)
+    func testPostSwitchWithoutExternalResetStillSummarizes() async {
+        let spy = GenerateSpy()
+        let sut = summarizer(spy: spy)
+        await sut.summarizeIfNeeded(postID: "p1") { self.detail(postID: "p1") }
+        XCTAssertEqual(sut.state, .done("요약 결과"))
+
+        // reset 없이 곧장 다음 글 — 자체 전환으로 생성돼야 한다.
+        await sut.summarizeIfNeeded(postID: "p2") { self.detail(postID: "p2") }
+        XCTAssertEqual(spy.calls, 2)
+        XCTAssertEqual(sut.state, .done("요약 결과"))
+    }
+
+    // MARK: - P2: 새로고침 무효화
+
+    func testInvalidateDropsCacheAndAllowsRegeneration() async {
+        let spy = GenerateSpy()
+        let sut = summarizer(spy: spy)
+        await sut.summarizeIfNeeded(postID: "p1") { self.detail(postID: "p1") }
+        XCTAssertEqual(spy.calls, 1)
+
+        // pull-to-refresh — 본문/댓글이 바뀌었을 수 있으니 캐시 무효화 후 재생성.
+        sut.invalidate(postID: "p1")
+        await sut.summarizeIfNeeded(postID: "p1") { self.detail(postID: "p1") }
+        XCTAssertEqual(spy.calls, 2, "무효화 후엔 캐시 대신 재생성")
+        XCTAssertEqual(sut.state, .done("요약 결과"))
+    }
+
+    // MARK: - P2: 재시도 성공도 캐시
+
+    func testSuccessfulRetryPopulatesCache() async {
+        let spy = GenerateSpy()
+        nonisolated(unsafe) var failFirst = true
+        let sut = PostSummarizer(
+            generate: { _, onSnapshot in
+                spy.calls += 1
+                if failFirst { failFirst = false; throw NSError(domain: "gen", code: 1) }
+                await onSnapshot("요약")
+                return spy.result
+            },
+            pollInterval: .milliseconds(5),
+            maxPolls: 3
+        )
+
+        await sut.summarizeIfNeeded(postID: "p1") { self.detail(postID: "p1") }
+        guard case .failed = sut.state else { return XCTFail("첫 생성은 실패해야 함") }
+
+        await sut.retry(detail: detail(postID: "p1"))
+        XCTAssertEqual(sut.state, .done("요약 결과"))
+
+        // 다른 글 갔다 재진입 — 재시도 성공본이 캐시에서 복원돼야 한다.
+        sut.reset()
+        await sut.summarizeIfNeeded(postID: "p1") { self.detail(postID: "p1") }
+        XCTAssertEqual(spy.calls, 2, "재시도 성공이 캐시됐으므로 재생성 없음")
+        XCTAssertEqual(sut.state, .done("요약 결과"))
+    }
+
     // MARK: - 캐시 정상 경로
 
     func testCacheRestoresWithoutRegeneration() async {
