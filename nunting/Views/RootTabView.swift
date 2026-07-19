@@ -31,26 +31,50 @@ final class DetailBackDrag {
             .onEnded { [self] v in onEnded(v) }
     }
 
+    /// 방향 판정 결과 — `lockDecision` 참조.
+    enum DragAxis: Equatable {
+        case horizontalRight
+        case horizontalLeft
+        case vertical
+    }
+
+    /// 드래그 초입의 축 판정. nil = 아직 미정(더 움직인 뒤 재판정).
+    ///
+    /// 이전 판정(이동 10pt + `w >= h` 동률 가로 우선)은 살짝 대각선으로
+    /// 시작한 세로 스크롤(예: w11/h10 시점)을 백드래그로 잠가 스크롤까지
+    /// 얼렸다 — "위로 스크롤이 뒤로가기로 인식"의 원인. 가로는 세로의
+    /// 1.5배 초과 우세를 요구하고, 동률·애매한 대각선은 미정으로 남겨
+    /// 세로가 판정(동률 포함 세로 우선)될 기회를 준다. 명확히 옆으로 긋는
+    /// 백드래그(h≈0)는 여전히 12pt 에 즉시 잠긴다.
+    nonisolated static func lockDecision(translation: CGSize) -> DragAxis? {
+        let w = abs(translation.width), h = abs(translation.height)
+        if w > 12, w > h * 1.5 {
+            return translation.width > 0 ? .horizontalRight : .horizontalLeft
+        }
+        if h > 12, h >= w {
+            return .vertical
+        }
+        return nil
+    }
+
     private func onChanged(_ v: DragGesture.Value) {
         // 오버레이가 보이는 동안에만 — 닫혀있으면(보드 목록) 보드 페이저에 양보.
         guard detail.activePost != nil, detail.isOverlayVisible else { return }
         // 하단 ~110pt(탭바/필터)에서 시작한 드래그는 백드래그로 잡지 않는다.
         if containerHeight > 0, v.startLocation.y > containerHeight - 110 { return }
-        let w = abs(v.translation.width), h = abs(v.translation.height)
         if horizontalLock == nil {
-            if w > 10 && w >= h {
-                if v.translation.width > 0 {
-                    // 우측(닫기) 가로 드래그만 백드래그로 잡는다.
-                    horizontalLock = true
-                    baseline = v.translation.width
-                    scrollLocked = true
-                    detail.offsetBase = detail.offset
-                } else {
-                    // 좌측 가로 드래그는 닫기와 무관 — 스크롤/탭을 막지 않게 양보.
-                    horizontalLock = false
-                }
-            } else if h > 10 && h > w {
+            switch Self.lockDecision(translation: v.translation) {
+            case .horizontalRight:
+                // 우측(닫기) 가로 드래그만 백드래그로 잡는다.
+                horizontalLock = true
+                baseline = v.translation.width
+                scrollLocked = true
+                detail.offsetBase = detail.offset
+            case .horizontalLeft, .vertical:
+                // 좌측 가로/세로는 닫기와 무관 — 스크롤/탭을 막지 않게 양보.
                 horizontalLock = false
+            case nil:
+                break
             }
         }
         if horizontalLock == true {
