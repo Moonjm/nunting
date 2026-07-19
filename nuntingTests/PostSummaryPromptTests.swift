@@ -78,4 +78,26 @@ final class PostSummaryPromptTests: XCTestCase {
         let prompt = PostSummaryPrompt.build(detail: detail(blocks: [.text("본문만")]))
         XCTAssertFalse(prompt.contains("댓글"), "댓글 없으면 댓글 섹션 자체가 없어야 한다")
     }
+
+    // MARK: - 자동 요약 판정
+
+    /// 임계 미만 글은 요약 UI 자체가 뜨지 않는다 — 한눈에 읽히는 글에서
+    /// 요약은 노이즈고, 자동 실행이라 짧은 글마다 생성을 도는 낭비도 크다.
+    func testQualifiesForAutoSummaryByBodyLength() {
+        let short = detail(blocks: [.text(String(repeating: "가", count: PostSummaryPrompt.autoSummarizeMinChars - 1))])
+        XCTAssertFalse(PostSummaryPrompt.qualifiesForAutoSummary(short))
+
+        let long = detail(blocks: [.text(String(repeating: "가", count: PostSummaryPrompt.autoSummarizeMinChars))])
+        XCTAssertTrue(PostSummaryPrompt.qualifiesForAutoSummary(long))
+    }
+
+    /// 판정 기준은 텍스트 길이 — 이미지 개수/URL 은 본문 길이에 안 섞인다.
+    func testQualifiesIgnoresMediaBlocks() {
+        let imageHeavy = detail(blocks: [
+            .text("짧은 캡션"),
+            .image(URL(string: "https://img.example/very-long-url-that-should-not-count-1.jpg")!),
+            .image(URL(string: "https://img.example/very-long-url-that-should-not-count-2.jpg")!),
+        ])
+        XCTAssertFalse(PostSummaryPrompt.qualifiesForAutoSummary(imageHeavy))
+    }
 }

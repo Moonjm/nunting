@@ -2,10 +2,11 @@ import SwiftUI
 
 /// 상세 본문 위의 온디바이스 AI 요약 카드 (프로토타입).
 ///
-/// idle 에선 작은 "AI 요약" 칩만 차지하고, 탭하면 그 자리가 카드로 바뀌며
-/// 스트리밍 스냅샷이 차오른다 — 첫 문장이 1~2초 안에 보이기 시작하므로
-/// 전체 생성(3~5초)을 기다리는 느낌이 없다. 모델 미지원 환경(구형 기기·
-/// Apple Intelligence 꺼짐)에서는 호출부가 이 뷰 자체를 만들지 않는다.
+/// 자동 실행 — 임계 길이(`PostSummaryPrompt.autoSummarizeMinChars`) 이상인
+/// 글에서만 호출부가 카드를 만들고, 카드가 뜨는 즉시 `.task` 로 생성이
+/// 시작돼 스트리밍 스냅샷이 차오른다. 첫 문장이 1~2초 안에 보이기
+/// 시작하므로 전체 생성(3~5초)을 기다리는 느낌이 없다. 짧은 글·모델
+/// 미지원 환경에서는 카드 자체가 없다.
 struct PostSummaryCard: View {
     let summarizer: PostSummarizer
     let detail: PostDetail
@@ -13,16 +14,13 @@ struct PostSummaryCard: View {
     var body: some View {
         switch summarizer.state {
         case .idle:
-            Button {
-                Task { await summarizer.summarize(detail: detail) }
-            } label: {
-                Label("AI 요약", systemImage: "sparkles")
-                    .font(.caption.weight(.medium))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(Color("AppSurface2"), in: Capsule())
+            // 자동 실행 task 가 붙기 전의 찰나 — 스트리밍 대기와 동일하게.
+            card {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("요약 중…").font(.caption).foregroundStyle(.secondary)
+                }
             }
-            .buttonStyle(.plain)
 
         case .streaming(let text):
             card {

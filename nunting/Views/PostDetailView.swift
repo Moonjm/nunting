@@ -153,10 +153,19 @@ struct PostDetailView: View, Equatable {
 
                     Divider()
 
-                    // 온디바이스 AI 요약 (프로토타입) — 본문이 로드된 뒤에만.
-                    // 댓글까지 입력에 쓰므로 detail 스냅샷을 그대로 넘긴다.
-                    if PostSummarizer.isAvailable, let detail = loader.detail {
+                    // 온디바이스 AI 요약 (프로토타입) — 임계 길이 이상 글만,
+                    // 카드가 뜨는 즉시 자동 실행. 짧은 글은 요약 UI 자체가
+                    // 없다. `.task` 의 latestDetail 클로저가 loader 를 다시
+                    // 읽는 이유: 본문 commit 직후엔 댓글 병합 전이라, 잠깐
+                    // 기다렸다 최신 스냅샷을 써야 반응 요약까지 실린다.
+                    if PostSummarizer.isAvailable, let detail = loader.detail,
+                       PostSummaryPrompt.qualifiesForAutoSummary(detail) {
                         PostSummaryCard(summarizer: summarizer, detail: detail)
+                            .task(id: post.id) {
+                                await summarizer.summarizeIfNeeded(postID: post.id) {
+                                    loader.detail
+                                }
+                            }
                     }
 
                     articleContent

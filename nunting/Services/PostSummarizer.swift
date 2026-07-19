@@ -22,6 +22,17 @@ nonisolated enum PostSummaryPrompt {
     없는 내용을 지어내지 마세요.
     """
 
+    /// 자동 요약 최소 본문 길이(글자). 미만이면 요약 UI 자체를 만들지
+    /// 않는다 — 한눈에 읽히는 글에서 요약은 노이즈고, 자동 실행 구조라
+    /// 짧은 글마다 3~6초 생성을 도는 낭비도 크다.
+    static let autoSummarizeMinChars = 600
+
+    /// 본문 텍스트 길이 기준 자동 요약 대상 판정. 미디어 블록은 길이에
+    /// 안 섞인다 — 이미지 위주 글은 요약할 프로즈가 없다.
+    static func qualifiesForAutoSummary(_ detail: PostDetail) -> Bool {
+        bodyText(from: detail.blocks).count >= autoSummarizeMinChars
+    }
+
     static func build(detail: PostDetail) -> String {
         let title = detail.fullTitle ?? detail.post.title
         let body = String(bodyText(from: detail.blocks).prefix(maxBodyChars))
@@ -82,10 +93,44 @@ final class PostSummarizer {
 
     private(set) var state: State = .idle
 
-    /// 요약 버튼 노출 여부. unavailable 사유는 프로토타입에선 구분 없이 숨김
+    /// post.id → 완성 요약 캐시. 오버레이 keep-alive 로 이 인스턴스가 세션
+    /// 내내 살아 있으므로, 목록↔상세 재진입마다 같은 글의 3~6초 생성을
+    /// 반복하지 않게 한다. 실패는 캐시하지 않는다(재진입이 재시도 기회).
+    private var completed: [String: String] = [:]
+    /// 캐시 상한 — 초과 시 통째 비움. LRU 를 갖출 만큼 크지 않은 프로토타입.
+    private static let cacheCap = 50
+
+    /// 요약 카드 노출 여부. unavailable 사유는 프로토타입에선 구분 없이 숨김
     /// (deviceNotEligible / appleIntelligenceNotEnabled / modelNotReady).
     static var isAvailable: Bool {
         SystemLanguageModel.default.availability == .available
+    }
+
+    /// 자동 실행 진입점 — 카드 `.task` 가 부른다. 캐시 히트면 생성 없이
+    /// 복원, idle 이 아니면(이미 스트리밍/완료) 아무것도 안 한다.
+    /// `latestDetail` 클로저인 이유: 본문 commit 직후엔 댓글이 아직 병합
+    /// 전이라, 잠깐 기다렸다 최신 스냅샷(댓글 포함)을 다시 읽어야 요약에
+    /// 반응 한 줄이 실린다.
+    func summarizeIfNeeded(postID: String, latestDetail: () -> PostDetail?) async {
+        if let cached = completed[postID] {
+            state = .done(cached)
+            return
+        }
+        guard state == .idle else { return }
+        // 댓글 leg 병합을 잠깐 기다린다 — 본문 commit 과 거의 동시에 오는
+        // 게 보통이라 0.7s 면 대부분 잡히고, 못 잡아도 본문만으로 요약한다.
+        state = .streaming("")
+        try? await Task.sleep(for: .milliseconds(700))
+        guard let detail = latestDetail() else {
+            state = .idle
+            return
+        }
+        state = .idle
+        await summarize(detail: detail)
+        if case .done(let text) = state {
+            if completed.count >= Self.cacheCap { completed.removeAll() }
+            completed[postID] = text
+        }
     }
 
     func summarize(detail: PostDetail) async {
