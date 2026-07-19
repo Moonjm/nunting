@@ -196,6 +196,22 @@ final class DamoangParserTests: XCTestCase {
         XCTAssertEqual(withText.content, "웃겨요")
     }
 
+    /// 앙티콘은 일반 스티커(밈 이미지, 200×140 프레임)와 달리 사이트 표시
+    /// 크기가 40~50px 소형이다 — 댓글 행이 `/emoticons/` 스티커를 소형
+    /// 프레임으로 구분 렌더하기 위한 판정.
+    func testEmoticonStickerIsDetectedForCompactRendering() {
+        XCTAssertTrue(PostDetailCommentRow.isEmoticonSticker(
+            URL(string: "https://damoang.net/emoticons/damoang-emo-039.gif")!))
+        // 일반 스티커/이미지는 대상 아님.
+        XCTAssertFalse(PostDetailCommentRow.isEmoticonSticker(
+            URL(string: "https://r2.damoang.net/data/editor/2607/meme.png")!))
+        XCTAssertFalse(PostDetailCommentRow.isEmoticonSticker(
+            URL(string: "https://i.aagag.com/abc.gif")!))
+        // 타 호스트의 /emoticons/ 경로도 대상 아님(다모앙 전용 규칙).
+        XCTAssertFalse(PostDetailCommentRow.isEmoticonSticker(
+            URL(string: "https://evil.example/emoticons/x.gif")!))
+    }
+
     /// 사이트 변환기와 동일한 검증 — 경로 탈출/비이미지 확장자는 변환하지
     /// 않고 텍스트로 남긴다(깨진 URL 로 이미지 로더를 태우지 않게).
     func testDecodeCommentRejectsMalformedEmoticonShortcode() throws {
