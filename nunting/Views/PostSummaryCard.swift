@@ -12,7 +12,9 @@ struct PostSummaryCard: View {
     let detail: PostDetail
 
     var body: some View {
-        switch summarizer.state {
+        // displayState: 공유 summarizer 에 남은 **다른 글**의 상태(전환 직후
+        // 자체 전환 전)를 새 카드가 렌더하지 않게 — 이전 글 요약 깜빡임 방지.
+        switch summarizer.displayState(for: detail.post.id) {
         case .idle:
             // 자동 실행 task 가 붙기 전의 찰나 — 스트리밍 대기와 동일하게.
             card {

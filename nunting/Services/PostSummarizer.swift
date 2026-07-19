@@ -143,6 +143,16 @@ final class PostSummarizer {
         SystemLanguageModel.default.availability == .available
     }
 
+    /// 카드가 렌더할 상태 — 요청 글과 `currentPostID` 가 일치할 때만 실제
+    /// 상태를 노출한다. 긴 글→긴 글 전환 시 새 카드의 첫 렌더는 .task 의
+    /// 자체 전환보다 먼저라, 공유 인스턴스에 남은 이전 글의 done/failed 를
+    /// 그대로 렌더하면 이전 글 요약/에러 UI 가 새 글에 잠깐 보인다 —
+    /// 불일치면 idle("요약 중" 자리)로 렌더하고, 곧 태스크의 자체 전환이
+    /// 실제 상태로 채운다.
+    func displayState(for postID: String) -> State {
+        currentPostID == postID ? state : .idle
+    }
+
     /// 카드 마운트 게이트 — 로드된 detail 이 **현재 글**이고 임계 길이를
     /// 넘을 때만. keep-alive 전환 중 로더는 이전 글 detail 을 노출하는데,
     /// 그 스냅샷으로 마운트하면 새 글 로드가 느리거나 실패할 때 "요약 중…"

@@ -274,6 +274,26 @@ final class PostSummarizerLifecycleTests: XCTestCase {
         XCTAssertEqual(spy.calls, 3, "A 캐시는 지워졌다")
     }
 
+    // MARK: - 표시 상태의 글 결부
+
+    /// 긴 글→긴 글 전환 시 새 카드의 첫 렌더는 .task 의 자체 전환보다
+    /// 먼저다 — 공유 인스턴스에 남은 이전 글의 done/failed 를 그대로
+    /// 렌더하면 이전 글 요약이 새 글에 잠깐 보인다. 카드는 요청 글과
+    /// 일치하는 상태만 보고, 불일치면 idle(요약 중 자리)로 렌더해야 한다.
+    func testDisplayStateSuppressesOtherPostsState() async {
+        let spy = GenerateSpy()
+        let sut = summarizer(spy: spy)
+        await sut.summarizeIfNeeded(postID: "p1") { self.detail(postID: "p1") }
+        XCTAssertEqual(sut.state, .done("요약 결과"))
+
+        // p2 카드의 첫 렌더 시점(자체 전환 전) — p1 의 done 이 새면 안 된다.
+        XCTAssertEqual(sut.displayState(for: "p2"), .idle)
+        XCTAssertEqual(sut.displayState(for: "p1"), .done("요약 결과"))
+
+        await sut.summarizeIfNeeded(postID: "p2") { self.detail(postID: "p2") }
+        XCTAssertEqual(sut.displayState(for: "p2"), .done("요약 결과"))
+    }
+
     // MARK: - 카드 마운트 게이트
 
     /// keep-alive 전환 중 로더는 이전 글의 detail 을 노출한다 — 그 스냅샷
