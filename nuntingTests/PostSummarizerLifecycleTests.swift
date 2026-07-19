@@ -9,17 +9,23 @@ import XCTest
 @MainActor
 final class PostSummarizerLifecycleTests: XCTestCase {
 
-    private func detail(postID: String, body: String = "본문") -> PostDetail {
+    private func detail(
+        postID: String,
+        body: String = "본문",
+        commentCount: Int = 0,
+        comments: [PostComment] = []
+    ) -> PostDetail {
         PostDetail(
-            post: .fixture(id: postID),
+            post: .fixture(id: postID, commentCount: commentCount),
             blocks: [.text(body)],
-            fullDateText: nil, viewCount: nil, source: nil, comments: []
+            fullDateText: nil, viewCount: nil, source: nil, comments: comments
         )
     }
 
-    /// 호출 횟수를 세는 즉답 생성 시임.
+    /// 호출 횟수·프롬프트를 기록하는 즉답 생성 시임.
     private final class GenerateSpy: @unchecked Sendable {
         var calls = 0
+        var prompts: [String] = []
         var result = "요약 결과"
     }
 
@@ -28,8 +34,9 @@ final class PostSummarizerLifecycleTests: XCTestCase {
         beforeReturn: (@MainActor () async -> Void)? = nil
     ) -> PostSummarizer {
         PostSummarizer(
-            generate: { _, onSnapshot in
+            generate: { prompt, onSnapshot in
                 spy.calls += 1
+                spy.prompts.append(prompt)
                 await onSnapshot("요약")
                 if let beforeReturn { await beforeReturn() }
                 return spy.result
@@ -171,6 +178,44 @@ final class PostSummarizerLifecycleTests: XCTestCase {
         sut.reset()
         await sut.summarizeIfNeeded(postID: "p1") { self.detail(postID: "p1") }
         XCTAssertEqual(spy.calls, 2, "재시도 성공이 캐시됐으므로 재생성 없음")
+        XCTAssertEqual(sut.state, .done("요약 결과"))
+    }
+
+    // MARK: - P2: 댓글 병합 대기
+
+    /// 목록이 댓글 존재(commentCount>0)를 예고했는데 첫 매칭 detail 에
+    /// 댓글이 아직 병합 전이면, 본문만으로 확정하지 말고 폴 윈도 안에서
+    /// 병합을 기다렸다가 댓글 포함 프롬프트로 생성해야 한다.
+    func testWaitsForPromisedCommentsBeforeGenerating() async {
+        let spy = GenerateSpy()
+        let sut = summarizer(spy: spy)
+        nonisolated(unsafe) var polls = 0
+        await sut.summarizeIfNeeded(postID: "p1") {
+            polls += 1
+            // 1번째 폴: 본문만(댓글 leg 미도착) → 2번째 폴부터 댓글 병합.
+            return self.detail(
+                postID: "p1", commentCount: 1,
+                comments: polls >= 2
+                    ? [PostComment(id: "c1", author: "댓글러", dateText: "", content: "베스트 반응", likeCount: 5, isReply: false)]
+                    : []
+            )
+        }
+        XCTAssertEqual(spy.calls, 1)
+        XCTAssertTrue(
+            spy.prompts[0].contains("베스트 반응"),
+            "댓글 병합을 기다렸다가 댓글 포함 프롬프트로 생성 (got: \(spy.prompts[0].suffix(80)))")
+    }
+
+    /// 댓글 leg 가 끝내 실패하면(윈도 소진) 본문만으로라도 생성한다 —
+    /// 댓글 대기가 요약 자체를 굶기면 안 된다.
+    func testExhaustedCommentWaitFallsBackToBodyOnly() async {
+        let spy = GenerateSpy()
+        let sut = summarizer(spy: spy)
+        await sut.summarizeIfNeeded(postID: "p1") {
+            self.detail(postID: "p1", commentCount: 3, comments: [])
+        }
+        XCTAssertEqual(spy.calls, 1, "윈도 소진 후 본문만으로 생성")
+        XCTAssertFalse(spy.prompts[0].contains("베스트 댓글"))
         XCTAssertEqual(sut.state, .done("요약 결과"))
     }
 

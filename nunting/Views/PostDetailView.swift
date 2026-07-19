@@ -368,7 +368,10 @@ struct PostDetailView: View, Equatable {
         )
         // 새로고침은 post.id 그대로 본문/댓글을 교체할 수 있다 — 낡은 요약
         // 캐시를 버리고 tick 으로 카드 태스크를 재발화해 새 detail 로
-        // 재생성한다.
+        // 재생성한다. 실패한 새로고침(이전 detail 유지 + errorMessage)은
+        // 제외 — 무효화하면 멀쩡한 요약을 버리고 낡은 detail 로 재생성하는
+        // 낭비만 남는다.
+        guard loader.errorMessage == nil else { return }
         summarizer.invalidate(postID: post.id)
         summaryRefreshTick += 1
     }

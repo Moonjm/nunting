@@ -176,10 +176,15 @@ final class PostSummarizer {
             // sleep 의 throw 를 try? 로 삼키므로 여기서 명시적으로 끊는다.
             if Task.isCancelled { return }
             guard gen == generation else { return } // 글 전환됨 — 쓰기 금지
-            if let d = latestDetail(), d.post.id == postID {
-                matched = d
-                break
-            }
+            guard let d = latestDetail(), d.post.id == postID else { continue }
+            matched = d
+            // 목록이 댓글 존재(commentCount>0)를 예고했는데 아직 병합 전이면
+            // 조금 더 기다린다 — 댓글 leg 는 본문 commit 뒤에 병합되므로 첫
+            // 매칭 스냅샷으로 확정하면 "반응 한 줄"이 영구히 빠진다. 윈도를
+            // 소진하면(느린 다페이지 댓글·leg 실패) 마지막 스냅샷, 즉 본문
+            // 만으로라도 생성한다.
+            if d.comments.isEmpty && d.post.commentCount > 0 { continue }
+            break
         }
         guard let detail = matched else {
             // 요청 글 detail 이 폴 윈도 안에 안 왔다 — 조용히 포기.
