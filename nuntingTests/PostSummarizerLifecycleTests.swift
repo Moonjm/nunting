@@ -219,6 +219,33 @@ final class PostSummarizerLifecycleTests: XCTestCase {
         XCTAssertEqual(sut.state, .done("요약 결과"))
     }
 
+    // MARK: - 카드 마운트 게이트
+
+    /// keep-alive 전환 중 로더는 이전 글의 detail 을 노출한다 — 그 스냅샷
+    /// 으로 카드가 마운트되면, 새 글 로드가 느리거나 실패할 때 "요약 중…"
+    /// 카드가 영구히 남는다. 카드는 로드된 detail 이 **현재 글**일 때만
+    /// 마운트해야 한다.
+    func testShouldShowRejectsStaleDetailFromPreviousPost() {
+        let post = Post.fixture(id: "current")
+        let staleLong = detail(
+            postID: "previous",
+            body: String(repeating: "가", count: PostSummaryPrompt.autoSummarizeMinChars)
+        )
+        XCTAssertFalse(PostSummarizer.shouldShowCard(post: post, loadedDetail: staleLong),
+                       "이전 글 detail 로는 마운트하지 않는다")
+        XCTAssertFalse(PostSummarizer.shouldShowCard(post: post, loadedDetail: nil))
+
+        let currentLong = detail(
+            postID: "current",
+            body: String(repeating: "가", count: PostSummaryPrompt.autoSummarizeMinChars)
+        )
+        XCTAssertTrue(PostSummarizer.shouldShowCard(post: post, loadedDetail: currentLong))
+
+        let currentShort = detail(postID: "current", body: "짧은 글")
+        XCTAssertFalse(PostSummarizer.shouldShowCard(post: post, loadedDetail: currentShort),
+                       "임계 미만은 현재 글이어도 비노출")
+    }
+
     // MARK: - 캐시 정상 경로
 
     func testCacheRestoresWithoutRegeneration() async {

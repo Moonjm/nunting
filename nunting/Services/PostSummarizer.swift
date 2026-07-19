@@ -143,6 +143,17 @@ final class PostSummarizer {
         SystemLanguageModel.default.availability == .available
     }
 
+    /// 카드 마운트 게이트 — 로드된 detail 이 **현재 글**이고 임계 길이를
+    /// 넘을 때만. keep-alive 전환 중 로더는 이전 글 detail 을 노출하는데,
+    /// 그 스냅샷으로 마운트하면 새 글 로드가 느리거나 실패할 때 "요약 중…"
+    /// 카드가 영구히 남는다(폴 소진 후 idle, 같은 task id 라 재발화 없음).
+    /// 현재 글 detail 커밋 시점에 카드가 처음 마운트되며 .task 가 발화하므로
+    /// 그 경로 자체가 사라진다.
+    nonisolated static func shouldShowCard(post: Post, loadedDetail: PostDetail?) -> Bool {
+        guard let loadedDetail, loadedDetail.post.id == post.id else { return false }
+        return PostSummaryPrompt.qualifiesForAutoSummary(loadedDetail)
+    }
+
     /// 자동 실행 진입점 — 카드 `.task` 가 부른다. 캐시 히트면 생성 없이
     /// 복원, idle 이 아니면(이미 스트리밍/완료) 아무것도 안 한다.
     ///

@@ -164,7 +164,7 @@ struct PostDetailView: View, Equatable {
                     // 읽는 이유: 본문 commit 직후엔 댓글 병합 전이라, 잠깐
                     // 기다렸다 최신 스냅샷을 써야 반응 요약까지 실린다.
                     if PostSummarizer.isAvailable, let detail = loader.detail,
-                       PostSummaryPrompt.qualifiesForAutoSummary(detail) {
+                       PostSummarizer.shouldShowCard(post: post, loadedDetail: detail) {
                         PostSummaryCard(summarizer: summarizer, detail: detail)
                             // tick 포함 키: 새로고침은 post.id 가 그대로라
                             // id 만으론 재발화가 없다 — invalidate 후 tick 이
@@ -197,7 +197,16 @@ struct PostDetailView: View, Equatable {
                     // pull-to-refresh 보다 싸고 스크롤 위치도 유지된다.
                     if loader.commentsFailed {
                         CommentsRetryBanner(isRetrying: loader.isRetryingComments) {
-                            Task { await loader.retryComments(cache: cache) }
+                            Task {
+                                await loader.retryComments(cache: cache)
+                                // 댓글 leg 실패로 본문만 요약이 확정됐을 수
+                                // 있다 — 재시도가 성공하면(배너 내려감) 요약을
+                                // 무효화해 댓글 포함 스냅샷으로 재생성한다.
+                                if !loader.commentsFailed {
+                                    summarizer.invalidate(postID: post.id)
+                                    summaryRefreshTick += 1
+                                }
+                            }
                         }
                         .padding(.top, 8)
                     }
