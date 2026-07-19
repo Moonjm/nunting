@@ -168,6 +168,49 @@ final class DamoangParserTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(page.comments.last).isReply)
     }
 
+    /// 다모앙 자체 이모티콘(앙티콘)은 API content 에 `{emo:파일명}` 숏코드로
+    /// 온다(실측 free/6745192, 사이트는 클라이언트 JS 가 `/emoticons/파일명`
+    /// 이미지로 변환). 텍스트로 흘리면 "{emo:…}" 가 그대로 보인다 —
+    /// sticker 로 승격하고 본문 텍스트에서는 제거해야 한다.
+    func testDecodeCommentConvertsEmoticonShortcodeToSticker() throws {
+        let parser = DamoangParser()
+        let json = commentJSON(page: 1, totalPages: 1, comments: [
+            (id: 1, content: "<p>{emo:damoang-emo-039.gif}</p>", depth: 0),
+            (id: 2, content: "<p>웃겨요 {emo:damoang-emo-001.png:100}</p>", depth: 0),
+        ])
+        let page = try parser.decodeCommentPage(json)
+
+        let emoOnly = try XCTUnwrap(page.comments.first)
+        XCTAssertEqual(
+            emoOnly.stickerURL?.absoluteString,
+            "https://damoang.net/emoticons/damoang-emo-039.gif"
+        )
+        XCTAssertEqual(emoOnly.content, "", "숏코드는 본문 텍스트에서 제거")
+
+        // 사이즈 변형(`{emo:파일명:100}`)도 파일명만으로 URL 구성.
+        let withText = try XCTUnwrap(page.comments.last)
+        XCTAssertEqual(
+            withText.stickerURL?.absoluteString,
+            "https://damoang.net/emoticons/damoang-emo-001.png"
+        )
+        XCTAssertEqual(withText.content, "웃겨요")
+    }
+
+    /// 사이트 변환기와 동일한 검증 — 경로 탈출/비이미지 확장자는 변환하지
+    /// 않고 텍스트로 남긴다(깨진 URL 로 이미지 로더를 태우지 않게).
+    func testDecodeCommentRejectsMalformedEmoticonShortcode() throws {
+        let parser = DamoangParser()
+        let json = commentJSON(page: 1, totalPages: 1, comments: [
+            (id: 1, content: "<p>{emo:../../etc/passwd}</p>", depth: 0),
+            (id: 2, content: "<p>{emo:script.js}</p>", depth: 0),
+        ])
+        let page = try parser.decodeCommentPage(json)
+        for comment in page.comments {
+            XCTAssertNil(comment.stickerURL, "비정상 숏코드는 sticker 로 승격하지 않는다")
+            XCTAssertTrue(comment.content.contains("{emo:"), "원문 텍스트 유지")
+        }
+    }
+
     func testDecodeCommentExtractsInlineImageAsSticker() throws {
         let parser = DamoangParser()
         let json = commentJSON(page: 1, totalPages: 1, comments: [
