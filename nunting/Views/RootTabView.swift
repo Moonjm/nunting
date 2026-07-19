@@ -123,6 +123,10 @@ struct RootTabView: View {
     // activePost 로 funnel 된다. 새 셸은 그 activePost 를 관찰해 상세를 띄운다.
     @State private var detail = DetailOverlayController.shared
 
+    // 상세 서브트리(.id(post.id))보다 위에서 소유 — 요약 캐시가 글 전환을
+    // 넘어 살아남아 재진입 재생성을 막는다 (detailCache 와 같은 이유).
+    @State private var summarizer = PostSummarizer()
+
     @State private var rootTabSelectionState = RootTabSelectionState()
     // 모음의 현재 보드 — 페이저/헤더/검색이 공유한다.
     @State private var currentBoardID: String?
@@ -288,6 +292,7 @@ struct RootTabView: View {
                         post: post,
                         readStore: readStore,
                         cache: detailCache,
+                        summarizer: summarizer,
                         tapGate: backDrag.tapGate,
                         isOverlayVisible: detail.isOverlayVisible,
                         isScrollingBlocked: backDrag.scrollLocked || detail.animating,
@@ -362,6 +367,7 @@ private struct PostDetailScreen: View {
     let post: Post
     let readStore: ReadStore
     let cache: PostDetailCache
+    let summarizer: PostSummarizer
     // 백드래그 공존용 — 드래그 중 내부 ScrollView 잠금 + 미디어 탭 억제.
     var tapGate: TapSuppressionGate? = nil
     var isOverlayVisible: Bool = true
@@ -376,6 +382,7 @@ private struct PostDetailScreen: View {
             post: post,
             readStore: readStore,
             cache: cache,
+            summarizer: summarizer,
             tapGate: tapGate,
             isOverlayVisible: isOverlayVisible,
             isScrollingBlocked: isScrollingBlocked

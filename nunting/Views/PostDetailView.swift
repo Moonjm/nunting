@@ -5,6 +5,12 @@ struct PostDetailView: View, Equatable {
     let post: Post
     let readStore: ReadStore
     let cache: PostDetailCache
+    /// 온디바이스 AI 요약 (프로토타입). 소유는 RootTabView — 상세 서브트리에
+    /// `.id(post.id)` 가 걸려 있어 글 전환마다 뷰가 재생성되므로, @State 로
+    /// 여기 두면 요약 캐시가 전환마다 증발해 재진입 재생성을 막지 못한다.
+    /// 글 전환 감지는 summarizer 가 postID 로 자체 수행. 미지원 기기에선
+    /// 카드가 아예 안 뜬다.
+    let summarizer: PostSummarizer
     /// Flipped by `DetailBackDrag` while a back-drag is in
     /// flight so an image / video tap firing on the same touch-up
     /// doesn't open a viewer / fullscreen player when the user was only
@@ -38,6 +44,8 @@ struct PostDetailView: View, Equatable {
     // Fields deliberately excluded from `==`:
     // - `readStore`, `cache`: read only from `.task { … }`, never from
     //   `body`. Mutations don't need a body re-eval to propagate.
+    // - `summarizer`: `@Observable` reference — `loader` 와 같은 이유
+    //   (state 읽기는 observation 이 추적, 인스턴스는 identity-stable).
     // - `tapGate`: read synchronously from `.onTapGesture` closures at
     //   tap time, not from `body`. Same reasoning as readStore/cache.
     // - `loader`: an `@Observable` reference type owned by `@State`.
@@ -57,6 +65,9 @@ struct PostDetailView: View, Equatable {
     @Environment(\.displayScale) private var displayScale
 
     @State private var loader = PostDetailLoader()
+    /// pull-to-refresh 마다 증가 — 같은 post.id 라도 본문/댓글이 교체됐을 수
+    /// 있으므로 요약 태스크를 다시 발화시키는 키 성분.
+    @State private var summaryRefreshTick = 0
     @State private var selectedImage: ImageViewerItem?
     @State private var webItem: WebBrowserItem?
     /// True from the moment the user commits a fullscreen-cover dismiss
@@ -151,6 +162,24 @@ struct PostDetailView: View, Equatable {
 
                     Divider()
 
+                    // 온디바이스 AI 요약 (프로토타입) — 임계 길이 이상 글만,
+                    // 카드가 뜨는 즉시 자동 실행. 짧은 글은 요약 UI 자체가
+                    // 없다. `.task` 의 latestDetail 클로저가 loader 를 다시
+                    // 읽는 이유: 본문 commit 직후엔 댓글 병합 전이라, 잠깐
+                    // 기다렸다 최신 스냅샷을 써야 반응 요약까지 실린다.
+                    if PostSummarizer.isAvailable, let detail = loader.detail,
+                       PostSummarizer.shouldShowCard(post: post, loadedDetail: detail) {
+                        PostSummaryCard(summarizer: summarizer, detail: detail)
+                            // tick 포함 키: 새로고침은 post.id 가 그대로라
+                            // id 만으론 재발화가 없다 — invalidate 후 tick 이
+                            // 올라가면 새 detail 로 재생성한다.
+                            .task(id: "\(post.id)#\(summaryRefreshTick)") {
+                                await summarizer.summarizeIfNeeded(postID: post.id) {
+                                    loader.detail
+                                }
+                            }
+                    }
+
                     articleContent
 
                     if let comments = loader.detail?.comments, !comments.isEmpty {
@@ -172,7 +201,16 @@ struct PostDetailView: View, Equatable {
                     // pull-to-refresh 보다 싸고 스크롤 위치도 유지된다.
                     if loader.commentsFailed {
                         CommentsRetryBanner(isRetrying: loader.isRetryingComments) {
-                            Task { await loader.retryComments(cache: cache) }
+                            Task {
+                                await loader.retryComments(cache: cache)
+                                // 댓글 leg 실패로 본문만 요약이 확정됐을 수
+                                // 있다 — 재시도가 성공하면(배너 내려감) 요약을
+                                // 무효화해 댓글 포함 스냅샷으로 재생성한다.
+                                if !loader.commentsFailed {
+                                    summarizer.invalidate(postID: post.id)
+                                    summaryRefreshTick += 1
+                                }
+                            }
                         }
                         .padding(.top, 8)
                     }
@@ -341,6 +379,14 @@ struct PostDetailView: View, Equatable {
             renderReadyAt: ContinuousClock.now,
             forceFresh: true
         )
+        // 새로고침은 post.id 그대로 본문/댓글을 교체할 수 있다 — 낡은 요약
+        // 캐시를 버리고 tick 으로 카드 태스크를 재발화해 새 detail 로
+        // 재생성한다. 실패한 새로고침(이전 detail 유지 + errorMessage)은
+        // 제외 — 무효화하면 멀쩡한 요약을 버리고 낡은 detail 로 재생성하는
+        // 낭비만 남는다.
+        guard loader.errorMessage == nil else { return }
+        summarizer.invalidate(postID: post.id)
+        summaryRefreshTick += 1
     }
 
 
