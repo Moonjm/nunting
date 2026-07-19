@@ -100,6 +100,37 @@ final class PostSummarizer {
     /// 캐시 상한 — 초과 시 통째 비움. LRU 를 갖출 만큼 크지 않은 프로토타입.
     private static let cacheCap = 50
 
+    /// 세대 토큰 — `reset()`(글 전환)마다 증가. keep-alive 로 살아남은 낡은
+    /// 태스크(폴링 대기·모델 스트리밍 중)가 전환 이후에 상태/캐시를 밀어
+    /// 넣는 레이스를 막는다: 모든 await 재개 지점에서 자기 세대를 비교해,
+    /// 밀렸으면 어떤 쓰기도 없이 조용히 종료한다.
+    private var generation = 0
+
+    /// 생성 시임 — `(프롬프트, 스냅샷 콜백) → 완성 요약`. 프로덕션은 아래
+    /// `liveGenerate`(FoundationModels 세션), 테스트는 결정적 fake 를 주입해
+    /// 모델 없이 라이프사이클 레이스를 검증한다.
+    typealias Generate = @MainActor (
+        _ prompt: String,
+        _ onSnapshot: @MainActor (String) -> Void
+    ) async throws -> String
+
+    private let generate: Generate
+    /// 요청 글 detail 커밋 + 댓글 병합을 기다리는 폴 간격/횟수. 기본
+    /// 700ms×11 ≈ 7.7s — 로드가 그보다 느리면 자동 요약을 포기한다
+    /// (재진입이 다음 기회). 테스트는 짧게 주입.
+    private let pollInterval: Duration
+    private let maxPolls: Int
+
+    init(
+        generate: @escaping Generate = PostSummarizer.liveGenerate,
+        pollInterval: Duration = .milliseconds(700),
+        maxPolls: Int = 11
+    ) {
+        self.generate = generate
+        self.pollInterval = pollInterval
+        self.maxPolls = maxPolls
+    }
+
     /// 요약 카드 노출 여부. unavailable 사유는 프로토타입에선 구분 없이 숨김
     /// (deviceNotEligible / appleIntelligenceNotEnabled / modelNotReady).
     static var isAvailable: Bool {
@@ -108,54 +139,100 @@ final class PostSummarizer {
 
     /// 자동 실행 진입점 — 카드 `.task` 가 부른다. 캐시 히트면 생성 없이
     /// 복원, idle 이 아니면(이미 스트리밍/완료) 아무것도 안 한다.
-    /// `latestDetail` 클로저인 이유: 본문 commit 직후엔 댓글이 아직 병합
-    /// 전이라, 잠깐 기다렸다 최신 스냅샷(댓글 포함)을 다시 읽어야 요약에
-    /// 반응 한 줄이 실린다.
+    ///
+    /// `latestDetail` 클로저 + 폴링인 이유 두 가지:
+    /// - keep-alive 재진입 직후엔 로더가 **이전 글의** detail 을 노출한다
+    ///   (새 로드 커밋 전) — 그대로 쓰면 이전 글 요약이 새 postID 로
+    ///   캐시된다. 요청 글(post.id == postID)의 detail 이 커밋될 때까지
+    ///   기다렸다 생성한다.
+    /// - 본문 commit 직후엔 댓글이 병합 전이라, 한 박자 뒤 최신 스냅샷을
+    ///   읽어야 반응 요약까지 실린다.
     func summarizeIfNeeded(postID: String, latestDetail: () -> PostDetail?) async {
         if let cached = completed[postID] {
             state = .done(cached)
             return
         }
         guard state == .idle else { return }
-        // 댓글 leg 병합을 잠깐 기다린다 — 본문 commit 과 거의 동시에 오는
-        // 게 보통이라 0.7s 면 대부분 잡히고, 못 잡아도 본문만으로 요약한다.
+        let gen = generation
         state = .streaming("")
-        try? await Task.sleep(for: .milliseconds(700))
-        guard let detail = latestDetail() else {
-            state = .idle
+
+        var matched: PostDetail?
+        for _ in 0..<maxPolls {
+            try? await Task.sleep(for: pollInterval)
+            guard gen == generation else { return } // 글 전환됨 — 쓰기 금지
+            if let d = latestDetail(), d.post.id == postID {
+                matched = d
+                break
+            }
+        }
+        guard let detail = matched else {
+            // 요청 글 detail 이 폴 윈도 안에 안 왔다 — 조용히 포기.
+            if gen == generation { state = .idle }
             return
         }
-        state = .idle
-        await summarize(detail: detail)
+
+        await run(detail: detail, gen: gen)
+        guard gen == generation else { return }
         if case .done(let text) = state {
             if completed.count >= Self.cacheCap { completed.removeAll() }
             completed[postID] = text
         }
     }
 
-    func summarize(detail: PostDetail) async {
-        if case .streaming = state { return }
+    /// 실패 카드의 "다시 시도" — 화면에 떠 있는 카드의 detail 로 즉시 재생성.
+    func retry(detail: PostDetail) async {
+        guard state != .idle, !isStreaming else { return }
+        state = .streaming("")
+        await run(detail: detail, gen: generation)
+    }
+
+    private var isStreaming: Bool {
+        if case .streaming = state { return true }
+        return false
+    }
+
+    /// 생성 공통부. 모든 상태 쓰기는 `gen` 이 현재 세대일 때만 — 스트리밍
+    /// 콜백 포함(await 재개마다 낡은 태스크일 수 있다).
+    private func run(detail: PostDetail, gen: Int) async {
         state = .streaming("")
         let prompt = PostSummaryPrompt.build(detail: detail)
-        let session = LanguageModelSession(instructions: PostSummaryPrompt.instructions)
         do {
-            var latest = ""
-            // ResponseStream 스냅샷은 델타가 아니라 **누적** 본문 — 그대로 대입.
-            for try await snapshot in session.streamResponse(to: prompt) {
-                latest = snapshot.content
-                state = .streaming(latest)
+            let text = try await generate(prompt) { [weak self] snapshot in
+                guard let self, gen == self.generation else { return }
+                self.state = .streaming(snapshot)
             }
-            state = latest.isEmpty
+            guard gen == generation else { return }
+            state = text.isEmpty
                 ? .failed("요약 결과가 비어 있어요.")
-                : .done(latest)
+                : .done(text)
         } catch {
             // guardrail 거부(민감 주제)·컨텍스트 초과 등 — 프로토타입에선
             // 한 줄 안내로 뭉뚱그린다.
+            guard gen == generation else { return }
             state = .failed("요약할 수 없어요 (\(error.localizedDescription))")
         }
     }
 
+    /// FoundationModels 스트리밍 — ResponseStream 스냅샷은 델타가 아니라
+    /// **누적** 본문이라 콜백에 그대로 넘긴다.
+    @MainActor
+    static func liveGenerate(
+        prompt: String,
+        onSnapshot: @MainActor (String) -> Void
+    ) async throws -> String {
+        let session = LanguageModelSession(instructions: PostSummaryPrompt.instructions)
+        var latest = ""
+        for try await snapshot in session.streamResponse(to: prompt) {
+            latest = snapshot.content
+            onSnapshot(latest)
+        }
+        return latest
+    }
+
+    /// 글 전환 시 호출 — 상태를 비우고 세대를 올려, 진행 중이던 낡은
+    /// 태스크의 이후 상태/캐시 쓰기를 전부 무효화한다.
     func reset() {
+        generation += 1
         state = .idle
     }
 }

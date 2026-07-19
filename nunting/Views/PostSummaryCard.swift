@@ -44,8 +44,10 @@ struct PostSummaryCard: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Button("다시 시도") {
-                        summarizer.reset()
-                        Task { await summarizer.summarize(detail: detail) }
+                        // reset() 을 부르지 않는 이유: reset 은 글 전환용으로
+                        // 세대를 올려 버려, 같은 글 재시도가 자기 세대 검사에
+                        // 걸린다. retry 는 현재 세대 안에서 재생성한다.
+                        Task { await summarizer.retry(detail: detail) }
                     }
                     .font(.caption.weight(.medium))
                 }
