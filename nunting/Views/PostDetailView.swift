@@ -5,6 +5,12 @@ struct PostDetailView: View, Equatable {
     let post: Post
     let readStore: ReadStore
     let cache: PostDetailCache
+    /// 온디바이스 AI 요약 (프로토타입). 소유는 RootTabView — 상세 서브트리에
+    /// `.id(post.id)` 가 걸려 있어 글 전환마다 뷰가 재생성되므로, @State 로
+    /// 여기 두면 요약 캐시가 전환마다 증발해 재진입 재생성을 막지 못한다.
+    /// 글 전환 감지는 summarizer 가 postID 로 자체 수행. 미지원 기기에선
+    /// 카드가 아예 안 뜬다.
+    let summarizer: PostSummarizer
     /// Flipped by `DetailBackDrag` while a back-drag is in
     /// flight so an image / video tap firing on the same touch-up
     /// doesn't open a viewer / fullscreen player when the user was only
@@ -38,6 +44,8 @@ struct PostDetailView: View, Equatable {
     // Fields deliberately excluded from `==`:
     // - `readStore`, `cache`: read only from `.task { … }`, never from
     //   `body`. Mutations don't need a body re-eval to propagate.
+    // - `summarizer`: `@Observable` reference — `loader` 와 같은 이유
+    //   (state 읽기는 observation 이 추적, 인스턴스는 identity-stable).
     // - `tapGate`: read synchronously from `.onTapGesture` closures at
     //   tap time, not from `body`. Same reasoning as readStore/cache.
     // - `loader`: an `@Observable` reference type owned by `@State`.
@@ -57,10 +65,6 @@ struct PostDetailView: View, Equatable {
     @Environment(\.displayScale) private var displayScale
 
     @State private var loader = PostDetailLoader()
-    /// 온디바이스 AI 요약 (프로토타입). 미지원 기기에선 카드가 아예 안 뜬다.
-    /// 글 전환 감지는 summarizer 가 postID 로 자체 수행 — 뷰 쪽 reset 호출은
-    /// 카드 태스크와의 실행 순서 레이스("요약 중" 멈춤)를 만들므로 두지 않는다.
-    @State private var summarizer = PostSummarizer()
     /// pull-to-refresh 마다 증가 — 같은 post.id 라도 본문/댓글이 교체됐을 수
     /// 있으므로 요약 태스크를 다시 발화시키는 키 성분.
     @State private var summaryRefreshTick = 0
