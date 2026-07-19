@@ -51,6 +51,13 @@ struct PostDetailCommentRow: View {
     let onVideoDismissBegin: () -> Void
     var isOverlayVisible: Bool = true
 
+    /// 다모앙 앙티콘(`damoang.net/emoticons/…`) 판정 — 사이트 표시 크기
+    /// (40~50px)에 맞춘 소형 프레임으로 구분 렌더한다. 밈/짤 스티커와 달리
+    /// 크게 키울 정보가 없는 이모지성 이미지라 일반 프레임이 과하다.
+    nonisolated static func isEmoticonSticker(_ url: URL) -> Bool {
+        Site.host(url.host, matches: "damoang.net") && url.path.hasPrefix("/emoticons/")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
@@ -95,9 +102,19 @@ struct PostDetailCommentRow: View {
                     Spacer(minLength: 0)
                 }
             } else if let stickerURL = comment.stickerURL {
+                // 다모앙 앙티콘은 사이트 표시 크기(40~50px)에 맞춘 소형
+                // 프레임 — 일반 스티커(밈 이미지) 프레임(200×140)으로
+                // 렌더하면 과하게 커진다.
+                let isEmoticon = Self.isEmoticonSticker(stickerURL)
                 HStack(spacing: 0) {
-                    NetworkImage(url: stickerURL, thumbnailMaxPointSize: 280)
-                        .frame(maxWidth: 200, maxHeight: 140)
+                    NetworkImage(
+                        url: stickerURL,
+                        thumbnailMaxPointSize: isEmoticon ? 112 : 280
+                    )
+                        .frame(
+                            maxWidth: isEmoticon ? 56 : 200,
+                            maxHeight: isEmoticon ? 56 : 140
+                        )
                         .contentShape(Rectangle())
                         .onTapGesture { onImageTap(stickerURL) }
                     Spacer(minLength: 0)
