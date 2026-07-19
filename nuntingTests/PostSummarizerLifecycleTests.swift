@@ -219,6 +219,61 @@ final class PostSummarizerLifecycleTests: XCTestCase {
         XCTAssertEqual(sut.state, .done("요약 결과"))
     }
 
+    // MARK: - 취소 후 재진입
+
+    /// 폴링 중 .task 가 취소되면(긴 글→짧은 글 전환) streaming("") 이 남아,
+    /// 같은 글 재진입 시 non-idle 가드에 막혀 "요약 중…" 이 영구 표시되던
+    /// 케이스 — 취소 시 현재 세대면 idle 로 복원해야 재진입 태스크가 돈다.
+    func testCancellationDuringPollRestoresIdleForReentry() async {
+        let spy = GenerateSpy()
+        let sut = PostSummarizer(
+            generate: { _, onSnapshot in
+                spy.calls += 1
+                await onSnapshot("요약")
+                return spy.result
+            },
+            pollInterval: .milliseconds(50),
+            maxPolls: 10
+        )
+        let task = Task { @MainActor in
+            await sut.summarizeIfNeeded(postID: "p1") { self.detail(postID: "p1") }
+        }
+        // 폴 sleep 진입 직후 취소 — 카드 언마운트(짧은 글로 전환) 시뮬레이션.
+        try? await Task.sleep(for: .milliseconds(10))
+        task.cancel()
+        await task.value
+
+        XCTAssertEqual(sut.state, .idle, "취소된 태스크가 streaming 을 남기면 안 된다")
+
+        // 같은 글 재진입 — currentPostID 불변이어도 idle 이므로 생성된다.
+        await sut.summarizeIfNeeded(postID: "p1") { self.detail(postID: "p1") }
+        XCTAssertEqual(spy.calls, 1)
+        XCTAssertEqual(sut.state, .done("요약 결과"))
+    }
+
+    // MARK: - 무관한 글 invalidate 격리
+
+    /// 글 A 의 늦은 새로고침 완료가 B 로 전환된 뒤 invalidate(A) 를 부르면,
+    /// A 캐시만 지워야지 B 의 세대/상태를 건드리면 안 된다.
+    func testInvalidateForOtherPostKeepsCurrentState() async {
+        let spy = GenerateSpy()
+        let sut = summarizer(spy: spy)
+        await sut.summarizeIfNeeded(postID: "A") { self.detail(postID: "A") }
+        await sut.summarizeIfNeeded(postID: "B") { self.detail(postID: "B") }
+        XCTAssertEqual(sut.state, .done("요약 결과"))
+        XCTAssertEqual(spy.calls, 2)
+
+        // B 가 현재 글인 상태에서 A 의 늦은 invalidate 도착.
+        sut.invalidate(postID: "A")
+        XCTAssertEqual(sut.state, .done("요약 결과"), "B 의 상태는 그대로")
+
+        // B 재진입 → 캐시 복원(재생성 없음). A 재진입 → 캐시가 지워졌으니 재생성.
+        await sut.summarizeIfNeeded(postID: "B") { self.detail(postID: "B") }
+        XCTAssertEqual(spy.calls, 2, "B 캐시는 살아있다")
+        await sut.summarizeIfNeeded(postID: "A") { self.detail(postID: "A") }
+        XCTAssertEqual(spy.calls, 3, "A 캐시는 지워졌다")
+    }
+
     // MARK: - 카드 마운트 게이트
 
     /// keep-alive 전환 중 로더는 이전 글의 detail 을 노출한다 — 그 스냅샷

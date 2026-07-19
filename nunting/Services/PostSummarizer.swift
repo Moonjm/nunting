@@ -185,7 +185,13 @@ final class PostSummarizer {
             try? await Task.sleep(for: pollInterval)
             // 카드가 사라지거나 id 가 바뀌면 SwiftUI 가 .task 를 취소한다 —
             // sleep 의 throw 를 try? 로 삼키므로 여기서 명시적으로 끊는다.
-            if Task.isCancelled { return }
+            // 현재 세대면 idle 로 되돌린다: streaming("") 을 남기면 같은 글
+            // 재진입 시(긴 글→짧은 글→다시 긴 글, currentPostID 불변) 새
+            // 태스크가 non-idle 가드에 막혀 "요약 중…" 이 영구 표시된다.
+            if Task.isCancelled {
+                if gen == generation { state = .idle }
+                return
+            }
             guard gen == generation else { return } // 글 전환됨 — 쓰기 금지
             guard let d = latestDetail(), d.post.id == postID else { continue }
             matched = d
@@ -220,8 +226,12 @@ final class PostSummarizer {
 
     /// pull-to-refresh 등으로 같은 post.id 의 본문/댓글이 교체된 경우 —
     /// 캐시를 버리고 다음 summarizeIfNeeded 가 새 detail 로 재생성하게 한다.
+    /// 세대/상태 리셋은 **현재 글일 때만**: 글 A 의 늦은 새로고침 완료가
+    /// B 로 전환된 뒤 도착하면 A 캐시만 지워야지, 무조건 리셋하면 B 의
+    /// 진행 중 생성을 죽이고 B 의 .task 는 재발화가 없어 카드가 멈춘다.
     func invalidate(postID: String) {
         completed.removeValue(forKey: postID)
+        guard currentPostID == postID else { return }
         generation += 1
         state = .idle
     }
@@ -252,9 +262,15 @@ final class PostSummarizer {
                 ? .failed("요약 결과가 비어 있어요.")
                 : .done(text)
         } catch {
+            guard gen == generation else { return }
+            // 생성 중 .task 취소(글 전환)는 실패가 아니다 — failed 로 남기면
+            // 재진입 자동 실행이 non-idle 가드에 막힌다(폴 취소와 동일 규율).
+            if error is CancellationError {
+                state = .idle
+                return
+            }
             // guardrail 거부(민감 주제)·컨텍스트 초과 등 — 프로토타입에선
             // 한 줄 안내로 뭉뚱그린다.
-            guard gen == generation else { return }
             state = .failed("요약할 수 없어요 (\(error.localizedDescription))")
         }
     }
