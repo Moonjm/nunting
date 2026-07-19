@@ -141,6 +141,11 @@ final class PostDetailLoader {
         // 서버 데이터에서 삭제글인지 진짜 구조 변경인지 판별할 수 없었다
         // (2026-07-15 뽐뿌 케이스). 사이트와 같은 이유로 resolved 로 갱신.
         var telemetryURL = post.url
+        // 리포트에 실을 응답 본문 — 일시적 이상 응답(순간 인터스티셜 등,
+        // 2026-07-18 쿨엔 단발)은 사후 재현이 안 되므로 리포트 시점의 본문
+        // 지문(길이+프리픽스)까지 남겨야 판별 가능하다. 파싱에 실제로 쓰인
+        // 최종 본으로 갱신.
+        var telemetryBody: String?
         do {
             let dispatch = try await resolveDispatchedPost(post)
             try Task.checkCancellation()
@@ -225,6 +230,7 @@ final class PostDetailLoader {
                         throw NetworkError.captchaChallenge(resolved.url)
                     }
                 }
+                telemetryBody = html
                 try Task.checkCancellation()
 
                 // Kick comment fetch off in parallel with the detached detail
@@ -342,9 +348,13 @@ final class PostDetailLoader {
         } catch {
             errorMessage = error.localizedDescription
             if case ParserError.structureChanged(let changeDetail) = error {
+                // 본문 지문은 파싱까지 간 경우에만 있다(fetch 실패 시 nil).
+                let bodyPart = telemetryBody.map {
+                    " | \(ParserFailureTelemetry.bodyFingerprint($0))"
+                } ?? ""
                 telemetry.report(
                     site: telemetrySite, phase: .detail,
-                    detail: "\(changeDetail) (\(telemetryURL.absoluteString))")
+                    detail: "\(changeDetail) (\(telemetryURL.absoluteString)\(bodyPart))")
             }
         }
     }

@@ -62,4 +62,22 @@ final class ParserFailureTelemetryTests: XCTestCase {
         await telemetry.report(site: .ppomppu, phase: .list, detail: "목록 0건")?.value
         XCTAssertEqual(sent.items.count, 1, "전송 실패한 (site, phase) 는 다음 발생 때 재시도")
     }
+
+    // MARK: - 본문 지문
+
+    /// 일시적 이상 응답(순간 인터스티셜·에러 페이지)은 리포트 시점의 본문을
+    /// 남기지 않으면 사후 판별이 불가능하다(2026-07-18 쿨엔 단발 케이스).
+    /// 길이 + 앞부분 프리픽스만으로 "봇체크/삭제 안내/구조 변경"을 구분한다.
+    func testBodyFingerprintCollapsesWhitespaceAndCaps() {
+        let html = "<html>\n  <head>\t<script>  challenge page </script>\n" + String(repeating: "x", count: 500)
+        let fp = ParserFailureTelemetry.bodyFingerprint(html)
+        XCTAssertTrue(fp.hasPrefix("len=\(html.count)"), "원문 길이 포함 (got: \(fp))")
+        XCTAssertTrue(fp.contains("<html> <head> <script> challenge page"),
+                      "공백 run 은 한 칸으로 접힘 (got: \(fp.prefix(80)))")
+        XCTAssertLessThan(fp.count, 260, "head 는 200자 안팎으로 캡")
+    }
+
+    func testBodyFingerprintEmptyBody() {
+        XCTAssertEqual(ParserFailureTelemetry.bodyFingerprint(""), "len=0, head=")
+    }
 }
