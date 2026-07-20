@@ -93,6 +93,34 @@ final class PostSummaryPromptTests: XCTestCase {
         XCTAssertNotEqual(Array(picked.prefix(4)), [1, 2, 3, 4], "나머지를 앞에서 채우면 안 된다")
     }
 
+    /// 뽑는 순서와 **보여주는 순서**는 다른 문제다. 고르게 뽑아도 원본
+    /// (시간) 순서로 실으면 모델이 프롬프트 앞줄을 대표로 인용해 결국
+    /// "첫 댓글 요약"이 된다 — 실제로 그렇게 재발했다. 제시는 공감
+    /// 내림차순으로 해서 맨 앞줄이 곧 가장 대표성 있는 댓글이게 한다.
+    func testCommentsArePresentedByLikeCountDescending() {
+        let likes = [0, 12, 3, 0, 40, 7]
+        let comments = likes.enumerated().map { i, l in self.comment("댓글내용\(i).", likes: l, id: i) }
+        let prompt = PostSummaryPrompt.build(detail: detail(blocks: [.text("본문")], comments: comments))
+
+        let order = (0..<likes.count)
+            .compactMap { i in prompt.range(of: "댓글내용\(i).").map { (i, $0.lowerBound) } }
+            .sorted { $0.1 < $1.1 }
+            .map { likes[$0.0] }
+        XCTAssertEqual(order, order.sorted(by: >), "공감 높은 댓글이 앞줄에 와야 한다")
+    }
+
+    /// 공감이 전부 0이면 정렬로 갈릴 게 없으니, 고르게 뽑은 표본 순서가
+    /// 그대로 유지돼야 한다(정렬이 표본을 뒤섞어 앞쪽으로 몰면 안 된다).
+    func testTiedLikesKeepSpreadSampleOrder() {
+        let comments = (1...30).map { i in self.comment("댓글내용\(i).", likes: 0, id: i) }
+        let prompt = PostSummaryPrompt.build(detail: detail(blocks: [.text("본문")], comments: comments))
+
+        let positions = (1...30).compactMap { i in prompt.range(of: "댓글내용\(i).").map { ($0.lowerBound, i) } }
+        XCTAssertEqual(positions.sorted { $0.0 < $1.0 }.map(\.1),
+                       positions.map(\.1).sorted(),
+                       "동점이면 표본 순서(=원본 순서) 유지")
+    }
+
     func testBuildTruncatesEachCommentToCharCap() {
         let long = String(repeating: "나", count: PostSummaryPrompt.maxCommentChars + 200)
         let prompt = PostSummaryPrompt.build(detail: detail(blocks: [.text("본문")], comments: [comment(long, likes: 1)]))

@@ -54,8 +54,10 @@ nonisolated enum PostSummaryPrompt {
         return prompt
     }
 
-    /// 요약에 실을 대표 댓글 `maxComments` 개. 원본(시간) 순서를 유지해
-    /// 돌려준다 — 모델이 흐름대로 읽는 편이 반응 요약에 유리하다.
+    /// 요약에 실을 대표 댓글 `maxComments` 개. **공감 내림차순**으로
+    /// 돌려준다(동점은 원본 순서 유지) — 모델이 프롬프트 앞줄을 대표로
+    /// 인용하는 경향이 있어서, 고르게 뽑아 놓고 시간순으로 실었더니 결국
+    /// 첫 댓글이 다시 요약을 대표했다. 앞줄이 곧 가장 공감받은 댓글이게 한다.
     ///
     /// 단순 "공감 내림차순 prefix" 였을 때의 버그: 공감이 전부 0인 스레드
     /// (aagag 이슈판이 대표적)는 전 항목이 동점이라 정렬이 사실상
@@ -65,7 +67,7 @@ nonisolated enum PostSummaryPrompt {
     /// 2. 남는 자리는 나머지에서 **고르게** 샘플링 — 앞에서 자르지 않는다.
     static func representativeComments(_ comments: [PostComment]) -> [PostComment] {
         let candidates = comments.filter { !$0.content.isEmpty }
-        guard candidates.count > maxComments else { return candidates }
+        guard candidates.count > maxComments else { return byLikesDescending(candidates) }
 
         let liked = candidates.filter { $0.likeCount > 0 }
             .sorted { $0.likeCount > $1.likeCount }
@@ -75,7 +77,21 @@ nonisolated enum PostSummaryPrompt {
         let fill = evenSample(rest, count: maxComments - liked.count)
 
         let chosen = pickedIDs.union(fill.map(\.id))
-        return candidates.filter { chosen.contains($0.id) }
+        return byLikesDescending(candidates.filter { chosen.contains($0.id) })
+    }
+
+    /// 공감 내림차순 정렬. Swift 의 sort 는 unstable 이라 동점 순서를
+    /// 보장하지 않는데, 공감이 전부 0인 스레드에서는 **동점이 곧 전부**라
+    /// 고르게 뽑아 둔 표본이 뒤섞인다 — 인덱스로 동점을 깨 원본 순서를
+    /// 유지한다.
+    private static func byLikesDescending(_ comments: [PostComment]) -> [PostComment] {
+        comments.enumerated()
+            .sorted { a, b in
+                a.element.likeCount == b.element.likeCount
+                    ? a.offset < b.offset
+                    : a.element.likeCount > b.element.likeCount
+            }
+            .map(\.element)
     }
 
     /// 배열 전체에 고르게 퍼진 `count` 개를 원본 순서로 뽑는다 — 앞/뒤
