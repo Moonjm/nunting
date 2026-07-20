@@ -1,3 +1,4 @@
+import FoundationModels
 import XCTest
 @testable import nunting
 
@@ -319,6 +320,28 @@ final class PostSummarizerLifecycleTests: XCTestCase {
         let currentShort = detail(postID: "current", body: "짧은 글")
         XCTAssertFalse(PostSummarizer.shouldShowCard(post: post, loadedDetail: currentShort),
                        "임계 미만은 현재 글이어도 비노출")
+    }
+
+    // MARK: - 실패 문구 매핑
+
+    /// 가드레일 거부는 사용자 잘못도 버그도 아니라 "이 글은 못 한다" 는
+    /// 사실이다 — 영문 원문(the model's safety guardrails were triggered)을
+    /// 그대로 노출하지 않고 한 줄 한국어 안내로 바꾼다.
+    func testGuardrailViolationGetsPlainKoreanMessage() {
+        let context = LanguageModelSession.GenerationError.Context(
+            debugDescription: "May contain sensitive or unsafe content"
+        )
+        let message = PostSummarizer.failureMessage(
+            for: LanguageModelSession.GenerationError.guardrailViolation(context)
+        )
+        XCTAssertEqual(message, "민감한 내용이 있어 요약을 건너뛰었어요.")
+        XCTAssertFalse(message.contains("guardrail"), "영문 원문을 노출하지 않는다")
+    }
+
+    /// 그 외 실패는 원인 파악이 필요하니 기존대로 원문을 붙여 보여준다.
+    func testOtherErrorsKeepUnderlyingDescription() {
+        struct Boom: LocalizedError { var errorDescription: String? { "펑" } }
+        XCTAssertEqual(PostSummarizer.failureMessage(for: Boom()), "요약할 수 없어요 (펑)")
     }
 
     // MARK: - 캐시 정상 경로

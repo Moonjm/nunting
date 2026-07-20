@@ -44,10 +44,7 @@ nonisolated enum PostSummaryPrompt {
         \(body)
         """
 
-        let top = detail.comments
-            .filter { !$0.content.isEmpty }
-            .sorted { $0.likeCount > $1.likeCount }
-            .prefix(maxComments)
+        let top = representativeComments(detail.comments)
         if !top.isEmpty {
             prompt += "\n\n베스트 댓글:"
             for c in top {
@@ -55,6 +52,56 @@ nonisolated enum PostSummaryPrompt {
             }
         }
         return prompt
+    }
+
+    /// 요약에 실을 대표 댓글 `maxComments` 개. **공감 내림차순**으로
+    /// 돌려준다(동점은 원본 순서 유지) — 모델이 프롬프트 앞줄을 대표로
+    /// 인용하는 경향이 있어서, 고르게 뽑아 놓고 시간순으로 실었더니 결국
+    /// 첫 댓글이 다시 요약을 대표했다. 앞줄이 곧 가장 공감받은 댓글이게 한다.
+    ///
+    /// 단순 "공감 내림차순 prefix" 였을 때의 버그: 공감이 전부 0인 스레드
+    /// (aagag 이슈판이 대표적)는 전 항목이 동점이라 정렬이 사실상
+    /// no-op 이고, 그러면 **첫 5개 댓글**만 실려 요약의 "반응" 문장이 맨 위
+    /// 댓글 몇 개만 대표했다. 그래서 두 단계로 뽑는다:
+    /// 1. 공감이 붙은 댓글을 공감순으로 — 신호가 있으면 그게 대표다.
+    /// 2. 남는 자리는 나머지에서 **고르게** 샘플링 — 앞에서 자르지 않는다.
+    static func representativeComments(_ comments: [PostComment]) -> [PostComment] {
+        let candidates = comments.filter { !$0.content.isEmpty }
+        guard candidates.count > maxComments else { return byLikesDescending(candidates) }
+
+        let liked = candidates.filter { $0.likeCount > 0 }
+            .sorted { $0.likeCount > $1.likeCount }
+            .prefix(maxComments)
+        let pickedIDs = Set(liked.map(\.id))
+        let rest = candidates.filter { !pickedIDs.contains($0.id) }
+        let fill = evenSample(rest, count: maxComments - liked.count)
+
+        let chosen = pickedIDs.union(fill.map(\.id))
+        return byLikesDescending(candidates.filter { chosen.contains($0.id) })
+    }
+
+    /// 공감 내림차순 정렬. Swift 의 sort 는 unstable 이라 동점 순서를
+    /// 보장하지 않는데, 공감이 전부 0인 스레드에서는 **동점이 곧 전부**라
+    /// 고르게 뽑아 둔 표본이 뒤섞인다 — 인덱스로 동점을 깨 원본 순서를
+    /// 유지한다.
+    private static func byLikesDescending(_ comments: [PostComment]) -> [PostComment] {
+        comments.enumerated()
+            .sorted { a, b in
+                a.element.likeCount == b.element.likeCount
+                    ? a.offset < b.offset
+                    : a.element.likeCount > b.element.likeCount
+            }
+            .map(\.element)
+    }
+
+    /// 배열 전체에 고르게 퍼진 `count` 개를 원본 순서로 뽑는다 — 앞/뒤
+    /// 어느 쪽으로도 치우치지 않게 각 구간의 중앙을 집는다.
+    private static func evenSample(_ items: [PostComment], count: Int) -> [PostComment] {
+        guard count > 0 else { return [] }
+        guard items.count > count else { return items }
+        return (0..<count).map { i in
+            items[(2 * i + 1) * items.count / (2 * count)]
+        }
     }
 
     /// 본문 블록에서 요약 입력용 텍스트만 추출 — richText 의 텍스트/링크
@@ -279,20 +326,38 @@ final class PostSummarizer {
                 state = .idle
                 return
             }
-            // guardrail 거부(민감 주제)·컨텍스트 초과 등 — 프로토타입에선
-            // 한 줄 안내로 뭉뚱그린다.
-            state = .failed("요약할 수 없어요 (\(error.localizedDescription))")
+            state = .failed(Self.failureMessage(for: error))
         }
+    }
+
+    /// 실패 카드에 띄울 한 줄. 가드레일 거부는 유저 잘못도 우리 버그도
+    /// 아니라 "이 글은 모델이 안 다룬다"는 사실이라, 영문 원문(the model's
+    /// safety guardrails were triggered)을 노출하지 않고 사실만 전한다.
+    /// 나머지는 원인 파악이 필요하니 원문을 붙인다.
+    nonisolated static func failureMessage(for error: Error) -> String {
+        if let generationError = error as? LanguageModelSession.GenerationError,
+           case .guardrailViolation = generationError {
+            return "민감한 내용이 있어 요약을 건너뛰었어요."
+        }
+        return "요약할 수 없어요 (\(error.localizedDescription))"
     }
 
     /// FoundationModels 스트리밍 — ResponseStream 스냅샷은 델타가 아니라
     /// **누적** 본문이라 콜백에 그대로 넘긴다.
+    ///
+    /// 가드레일을 `permissiveContentTransformations` 로 낮춘다: 기본
+    /// 프로파일은 한국 커뮤니티 글(사건사고·비속어 섞인 본문과 댓글)을
+    /// 자주 거부해 멀쩡한 글이 통째로 요약 실패했다. 우리가 새 내용을
+    /// 만드는 게 아니라 **유저가 이미 보고 있는 글을 압축**하는 용도라
+    /// Apple 이 이 프로파일을 두는 바로 그 케이스다. 출력 쪽 필터는 그대로
+    /// 남으므로 거부가 0 이 되지는 않는다 — failureMessage 가 받는다.
     @MainActor
     static func liveGenerate(
         prompt: String,
         onSnapshot: @MainActor (String) -> Void
     ) async throws -> String {
-        let session = LanguageModelSession(instructions: PostSummaryPrompt.instructions)
+        let model = SystemLanguageModel(guardrails: .permissiveContentTransformations)
+        let session = LanguageModelSession(model: model, instructions: PostSummaryPrompt.instructions)
         var latest = ""
         for try await snapshot in session.streamResponse(to: prompt) {
             latest = snapshot.content
