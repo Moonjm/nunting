@@ -67,6 +67,32 @@ final class PostSummaryPromptTests: XCTestCase {
         for i in 1...5 { XCTAssertFalse(prompt.contains("댓글내용\(i)."), "하위 댓글 \(i) 이 포함됨") }
     }
 
+    /// 공감이 전부 0인 스레드(aagag 이슈판이 대표적 — `w_good` 이 거의
+    /// 안 붙는다)에서 공감 내림차순 정렬은 전부 동점이라 무의미하고,
+    /// 결과적으로 **첫 5개 댓글**만 뽑혔다. 요약의 "반응 한 줄"이 스레드
+    /// 전체가 아니라 맨 위 댓글 몇 개만 대표하게 되는 버그. 동점 구간은
+    /// 앞에서 자르지 말고 스레드 전체에 고르게 퍼뜨려 뽑는다.
+    func testBuildSpreadsSelectionWhenNoLikesToRankBy() {
+        let comments = (1...30).map { i in self.comment("댓글내용\(i).", likes: 0, id: i) }
+        let prompt = PostSummaryPrompt.build(detail: detail(blocks: [.text("본문")], comments: comments))
+
+        let picked = (1...30).filter { prompt.contains("댓글내용\($0).") }
+        XCTAssertEqual(picked.count, PostSummaryPrompt.maxComments)
+        XCTAssertNotEqual(picked, [1, 2, 3, 4, 5], "앞에서 자르면 첫 댓글만 대표한다")
+        XCTAssertGreaterThan(picked.last ?? 0, 20, "스레드 후반부도 표본에 들어와야 한다")
+    }
+
+    /// 공감이 일부에만 붙은 스레드: 공감 있는 댓글은 우선 살리되, 남는
+    /// 자리를 앞 댓글로 채우지 않는다.
+    func testBuildKeepsLikedCommentsAndSpreadsTheRest() {
+        let comments = (1...30).map { i in self.comment("댓글내용\(i).", likes: i == 25 ? 7 : 0, id: i) }
+        let prompt = PostSummaryPrompt.build(detail: detail(blocks: [.text("본문")], comments: comments))
+
+        let picked = (1...30).filter { prompt.contains("댓글내용\($0).") }
+        XCTAssertTrue(picked.contains(25), "공감 붙은 댓글은 반드시 포함")
+        XCTAssertNotEqual(Array(picked.prefix(4)), [1, 2, 3, 4], "나머지를 앞에서 채우면 안 된다")
+    }
+
     func testBuildTruncatesEachCommentToCharCap() {
         let long = String(repeating: "나", count: PostSummaryPrompt.maxCommentChars + 200)
         let prompt = PostSummaryPrompt.build(detail: detail(blocks: [.text("본문")], comments: [comment(long, likes: 1)]))
