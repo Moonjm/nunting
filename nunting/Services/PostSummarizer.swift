@@ -45,7 +45,12 @@ nonisolated enum PostSummaryPrompt {
         """
 
         let top = representativeComments(detail.comments)
-        if !top.isEmpty {
+        if top.isEmpty {
+            // 프롬프트에 댓글이 없어도 instructions("댓글이 있으면 반응을
+            // 덧붙이라")를 소형 모델이 무시하고 반응을 지어낸다 — 여기서
+            // 못박는다.
+            prompt += "\n\n이 글에는 댓글은 없습니다. 댓글 반응은 요약에 쓰지 마세요."
+        } else {
             prompt += "\n\n베스트 댓글:"
             for c in top {
                 prompt += "\n- (공감 \(c.likeCount)) \(String(c.content.prefix(maxCommentChars)))"
