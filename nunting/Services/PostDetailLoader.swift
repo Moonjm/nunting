@@ -125,6 +125,12 @@ final class PostDetailLoader {
             // 글을 성공적으로 캐시했을 수 있다 — 히트 복원 시 배너는 내린다.
             commentsFailed = false
             commentRetryContext = nil
+            // 캐시 히트도 이미지 서브트리를 다시 세운다 — SDImageCache 가
+            // 메모리 압박/백그라운드 해제로 비워졌으면 같은 GIF 를 재디코드해
+            // 스파이크가 재현될 수 있다. cold 경로와 같은 태그를 남겨 그 순간을
+            // 특정 글로 귀속시킨다(캐시 detail.post 는 resolved 라 site 일치).
+            FootprintLogger.shared.record(
+                Self.mediaLabel(for: entry.detail.blocks, site: entry.detail.post.site, postID: post.id))
             return
         }
         guard !Task.isCancelled else { return }
@@ -301,6 +307,11 @@ final class PostDetailLoader {
                 }
                 isLoading = false
                 detail = parsed
+                // 파싱된 미디어 구성을 footprint 타임라인에 태그 — 스파이크가
+                // 나면 어떤 글·어떤 포맷이었는지 바로 귀속된다. 블록이 확정된
+                // 지금이 파싱+프리페치로 메모리가 실제 움직이는 순간이라
+                // 샘플 위치가 정확하다.
+                FootprintLogger.shared.record(Self.mediaLabel(for: parsed.blocks, site: resolved.site, postID: post.id))
 
                 switch await commentsTask {
                 case .success(let extras):
@@ -513,6 +524,43 @@ final class PostDetailLoader {
         }
         if blocksHaveMedia { return true }
         return detail.comments.contains { $0.stickerURL != nil || $0.videoURL != nil }
+    }
+
+    /// 파싱 직후 남기는 footprint 샘플의 미디어 구성 태그.
+    /// `media:clien/img=12,gif=3,webp=1,vid=0` — 어떤 글이 무엇을 담았는지
+    /// 타임라인에 못박아, 미디어 디코드 스파이크를 추정이 아니라 특정
+    /// 글·특정 포맷으로 귀속시킨다(2026-07-20 1.4GB 스파이크 조사가 label
+    /// 부재로 스모킹건을 못 만든 갭). gif/webp 는 프리페치가 전 프레임을
+    /// 실체화하는 애니메이션 포맷이라 `img` 총계와 별도로 세어, 프리페치
+    /// 차단 수정의 효과(같은 gif=N 에서 스파이크 소멸)를 원격 검증한다.
+    nonisolated static func mediaLabel(for blocks: [ContentBlock], site: Site, postID: String) -> String {
+        var img = 0, gif = 0, webp = 0, vid = 0
+        for block in blocks {
+            switch block.kind {
+            case .image(let url, _, _):
+                img += 1
+                switch url.pathExtension.lowercased() {
+                case "gif": gif += 1
+                case "webp": webp += 1
+                default: break
+                }
+            case .video:
+                vid += 1
+            case .richText, .dealLink, .embed:
+                break
+            }
+        }
+        // id 로 같은 사이트·같은 카운트의 두 글을 구분 — 없으면 스파이크를
+        // 특정 글로 귀속 못 한다. cold/cache-hit 양 경로 모두 캐시 키(post.id)를
+        // 써 같은 글이 같은 식별자로 찍히게 한다.
+        //
+        // 서버는 label 을 80 runes 로 **뒤에서** 자른다(maxFootprintLabelRunes).
+        // id 가 맨 끝이라, 애객 미러처럼 원본 URL 을 통째로 담은 긴 id
+        // (`issue-…/issue/?idx=123456`)면 구분용 idx 숫자가 통째로 잘려 귀속이
+        // 무너진다. 고엔트로피가 tail 에 있으므로 앞 보일러플레이트를 버리고
+        // 끝 24 runes 만 남겨 예산 안에 들인다(최악 카운트에서도 ≤80).
+        let compactID = postID.count <= 24 ? postID : String(postID.suffix(24))
+        return "media:\(site.rawValue)/img=\(img),gif=\(gif),webp=\(webp),vid=\(vid),id=\(compactID)"
     }
 
     /// Sleep until `deadline` if it's in the future; no-op otherwise.
