@@ -130,7 +130,25 @@ final class PostSummaryPromptTests: XCTestCase {
 
     func testBuildOmitsCommentsSectionWhenEmpty() {
         let prompt = PostSummaryPrompt.build(detail: detail(blocks: [.text("본문만")]))
-        XCTAssertFalse(prompt.contains("댓글"), "댓글 없으면 댓글 섹션 자체가 없어야 한다")
+        XCTAssertFalse(prompt.contains("베스트 댓글"), "댓글 없으면 댓글 섹션 자체가 없어야 한다")
+    }
+
+    /// 댓글이 없으면 프롬프트에 댓글 섹션이 안 붙지만, 세션 instructions 는
+    /// 여전히 "댓글이 있으면 반응을 덧붙이라"고 말한다 — 온디바이스 소형
+    /// 모델은 그 조건을 무시하고 없는 반응을 지어낸다("네티즌 반응은…").
+    /// 프롬프트 본체에 못박아 반응 언급을 막는다.
+    func testBuildForbidsReactionLineWhenNoComments() {
+        let prompt = PostSummaryPrompt.build(detail: detail(blocks: [.text("본문만")]))
+        XCTAssertTrue(prompt.contains("댓글은 없습니다"), "댓글 없을 때 반응 금지 지시가 있어야 한다")
+    }
+
+    /// 댓글이 있으면 그 금지 지시는 없어야 한다(반응 요약을 막으면 안 됨).
+    func testBuildOmitsNoCommentDirectiveWhenCommentsExist() {
+        let prompt = PostSummaryPrompt.build(
+            detail: detail(blocks: [.text("본문")], comments: [comment("좋아요", likes: 3)])
+        )
+        XCTAssertFalse(prompt.contains("댓글은 없습니다"))
+        XCTAssertTrue(prompt.contains("베스트 댓글"))
     }
 
     // MARK: - 자동 요약 판정
