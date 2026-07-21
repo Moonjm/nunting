@@ -443,11 +443,13 @@ struct NetworkImage: View {
     /// 이미지 전부가 blank 로 멈춘다(#82 의 14s 프리즈 진범). 인라인 렌더는
     /// `AnimatedImage` 가 lazy `SDAnimatedImage`(같은 파일 27ms, 뷰어와 동일
     /// 경로)로 열므로 게이트하지 않는다 — 이 판정은 프리페치에만 쓴다.
-    /// poster-backed(웃대 짤방) 또는 `.webp` 확장자가 스킵 대상. GIF 는
-    /// 프리즈 실측이 없어 종전대로 프리페치. 확장자 없는 URL 은 판별 불가
-    /// — best-effort 로 프리페치에 포함.
+    /// poster-backed(웃대 짤방) 또는 애니메이션 확장자(`.webp`/`.gif`)가 스킵
+    /// 대상. GIF 도 프리페치 시 전 프레임이 실체화돼 메모리 스파이크를 낸다
+    /// (footprint 실측: Clien 본문 GIF 열람 직후 1.4GB peak). 확장자 없는
+    /// URL 은 판별 불가 — best-effort 로 프리페치에 포함(실 파서는 본문
+    /// 이미지를 항상 확장자 있는 CDN URL 로 resolve 해 실질 노출 없음).
     nonisolated static func skipsPrefetch(url: URL, posterURL: URL?) -> Bool {
-        posterURL != nil || url.pathExtension.lowercased() == "webp"
+        posterURL != nil || ["webp", "gif"].contains(url.pathExtension.lowercased())
     }
 
     nonisolated static func shouldShowHeavyImage(

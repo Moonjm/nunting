@@ -9,7 +9,10 @@ import XCTest
 /// blank 로 멈춘다(#82의 14s 프리즈 진범). 인라인 렌더는 `AnimatedImage`
 /// 가 lazy `SDAnimatedImage`(같은 파일 27ms)로 열어 재생까지 안전하므로
 /// 게이트하지 않는다 — 이 판정은 **프리페치 제외 전용**이다.
-/// GIF 는 프리페치 프리즈 실측이 없어 종전대로 프리페치에 포함한다.
+/// 애니메이션 GIF 도 프리페치 시 전 프레임이 실체화돼 메모리 스파이크를
+/// 내므로(footprint 실측: Clien 본문 GIF 열람 직후 1.4GB peak) webp 와
+/// 동급으로 제외한다. 정적 GIF 는 프리페치를 못 받아 미미하게 늦게 뜨지만,
+/// 커뮤니티 GIF 는 대부분 움짤이라 실익이 크다.
 final class NetworkImagePrefetchSkipTests: XCTestCase {
     private func skips(_ urlString: String, poster: String? = nil) -> Bool {
         NetworkImage.skipsPrefetch(
@@ -39,9 +42,19 @@ final class NetworkImagePrefetchSkipTests: XCTestCase {
         XCTAssertTrue(skips("https://cdn.example.com/img.webp?type=w800"))
     }
 
-    func testNonWebpPrefetches() {
-        // GIF/정지 포맷은 종전대로 프리페치 대상.
-        XCTAssertFalse(skips("https://cdn.example.com/small.gif"))
+    func testGifSkipsPrefetchWithoutPoster() {
+        // 애니메이션 GIF(Clien/Ppomppu 본문 움짤)도 스킵 — 프리페처의
+        // 전-프레임 실체화가 메모리 스파이크를 낸다.
+        XCTAssertTrue(skips("https://cdn.example.com/small.gif"))
+    }
+
+    func testGifExtensionCaseInsensitive() {
+        XCTAssertTrue(skips("https://cdn.example.com/IMG.GIF"))
+    }
+
+    func testStaticFormatsPrefetch() {
+        // 정지 포맷(jpg/png)은 프리페치 시 다운샘플 박스로 축소 디코드돼
+        // 안전하므로 종전대로 프리페치 대상.
         XCTAssertFalse(skips("https://cdn.example.com/photo.jpg"))
         XCTAssertFalse(skips("https://cdn.example.com/photo.png"))
     }
