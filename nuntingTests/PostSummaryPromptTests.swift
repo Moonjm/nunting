@@ -133,22 +133,33 @@ final class PostSummaryPromptTests: XCTestCase {
         XCTAssertFalse(prompt.contains("베스트 댓글"), "댓글 없으면 댓글 섹션 자체가 없어야 한다")
     }
 
-    /// 댓글이 없으면 프롬프트에 댓글 섹션이 안 붙지만, 세션 instructions 는
-    /// 여전히 "댓글이 있으면 반응을 덧붙이라"고 말한다 — 온디바이스 소형
-    /// 모델은 그 조건을 무시하고 없는 반응을 지어낸다("네티즌 반응은…").
-    /// 프롬프트 본체에 못박아 반응 언급을 막는다.
-    func testBuildForbidsReactionLineWhenNoComments() {
-        let prompt = PostSummaryPrompt.build(detail: detail(blocks: [.text("본문만")]))
-        XCTAssertTrue(prompt.contains("댓글은 없습니다"), "댓글 없을 때 반응 금지 지시가 있어야 한다")
+    /// 반응 각인의 근본 원인은 static instructions 에 있었다 — "댓글이
+    /// 있으면 반응을 덧붙이라"는 조건부 지시를 소형 모델이 조건절만 흘리고
+    /// **항상 출력 템플릿**으로 각인해, 댓글이 없어도 "네티즌 반응은…"을
+    /// 지어냈다. 프롬프트 부정문("쓰지 마세요")은 소형 모델이 부정을 못
+    /// 지키고 "반응"을 꺼내는 것 자체가 재각인이라 실패했다. 반응 지시를
+    /// instructions 에서 통째로 빼, 각인 원천 자체를 없앤다.
+    func testInstructionsDoNotPrimeReaction() {
+        XCTAssertFalse(PostSummaryPrompt.instructions.contains("반응"),
+                       "instructions 가 반응을 각인하면 댓글 없는 글도 반응을 지어낸다")
     }
 
-    /// 댓글이 있으면 그 금지 지시는 없어야 한다(반응 요약을 막으면 안 됨).
-    func testBuildOmitsNoCommentDirectiveWhenCommentsExist() {
+    /// 반응 지시는 프롬프트의 **댓글 있음 분기에만** 산다 — 그래야 조건이
+    /// 물리적으로 성립할 때만 존재한다. 댓글 없는 프롬프트는 반응을 아예
+    /// 언급하지 않는다(부정도 안 함 — 부정문은 소형 모델에 재각인 위험).
+    func testBuildNeverMentionsReactionWhenNoComments() {
+        let prompt = PostSummaryPrompt.build(detail: detail(blocks: [.text("본문만")]))
+        XCTAssertFalse(prompt.contains("반응"), "댓글 없으면 반응을 언급조차 하지 않는다")
+    }
+
+    /// 댓글이 있으면 반응 지시가 프롬프트에 실려야 한다(반응 요약을
+    /// 막으면 안 됨). 지시는 나열된 베스트 댓글에 근거하도록 프레이밍한다.
+    func testBuildAsksForReactionLineWhenCommentsExist() {
         let prompt = PostSummaryPrompt.build(
             detail: detail(blocks: [.text("본문")], comments: [comment("좋아요", likes: 3)])
         )
-        XCTAssertFalse(prompt.contains("댓글은 없습니다"))
         XCTAssertTrue(prompt.contains("베스트 댓글"))
+        XCTAssertTrue(prompt.contains("반응"), "댓글 있으면 반응 한 줄 지시가 있어야 한다")
     }
 
     // MARK: - 자동 요약 판정
