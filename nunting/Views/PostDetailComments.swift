@@ -51,6 +51,41 @@ struct PostDetailCommentRow: View {
     let onVideoDismissBegin: () -> Void
     var isOverlayVisible: Bool = true
 
+    /// 댓글 비디오 슬롯이 차지하는 고정 높이. 종전 최대 높이(240)보다 낮게
+    /// 잡은 이유: 고정 예약이라 남는 공간이 그대로 빈칸으로 보이는데, 가로
+    /// 영상(320×180, 흔한 쪽)에서 240 은 60pt 나 비어 눈에 띈다. 200 이면
+    /// 가로는 20pt 만 남고, 세로 영상(500×786)은 127×200 으로 종전
+    /// 152×240 대비 조금 작아지는 선에서 그친다.
+    static let videoSlotHeight: CGFloat = 200
+    /// 슬롯 최대 폭 — 종전 `.frame(maxWidth: 320)` 과 동일.
+    static let videoSlotWidth: CGFloat = 320
+
+    /// 댓글 비디오 슬롯. **높이를 고정 예약**하는 게 핵심이다.
+    ///
+    /// InlineVideoPlayer 는 AVAsset 메타데이터를 비동기로 읽어 종횡비를
+    /// 16:9 기본값에서 실제 비율로 갈아끼운다. 슬롯 높이를 플레이어에게
+    /// 맡기면 그 순간 행 높이가 통째로 바뀌고(실측: 16:9 180pt → 세로
+    /// 500×786 240pt, 2.35:1 136pt), 그 행이 뷰포트 *위쪽*에 있으면
+    /// 스크롤 콘텐츠가 손가락 밑에서 밀린다 — "스크롤이 안 내려가고 튄다".
+    /// 특히 humoruniv 댓글 mp4 는 moov atom 이 파일 끝에 있는 non-faststart
+    /// 인코딩(25MB 짜리도 있음)이라 메타데이터가 몇 초 뒤 도착해, 사용자가
+    /// 한참 스크롤한 뒤에 뜬금없이 튀는 형태로 나타났다.
+    ///
+    /// 높이를 고정하면 비율이 언제 도착하든 행 높이는 그대로고, 플레이어는
+    /// 그 안에서 자기 비율대로 맞춰진다(가로 영상은 위아래 여백이 남음).
+    @ViewBuilder
+    static func videoSlot<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        HStack(spacing: 0) {
+            content()
+                // `.leading`: 세로 영상은 320 슬롯보다 좁아서(127pt) 기본
+                // 가운데 정렬이면 혼자 안쪽으로 들여쓴 것처럼 보였다 — 닉네임/
+                // 본문/스티커와 같은 왼쪽 라인에 맞춘다.
+                .frame(maxWidth: videoSlotWidth, maxHeight: videoSlotHeight, alignment: .leading)
+            Spacer(minLength: 0)
+        }
+        .frame(height: videoSlotHeight)
+    }
+
     /// 다모앙 앙티콘(`damoang.net/emoticons/…`) 판정 — 사이트 표시 크기
     /// (40~50px)에 맞춘 소형 프레임으로 구분 렌더한다. 밈/짤 스티커와 달리
     /// 크게 키울 정보가 없는 이모지성 이미지라 일반 프레임이 과하다.
@@ -91,15 +126,13 @@ struct PostDetailCommentRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             if let videoURL = comment.videoURL {
-                HStack(spacing: 0) {
+                Self.videoSlot {
                     InlineVideoPlayer(
                         url: videoURL,
                         tapGate: tapGate,
                         onDismissBegin: onVideoDismissBegin,
                         isOverlayVisible: isOverlayVisible
                     )
-                        .frame(maxWidth: 320, maxHeight: 240)
-                    Spacer(minLength: 0)
                 }
             } else if let stickerURL = comment.stickerURL {
                 // 다모앙 앙티콘은 사이트 표시 크기(40~50px)에 맞춘 소형

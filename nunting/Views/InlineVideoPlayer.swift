@@ -41,16 +41,15 @@ struct InlineVideoPlayer: View {
     /// inline player also pauses while the fullscreen cover is up,
     /// avoiding two AVPlayers streaming the same asset in parallel.
     @State private var isVisible = false
-    /// Aspect ratio reserved for the player frame. Starts at the
-    /// landscape default (16:9 = ~1.78) because most board-uploaded
-    /// videos are landscape and that's the better-than-nothing
-    /// layout reservation before AVAsset metadata loads. Once the
+    /// Aspect ratio measured from this view's own AVAsset load. `nil`
+    /// until `onAspectKnown` fires; `effectiveAspect` falls back to the
+    /// per-URL memo and then to the landscape default. Once the
     /// underlying `InlineAutoplayUIView` finishes reading the
     /// video track's `naturalSize` × `preferredTransform`, it
     /// fires `onAspectKnown` and we snap to the source's true
     /// aspect — vertical clips (9:16 ≈ 0.56) then render tall
     /// instead of letterbox-bound inside a 16:9 box.
-    @State private var measuredAspect: CGFloat = 16.0 / 9.0
+    @State private var measuredAspect: CGFloat?
 
     var body: some View {
         ZStack {
@@ -88,9 +87,7 @@ struct InlineVideoPlayer: View {
                     url: url,
                     isPlaying: isOverlayVisible && isVisible && !isPresented,
                     onAspectKnown: { aspect in
-                        if aspect.isFinite && aspect > 0 {
-                            measuredAspect = aspect
-                        }
+                        applyMeasuredAspect(aspect)
                     }
                 )
             } else {
@@ -98,20 +95,13 @@ struct InlineVideoPlayer: View {
                     url: url,
                     isPlaying: isOverlayVisible && isVisible && !isPresented,
                     onAspectKnown: { aspect in
-                        // Guard against degenerate metadata (audio-only
-                        // tracks or assets where preferredTransform makes
-                        // both dimensions zero). Without the guard a
-                        // bogus aspect collapses the SwiftUI frame to
-                        // zero height and the slot disappears.
-                        if aspect.isFinite && aspect > 0 {
-                            measuredAspect = aspect
-                        }
+                        applyMeasuredAspect(aspect)
                     }
                 )
             }
         }
         .frame(maxWidth: .infinity)
-        .aspectRatio(measuredAspect, contentMode: .fit)
+        .aspectRatio(effectiveAspect, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         // Tap-to-fullscreen overlay carved to exclude the bottom strip
         // where the scrub bar's UIKit gesture recognizers live. A
@@ -155,6 +145,62 @@ struct InlineVideoPlayer: View {
                 FullscreenVideoPlayer(url: url, onDismissBegin: onDismissBegin)
             }
         }
+    }
+
+    // MARK: - Aspect reservation
+
+    /// Layout reservation used before any metadata is known. Landscape
+    /// (16:9) because most board-uploaded clips are landscape.
+    nonisolated static let defaultAspect: CGFloat = 16.0 / 9.0
+
+    /// Aspect ratios already measured this session, keyed by video URL.
+    /// A LazyVStack row (comment list) drops its `@State` when SwiftUI
+    /// derealizes it on a long scroll, so without the memo every
+    /// re-realize restarts at `defaultAspect` and re-snaps to the true
+    /// aspect once the asset loads — the same layout shift replayed on
+    /// every pass over the same video. `NSCache` bounds the table and
+    /// drops it under memory pressure; a miss is merely the old
+    /// behaviour. Same storage shape as
+    /// `PostDetailCommentRow.styledCache`.
+    private static let aspectMemo: NSCache<NSURL, NSNumber> = {
+        let cache = NSCache<NSURL, NSNumber>()
+        cache.countLimit = 200
+        return cache
+    }()
+
+    /// Aspect this view lays out with: own measurement first, then the
+    /// session memo for the same URL, then the landscape default.
+    /// Extracted (and `internal`) so the precedence is unit-testable —
+    /// mirrors `NetworkImage.effectiveAspect`.
+    nonisolated static func effectiveAspect(measured: CGFloat?, remembered: CGFloat?) -> CGFloat {
+        measured ?? remembered ?? defaultAspect
+    }
+
+    /// Reject degenerate metadata (audio-only tracks, or assets whose
+    /// `preferredTransform` makes both dimensions zero). Without the
+    /// guard a bogus aspect collapses the SwiftUI frame to zero height
+    /// and the slot disappears.
+    nonisolated static func isUsableAspect(_ aspect: CGFloat) -> Bool {
+        aspect.isFinite && aspect > 0
+    }
+
+    static func rememberedAspect(for url: URL) -> CGFloat? {
+        aspectMemo.object(forKey: url as NSURL).map { CGFloat($0.doubleValue) }
+    }
+
+    static func rememberAspect(_ aspect: CGFloat, for url: URL) {
+        guard isUsableAspect(aspect) else { return }
+        aspectMemo.setObject(NSNumber(value: Double(aspect)), forKey: url as NSURL)
+    }
+
+    private var effectiveAspect: CGFloat {
+        Self.effectiveAspect(measured: measuredAspect, remembered: Self.rememberedAspect(for: url))
+    }
+
+    private func applyMeasuredAspect(_ aspect: CGFloat) {
+        guard Self.isUsableAspect(aspect) else { return }
+        Self.rememberAspect(aspect, for: url)
+        measuredAspect = aspect
     }
 
     /// Container-extension probe for the WKWebView fallback. Codec
