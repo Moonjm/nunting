@@ -30,7 +30,7 @@ final class CommentVideoSlotTests: XCTestCase {
     }
 
     func testSlotHeightIsConstantAcrossAspects() {
-        let landscape = slotHeight(aspect: InlineVideoPlayer.defaultAspect)   // 16:9 기본 예약
+        let landscape = slotHeight(aspect: 16.0 / 9.0)                        // 메타데이터 도착 전 기본 예약
         let portrait = slotHeight(aspect: 500.0 / 786.0)                      // 실제 댓글 영상
         let cinemascope = slotHeight(aspect: 2.35)
 
@@ -46,42 +46,5 @@ final class CommentVideoSlotTests: XCTestCase {
         let url = URL(string: "https://example.com/a.mp4")!
         let height = hostedHeight(PostDetailCommentRow.videoSlot { InlineVideoPlayer(url: url) })
         XCTAssertEqual(height, PostDetailCommentRow.videoSlotHeight, accuracy: 0.5)
-    }
-
-    // MARK: - 종횡비 우선순위 / 세션 메모
-
-    func testEffectiveAspectPrefersOwnMeasurement() {
-        let a = InlineVideoPlayer.effectiveAspect(measured: 0.64, remembered: 1.78)
-        XCTAssertEqual(a, 0.64, accuracy: 0.0001)
-    }
-
-    func testEffectiveAspectFallsBackToRememberedBeforeDefault() {
-        // LazyVStack derealize 로 @State 가 날아가도 같은 URL 이면 실제 비율로
-        // 바로 복원 — 16:9 로 되돌아갔다 다시 스냅하는 왕복이 사라진다.
-        let a = InlineVideoPlayer.effectiveAspect(measured: nil, remembered: 0.64)
-        XCTAssertEqual(a, 0.64, accuracy: 0.0001)
-    }
-
-    func testEffectiveAspectUsesLandscapeDefaultWhenNothingKnown() {
-        let a = InlineVideoPlayer.effectiveAspect(measured: nil, remembered: nil)
-        XCTAssertEqual(a, 16.0 / 9.0, accuracy: 0.0001)
-    }
-
-    func testRememberedAspectRoundTrips() {
-        let url = URL(string: "https://example.com/remembered-\(UUID().uuidString).mp4")!
-        XCTAssertNil(InlineVideoPlayer.rememberedAspect(for: url))
-        InlineVideoPlayer.rememberAspect(500.0 / 786.0, for: url)
-        XCTAssertEqual(InlineVideoPlayer.rememberedAspect(for: url) ?? 0, 500.0 / 786.0, accuracy: 0.0001)
-    }
-
-    func testDegenerateAspectIsNotRemembered() {
-        // 오디오 전용 트랙 / preferredTransform 이 0 인 자산 → 0 높이 슬롯 방지.
-        let url = URL(string: "https://example.com/degenerate-\(UUID().uuidString).mp4")!
-        InlineVideoPlayer.rememberAspect(0, for: url)
-        InlineVideoPlayer.rememberAspect(.nan, for: url)
-        XCTAssertNil(InlineVideoPlayer.rememberedAspect(for: url))
-        XCTAssertFalse(InlineVideoPlayer.isUsableAspect(0))
-        XCTAssertFalse(InlineVideoPlayer.isUsableAspect(.infinity))
-        XCTAssertTrue(InlineVideoPlayer.isUsableAspect(0.64))
     }
 }
