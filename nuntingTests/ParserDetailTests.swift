@@ -1936,6 +1936,77 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertEqual(links.first?.0.absoluteString, "https://example.com/ref")
     }
 
+    func testCoolenjoyJirumRelatedLinkEmitsDealLink() throws {
+        // 지름 게시판 "관련링크"(구매링크)는 `div#bo_v_con`(본문) *바깥*,
+        // `section#bo_v_atc` 안의 형제 `ul.na-table` 에 산다. 본문 walker 는
+        // `div.view-content` 만 훑으므로 따로 뽑지 않으면 통째로 누락된다.
+        // 같은 `ul` 안에 사는 작성자 시그니처 행(`i.fa-computer`)과 댓글
+        // (`section#bo_vc`) 앵커가 구매링크 배너로 새지 않는지도 함께 핀.
+        let html = """
+        <html><body>
+        <article id="bo_v">
+          <section id="bo_v_atc">
+            <div id="bo_v_con">
+              <div class="view-content">
+                <p>지금 오늘의집에서 쿠폰받으면 31,800원에 구매가 가능하네요</p>
+              </div>
+            </div>
+            <ul class="na-table d-table w-100 text-muted">
+              <li class="d-table-row border-top border-bottom">
+                <div class="d-table-cell px-3 py-2">
+                  <div class="d-flex my-1">
+                    <div class="px-0"><i class="fa fa-link css-tooltip" data-tooltip="제휴사링크로 전환될 수 있습니다"aria-hidden="true"></i></div>
+                    <div class="pl-3 flex-grow-1 text-break-all">
+                      <a href="https://coolenjoy.net/bbs/link2.php?bo_table=jirum&amp;wr_id=3531821&amp;no=1" target="_blank" >
+                        https://ozip.me/kzNkDEI <span class="count-plus orangered">2</span>
+                        <span class="sr-only">회 연결</span>
+                      </a>
+                    </div>
+                  </div>
+                </div>
+              </li>
+              <li class="d-none d-table-row border-top border-bottom">
+                <i class="fa-solid fa-computer"></i>
+                <b>CPU:</b> <a href="https://evil.example.com/signature">시그니처 링크</a>
+              </li>
+            </ul>
+          </section>
+          <section id="bo_vc">
+            <article id="c_1"><a href="https://evil.example.com/from-a-comment">댓글 속 링크</a></article>
+          </section>
+        </article>
+        </body></html>
+        """
+        let parser = CoolenjoyParser()
+        let post = Post.fixture(
+            id: "coolenjoy-jirum-3531821",
+            site: .coolenjoy,
+            boardID: "coolenjoy-jirum",
+            url: URL(string: "https://coolenjoy.net/bbs/jirum/3531821")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+
+        // 1) 관련링크가 dealLink 1건으로 추출 — href 는 사이트의 link2.php
+        //    리다이렉트(제휴 전환 + 연결 카운트)를 그대로 보존.
+        let deals = detail.blocks.dealLinks
+        XCTAssertEqual(deals.count, 1, "i.fa-link 행의 앵커만 dealLink 로 emit (시그니처/댓글 링크 제외)")
+        XCTAssertEqual(deals.first?.0.absoluteString,
+                       "https://coolenjoy.net/bbs/link2.php?bo_table=jirum&wr_id=3531821&no=1")
+        XCTAssertEqual(deals.first?.1, "https://ozip.me/kzNkDEI",
+                       "라벨은 연결 횟수 배지(count-plus)/스크린리더 문구(sr-only)를 걷어낸 목적지 URL")
+        XCTAssertFalse(deals.contains { $0.0.absoluteString.contains("evil.example.com") },
+                       "시그니처·댓글 앵커가 구매링크 배너로 새면 안 됨")
+
+        // 2) 소스 순서(본문 아래)와 무관하게 본문 위로 prepend — Clien/Ppomppu
+        //    구매링크 배너와 같은 자리.
+        if case .dealLink = detail.blocks.first?.kind {} else {
+            XCTFail("dealLink 가 첫 블록이어야 함: \(String(describing: detail.blocks.first?.kind))")
+        }
+
+        // 3) 본문 텍스트는 그대로
+        XCTAssertTrue(detail.blocks.plainText.contains("31,800원"))
+    }
+
     func testCoolenjoyBodyDropsVideoAndIframeLegacy() throws {
         // 옛 CoolenjoyParser 는 `<video>`/`<iframe>` 케이스가 없어 본문에
         // 표시 안 함 (default recurse → 자식 없음 → 빈 output). walker

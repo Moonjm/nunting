@@ -189,7 +189,12 @@ public struct CoolenjoyParser: BoardParser {
         // <video>/<iframe> 케이스가 없어 본문에 표시 안 함. legacy parity 유지.
         rules.mediaTags = ["img"]
         rules.skipTags.formUnion(["video", "iframe"])
-        let blocks = try ParserBlockWalker(parser: self, rules: rules).walk(contentEl)
+        let body = try ParserBlockWalker(parser: self, rules: rules).walk(contentEl)
+        // 관련링크는 소스 순서상 본문 아래지만 본문 위에 prepend 한다 —
+        // 지름 글의 핵심 affordance 라 이미지 여러 장을 스크롤해 내려가야
+        // 만나는 위치는 쓸모가 떨어진다. Clien/Ppomppu 구매링크 배너와도
+        // 같은 자리가 된다.
+        let blocks = (try relatedDealLinks(from: article)) + body
 
         let fullDateText = try article.select("time").first()?.text()
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -203,6 +208,29 @@ public struct CoolenjoyParser: BoardParser {
             source: nil,
             comments: []
         )
+    }
+
+    /// 지름 게시판 "관련링크"(구매링크) 앵커를 `.dealLink` 블록으로 추출.
+    /// 이 블록은 본문(`div#bo_v_con` > `div.view-content`) *바깥*, 같은
+    /// `section#bo_v_atc` 안 형제 `ul.na-table` 에 산다 — 본문 walker 는
+    /// view-content 만 훑으므로 따로 뽑지 않으면 링크가 통째로 사라진다
+    /// (2026-07-29 실측: jirum 최근 글 6/6 동일 마크업).
+    ///
+    /// 같은 `ul` 안에 작성자 시그니처 행(`i.fa-computer`, 견적 링크가 박히기도
+    /// 한다)도 살기 때문에 링크 아이콘(`i.fa-link`)을 가진 행으로 좁힌다.
+    /// href 는 사이트의 `link2.php` 리다이렉트를 그대로 보존 — 302 로 실제
+    /// 목적지에 도달하면서 제휴 전환/연결 카운트가 유지된다. 라벨은 앵커
+    /// 텍스트에서 연결 횟수 배지(`span.count-plus`)와 스크린리더 문구
+    /// (`span.sr-only`)를 걷어낸 목적지 URL. 본문 바깥이라 Ppomppu 처럼
+    /// `shouldEmitAnchor` 로 중복을 막을 필요는 없다.
+    nonisolated private func relatedDealLinks(from article: Element) throws -> [ContentBlock] {
+        let anchors = try article.select("section#bo_v_atc ul.na-table li:has(i.fa-link) a[href]").array()
+        return try anchors.compactMap { el -> ContentBlock? in
+            let copy = el.copy() as? Element ?? el
+            try copy.select("span.count-plus, span.sr-only").remove()
+            guard let resolved = try anchor(from: copy) else { return nil }
+            return .dealLink(resolved.url, label: resolved.label)
+        }
     }
 
     nonisolated private func resolvePostURL(titleEl: Element, row: Element) throws -> URL? {
