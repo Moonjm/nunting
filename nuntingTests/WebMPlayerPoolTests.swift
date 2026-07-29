@@ -9,8 +9,10 @@ final class WebMPlayerPoolTests: XCTestCase {
     private final class StubHolder: WebMPlayerPool.Leaseholder {
         let name: String
         private(set) var recreateCalls = 0
+        private(set) var evictCalls = 0
         init(_ name: String) { self.name = name }
         func tryRecreateWebView() { recreateCalls += 1 }
+        func releaseWebViewForPoolEviction() { evictCalls += 1 }
     }
 
     private var pool: WebMPlayerPool!
@@ -137,5 +139,75 @@ final class WebMPlayerPoolTests: XCTestCase {
         // c would succeed (free slot).
         XCTAssertTrue(pool.acquire(c))
         XCTAssertEqual(pool.leaseCount, 2)
+    }
+
+    // MARK: - 가시성 기반 lease (eager 스택 대응)
+
+    func testOffScreenLeaseIsEvictedForANewcomer() {
+        // eager 스택에서는 화면 밖 행도 계속 마운트돼 있다 — 슬롯이 도는
+        // 유일한 길이 "화면 밖 lease 회수" 다. 이게 없으면 webm 이 3개
+        // 이상인 글에서 셋째부터 영원히 포스터만 뜬다.
+        let a = StubHolder("a")
+        let b = StubHolder("b")
+        let c = StubHolder("c")
+        _ = pool.acquire(a)
+        _ = pool.acquire(b)
+        pool.notifyPaused(a)                 // a 가 화면 밖으로
+
+        XCTAssertTrue(pool.acquire(c), "화면 밖 a 를 회수하고 c 에게 슬롯을 준다")
+        XCTAssertEqual(a.evictCalls, 1, "a 는 WKWebView 를 내려놔야 함")
+        XCTAssertEqual(pool.leaseCount, 2)
+        XCTAssertEqual(pool.waiterCount, 0)
+    }
+
+    func testOnScreenLeasesAreNeverEvicted() {
+        let a = StubHolder("a")
+        let b = StubHolder("b")
+        let c = StubHolder("c")
+        _ = pool.acquire(a)
+        _ = pool.acquire(b)
+
+        XCTAssertFalse(pool.acquire(c), "둘 다 화면 안이면 회수 대상이 없다")
+        XCTAssertEqual(a.evictCalls, 0)
+        XCTAssertEqual(b.evictCalls, 0)
+        XCTAssertEqual(pool.waiterCount, 1)
+    }
+
+    func testPauseHandsSlotToWaitingOnScreenView() {
+        let a = StubHolder("a")
+        let b = StubHolder("b")
+        let c = StubHolder("c")
+        _ = pool.acquire(a)
+        _ = pool.acquire(b)
+        _ = pool.acquire(c)                  // 대기열
+        XCTAssertEqual(c.recreateCalls, 0)
+
+        pool.notifyPaused(b)                 // b 가 화면 밖으로
+        XCTAssertEqual(c.recreateCalls, 1, "대기 중이던 화면 안 뷰가 승격된다")
+    }
+
+    func testResumeMakesLeaseNonEvictable() {
+        // 뷰포트 가장자리에서 잠깐 벗어났다 돌아온 webm 이, 뒤이어 들어온
+        // 다른 webm 에게 슬롯을 뺏겨 화면 한가운데서 꺼지면 안 된다.
+        let a = StubHolder("a")
+        let b = StubHolder("b")
+        let c = StubHolder("c")
+        _ = pool.acquire(a)
+        _ = pool.acquire(b)
+        pool.notifyPaused(a)
+        pool.notifyResumed(a)                // 다시 화면 안
+
+        XCTAssertEqual(pool.pausedLeaseCount, 0)
+        XCTAssertFalse(pool.acquire(c), "회수 가능한 lease 가 없다")
+        XCTAssertEqual(a.evictCalls, 0)
+    }
+
+    func testResumeOnNonLeaseHolderIsNoOp() {
+        // 이미 회수당한 뒤(webView 없음) 들어오는 resume 은 무시돼야 한다 —
+        // 실제 경로에선 그때 tryRecreateWebView 로 재획득한다.
+        let a = StubHolder("a")
+        pool.notifyResumed(a)
+        XCTAssertEqual(pool.leaseCount, 0)
+        XCTAssertEqual(pool.waiterCount, 0)
     }
 }
