@@ -72,23 +72,18 @@ struct WebmInlineWebView: UIViewRepresentable {
     func makeUIView(context: Context) -> WebmContainerView {
         let container = WebmContainerView()
         context.coordinator.container = container
-        // Try to acquire a pool slot on initial mount. If denied, the
-        // container stays empty; the pool will call back via
-        // `tryRecreateWebView()` when a slot frees.
-        if WebMPlayerPool.shared.acquire(context.coordinator) {
-            context.coordinator.attachWebView()
-        }
+        // No pool acquire here: the host stacks are eager, so mounting
+        // is not evidence that this webm is on-screen. `updateUIView`
+        // runs immediately after with the real `isPlaying` and drives
+        // the lease from viewport visibility instead. Acquiring at mount
+        // let the first two webm rows of a post hold both slots for the
+        // whole detail lifetime — every later webm stayed poster-only.
         return container
     }
 
     func updateUIView(_ container: WebmContainerView, context: Context) {
         context.coordinator.onAspectKnown = onAspectKnown
-        context.coordinator.desiredPlaying = isPlaying
-        // If we hold a lease, propagate playback state. If not, nothing
-        // to do — the container has no webview to drive.
-        if let webView = container.webView {
-            context.coordinator.applyPlaybackState(to: webView)
-        }
+        context.coordinator.setPlaying(isPlaying)
     }
 
     static func dismantleUIView(_ container: WebmContainerView, coordinator: Coordinator) {
@@ -201,6 +196,44 @@ struct WebmInlineWebView: UIViewRepresentable {
             // Reset `hasLoaded` — a recreated WebView starts fresh, and
             // any previously-cached playback intent will re-apply on
             // didFinish below.
+            hasLoaded = false
+        }
+
+        /// Viewport-visibility driver, mirroring
+        /// `InlineAutoplayUIView.setPlaying`. The lease follows what the
+        /// user can see, not the view's lifetime:
+        ///   * visible, no webview → try to acquire (poster-only + queued
+        ///     as waiter if every slot is busy on-screen).
+        ///   * visible, webview alive → tell the pool we're back so the
+        ///     slot stops being eviction-eligible.
+        ///   * off-screen, webview alive → keep it warm but mark the slot
+        ///     eviction-eligible for anyone who needs it.
+        ///   * off-screen, no webview → drop out of the waiter queue.
+        func setPlaying(_ playing: Bool) {
+            desiredPlaying = playing
+            if playing {
+                if container?.webView == nil {
+                    tryRecreateWebView()
+                } else {
+                    WebMPlayerPool.shared.notifyResumed(self)
+                }
+            } else {
+                if container?.webView == nil {
+                    WebMPlayerPool.shared.release(self)
+                } else {
+                    WebMPlayerPool.shared.notifyPaused(self)
+                }
+            }
+            if let webView = container?.webView {
+                applyPlaybackState(to: webView)
+            }
+        }
+
+        /// `WebMPlayerPool.Leaseholder` — the pool pulled this (off-screen)
+        /// lease for a visible view. Drop the WKWebView; `setPlaying(true)`
+        /// on the next visible transition re-acquires and reloads.
+        func releaseWebViewForPoolEviction() {
+            container?.detach()
             hasLoaded = false
         }
 

@@ -14,15 +14,25 @@ import UIKit
 ///
 /// 1. Refresh in place if the requesting view already holds a lease.
 /// 2. Free slot available → grant.
-/// 3. At cap → deny, queue as waiter. When some lease is released,
-///    the oldest waiter is promoted via `tryRecreateWebView()`.
+/// 3. At cap with an off-screen (paused) lease → evict the oldest paused
+///    one and grant.
+/// 4. At cap with every lease on-screen → deny, queue as waiter. When a
+///    lease is released or pauses, the oldest waiter is promoted via
+///    `tryRecreateWebView()`.
 ///
-/// Difference from `VideoPlayerPool`: WebM has no notion of "paused but
-/// still warm" — the AVPlayer pool can evict paused leases preferentially
-/// because pausing a player is cheap; tearing down a WKWebView and
-/// re-creating one later costs a full WebContent process spin-up (~200 ms
-/// + 30 MB cold). So this pool stays strictly cap-and-wait: late views
-/// see poster only until an earlier view releases.
+/// Rule 3 exists because the host stacks are **eager** (article body and
+/// comment list both materialise every row up-front, for scroll-position
+/// stability). A lease tied to view lifetime therefore never comes back:
+/// the first two webm views hold both slots for as long as the detail is
+/// open and every later webm stays poster-only forever. Tying the lease
+/// to viewport visibility instead is what makes the cap work under eager
+/// layout — the same model `VideoPlayerPool` already uses for AVPlayer.
+///
+/// The WebM-specific cost is that recreating a WKWebView is a full
+/// WebContent process spin-up (~200 ms + 30 MB cold) and playback
+/// restarts from zero, so eviction is *only* used to satisfy real
+/// contention: a paused lease is kept warm as long as nobody else needs
+/// the slot.
 ///
 /// `max = 2` (vs AVPlayer's 3) — WKWebView's per-instance memory weight
 /// is meaningfully higher, and the typical "screen with one webm plus
@@ -51,10 +61,19 @@ final class WebMPlayerPool {
         /// during this method; the pool granted the slot speculatively
         /// and counts on the immediate re-attempt to settle bookkeeping.
         func tryRecreateWebView()
+        /// The pool pulled this holder's (paused) lease to make room for
+        /// another view. The holder should tear its WKWebView down; it
+        /// re-acquires on its next visible transition.
+        func releaseWebViewForPoolEviction()
     }
 
     private struct Lease {
         weak var holder: Leaseholder?
+        /// `true` once the holder reported going off-screen
+        /// (`notifyPaused`). Only paused leases are eviction-eligible, so
+        /// a webm the user is actually looking at is never pulled out
+        /// from under them.
+        var isPaused: Bool
     }
 
     private struct Waiter {
@@ -75,27 +94,58 @@ final class WebMPlayerPool {
     func acquire(_ holder: Leaseholder) -> Bool {
         compactDeadRefs()
 
-        // Already in pool: refresh position to back.
+        // Already in pool: refresh position to back, clear paused flag.
         if let i = leases.firstIndex(where: { $0.holder === holder }) {
             leases.remove(at: i)
-            leases.append(Lease(holder: holder))
+            leases.append(Lease(holder: holder, isPaused: false))
             removeFromWaiters(holder)
             return true
         }
 
         // Free slot.
         if leases.count < Self.maxConcurrent {
-            leases.append(Lease(holder: holder))
+            leases.append(Lease(holder: holder, isPaused: false))
             removeFromWaiters(holder)
             return true
         }
 
-        // At cap. Queue as waiter (idempotent — the same holder asking
-        // twice stays at its current waiter position).
+        // At cap. Evict the oldest off-screen lease if there is one — its
+        // WKWebView isn't showing anything the user can see, and under
+        // eager layout that is the only way a slot ever frees up.
+        if let pausedIdx = leases.firstIndex(where: { $0.isPaused }) {
+            let evicted = leases.remove(at: pausedIdx)
+            evicted.holder?.releaseWebViewForPoolEviction()
+            leases.append(Lease(holder: holder, isPaused: false))
+            removeFromWaiters(holder)
+            return true
+        }
+
+        // Every lease is on-screen. Queue as waiter (idempotent — the same
+        // holder asking twice stays at its current waiter position).
         if !waiters.contains(where: { $0.holder === holder }) {
             waiters.append(Waiter(holder: holder))
         }
         return false
+    }
+
+    /// Holder went off-screen but keeps its WKWebView warm. Marks the
+    /// slot eviction-eligible and hands it to a waiting on-screen view if
+    /// one is queued — the whole point of the visibility-tied lease.
+    func notifyPaused(_ holder: Leaseholder) {
+        if let i = leases.firstIndex(where: { $0.holder === holder }) {
+            leases[i].isPaused = true
+        }
+        promoteWaiterIfPossible()
+    }
+
+    /// Holder came back on-screen while still holding its lease. Clears
+    /// the paused flag and refreshes recency so a still-visible webm
+    /// can't be evicted by a later acquire — mirrors
+    /// `VideoPlayerPool.notifyResumed`.
+    func notifyResumed(_ holder: Leaseholder) {
+        guard let i = leases.firstIndex(where: { $0.holder === holder }) else { return }
+        leases.remove(at: i)
+        leases.append(Lease(holder: holder, isPaused: false))
     }
 
     /// Full removal from both lease and waiter lists. Used by view
@@ -109,7 +159,12 @@ final class WebMPlayerPool {
 
     private func promoteWaiterIfPossible() {
         compactDeadRefs()
-        guard !waiters.isEmpty, leases.count < Self.maxConcurrent else { return }
+        guard !waiters.isEmpty else { return }
+        // Grant only when the promoted holder's `acquire` will actually
+        // succeed: a free slot, or a paused lease it can evict.
+        let canGrant = leases.count < Self.maxConcurrent
+            || leases.contains(where: { $0.isPaused })
+        guard canGrant else { return }
         let waiter = waiters.removeFirst()
         guard let holder = waiter.holder else {
             // Stale waiter; re-try the next one to keep draining.
@@ -135,6 +190,7 @@ final class WebMPlayerPool {
     #if DEBUG
     var leaseCount: Int { leases.count }
     var waiterCount: Int { waiters.count }
+    var pausedLeaseCount: Int { leases.lazy.filter { $0.isPaused }.count }
     func resetForTesting() {
         leases.removeAll()
         waiters.removeAll()
