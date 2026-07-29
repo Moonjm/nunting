@@ -20,13 +20,23 @@ struct PostDetailCommentsSection: View {
                     .foregroundStyle(.secondary)
             }
 
-            // LazyVStack so off-screen comments don't kick off markdown
-            // parses / image fetches / AVPlayer setup at the same time
-            // the user is trying to scroll the top of a long thread.
-            // Back-drag is a SwiftUI `.offset(x:)` transform rather than
-            // a SwiftUI layout op, so contentSize churn as new rows
-            // materialise doesn't bleed into the drag position either.
-            LazyVStack(alignment: .leading, spacing: 0) {
+            // Eager VStack (not LazyVStack) — 본문 블록(PostDetailView
+            // articleContent)과 같은 이유다. LazyVStack 은 뷰포트를 벗어난
+            // 댓글 행을 derealize 했다가 되돌릴 때 행 높이를 정확히 복원하지
+            // 못해, 스크롤 도중 contentSize 가 수십~수백 pt 씩 오르내렸다
+            // (계측: 3377↔3568). 그 순간 스크롤 오프셋이 뒤로 끌려가
+            // "내려가다 튕겨 올라오는" 증상이 된다. 영상 첨부 댓글(200pt
+            // 슬롯)이 섞이면 진폭이 커져 사실상 스크롤이 안 내려간다.
+            //
+            // eager 로 바뀌며 늘어나는 비용: 행 측정 + 댓글마다의 UITextView,
+            // 그리고 스티커 이미지 fetch 다. AVPlayer 는 여전히 뷰포트 게이트
+            // (InlineVideoPlayer 의 onScrollVisibilityChange + VideoPlayerPool
+            // 3슬롯 상한)가 막아 화면 밖 영상은 만들어지지 않지만, 댓글 스티커
+            // NetworkImage 는 `visibilityGated: false`(아이콘/스티커 정책)라
+            // 화면 밖 것도 바로 받는다 — 썸네일 크기(≤280pt)에 다운로더가
+            // 동시 4개로 묶여 있어 수용 가능한 수준으로 본다. 댓글 수백 개
+            // 스레드에서 문제가 되면 그때 스티커만 게이트를 켜는 게 다음 수.
+            VStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(comments.enumerated()), id: \.element.id) { index, comment in
                     PostDetailCommentRow(
                         comment: comment,
