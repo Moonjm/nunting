@@ -85,6 +85,9 @@ final class DetailOverlayController {
     func show(_ post: Post) {
         // Drop any pending deferred-show before scheduling a new one.
         showTask?.cancel()
+        // 백드래그 스냅샷은 정착까지 400ms 살아 있다 — 그 사이에 다음 글을
+        // 열면 지난 글의 스냅샷이 새 상세를 덮는다. 여는 쪽에서 먼저 걷는다.
+        DetailDragSnapshot.shared.releaseNow()
         if activePost?.id == post.id {
             withAnimation(.spring(response: Self.springResponse, dampingFraction: Self.springDamping)) {
                 offset = 0

@@ -70,6 +70,10 @@ final class DetailBackDrag {
                 baseline = v.translation.width
                 scrollLocked = true
                 detail.offsetBase = detail.offset
+                // 살아있는 계층 대신 스냅샷 한 장을 끌기 시작한다 — 이 아래
+                // 코드가 매 프레임 쓰는 detail.offset 이 스냅샷에만 걸린다.
+                // 캡처는 offset 을 건드리기 전에(= 화면이 아직 제자리일 때).
+                DetailDragSnapshot.shared.captureKeyWindow(currentOffset: detail.offset)
                 // 진단 계측 — 이 구간의 프레임 간격을 재서 히치가 있으면
                 // 서버로 올린다. 실체화된 댓글 행 수를 함께 실어 "댓글 많은
                 // 글에서만 버벅인다" 는 체감을 숫자로 확인/반증한다.
@@ -98,7 +102,11 @@ final class DetailBackDrag {
         baseline = 0
         scrollLocked = false
         // 손을 뗀 뒤의 스프링 복귀/닫기 슬라이드까지 재고 마무리한다.
-        if horizontal { FrameHitchRecorder.shared.endAfterSettle() }
+        // 스냅샷도 그 정착이 끝난 뒤에 걷는다(먼저 걷으면 정착 중 화면이 튄다).
+        if horizontal {
+            FrameHitchRecorder.shared.endAfterSettle()
+            DetailDragSnapshot.shared.releaseAfterSettle()
+        }
         guard horizontal, detail.activePost != nil else { return }
         let traveled = v.translation.width - base
         let velocity = v.predictedEndTranslation.width - v.translation.width
@@ -131,6 +139,8 @@ struct RootTabView: View {
     // 푸시 탭·받은알림 탭 모두 DetailOverlayController.present(url:title:) →
     // activePost 로 funnel 된다. 새 셸은 그 activePost 를 관찰해 상세를 띄운다.
     @State private var detail = DetailOverlayController.shared
+    // 백드래그 중 상세를 대신하는 스냅샷 — 있을 때만 오버레이 합성이 바뀐다.
+    @State private var dragSnapshot = DetailDragSnapshot.shared
 
     @State private var rootTabSelectionState = RootTabSelectionState()
     // 모음의 현재 보드 — 페이저/헤더/검색이 공유한다.
@@ -292,22 +302,39 @@ struct RootTabView: View {
             // 포함)를 덮는다. show() 가 우측에서 슬라이드 인, 백드래그가 offset 을
             // 추적해 우→ 스와이프로 닫는다. 인앱 글 탭·푸시·받은알림 모두 이 경로.
             if let post = detail.activePost {
-                NavigationStack {
-                    PostDetailScreen(
-                        post: post,
-                        readStore: readStore,
-                        cache: detailCache,
-                        tapGate: backDrag.tapGate,
-                        isOverlayVisible: detail.isOverlayVisible,
-                        isScrollingBlocked: backDrag.scrollLocked || detail.animating,
-                        onBack: { backDrag.dismiss() }
-                    )
+                // 백드래그 중에는 스냅샷 한 장만 움직인다 — 살아있는 계층은
+                // 제자리에 멈춘 채 그려지지 않는다(`DetailDragSnapshot` 참고).
+                // 언마운트가 아니라 opacity 0 인 이유: keep-alive 로 스크롤
+                // 위치·이미지·영상 상태를 유지해야 하고, 댓글 행이 사라졌다
+                // 되살아나면 #160 의 높이 복원 실패가 재발한다.
+                let snapshot = dragSnapshot.view
+                ZStack {
+                    NavigationStack {
+                        PostDetailScreen(
+                            post: post,
+                            readStore: readStore,
+                            cache: detailCache,
+                            tapGate: backDrag.tapGate,
+                            isOverlayVisible: detail.isOverlayVisible,
+                            isScrollingBlocked: backDrag.scrollLocked || detail.animating,
+                            onBack: { backDrag.dismiss() }
+                        )
+                    }
+                    .background(Color(.systemBackground).ignoresSafeArea())
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .id(post.id)
+                    .offset(x: snapshot == nil ? detail.offset : 0)
+                    .opacity(snapshot == nil ? 1 : 0)
+                    .allowsHitTesting(detail.allowsHitTesting)
+
+                    if let snapshot {
+                        DetailDragSnapshotView(snapshot: snapshot)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .ignoresSafeArea()
+                            .offset(x: detail.offset)
+                            .allowsHitTesting(false)
+                    }
                 }
-                .background(Color(.systemBackground).ignoresSafeArea())
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .id(post.id)
-                .offset(x: detail.offset)
-                .allowsHitTesting(detail.allowsHitTesting)
                 .zIndex(10)
             }
         }
