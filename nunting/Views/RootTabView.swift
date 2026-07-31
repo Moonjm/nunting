@@ -81,6 +81,7 @@ final class DetailBackDrag {
                     label: "backdrag",
                     context: CommentRenderProbe.shared.summary
                         + " · " + DetailDragSnapshot.shared.lastCaptureSummary
+                        + " · hide:" + DetailDragSnapshot.hidingVariant
                 )
             case .horizontalLeft, .vertical:
                 // 좌측 가로/세로는 닫기와 무관 — 스크롤/탭을 막지 않게 양보.
@@ -324,7 +325,19 @@ struct RootTabView: View {
                     .background(Color(.systemBackground).ignoresSafeArea())
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .id(post.id)
-                    .offset(x: snapshot == nil ? detail.offset : 0)
+                    // 드래그 중에는 화면 밖(왼쪽)에 세워 둔다. 투명도만 0 으로
+                    // 두던 종전 방식은 기기 계측에서 부족했다 — 드랍의 83%가
+                    // 스냅샷을 걷기 *전*(드래그 중)에 났고, 스냅샷 한 장만
+                    // 움직이는데도 비용이 여전히 댓글 행 수에 비례했다
+                    // (30행 8드랍 → 147행 24~27드랍). 투명한 계층도 렌더 트리에
+                    // 남아 있어, 스냅샷이 비켜 준 영역을 다시 그릴 때마다 그
+                    // 아래 1,700장 규모의 레이어를 훑는 것으로 보인다. 창 밖으로
+                    // 내보내면 그 영역에서 잘려 나간다.
+                    //
+                    // 조건부 분기(`if`)가 아니라 값만 바꾸는 이유: 분기는 뷰
+                    // identity 를 바꿔 상세를 통째로 헐었다 다시 짓게 만든다
+                    // (keep-alive 파기 + #160 재발).
+                    .offset(x: snapshot == nil ? detail.offset : -detail.containerWidth)
                     .opacity(snapshot == nil ? 1 : 0)
                     .allowsHitTesting(detail.allowsHitTesting)
 

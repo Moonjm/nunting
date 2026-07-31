@@ -23,6 +23,10 @@ final class DetailDragSnapshot {
     /// 계층이 직접 움직인다.
     private(set) var view: UIView?
 
+    /// 드래그 중 살아있는 계층을 감추는 방식 — 히치 리포트에 실어 어느 빌드가
+    /// 낸 수치인지 로그에서 구분한다(계측 라운드마다 방식이 바뀌므로).
+    static let hidingVariant = "offscreen"
+
     /// 스프링(0.32s) + 애니메이션 락(350ms)이 끝나고도 남는 여유. 이보다 일찍
     /// 스냅샷을 걷으면 정착 중인 화면이 살아있는 계층으로 갈아끼워지며 튄다.
     static let settleWindow: Duration = .milliseconds(400)
