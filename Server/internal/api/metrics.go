@@ -19,8 +19,11 @@ import (
 // 작은 JSON) — 사이트 마크업 개편을 기기 밖에서 관측하기 위한 채널.
 // hang = iOS HangWatchdog 의 메인스레드 hang 리포트({ts, durationMs, label, samples[]})
 // — MetricKit diagnostic 이 Xcode 설치 빌드에 전달되지 않아 만든 직접 수집 채널.
+// hitch = iOS FrameHitchRecorder 의 인터랙션 구간 프레임 히치({label, context,
+// frameCount, droppedFrames, worstFrameMs, ...}) — hang 임계(1s) 아래로 새는
+// "몇 프레임 빠짐" 을 보기 위한 채널. 히치가 있는 구간만 올라온다.
 var validMetricKinds = map[string]bool{
-	"metric": true, "diagnostic": true, "parser": true, "hang": true,
+	"metric": true, "diagnostic": true, "parser": true, "hang": true, "hitch": true,
 }
 
 // POST /me/metrics?kind=metric|diagnostic|parser
@@ -155,6 +158,20 @@ type hangPayloadJSON struct {
 	} `json:"samples"`
 }
 
+// hitchPayloadJSON 은 iOS FrameHitchRecorder 리포트(kind=hitch). 키는 Swift
+// FrameHitchReportDTO 와 합의.
+type hitchPayloadJSON struct {
+	Label           string    `json:"label"`
+	Context         string    `json:"context"`
+	DurationMs      int       `json:"durationMs"`
+	FrameCount      int       `json:"frameCount"`
+	DroppedFrames   int       `json:"droppedFrames"`
+	WorstFrameMs    float64   `json:"worstFrameMs"`
+	ExpectedFrameMs float64   `json:"expectedFrameMs"`
+	WorstFrames     []float64 `json:"worstFrames"`
+	SessionDrags    int       `json:"sessionDrags"`
+}
+
 // metricsSummary 상단 강조 박스 — 전체 payload 누적.
 type metricsSummary struct {
 	ForegroundOOM  int // foreground memory limit (앱 쓰는 중 OOM kill — 가장 흔한 "그냥 꺼짐")
@@ -166,6 +183,8 @@ type metricsSummary struct {
 	NormalExit     int
 	Crashes        int
 	Hangs          int
+	Hitches        int
+	DroppedFrames  int
 }
 
 type metricsRow struct {
@@ -261,6 +280,8 @@ func buildMetricsPage(rows []db.MetricPayloadRow) metricsPage {
 			vr.Summary = summarizeDiagnostic(row.Payload, &page.Summary)
 		case "hang":
 			vr.Summary = summarizeHang(row.Payload, &page.Summary)
+		case "hitch":
+			vr.Summary = summarizeHitch(row.Payload, &page.Summary)
 		}
 		if vr.Summary == "" {
 			vr.Summary = "—"
@@ -342,6 +363,36 @@ func summarizeHang(payload string, sum *metricsSummary) string {
 			s += " · top: " + top
 		}
 		s += ")"
+	}
+	return s
+}
+
+// summarizeHitch FrameHitchRecorder 리포트 한 건을 "hitch 6 dropped / 42 frames ·
+// worst 68ms (기대 8ms) @ backdrag · comments 210/400 (13번째)" 형태로 요약한다.
+// 원인 특정에 쓰는 축은 두 개다: worst/expected 비율(얼마나 크게 걸렸나)과
+// context(무엇이 화면에 실체화돼 있었나).
+func summarizeHitch(payload string, sum *metricsSummary) string {
+	var h hitchPayloadJSON
+	if err := json.Unmarshal([]byte(payload), &h); err != nil {
+		return ""
+	}
+	sum.Hitches++
+	sum.DroppedFrames += h.DroppedFrames
+
+	s := "hitch " + strconv.Itoa(h.DroppedFrames) + " dropped / " +
+		strconv.Itoa(h.FrameCount) + " frames"
+	s += " · worst " + strconv.FormatFloat(h.WorstFrameMs, 'f', 0, 64) + "ms"
+	if h.ExpectedFrameMs > 0 {
+		s += " (기대 " + strconv.FormatFloat(h.ExpectedFrameMs, 'f', 0, 64) + "ms)"
+	}
+	if h.Label != "" {
+		s += " @ " + h.Label
+	}
+	if h.Context != "" {
+		s += " · " + h.Context
+	}
+	if h.SessionDrags > 0 {
+		s += " (" + strconv.Itoa(h.SessionDrags) + "번째)"
 	}
 	return s
 }
@@ -434,6 +485,8 @@ var metricsTemplate = template.Must(template.New("metrics").Parse(`<!doctype htm
  <div class="card{{if .Summary.BadAccess}} hot{{end}}"><div class="n">{{.Summary.BadAccess}}</div><div class="l">bad access</div></div>
  <div class="card"><div class="n">{{.Summary.Abnormal}}</div><div class="l">abnormal</div></div>
  <div class="card"><div class="n">{{.Summary.Hangs}}</div><div class="l">hangs</div></div>
+ <div class="card{{if .Summary.Hitches}} hot{{end}}"><div class="n">{{.Summary.Hitches}}</div><div class="l">hitches</div></div>
+ <div class="card"><div class="n">{{.Summary.DroppedFrames}}</div><div class="l">dropped frames</div></div>
  <div class="card"><div class="n">{{.Summary.NormalExit}}</div><div class="l">normal exit</div></div>
 </div>
 {{if .Rows}}

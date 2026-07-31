@@ -70,6 +70,13 @@ final class DetailBackDrag {
                 baseline = v.translation.width
                 scrollLocked = true
                 detail.offsetBase = detail.offset
+                // 진단 계측 — 이 구간의 프레임 간격을 재서 히치가 있으면
+                // 서버로 올린다. 실체화된 댓글 행 수를 함께 실어 "댓글 많은
+                // 글에서만 버벅인다" 는 체감을 숫자로 확인/반증한다.
+                FrameHitchRecorder.shared.begin(
+                    label: "backdrag",
+                    context: CommentRenderProbe.shared.summary
+                )
             case .horizontalLeft, .vertical:
                 // 좌측 가로/세로는 닫기와 무관 — 스크롤/탭을 막지 않게 양보.
                 horizontalLock = false
@@ -90,6 +97,8 @@ final class DetailBackDrag {
         horizontalLock = nil
         baseline = 0
         scrollLocked = false
+        // 손을 뗀 뒤의 스프링 복귀/닫기 슬라이드까지 재고 마무리한다.
+        if horizontal { FrameHitchRecorder.shared.endAfterSettle() }
         guard horizontal, detail.activePost != nil else { return }
         let traveled = v.translation.width - base
         let velocity = v.predictedEndTranslation.width - v.translation.width

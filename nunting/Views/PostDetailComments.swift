@@ -129,6 +129,12 @@ struct PostDetailCommentsSection: View {
                     }
                 }
             }
+            // 진단 계측 — 실체화된 행 수를 FrameHitchRecorder 가 히치 리포트의
+            // context 로 쓴다. body 안에서 직접 쓰지 않고 onChange 로 흘리는
+            // 이유: 뷰 평가는 부작용이 없어야 한다(재평가마다 중복 실행됨).
+            .onChange(of: rendered, initial: true) { _, count in
+                CommentRenderProbe.shared.update(rendered: count, total: comments.count)
+            }
         }
     }
 
