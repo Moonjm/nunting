@@ -79,10 +79,6 @@ final class DetailBackDrag {
                 detail.offsetBase = detail.offset
                 gestureEvents = 0
                 gestureWorkSeconds = 0
-                // 살아있는 계층 대신 스냅샷 한 장을 끌기 시작한다 — 이 아래
-                // 코드가 매 프레임 쓰는 detail.offset 이 스냅샷에만 걸린다.
-                // 캡처는 offset 을 건드리기 전에(= 화면이 아직 제자리일 때).
-                DetailDragSnapshot.shared.captureKeyWindow(currentOffset: detail.offset)
                 // 진단 계측 — 이 구간의 프레임 간격을 재서 히치가 있으면
                 // 서버로 올린다. 실체화된 댓글 행 수를 함께 실어 "댓글 많은
                 // 글에서만 버벅인다" 는 체감을 숫자로 확인/반증한다.
@@ -96,8 +92,7 @@ final class DetailBackDrag {
                 FrameHitchRecorder.shared.begin(
                     label: "backdrag",
                     context: CommentRenderProbe.shared.summary
-                        + " · " + DetailDragSnapshot.shared.lastCaptureSummary
-                        + " · hide:" + DetailDragSnapshot.hidingVariant
+                        + " · hide:uikit-host"
                 )
             case .horizontalLeft, .vertical:
                 // 좌측 가로/세로는 닫기와 무관 — 스크롤/탭을 막지 않게 양보.
@@ -110,7 +105,10 @@ final class DetailBackDrag {
             let workStart = CFAbsoluteTimeGetCurrent()
             tapGate.suppress()
             let dx = v.translation.width - baseline
-            detail.offset = max(0, min(detail.containerWidth, dx))  // 우→(닫기) 방향만
+            // SwiftUI 상태가 아니라 레이어 변환을 직접 옮긴다 — 프레임마다
+            // 상태를 쓰면 그 값을 읽는 트리의 디스플레이 리스트가 통째로
+            // 다시 그려진다(계측: 글리프 재래스터화로 100~150ms 정체).
+            DetailOverlayTransform.shared.track(max(0, min(detail.containerWidth, dx)))
             gestureEvents += 1
             gestureWorkSeconds += CFAbsoluteTimeGetCurrent() - workStart
         }
@@ -129,10 +127,9 @@ final class DetailBackDrag {
                 "gesture \(gestureEvents)ev \(String(format: "%.0f", gestureWorkSeconds * 1000))ms"
             )
             FrameHitchRecorder.shared.endAfterSettle()
-            DetailDragSnapshot.shared.releaseAfterSettle()
             // 정착까지 포함해 재운다 — 스프링 구간의 정체도 같은 원인일 수 있다.
             Task { @MainActor in
-                try? await Task.sleep(for: DetailDragSnapshot.settleWindow)
+                try? await Task.sleep(for: .milliseconds(500))
                 HangWatchdog.dragProbe.pause()
             }
         }
@@ -143,7 +140,7 @@ final class DetailBackDrag {
             dismiss()
         } else {
             detail.beginAnimationLock()
-            withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) { detail.offset = 0 }
+            detail.settleBack()
         }
     }
 
@@ -152,54 +149,6 @@ final class DetailBackDrag {
     /// 인한다. 다음 글을 열면 그때 이전 오버레이가 교체·해제된다.
     func dismiss() {
         detail.hide()
-    }
-}
-
-/// 상세 오버레이의 이동 레이어. **`detail.offset` 을 읽는 유일한 곳**이다.
-///
-/// 왜 따로 뺐나: 백드래그는 손가락이 움직일 때마다 `offset` 을 쓴다. 그 값을
-/// 셸(RootTabView) 본문에서 읽으면 프레임마다 셸 전체 — 탭바·보드 목록·상세
-/// 오버레이 — 의 body 가 다시 평가된다. 반면 히스토리 버튼으로 다시 여는
-/// 경로는 `withAnimation` 안에서 offset 을 한 번만 쓰고 SwiftUI 가 내부에서
-/// 보간하므로 body 재평가가 없다. "버튼으로 열 땐 부드러운데 스와이프는
-/// 버벅인다" 는 관측이 정확히 이 차이를 가리켰다.
-///
-/// `content` 를 클로저가 아니라 **이미 만들어진 값**으로 받는 것이 핵심이다.
-/// 클로저면 이 뷰가 재평가될 때마다 상세 트리를 다시 만들게 되어 분리한
-/// 의미가 없어진다.
-private struct DetailOverlayLayer<Content: View>: View {
-    var detail: DetailOverlayController
-    let snapshot: UIView?
-    let content: Content
-
-    init(
-        detail: DetailOverlayController,
-        snapshot: UIView?,
-        @ViewBuilder content: () -> Content
-    ) {
-        self.detail = detail
-        self.snapshot = snapshot
-        self.content = content()
-    }
-
-    var body: some View {
-        ZStack {
-            content
-                // 스냅샷이 떠 있는 동안 살아있는 계층은 창 밖에 세워 둔다.
-                // 조건부 분기가 아니라 값만 바꾸는 이유: 분기는 뷰 identity 를
-                // 바꿔 상세를 헐고 다시 짓게 만든다(keep-alive 파기 + #160 재발).
-                .offset(x: snapshot == nil ? detail.offset : -detail.containerWidth)
-                .opacity(snapshot == nil ? 1 : 0)
-                .allowsHitTesting(detail.allowsHitTesting)
-
-            if let snapshot {
-                DetailDragSnapshotView(snapshot: snapshot)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .ignoresSafeArea()
-                    .offset(x: detail.offset)
-                    .allowsHitTesting(false)
-            }
-        }
     }
 }
 
@@ -216,8 +165,6 @@ struct RootTabView: View {
     // 푸시 탭·받은알림 탭 모두 DetailOverlayController.present(url:title:) →
     // activePost 로 funnel 된다. 새 셸은 그 activePost 를 관찰해 상세를 띄운다.
     @State private var detail = DetailOverlayController.shared
-    // 백드래그 중 상세를 대신하는 스냅샷 — 있을 때만 오버레이 합성이 바뀐다.
-    @State private var dragSnapshot = DetailDragSnapshot.shared
 
     @State private var rootTabSelectionState = RootTabSelectionState()
     // 모음의 현재 보드 — 페이저/헤더/검색이 공유한다.
@@ -384,7 +331,11 @@ struct RootTabView: View {
                 // 언마운트가 아니라 opacity 0 인 이유: keep-alive 로 스크롤
                 // 위치·이미지·영상 상태를 유지해야 하고, 댓글 행이 사라졌다
                 // 되살아나면 #160 의 높이 복원 실패가 재발한다.
-                DetailOverlayLayer(detail: detail, snapshot: dragSnapshot.view) {
+                // 상세는 자기 UIHostingController 안에서 산다 — 셸과 디스플레이
+                // 리스트를 분리해, 드래그가 셸의 텍스트를 다시 래스터화하지
+                // 않게 한다(`DetailOverlayHost` 참고). 위치는 SwiftUI 가 아니라
+                // `DetailOverlayTransform` 이 레이어 변환으로 소유한다.
+                DetailOverlayHost(content:
                     NavigationStack {
                         PostDetailScreen(
                             post: post,
@@ -399,7 +350,9 @@ struct RootTabView: View {
                     .background(Color(.systemBackground).ignoresSafeArea())
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .id(post.id)
-                }
+                )
+                .ignoresSafeArea()
+                .allowsHitTesting(detail.allowsHitTesting)
                 .zIndex(10)
             }
         }

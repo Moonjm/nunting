@@ -85,18 +85,17 @@ final class DetailOverlayController {
     func show(_ post: Post) {
         // Drop any pending deferred-show before scheduling a new one.
         showTask?.cancel()
-        // 백드래그 스냅샷은 정착까지 400ms 살아 있다 — 그 사이에 다음 글을
-        // 열면 지난 글의 스냅샷이 새 상세를 덮는다. 여는 쪽에서 먼저 걷는다.
-        DetailDragSnapshot.shared.releaseNow()
         if activePost?.id == post.id {
-            withAnimation(.spring(response: Self.springResponse, dampingFraction: Self.springDamping)) {
-                offset = 0
-            }
+            // 위치는 레이어 변환이 소유한다 — SwiftUI 애니메이션으로 밀면
+            // 상세 전체가 매 프레임 다시 그려진다(`DetailOverlayHost` 참고).
+            offset = 0
+            DetailOverlayTransform.shared.animate(to: 0)
             return
         }
         // Fallback to a finite off-screen offset on the very first
         // open before the GeometryReader has measured `containerWidth`.
         offset = containerWidth > 0 ? containerWidth : Self.unmeasuredContainerFallback
+        DetailOverlayTransform.shared.snap(to: offset)
         activePost = post
         showTask = Task { @MainActor [weak self] in
             // Yield once so SwiftUI observes the off-screen anchor
@@ -107,9 +106,8 @@ final class DetailOverlayController {
             // `DispatchQueue.main.async` semantic this used to use.
             await Task.yield()
             guard let self, !Task.isCancelled else { return }
-            withAnimation(.spring(response: Self.springResponse, dampingFraction: Self.springDamping)) {
-                self.offset = 0
-            }
+            self.offset = 0
+            DetailOverlayTransform.shared.animate(to: 0)
         }
     }
 
@@ -156,10 +154,20 @@ final class DetailOverlayController {
     func hide(alongsideAnimation: (() -> Void)? = nil) {
         showTask?.cancel()
         beginAnimationLock()
-        withAnimation(.spring(response: Self.springResponse, dampingFraction: Self.springDamping)) {
-            offset = containerWidth
-            alongsideAnimation?()
+        offset = containerWidth
+        DetailOverlayTransform.shared.animate(to: containerWidth)
+        if let alongsideAnimation {
+            withAnimation(.spring(response: Self.springResponse, dampingFraction: Self.springDamping)) {
+                alongsideAnimation()
+            }
         }
+    }
+
+    /// 백드래그를 놓아 제자리로 되돌리는 경로 — 닫기(`hide`)의 반대편.
+    /// 애니메이션 락은 호출부가 이미 잡은 뒤에 부른다.
+    func settleBack() {
+        offset = 0
+        DetailOverlayTransform.shared.animate(to: 0)
     }
 
     /// Hold `animating` true for slightly longer than the spring's
@@ -182,7 +190,10 @@ final class DetailOverlayController {
     func updateContainerWidth(_ newWidth: CGFloat) {
         let wasHidden = offset >= containerWidth - 0.5 && containerWidth > 0
         containerWidth = newWidth
-        if wasHidden { offset = newWidth }
+        if wasHidden {
+            offset = newWidth
+            DetailOverlayTransform.shared.snap(to: newWidth)
+        }
     }
 
     /// Pan-gesture commit predicate: did the back-drag travel far
