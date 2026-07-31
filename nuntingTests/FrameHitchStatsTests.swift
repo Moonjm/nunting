@@ -12,8 +12,15 @@ final class FrameHitchStatsTests: XCTestCase {
     /// 60Hz 기준 한 프레임(초).
     private let sixty = 1.0 / 60.0
 
+    /// 등간격 프레임 표본 — `at` 은 구간 시작 기준 누적 시각.
+    private func evenSamples(count: Int, interval: Double) -> [(at: Double, actual: Double, expected: Double)] {
+        (0..<count).map { i in
+            (at: Double(i + 1) * interval, actual: interval, expected: interval)
+        }
+    }
+
     func testSmoothRunHasNoDroppedFrames() {
-        let samples = Array(repeating: (actual: promotion, expected: promotion), count: 60)
+        let samples = evenSamples(count: 60, interval: promotion)
         let stats = FrameHitchStats.make(from: samples)
 
         XCTAssertEqual(stats.frameCount, 60)
@@ -23,16 +30,18 @@ final class FrameHitchStatsTests: XCTestCase {
 
     /// 디스플레이 링크 콜백 자체의 지터(수 % 흔들림)를 드랍으로 세면 안 된다.
     func testJitterIsNotCountedAsDropped() {
-        let samples = (0..<60).map { i in
-            (actual: promotion * (1 + Double(i % 5) * 0.06), expected: promotion)
+        var samples = evenSamples(count: 60, interval: promotion)
+        for i in samples.indices {
+            let jitter: Double = 1 + Double(i % 5) * 0.06
+            samples[i] = (at: samples[i].at, actual: promotion * jitter, expected: promotion)
         }
         XCTAssertEqual(FrameHitchStats.make(from: samples).droppedFrames, 0)
     }
 
     /// 간격이 기대의 2배면 프레임 1장이 화면에 못 나갔다.
     func testDoubledIntervalCountsAsOneDroppedFrame() {
-        var samples = Array(repeating: (actual: sixty, expected: sixty), count: 10)
-        samples[5] = (actual: sixty * 2, expected: sixty)
+        var samples = evenSamples(count: 10, interval: sixty)
+        samples[5] = (at: samples[5].at, actual: sixty * 2, expected: sixty)
 
         let stats = FrameHitchStats.make(from: samples)
         XCTAssertEqual(stats.droppedFrames, 1)
@@ -41,17 +50,17 @@ final class FrameHitchStatsTests: XCTestCase {
 
     /// 크게 걸린 한 프레임은 그만큼 여러 장을 삼킨다 — 5배면 4장.
     func testLongStallCountsEveryMissedFrame() {
-        var samples = Array(repeating: (actual: sixty, expected: sixty), count: 10)
-        samples[3] = (actual: sixty * 5, expected: sixty)
+        var samples = evenSamples(count: 10, interval: sixty)
+        samples[3] = (at: samples[3].at, actual: sixty * 5, expected: sixty)
 
         XCTAssertEqual(FrameHitchStats.make(from: samples).droppedFrames, 4)
     }
 
     /// 여러 번 걸리면 합산된다.
     func testDroppedFramesAccumulate() {
-        var samples = Array(repeating: (actual: promotion, expected: promotion), count: 30)
-        samples[5] = (actual: promotion * 3, expected: promotion)   // 2장
-        samples[20] = (actual: promotion * 2, expected: promotion)  // 1장
+        var samples = evenSamples(count: 30, interval: promotion)
+        samples[5] = (at: samples[5].at, actual: promotion * 3, expected: promotion)   // 2장
+        samples[20] = (at: samples[20].at, actual: promotion * 2, expected: promotion) // 1장
 
         XCTAssertEqual(FrameHitchStats.make(from: samples).droppedFrames, 3)
     }
@@ -60,16 +69,16 @@ final class FrameHitchStatsTests: XCTestCase {
     /// 하드코딩한 60Hz 기준으로 재면 120Hz 구간의 정상 프레임이 전부 드랍으로
     /// 잡히므로, 판정은 그 프레임이 알려준 기대값으로 해야 한다.
     func testExpectedIntervalIsPerFrameNotHardcoded() {
-        let samples = Array(repeating: (actual: sixty, expected: sixty), count: 20)
+        let samples = evenSamples(count: 20, interval: sixty)
         XCTAssertEqual(FrameHitchStats.make(from: samples).droppedFrames, 0)
     }
 
     /// 최악 프레임 목록은 내림차순 상위 N개.
     func testWorstFramesAreTopDescending() {
-        var samples = Array(repeating: (actual: sixty, expected: sixty), count: 20)
-        samples[1] = (actual: 0.100, expected: sixty)
-        samples[7] = (actual: 0.050, expected: sixty)
-        samples[9] = (actual: 0.030, expected: sixty)
+        var samples = evenSamples(count: 20, interval: sixty)
+        samples[1] = (at: samples[1].at, actual: 0.100, expected: sixty)
+        samples[7] = (at: samples[7].at, actual: 0.050, expected: sixty)
+        samples[9] = (at: samples[9].at, actual: 0.030, expected: sixty)
 
         let worst = FrameHitchStats.make(from: samples).worstFrames
         XCTAssertEqual(worst.count, FrameHitchStats.worstSampleCount)
@@ -89,10 +98,44 @@ final class FrameHitchStatsTests: XCTestCase {
         XCTAssertTrue(stats.worstFrames.isEmpty)
     }
 
+    /// 드랍을 마크 앞/뒤로 가른다 — "드래그 중"과 "그 뒤(스냅샷 해제·정착)"
+    /// 중 어디서 걸리는지가 다음 수를 가르는 유일한 축이다.
+    func testDropsSplitAroundTheMark() {
+        var samples = evenSamples(count: 40, interval: sixty)
+        samples[5] = (at: samples[5].at, actual: sixty * 3, expected: sixty)   // 마크 전 2장
+        samples[30] = (at: samples[30].at, actual: sixty * 4, expected: sixty) // 마크 후 3장
+        let markAt = samples[20].at
+
+        let stats = FrameHitchStats.make(from: samples, markAt: markAt)
+        XCTAssertEqual(stats.droppedFrames, 5)
+        XCTAssertEqual(stats.dropsBeforeMark, 2)
+        XCTAssertEqual(stats.dropsAfterMark, 3)
+    }
+
+    /// 마크가 없으면(구간이 마크 전에 끝남) 전부 앞 구간으로 센다.
+    func testWithoutMarkEverythingCountsAsBefore() {
+        var samples = evenSamples(count: 10, interval: sixty)
+        samples[4] = (at: samples[4].at, actual: sixty * 3, expected: sixty)
+
+        let stats = FrameHitchStats.make(from: samples)
+        XCTAssertEqual(stats.dropsBeforeMark, 2)
+        XCTAssertEqual(stats.dropsAfterMark, 0)
+    }
+
+    /// 최악 프레임의 시각도 함께 남긴다 — 시작 직후(캡처)인지 끝(교체)인지.
+    func testWorstFrameTimestampIsReported() {
+        var samples = evenSamples(count: 30, interval: sixty)
+        samples[25] = (at: samples[25].at, actual: 0.2, expected: sixty)
+
+        let stats = FrameHitchStats.make(from: samples)
+        XCTAssertEqual(stats.worstFrameAt, samples[25].at, accuracy: 0.001)
+    }
+
     /// 기대 간격이 0 인 표본(디스플레이 링크가 targetTimestamp 를 못 준 경우)은
     /// 나눗셈이 폭주하지 않게 건너뛴다.
     func testZeroExpectedIntervalIsIgnored() {
-        let samples = [(actual: 0.5, expected: 0.0), (actual: sixty, expected: sixty)]
+        let samples = [(at: 0.5, actual: 0.5, expected: 0.0),
+                       (at: 0.5 + sixty, actual: sixty, expected: sixty)]
         XCTAssertEqual(FrameHitchStats.make(from: samples).droppedFrames, 0)
     }
 }

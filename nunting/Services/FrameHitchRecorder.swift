@@ -13,6 +13,11 @@ nonisolated struct FrameHitchReportDTO: Encodable, Sendable {
     let expectedFrameMs: Double
     let worstFrames: [Double] // 최악 프레임 간격 상위 몇 개(ms)
     let sessionDrags: Int     // 실행 후 이 라벨로 기록한 총 횟수 — 리포트가 안 온 드래그와의 비율
+    let worstFrameAtMs: Int   // 최악 프레임이 구간 시작 몇 ms 지점이었나
+    let markLabel: String     // 구간을 둘로 가르는 지점의 이름(예: "release")
+    let markAtMs: Int         // 그 지점의 시각(구간 시작 기준). 0 이면 마크 없음
+    let dropsBeforeMark: Int
+    let dropsAfterMark: Int
 }
 
 /// 프레임 간격 표본에서 통계를 뽑는 순수 계산부.
@@ -26,6 +31,11 @@ nonisolated struct FrameHitchStats: Sendable, Equatable {
     let worstFrameMs: Double
     let expectedFrameMs: Double
     let worstFrames: [Double]
+    /// 최악 프레임이 구간 시작 기준 몇 초 지점이었나.
+    let worstFrameAt: Double
+    /// `mark` 이전/이후로 나눈 드랍 수 — 마크가 없으면 전부 before 로 센다.
+    let dropsBeforeMark: Int
+    let dropsAfterMark: Int
 
     /// 기대 간격 대비 이 배수를 넘긴 프레임만 "늦었다"고 본다. 1.5 인 이유:
     /// 정확히 한 프레임을 놓치면 간격이 2배가 되고, 측정 잡음(디스플레이 링크
@@ -36,23 +46,36 @@ nonisolated struct FrameHitchStats: Sendable, Equatable {
     /// 상위 몇 개의 최악 간격을 리포트에 싣는지.
     static let worstSampleCount = 5
 
-    /// `samples` 는 (실제 간격, 그 프레임의 기대 간격) 쌍의 초 단위 값.
-    static func make(from samples: [(actual: Double, expected: Double)]) -> FrameHitchStats {
+    /// `samples` 는 (구간 시작 기준 시각, 실제 간격, 기대 간격) 의 초 단위 값.
+    /// `markAt` 은 구간을 둘로 가르는 시각(예: 스냅샷을 걷은 순간) — nil 이면
+    /// 전부 이전 구간으로 센다.
+    static func make(
+        from samples: [(at: Double, actual: Double, expected: Double)],
+        markAt: Double? = nil
+    ) -> FrameHitchStats {
         guard !samples.isEmpty else {
             return FrameHitchStats(
                 frameCount: 0, droppedFrames: 0, worstFrameMs: 0,
-                expectedFrameMs: 0, worstFrames: []
+                expectedFrameMs: 0, worstFrames: [],
+                worstFrameAt: 0, dropsBeforeMark: 0, dropsAfterMark: 0
             )
         }
 
         var dropped = 0
+        var before = 0
+        var after = 0
         for sample in samples where sample.expected > 0 {
             let ratio = sample.actual / sample.expected
             guard ratio > lateThreshold else { continue }
             // 간격이 기대의 3.2배면 그 사이 프레임 2장이 화면에 못 나갔다.
-            dropped += max(0, Int(ratio.rounded()) - 1)
+            let missed = max(0, Int(ratio.rounded()) - 1)
+            dropped += missed
+            // 늦은 프레임의 지연은 그 프레임이 *끝난* 시점까지 쌓인 것이므로,
+            // 구간 판정도 끝 시각(`at`)으로 한다.
+            if let markAt, sample.at > markAt { after += missed } else { before += missed }
         }
 
+        let worst = samples.max { $0.actual < $1.actual }
         let intervalsMs = samples.map { $0.actual * 1000 }.sorted(by: >)
         let expected = samples.map(\.expected).reduce(0, +) / Double(samples.count) * 1000
 
@@ -61,7 +84,10 @@ nonisolated struct FrameHitchStats: Sendable, Equatable {
             droppedFrames: dropped,
             worstFrameMs: intervalsMs.first ?? 0,
             expectedFrameMs: expected,
-            worstFrames: Array(intervalsMs.prefix(worstSampleCount))
+            worstFrames: Array(intervalsMs.prefix(worstSampleCount)),
+            worstFrameAt: worst?.at ?? 0,
+            dropsBeforeMark: before,
+            dropsAfterMark: after
         )
     }
 }
@@ -89,7 +115,9 @@ final class FrameHitchRecorder: NSObject {
     static let settleWindow: Duration = .milliseconds(500)
 
     private var link: CADisplayLink?
-    private var samples: [(actual: Double, expected: Double)] = []
+    private var samples: [(at: Double, actual: Double, expected: Double)] = []
+    private var markLabel = ""
+    private var markAt: Double?
     private var lastTimestamp: CFTimeInterval = 0
     private var startedAt: CFTimeInterval = 0
     private var label = ""
@@ -123,6 +151,8 @@ final class FrameHitchRecorder: NSObject {
         self.context = context
         samples.removeAll(keepingCapacity: true)
         lastTimestamp = 0
+        markLabel = ""
+        markAt = nil
         startedAt = CACurrentMediaTime()
         dragCounts[label, default: 0] += 1
 
@@ -143,6 +173,14 @@ final class FrameHitchRecorder: NSObject {
         }
     }
 
+    /// 구간 안의 특정 사건 시각을 기록한다 — 드랍 프레임을 그 앞/뒤로 갈라
+    /// "드래그 중"과 "그 뒤(스냅샷 해제·정착)" 중 어디서 걸리는지 본다.
+    func mark(_ label: String) {
+        guard link != nil, markAt == nil else { return }
+        markLabel = label
+        markAt = CACurrentMediaTime() - startedAt
+    }
+
     /// 즉시 마무리(구간이 취소된 경우 등).
     func finish() {
         stopTask?.cancel()
@@ -151,7 +189,7 @@ final class FrameHitchRecorder: NSObject {
         link.invalidate()
         self.link = nil
 
-        let stats = FrameHitchStats.make(from: samples)
+        let stats = FrameHitchStats.make(from: samples, markAt: markAt)
         let durationMs = Int((CACurrentMediaTime() - startedAt) * 1000)
         samples.removeAll(keepingCapacity: true)
 
@@ -170,7 +208,12 @@ final class FrameHitchRecorder: NSObject {
             worstFrameMs: stats.worstFrameMs,
             expectedFrameMs: stats.expectedFrameMs,
             worstFrames: stats.worstFrames,
-            sessionDrags: dragCounts[label] ?? 0
+            sessionDrags: dragCounts[label] ?? 0,
+            worstFrameAtMs: Int(stats.worstFrameAt * 1000),
+            markLabel: markLabel,
+            markAtMs: Int((markAt ?? 0) * 1000),
+            dropsBeforeMark: stats.dropsBeforeMark,
+            dropsAfterMark: stats.dropsAfterMark
         ))
     }
 
@@ -179,7 +222,11 @@ final class FrameHitchRecorder: NSObject {
         // 첫 틱은 이전 프레임 시각이 없어 간격을 못 만든다.
         guard lastTimestamp > 0 else { return }
         let expected = link.targetTimestamp - link.timestamp
-        samples.append((actual: link.timestamp - lastTimestamp, expected: expected))
+        samples.append((
+            at: link.timestamp - startedAt,
+            actual: link.timestamp - lastTimestamp,
+            expected: expected
+        ))
     }
 }
 

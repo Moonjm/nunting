@@ -101,6 +101,10 @@ final class DetailDragSnapshot {
     func releaseNow() {
         releaseTask?.cancel()
         releaseTask = nil
+        // 스냅샷을 걷는 순간(= 살아있는 계층이 다시 그려지기 시작하는 순간)을
+        // 히치 기록에 표시한다. 남은 드랍이 드래그 중인지 이 교체 때문인지
+        // 가르는 유일한 축이다. 진단끼리의 결합이라 계측을 뗄 때 같이 사라진다.
+        if view != nil { FrameHitchRecorder.shared.mark("release") }
         view = nil
     }
 

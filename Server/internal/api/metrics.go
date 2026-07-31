@@ -170,6 +170,11 @@ type hitchPayloadJSON struct {
 	ExpectedFrameMs float64   `json:"expectedFrameMs"`
 	WorstFrames     []float64 `json:"worstFrames"`
 	SessionDrags    int       `json:"sessionDrags"`
+	WorstFrameAtMs  int       `json:"worstFrameAtMs"`
+	MarkLabel       string    `json:"markLabel"`
+	MarkAtMs        int       `json:"markAtMs"`
+	DropsBeforeMark int       `json:"dropsBeforeMark"`
+	DropsAfterMark  int       `json:"dropsAfterMark"`
 }
 
 // metricsSummary 상단 강조 박스 — 전체 payload 누적.
@@ -385,8 +390,18 @@ func summarizeHitch(payload string, sum *metricsSummary) string {
 	if h.ExpectedFrameMs > 0 {
 		s += " (기대 " + strconv.FormatFloat(h.ExpectedFrameMs, 'f', 0, 64) + "ms)"
 	}
+	if h.WorstFrameAtMs > 0 {
+		s += " @+" + strconv.Itoa(h.WorstFrameAtMs) + "ms"
+	}
 	if h.Label != "" {
 		s += " @ " + h.Label
+	}
+	// 마크 앞/뒤 드랍 — 드래그 중에 걸렸는지, 그 뒤(스냅샷 해제·정착)에
+	// 걸렸는지 가른다.
+	if h.MarkLabel != "" {
+		s += " · " + strconv.Itoa(h.DropsBeforeMark) + "전/" +
+			strconv.Itoa(h.DropsAfterMark) + "후(" + h.MarkLabel +
+			" +" + strconv.Itoa(h.MarkAtMs) + "ms)"
 	}
 	if h.Context != "" {
 		s += " · " + h.Context
