@@ -86,6 +86,13 @@ final class DetailBackDrag {
                 // 진단 계측 — 이 구간의 프레임 간격을 재서 히치가 있으면
                 // 서버로 올린다. 실체화된 댓글 행 수를 함께 실어 "댓글 많은
                 // 글에서만 버벅인다" 는 체감을 숫자로 확인/반증한다.
+                // 드래그 구간의 메인 스레드 정체 스택을 직접 뜬다 — 렌더 쪽
+                // 시도가 네 번 연속 무관했고, 남은 질문은 "그 100~150ms 동안
+                // 메인이 무엇을 하고 있나" 하나뿐이다.
+                HangWatchdog.dragProbe.noteEvent(
+                    "backdrag " + CommentRenderProbe.shared.summary
+                )
+                HangWatchdog.dragProbe.resume()
                 FrameHitchRecorder.shared.begin(
                     label: "backdrag",
                     context: CommentRenderProbe.shared.summary
@@ -123,6 +130,11 @@ final class DetailBackDrag {
             )
             FrameHitchRecorder.shared.endAfterSettle()
             DetailDragSnapshot.shared.releaseAfterSettle()
+            // 정착까지 포함해 재운다 — 스프링 구간의 정체도 같은 원인일 수 있다.
+            Task { @MainActor in
+                try? await Task.sleep(for: DetailDragSnapshot.settleWindow)
+                HangWatchdog.dragProbe.pause()
+            }
         }
         guard horizontal, detail.activePost != nil else { return }
         let traveled = v.translation.width - base
