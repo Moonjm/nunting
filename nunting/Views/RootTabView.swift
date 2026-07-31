@@ -128,6 +128,54 @@ final class DetailBackDrag {
     }
 }
 
+/// 상세 오버레이의 이동 레이어. **`detail.offset` 을 읽는 유일한 곳**이다.
+///
+/// 왜 따로 뺐나: 백드래그는 손가락이 움직일 때마다 `offset` 을 쓴다. 그 값을
+/// 셸(RootTabView) 본문에서 읽으면 프레임마다 셸 전체 — 탭바·보드 목록·상세
+/// 오버레이 — 의 body 가 다시 평가된다. 반면 히스토리 버튼으로 다시 여는
+/// 경로는 `withAnimation` 안에서 offset 을 한 번만 쓰고 SwiftUI 가 내부에서
+/// 보간하므로 body 재평가가 없다. "버튼으로 열 땐 부드러운데 스와이프는
+/// 버벅인다" 는 관측이 정확히 이 차이를 가리켰다.
+///
+/// `content` 를 클로저가 아니라 **이미 만들어진 값**으로 받는 것이 핵심이다.
+/// 클로저면 이 뷰가 재평가될 때마다 상세 트리를 다시 만들게 되어 분리한
+/// 의미가 없어진다.
+private struct DetailOverlayLayer<Content: View>: View {
+    var detail: DetailOverlayController
+    let snapshot: UIView?
+    let content: Content
+
+    init(
+        detail: DetailOverlayController,
+        snapshot: UIView?,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.detail = detail
+        self.snapshot = snapshot
+        self.content = content()
+    }
+
+    var body: some View {
+        ZStack {
+            content
+                // 스냅샷이 떠 있는 동안 살아있는 계층은 창 밖에 세워 둔다.
+                // 조건부 분기가 아니라 값만 바꾸는 이유: 분기는 뷰 identity 를
+                // 바꿔 상세를 헐고 다시 짓게 만든다(keep-alive 파기 + #160 재발).
+                .offset(x: snapshot == nil ? detail.offset : -detail.containerWidth)
+                .opacity(snapshot == nil ? 1 : 0)
+                .allowsHitTesting(detail.allowsHitTesting)
+
+            if let snapshot {
+                DetailDragSnapshotView(snapshot: snapshot)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .ignoresSafeArea()
+                    .offset(x: detail.offset)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+}
+
 // 2026/27 재디자인 셸 — Liquid Glass 탭바(모음/둘러보기/알림).
 // ContentView(드로어+오버레이+제스처)를 대체한다. 데이터/로더/상세 렌더는
 // 기존 서비스·뷰(BoardListView/PostDetailView/KeywordListView)를 그대로
@@ -309,8 +357,7 @@ struct RootTabView: View {
                 // 언마운트가 아니라 opacity 0 인 이유: keep-alive 로 스크롤
                 // 위치·이미지·영상 상태를 유지해야 하고, 댓글 행이 사라졌다
                 // 되살아나면 #160 의 높이 복원 실패가 재발한다.
-                let snapshot = dragSnapshot.view
-                ZStack {
+                DetailOverlayLayer(detail: detail, snapshot: dragSnapshot.view) {
                     NavigationStack {
                         PostDetailScreen(
                             post: post,
@@ -325,29 +372,6 @@ struct RootTabView: View {
                     .background(Color(.systemBackground).ignoresSafeArea())
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .id(post.id)
-                    // 드래그 중에는 화면 밖(왼쪽)에 세워 둔다. 투명도만 0 으로
-                    // 두던 종전 방식은 기기 계측에서 부족했다 — 드랍의 83%가
-                    // 스냅샷을 걷기 *전*(드래그 중)에 났고, 스냅샷 한 장만
-                    // 움직이는데도 비용이 여전히 댓글 행 수에 비례했다
-                    // (30행 8드랍 → 147행 24~27드랍). 투명한 계층도 렌더 트리에
-                    // 남아 있어, 스냅샷이 비켜 준 영역을 다시 그릴 때마다 그
-                    // 아래 1,700장 규모의 레이어를 훑는 것으로 보인다. 창 밖으로
-                    // 내보내면 그 영역에서 잘려 나간다.
-                    //
-                    // 조건부 분기(`if`)가 아니라 값만 바꾸는 이유: 분기는 뷰
-                    // identity 를 바꿔 상세를 통째로 헐었다 다시 짓게 만든다
-                    // (keep-alive 파기 + #160 재발).
-                    .offset(x: snapshot == nil ? detail.offset : -detail.containerWidth)
-                    .opacity(snapshot == nil ? 1 : 0)
-                    .allowsHitTesting(detail.allowsHitTesting)
-
-                    if let snapshot {
-                        DetailDragSnapshotView(snapshot: snapshot)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .ignoresSafeArea()
-                            .offset(x: detail.offset)
-                            .allowsHitTesting(false)
-                    }
                 }
                 .zIndex(10)
             }

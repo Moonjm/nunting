@@ -25,7 +25,17 @@ final class DetailDragSnapshot {
 
     /// 드래그 중 살아있는 계층을 감추는 방식 — 히치 리포트에 실어 어느 빌드가
     /// 낸 수치인지 로그에서 구분한다(계측 라운드마다 방식이 바뀌므로).
-    static let hidingVariant = "offscreen+bitmap"
+    static let hidingVariant = "isolated"
+
+    /// 이번 계측 라운드에서는 스냅샷을 끈다 — 셸 body 의 프레임당 재평가를
+    /// 없앤 것(`DetailOverlayLayer`)만으로 충분한지부터 본다. 그것으로 충분하면
+    /// 스냅샷 기계장치는 통째로 지우는 게 맞다(캡처 비용도, 교체 타이밍
+    /// 경계조건도 사라진다).
+    static let defaultEnabled = false
+
+    /// 인스턴스 단위 스위치 — 수명 계약 테스트는 켠 채로 검증한다(끄면 캡처가
+    /// 성립하지 않아 그 계약을 확인할 수 없다).
+    var isEnabled = DetailDragSnapshot.defaultEnabled
 
     /// 스프링(0.32s) + 애니메이션 락(350ms)이 끝나고도 남는 여유. 이보다 일찍
     /// 스냅샷을 걷으면 정착 중인 화면이 살아있는 계층으로 갈아끼워지며 튄다.
@@ -47,6 +57,10 @@ final class DetailDragSnapshot {
     func capture(from source: UIView?, currentOffset: CGFloat) {
         releaseTask?.cancel()
         releaseTask = nil
+        guard isEnabled else {
+            lastCaptureSummary = "snapshot off"
+            return
+        }
         guard view == nil, abs(currentOffset) < 0.5 else { return }
         lastCaptureSummary = "snapshot none"
         guard let source, source.bounds.width > 0, source.bounds.height > 0 else { return }

@@ -31,6 +31,7 @@ final class DetailDragSnapshotTests: XCTestCase {
 
     func testCaptureProvidesASnapshotView() {
         let store = DetailDragSnapshot()
+        store.isEnabled = true
         let (window, source) = makeSource()
         defer { window.isHidden = true }
 
@@ -42,6 +43,7 @@ final class DetailDragSnapshotTests: XCTestCase {
     /// 그 이동량이 이미 찍혀 있어, 거기에 offset 을 또 걸면 두 배로 밀린다.
     func testCaptureSkippedWhenOverlayIsAlreadyOffset() {
         let store = DetailDragSnapshot()
+        store.isEnabled = true
         let (window, source) = makeSource()
         defer { window.isHidden = true }
 
@@ -53,6 +55,7 @@ final class DetailDragSnapshotTests: XCTestCase {
     /// 종전처럼 움직이고, 히치만 남는다.
     func testCaptureFailureLeavesNoSnapshot() {
         let store = DetailDragSnapshot()
+        store.isEnabled = true
         store.capture(from: nil, currentOffset: 0)
         XCTAssertNil(store.view)
     }
@@ -61,6 +64,7 @@ final class DetailDragSnapshotTests: XCTestCase {
     /// 프레임에 화면이 튄다).
     func testSecondCaptureKeepsTheFirstSnapshot() {
         let store = DetailDragSnapshot()
+        store.isEnabled = true
         let (window, source) = makeSource()
         defer { window.isHidden = true }
 
@@ -72,6 +76,7 @@ final class DetailDragSnapshotTests: XCTestCase {
 
     func testReleaseNowClearsImmediately() {
         let store = DetailDragSnapshot()
+        store.isEnabled = true
         let (window, source) = makeSource()
         defer { window.isHidden = true }
 
@@ -84,6 +89,7 @@ final class DetailDragSnapshotTests: XCTestCase {
     /// 락(350ms)이 도는 동안 화면을 갈아끼우면 정착이 튄다.
     func testReleaseAfterSettleKeepsSnapshotDuringTheSpring() async {
         let store = DetailDragSnapshot()
+        store.isEnabled = true
         let (window, source) = makeSource()
         defer { window.isHidden = true }
 
@@ -95,6 +101,7 @@ final class DetailDragSnapshotTests: XCTestCase {
 
     func testReleaseAfterSettleClearsOnceSettled() async {
         let store = DetailDragSnapshot()
+        store.isEnabled = true
         let (window, source) = makeSource()
         defer { window.isHidden = true }
 
@@ -108,6 +115,7 @@ final class DetailDragSnapshotTests: XCTestCase {
     /// 도중에 터져 화면이 튀면 안 된다.
     func testNewCaptureCancelsAPendingRelease() async {
         let store = DetailDragSnapshot()
+        store.isEnabled = true
         let (window, source) = makeSource()
         defer { window.isHidden = true }
 
@@ -127,7 +135,12 @@ final class DetailDragSnapshotTests: XCTestCase {
         defer { window.isHidden = true }
         let controller = DetailOverlayController.shared
         let previousPost = controller.activePost
-        defer { controller.activePost = previousPost }
+        let previouslyEnabled = DetailDragSnapshot.shared.isEnabled
+        DetailDragSnapshot.shared.isEnabled = true
+        defer {
+            controller.activePost = previousPost
+            DetailDragSnapshot.shared.isEnabled = previouslyEnabled
+        }
 
         DetailDragSnapshot.shared.capture(from: source, currentOffset: 0)
         XCTAssertNotNil(DetailDragSnapshot.shared.view)
