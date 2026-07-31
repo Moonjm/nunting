@@ -23,6 +23,13 @@ final class DetailBackDrag {
     @ObservationIgnored private var horizontalLock: Bool? = nil  // nil 미정 / true 가로 / false 세로
     @ObservationIgnored private var baseline: CGFloat = 0
 
+    // 진단 계측 — 드래그 한 번 동안 도착한 제스처 이벤트 수와 그 처리에 쓴 시간.
+    // 프레임 수와 나란히 놓고 보면 병목이 렌더인지 입력 처리인지 갈린다:
+    // 이벤트가 프레임보다 훨씬 많으면 렌더가 못 따라간 것이고, 이벤트 자체가
+    // 프레임 수만큼밖에 안 왔으면 메인 스레드가 그 앞에서 이미 포화된 것이다.
+    @ObservationIgnored private var gestureEvents = 0
+    @ObservationIgnored private var gestureWorkSeconds: Double = 0
+
     private var detail: DetailOverlayController { .shared }
 
     var gesture: some Gesture {
@@ -70,6 +77,8 @@ final class DetailBackDrag {
                 baseline = v.translation.width
                 scrollLocked = true
                 detail.offsetBase = detail.offset
+                gestureEvents = 0
+                gestureWorkSeconds = 0
                 // 살아있는 계층 대신 스냅샷 한 장을 끌기 시작한다 — 이 아래
                 // 코드가 매 프레임 쓰는 detail.offset 이 스냅샷에만 걸린다.
                 // 캡처는 offset 을 건드리기 전에(= 화면이 아직 제자리일 때).
@@ -91,9 +100,12 @@ final class DetailBackDrag {
             }
         }
         if horizontalLock == true {
+            let workStart = CFAbsoluteTimeGetCurrent()
             tapGate.suppress()
             let dx = v.translation.width - baseline
             detail.offset = max(0, min(detail.containerWidth, dx))  // 우→(닫기) 방향만
+            gestureEvents += 1
+            gestureWorkSeconds += CFAbsoluteTimeGetCurrent() - workStart
         }
     }
 
@@ -106,6 +118,9 @@ final class DetailBackDrag {
         // 손을 뗀 뒤의 스프링 복귀/닫기 슬라이드까지 재고 마무리한다.
         // 스냅샷도 그 정착이 끝난 뒤에 걷는다(먼저 걷으면 정착 중 화면이 튄다).
         if horizontal {
+            FrameHitchRecorder.shared.appendContext(
+                "gesture \(gestureEvents)ev \(String(format: "%.0f", gestureWorkSeconds * 1000))ms"
+            )
             FrameHitchRecorder.shared.endAfterSettle()
             DetailDragSnapshot.shared.releaseAfterSettle()
         }

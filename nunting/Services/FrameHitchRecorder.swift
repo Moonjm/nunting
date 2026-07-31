@@ -173,6 +173,13 @@ final class FrameHitchRecorder: NSObject {
         }
     }
 
+    /// 구간이 끝날 때 context 에 덧붙일 정보 — 드래그 도중 누적되는 값
+    /// (제스처 이벤트 수 등)은 시작 시점에 알 수 없다.
+    func appendContext(_ extra: String) {
+        guard link != nil, !extra.isEmpty else { return }
+        context += " · " + extra
+    }
+
     /// 구간 안의 특정 사건 시각을 기록한다 — 드랍 프레임을 그 앞/뒤로 갈라
     /// "드래그 중"과 "그 뒤(스냅샷 해제·정착)" 중 어디서 걸리는지 본다.
     func mark(_ label: String) {
