@@ -25,7 +25,7 @@ final class DetailDragSnapshot {
 
     /// 드래그 중 살아있는 계층을 감추는 방식 — 히치 리포트에 실어 어느 빌드가
     /// 낸 수치인지 로그에서 구분한다(계측 라운드마다 방식이 바뀌므로).
-    static let hidingVariant = "offscreen"
+    static let hidingVariant = "offscreen+bitmap"
 
     /// 스프링(0.32s) + 애니메이션 락(350ms)이 끝나고도 남는 여유. 이보다 일찍
     /// 스냅샷을 걷으면 정착 중인 화면이 살아있는 계층으로 갈아끼워지며 튄다.
@@ -52,11 +52,9 @@ final class DetailDragSnapshot {
         guard let source, source.bounds.width > 0, source.bounds.height > 0 else { return }
 
         let start = CFAbsoluteTimeGetCurrent()
-        var method = "none"
-        var snapshot = source.snapshotView(afterScreenUpdates: false)
-        if snapshot != nil {
-            method = "view"
-        } else if let rendered = Self.renderFallback(of: source) {
+        var method = "bitmap"
+        var snapshot = Self.bitmapSnapshot(of: source)
+        if snapshot == nil, let rendered = Self.renderFallback(of: source) {
             snapshot = rendered
             method = "render"
         }
@@ -68,13 +66,34 @@ final class DetailDragSnapshot {
         view = snapshot
     }
 
-    /// 기기에서는 `snapshotView(afterScreenUpdates:)` 가 잡힌다 — 이미 렌더된
-    /// 결과를 재사용해 가장 싸다. 다만 화면에 실제로 그려지는 렌더 세션이 없는
-    /// 환경(유닛 테스트 프로세스)에서는 그 API 도, `drawHierarchy` 도 빈손이라
-    /// (계측으로 확인) 캡처 경로 자체를 검증할 수 없다. 그래서 레이어를 직접
-    /// 그리는 폴백을 둔다 — 느리고 UIVisualEffectView 같은 합성 효과를
-    /// 재현하지 못하지만, 캡처가 nil 이면 이 최적화가 통째로 무력화되므로
-    /// (스냅샷 없이 종전대로 살아있는 계층이 움직임) 빈손보다 낫다.
+    /// **비트맵으로 굽는다.** 종전엔 `snapshotView(afterScreenUpdates:)` 를 썼고
+    /// 캡처가 5~14ms 로 쌌는데, 그게 싼 이유가 문제였다 — 이 API 는 픽셀을
+    /// 새로 그리지 않고 원본 레이어 트리를 참조하는 포탈 뷰를 돌려준다.
+    /// 그래서 그걸 움직이면 원본 계층이 그대로 다시 그려져, "스냅샷 한 장만
+    /// 움직인다" 는 전제가 성립하지 않았다. 기기 계측이 그 결과를 두 라운드
+    /// 연속으로 보여줬다 — 원본을 투명하게 만들어도(22:20), 창 밖으로 내보내도
+    /// (22:28) 드랍이 그대로 댓글 행 수에 비례했다(147행 15~27장).
+    ///
+    /// `drawHierarchy` 는 반대다 — 굽는 데 수십 ms 를 쓰는 대신 결과는 텍스처
+    /// 한 장이라, 이후 프레임에서는 원본과 무관하게 상수 비용으로 움직인다.
+    /// 드래그 시작에 한 번 얹히는 그 비용은 리포트의 캡처 시간으로 그대로
+    /// 관측된다.
+    private static func bitmapSnapshot(of source: UIView) -> UIView? {
+        let renderer = UIGraphicsImageRenderer(bounds: source.bounds)
+        var drawn = false
+        let image = renderer.image { _ in
+            drawn = source.drawHierarchy(in: source.bounds, afterScreenUpdates: false)
+        }
+        guard drawn else { return nil }
+        let imageView = UIImageView(image: image)
+        imageView.frame = source.bounds
+        return imageView
+    }
+
+    /// `drawHierarchy` 가 빈손인 환경(유닛 테스트 프로세스처럼 실제 렌더
+    /// 세션이 없는 경우 — 계측으로 확인)용 폴백. 레이어를 직접 그리므로
+    /// UIVisualEffectView 같은 합성 효과는 재현하지 못하지만, 캡처가 nil 이면
+    /// 이 최적화가 통째로 무력화되므로 빈손보다 낫다.
     private static func renderFallback(of source: UIView) -> UIView? {
         let renderer = UIGraphicsImageRenderer(bounds: source.bounds)
         let image = renderer.image { ctx in source.layer.render(in: ctx.cgContext) }
