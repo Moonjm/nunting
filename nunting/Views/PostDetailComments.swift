@@ -1,6 +1,71 @@
 import SwiftUI
 import UIKit
 
+/// 댓글 목록을 한 번에 다 그리지 않고 앞에서부터 잘라 그리기 위한 창(window)
+/// 규칙. **오직 늘어나기만 한다** — 이미 그린 행은 절대 되돌리지 않는다.
+///
+/// eager VStack 은 화면 밖 행까지 진입 즉시 실체화한다. 행마다 UITextView
+/// (SelectableRichText) 가 붙어 있어 비용이 댓글 수에 정비례하고, 그 값을
+/// 상세 커밋 순간 메인스레드에서 통째로 지불한다. 계측(iPhone 17 Pro
+/// 시뮬레이터, 댓글 1개당 약 6ms — 구분선 포함 섹션 전체 기준):
+///   100개 575ms · 200개 1,193ms · 400개 2,464ms
+/// "댓글 많은 글 들어갈 때 버벅"의 정체가 이 블록이다. 창을 씌운 뒤 같은
+/// 하네스에서 진입 비용은 댓글 수와 무관하게 155~170ms 로 고정된다.
+///
+/// 참고로 이 비용은 마크다운 파싱(1개당 0.025ms)도, AttributedString →
+/// NSAttributedString 브릿지(0.4ms, 게다가 행마다 한 번뿐 — 스크롤 중
+/// updateUIView 재호출은 계측상 0회)도 아니다. 대부분 UITextView 생성과
+/// TextKit 높이 측정이라 "행을 덜 만드는 것" 말고 줄일 방법이 마땅치 않다.
+///
+/// LazyVStack 으로 되돌리는 건 답이 아니다 — 화면 밖 행을 derealize 했다가
+/// 되돌릴 때 높이를 복원하지 못해 스크롤이 뒤로 튀는 게 #160 에서 고친 바로
+/// 그 증상이다. 여기서는 *제거 없이 추가만* 하므로 그 실패 모드가 없다:
+/// 새 행은 항상 이미 그려진 마지막 행 아래에 붙고, 위쪽 콘텐츠 높이는 변하지
+/// 않으므로 스크롤 오프셋이 흔들리지 않는다.
+enum CommentRenderWindow {
+    /// 진입 시 그리는 행 수. 393pt 폭에서 댓글 1개가 대략 100pt 이므로
+    /// 30개면 뷰포트(852pt) 기준 3화면 이상의 스크롤 여유가 생긴다.
+    static let initialCount = 30
+    /// 한 번 늘릴 때 붙이는 행 수. 성장은 스크롤 도중 한 프레임에 일어나므로
+    /// 청크가 클수록 그 순간의 히치가 길다(위 계측 기준 20개면 100ms 안팎).
+    /// 총 작업량은 어차피 같으니 히치를 잘게 쪼개는 쪽을 택했다. 연쇄 성장은
+    /// 청크 크기와 무관하게 막힌다 — 센티넬은 사용자가 실제로 그 지점까지
+    /// 내려와야 반응하므로, 한 번의 성장 뒤 다음 센티넬은 그만큼 더 내려가야
+    /// 닿는다.
+    static let chunkSize = 20
+    /// 끝에서 이만큼 남은 지점을 지나면 다음 청크를 붙인다. 사용자가 실제
+    /// 끝에 닿기 전에(대략 한 화면 앞) 미리 늘려, 빈 구간이 보이지 않게 한다.
+    static let growthMargin = 10
+
+    /// 현재 그린 개수를 전체 개수 안에서 정규화한다. 새로고침으로 댓글이
+    /// 줄어도 prefix 가 알아서 잘리므로 별도 리셋이 필요 없다.
+    static func clamped(_ count: Int, total: Int) -> Int {
+        min(max(count, initialCount), total)
+    }
+
+    /// 다음 성장 후의 개수.
+    static func grown(from current: Int, total: Int) -> Int {
+        clamped(current + chunkSize, total: total)
+    }
+
+    /// `index` 행 뒤에 성장 센티넬을 두는지. 청크 경계에 **고정**으로 둔다 —
+    /// "마지막 행"을 따라 옮겨 다니면 옮길 때마다 그 행의 뷰 identity 나
+    /// 위쪽 레이아웃이 흔들리므로, 한 번 놓인 센티넬은 그 자리에 남는다.
+    /// 이미 그려진 위치에만 존재하므로 성장 시 추가되는 센티넬도 항상
+    /// 콘텐츠 맨 아래쪽이다.
+    static func hasSentinel(after index: Int) -> Bool {
+        index >= initialCount - growthMargin
+            && (index - (initialCount - growthMargin)) % chunkSize == 0
+    }
+
+    /// 그 센티넬이 지금 성장을 촉발해야 하는지 — 끝에서 `growthMargin` 안쪽에
+    /// 든 센티넬만 반응한다. 위쪽에 남아 있는 과거 센티넬들은 화면에 다시
+    /// 들어와도 아무 일도 하지 않는다.
+    static func shouldGrow(sentinelAfter index: Int, rendered: Int, total: Int) -> Bool {
+        rendered < total && index >= rendered - growthMargin
+    }
+}
+
 struct PostDetailCommentsSection: View {
     let comments: [PostComment]
     var tapGate: TapSuppressionGate? = nil
@@ -9,6 +74,9 @@ struct PostDetailCommentsSection: View {
     /// 상세 오버레이가 화면에 실제로 떠 있는지 — 댓글 비디오를 오버레이 offset
     /// 기준으로도 정지시키기 위해 InlineVideoPlayer 까지 내려보낸다.
     var isOverlayVisible: Bool = true
+
+    /// 지금까지 그린 댓글 수. 늘어나기만 한다(`CommentRenderWindow` 참고).
+    @State private var renderedCount = CommentRenderWindow.initialCount
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -28,16 +96,21 @@ struct PostDetailCommentsSection: View {
             // "내려가다 튕겨 올라오는" 증상이 된다. 영상 첨부 댓글(200pt
             // 슬롯)이 섞이면 진폭이 커져 사실상 스크롤이 안 내려간다.
             //
-            // eager 로 바뀌며 늘어나는 비용: 행 측정 + 댓글마다의 UITextView,
-            // 그리고 스티커 이미지 fetch 다. AVPlayer 는 여전히 뷰포트 게이트
+            // 다만 eager 는 "화면 밖 행까지 진입 즉시 전부" 라 비용이 댓글 수에
+            // 정비례한다. 그래서 전체가 아니라 `CommentRenderWindow` 만큼만
+            // 그리고, 끝에 다가가면 청크를 덧붙인다 — 추가만 하고 제거하지
+            // 않으므로 위 실패 모드는 그대로 없다. (성장 트리거는 청크 경계에
+            // 고정된 1pt 센티넬 — `growthSentinel` 참고.)
+            //
+            // 남는 eager 비용: 그려진 행의 측정 + UITextView, 그리고 스티커
+            // 이미지 fetch 다. AVPlayer 는 여전히 뷰포트 게이트
             // (InlineVideoPlayer 의 onScrollVisibilityChange + VideoPlayerPool
-            // 3슬롯 상한)가 막아 화면 밖 영상은 만들어지지 않지만, 댓글 스티커
+            // 3슬롯 상한)가 막아 화면 밖 영상은 만들어지지 않고, 댓글 스티커
             // NetworkImage 는 `visibilityGated: false`(아이콘/스티커 정책)라
-            // 화면 밖 것도 바로 받는다 — 썸네일 크기(≤280pt)에 다운로더가
-            // 동시 4개로 묶여 있어 수용 가능한 수준으로 본다. 댓글 수백 개
-            // 스레드에서 문제가 되면 그때 스티커만 게이트를 켜는 게 다음 수.
+            // 화면 밖 것도 바로 받지만 이제 "그려진 창" 안의 것만 받는다.
+            let rendered = CommentRenderWindow.clamped(renderedCount, total: comments.count)
             VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(comments.enumerated()), id: \.element.id) { index, comment in
+                ForEach(Array(comments.prefix(rendered).enumerated()), id: \.element.id) { index, comment in
                     PostDetailCommentRow(
                         comment: comment,
                         tapGate: tapGate,
@@ -45,12 +118,57 @@ struct PostDetailCommentsSection: View {
                         onVideoDismissBegin: onVideoDismissBegin,
                         isOverlayVisible: isOverlayVisible
                     )
+                    if CommentRenderWindow.hasSentinel(after: index) {
+                        growthSentinel(after: index, rendered: rendered)
+                    }
+                    // 경계 조건을 `rendered` 가 아니라 전체 개수로 잡는다:
+                    // 마지막으로 그린 행에도 구분선이 남아 있어야 청크가
+                    // 붙을 때 기존 행의 높이가 1pt 도 바뀌지 않는다.
                     if index < comments.count - 1 {
                         Divider().padding(.vertical, 2)
                     }
                 }
             }
         }
+    }
+
+    /// 청크 경계에 고정으로 놓이는 성장 트리거. 1pt 인 이유: 0pt 프레임은
+    /// 면적이 없어 가시성 판정에서 빠질 수 있다. 센티넬은 한 번 놓이면 그
+    /// 자리에 남으므로, 1pt 는 성장 때마다 누적되는 게 아니라 청크당 한 번
+    /// 콘텐츠 맨 아래에 붙는다.
+    ///
+    /// 판정을 `onScrollVisibilityChange` 로 하지 않는 이유: 그 API 는 **첫
+    /// 레이아웃 패스에서 화면 밖 뷰까지 visible=true 로 보고한다**(계측:
+    /// 뷰포트 852pt 아래 3,100pt 에 있는 센티넬까지 true). 그대로 쓰면
+    /// 사용자가 스크롤도 하기 전에 청크가 붙어 진입 비용이 두 배가 됐다.
+    /// `bounds(of: .scrollView)` 는 같은 시점에 정확한 값을 준다(위 센티넬
+    /// 기준 -3103..-2305 = 가시 영역이 한참 위에 있음).
+    ///
+    /// 조건이 "보인다" 가 아니라 "여기까지 내려왔다"(가시 영역 하단이 센티넬에
+    /// 닿음)인 이유: 보이는 순간에만 반응하면 빠른 플링처럼 센티넬 구간을
+    /// 건너뛰는 프레임에서 트리거를 놓칠 수 있고, 그러면 댓글이 잘린 채 영영
+    /// 늘어나지 않는다 — 버벅임보다 나쁜 결함이다. 지나친 뒤에도 계속 참인
+    /// 단조 조건이라 다음 레이아웃 패스에서 반드시 잡힌다.
+    @ViewBuilder
+    private func growthSentinel(after index: Int, rendered: Int) -> some View {
+        Color.clear
+            .frame(height: 1)
+            .onGeometryChange(for: Bool.self) { proxy in
+                // 가시 영역을 센티넬 로컬 좌표로 환산한 값(센티넬은 로컬 0..1).
+                // maxY >= 0 = 가시 영역 하단이 센티넬에 도달했거나 지나갔다.
+                // 스크롤 뷰 밖이거나 지오메트리가 아직 없으면 nil — 성장 금지.
+                guard let visible = proxy.bounds(of: .scrollView) else { return false }
+                return visible.maxY >= 0
+            } action: { reached in
+                guard reached,
+                      CommentRenderWindow.shouldGrow(
+                          sentinelAfter: index,
+                          rendered: rendered,
+                          total: comments.count
+                      )
+                else { return }
+                renderedCount = CommentRenderWindow.grown(from: rendered, total: comments.count)
+            }
     }
 }
 
