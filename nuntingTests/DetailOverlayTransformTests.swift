@@ -102,6 +102,44 @@ final class DetailOverlayTransformTests: XCTestCase {
         XCTAssertEqual(target.transform.tx, 0, accuracy: 0.5, "복귀가 변환을 안 되돌렸다")
     }
 
+    /// 글을 열면 오버레이가 **제자리(0)에 정착**해야 한다. 실제로 터진 회귀가
+    /// 이것이다 — 상세가 잠깐 떴다가 옆으로 사라진 채 남았고, 논리 상태는
+    /// "보이는 중"이라 뒤쪽 목록까지 먹통이 됐다.
+    ///
+    /// 타깃 뷰를 테스트가 심지 않는 이유: 이 테스트 번들의 호스트는 **앱 자체**라,
+    /// `show()` 가 진짜 오버레이를 만들고 그쪽이 `shared.target` 을 가져간다.
+    /// 그래서 심어 둔 가짜 뷰가 아니라 실제로 움직인 뷰를 확인한다.
+    func testShowingAPostSettlesTheOverlayInPlace() async {
+        let controller = DetailOverlayController.shared
+        let previousPost = controller.activePost
+        defer { controller.activePost = previousPost }
+        controller.updateContainerWidth(393)
+        controller.hide()
+
+        controller.show(
+            Post(
+                id: "overlay-settle-test",
+                site: .clien,
+                boardID: "park",
+                title: "새 글",
+                author: "",
+                date: nil,
+                dateText: "",
+                commentCount: 0,
+                url: URL(string: "https://www.clien.net/service/board/park/2")!
+            )
+        )
+        try? await Task.sleep(for: .milliseconds(800))
+
+        XCTAssertEqual(controller.offset, 0, accuracy: 0.01)
+        XCTAssertEqual(DetailOverlayTransform.shared.offset, 0, accuracy: 0.01,
+                       "글을 열었는데 변환이 제자리로 오지 않았다")
+        if let moved = DetailOverlayTransform.shared.target {
+            XCTAssertEqual(moved.transform.tx, 0, accuracy: 0.5,
+                           "실제 오버레이 뷰가 제자리로 오지 않았다")
+        }
+    }
+
     /// 회전 등으로 폭이 바뀔 때, 숨겨져 있던 오버레이는 새 폭만큼 밖에 있어야
     /// 한다 — 안 그러면 오른쪽에 한 조각이 남는다.
     func testContainerWidthChangeKeepsAHiddenOverlayOffscreen() {

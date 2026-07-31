@@ -326,11 +326,6 @@ struct RootTabView: View {
             // 포함)를 덮는다. show() 가 우측에서 슬라이드 인, 백드래그가 offset 을
             // 추적해 우→ 스와이프로 닫는다. 인앱 글 탭·푸시·받은알림 모두 이 경로.
             if let post = detail.activePost {
-                // 백드래그 중에는 스냅샷 한 장만 움직인다 — 살아있는 계층은
-                // 제자리에 멈춘 채 그려지지 않는다(`DetailDragSnapshot` 참고).
-                // 언마운트가 아니라 opacity 0 인 이유: keep-alive 로 스크롤
-                // 위치·이미지·영상 상태를 유지해야 하고, 댓글 행이 사라졌다
-                // 되살아나면 #160 의 높이 복원 실패가 재발한다.
                 // 상세는 자기 UIHostingController 안에서 산다 — 셸과 디스플레이
                 // 리스트를 분리해, 드래그가 셸의 텍스트를 다시 래스터화하지
                 // 않게 한다(`DetailOverlayHost` 참고). 위치는 SwiftUI 가 아니라
@@ -351,6 +346,10 @@ struct RootTabView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .id(post.id)
                 )
+                // 대표 뷰가 화면을 꽉 채우도록 명시한다 — 안 그러면 SwiftUI 가
+                // 호스팅 컨트롤러의 이상 크기(ideal size)를 물어 컨테이너가
+                // 0 크기로 잡히고, 그 안에서 상세가 엉뚱한 자리에 배치된다.
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .ignoresSafeArea()
                 .allowsHitTesting(detail.allowsHitTesting)
                 .zIndex(10)

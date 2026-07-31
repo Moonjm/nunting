@@ -120,6 +120,12 @@ final class DetailOverlayContainerController<Content: View>: UIViewController {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not supported") }
 
+    /// 컨테이너 뷰를 직접 만든다 — 옮겨진 자식 밖의 터치를 통과시켜야 하므로
+    /// (`PassthroughView` 주석 참고) 기본 UIView 로는 안 된다.
+    override func loadView() {
+        view = PassthroughView()
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .clear
@@ -127,13 +133,35 @@ final class DetailOverlayContainerController<Content: View>: UIViewController {
         // 컨테이너는 투명하고, 실제 배경은 상세 콘텐츠가 그린다.
         hosting.view.backgroundColor = .clear
         addChild(hosting)
-        hosting.view.frame = view.bounds
-        hosting.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        // 프레임 + autoresizingMask 가 아니라 제약으로 붙이는 이유: 컨테이너가
+        // 아직 레이아웃되지 않은 시점(bounds 가 .zero)에 프레임을 잡으면
+        // autoresizing 이 그 zero 기준으로 비율을 잡아 자식이 엉뚱한 크기·위치로
+        // 남는다. 제약은 변환(transform)과 독립적으로 "변환 전 레이아웃" 을
+        // 정의하므로 둘을 같이 써도 안전하다.
+        hosting.view.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(hosting.view)
+        NSLayoutConstraint.activate([
+            hosting.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            hosting.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            hosting.view.topAnchor.constraint(equalTo: view.topAnchor),
+            hosting.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
         hosting.didMove(toParent: self)
     }
 
     func update(rootView: Content) {
         hosting.rootView = rootView
+    }
+}
+
+/// 컨테이너는 화면 전체를 덮지만, 그 안의 상세는 변환으로 화면 밖에 나가 있을
+/// 수 있다. 기본 UIView 는 배경이 투명해도 자기 영역의 터치를 먹으므로, 상세가
+/// 옆으로 비켜난 동안 뒤(보드 목록)가 통째로 먹통이 된다 — 실제로 그렇게 됐다.
+/// 자식(옮겨진 상세)에 실제로 닿는 터치만 받고 나머지는 통과시킨다.
+final class PassthroughView: UIView {
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        // 자기 자신이 걸렸다 = 자식 어디에도 안 닿았다는 뜻이므로 통과.
+        return hit === self ? nil : hit
     }
 }
