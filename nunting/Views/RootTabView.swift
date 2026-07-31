@@ -80,6 +80,7 @@ final class DetailBackDrag {
                 FrameHitchRecorder.shared.begin(
                     label: "backdrag",
                     context: CommentRenderProbe.shared.summary
+                        + " · " + DetailDragSnapshot.shared.lastCaptureSummary
                 )
             case .horizontalLeft, .vertical:
                 // 좌측 가로/세로는 닫기와 무관 — 스크롤/탭을 막지 않게 양보.

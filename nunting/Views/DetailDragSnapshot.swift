@@ -29,6 +29,11 @@ final class DetailDragSnapshot {
 
     @ObservationIgnored private var releaseTask: Task<Void, Never>?
 
+    /// 마지막 캡처가 어느 경로로, 얼마나 걸렸는지 — FrameHitchRecorder 가
+    /// 히치 리포트 context 에 실어 보낸다. "스냅샷을 떴는데도 히치가 남았나"
+    /// 와 "캡처 자체가 히치의 원인인가" 를 로그에서 가른다.
+    @ObservationIgnored private(set) var lastCaptureSummary = "snapshot none"
+
     /// 드래그 시작 시점의 화면을 뜬다. 실패하면(스냅샷 불가) nil 로 남아
     /// 종전처럼 살아있는 계층이 움직인다 — 기능은 그대로고 히치만 남는다.
     ///
@@ -39,8 +44,22 @@ final class DetailDragSnapshot {
         releaseTask?.cancel()
         releaseTask = nil
         guard view == nil, abs(currentOffset) < 0.5 else { return }
+        lastCaptureSummary = "snapshot none"
         guard let source, source.bounds.width > 0, source.bounds.height > 0 else { return }
-        guard let snapshot = Self.makeSnapshot(of: source) else { return }
+
+        let start = CFAbsoluteTimeGetCurrent()
+        var method = "none"
+        var snapshot = source.snapshotView(afterScreenUpdates: false)
+        if snapshot != nil {
+            method = "view"
+        } else if let rendered = Self.renderFallback(of: source) {
+            snapshot = rendered
+            method = "render"
+        }
+        let costMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
+        lastCaptureSummary = "snapshot \(method) \(String(format: "%.0f", costMs))ms"
+
+        guard let snapshot else { return }
         snapshot.isUserInteractionEnabled = false
         view = snapshot
     }
@@ -52,9 +71,7 @@ final class DetailDragSnapshot {
     /// 그리는 폴백을 둔다 — 느리고 UIVisualEffectView 같은 합성 효과를
     /// 재현하지 못하지만, 캡처가 nil 이면 이 최적화가 통째로 무력화되므로
     /// (스냅샷 없이 종전대로 살아있는 계층이 움직임) 빈손보다 낫다.
-    private static func makeSnapshot(of source: UIView) -> UIView? {
-        if let snapshot = source.snapshotView(afterScreenUpdates: false) { return snapshot }
-
+    private static func renderFallback(of source: UIView) -> UIView? {
         let renderer = UIGraphicsImageRenderer(bounds: source.bounds)
         let image = renderer.image { ctx in source.layer.render(in: ctx.cgContext) }
         let imageView = UIImageView(image: image)
