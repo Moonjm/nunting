@@ -181,6 +181,7 @@ final class DetailOverlayController {
             try? await Task.sleep(for: .milliseconds(Self.animationLockMs))
             guard !Task.isCancelled else { return }
             self?.animating = false
+            DetailScrollLock.shared.isLocked = false
         }
     }
 

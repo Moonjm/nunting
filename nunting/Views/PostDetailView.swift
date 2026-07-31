@@ -17,12 +17,6 @@ struct PostDetailView: View, Equatable {
     /// its grip on the list's `scrollsToTop` flag when the overlay
     /// slides off-screen.
     var isOverlayVisible: Bool = true
-    /// Forwarded to `.scrollDisabled` on the inner `ScrollView` while a
-    /// horizontal back-drag is in flight or the post-release spring is
-    /// still settling — without it, layout callbacks during the spring
-    /// can drift `contentOffset` and the scroll position the user had
-    /// on dismiss isn't preserved for re-entry.
-    var isScrollingBlocked: Bool = false
 
     // Without this explicit Equatable, SwiftUI treats PostDetailView as
     // "possibly changed" on every parent re-eval. During a back-drag the parent
@@ -30,7 +24,7 @@ struct PostDetailView: View, Equatable {
     // ScrollView + body VStack + comments LazyVStack of a long post gets
     // re-built on every frame too. Combined with heavy async image
     // decode that churn is expensive. Comparing the diffable inputs
-    // (`post`, `isOverlayVisible`, `isScrollingBlocked`) lets SwiftUI
+    // (`post`, `isOverlayVisible`) lets SwiftUI
     // short-circuit the diff, while still propagating the scroll-lock
     // flip and any post-metadata change (title, commentCount, …) at
     // their edges.
@@ -49,7 +43,6 @@ struct PostDetailView: View, Equatable {
     static func == (lhs: PostDetailView, rhs: PostDetailView) -> Bool {
         lhs.post == rhs.post
             && lhs.isOverlayVisible == rhs.isOverlayVisible
-            && lhs.isScrollingBlocked == rhs.isScrollingBlocked
     }
 
     /// 프리페처 thumbnail 컨텍스트 구성용 — `NetworkImage` 가 내부에서 읽는
@@ -128,6 +121,11 @@ struct PostDetailView: View, Equatable {
                 // restores them the moment the overlay slides off.
                 StatusBarTapScrollClaimer(isActive: isOverlayVisible)
                     .frame(width: 0, height: 0)
+                // 백드래그 중 스크롤 잠금 — SwiftUI 상태가 아니라 UIScrollView 에
+                // 직접 건다. `.scrollDisabled` 은 그 값이 이 뷰의 Equatable
+                // 입력이라, 드래그 시작/끝마다 상세 전체가 다시 평가되며 댓글
+                // 행 높이를 전부 다시 쟀다(`DetailScrollLock` 참고).
+                DetailScrollLockGate()
                 VStack(alignment: .leading, spacing: 16) {
                     WrappingTitleLabel(text: loader.detail?.fullTitle ?? post.title)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -179,7 +177,6 @@ struct PostDetailView: View, Equatable {
                 }
                 .padding()
             }
-            .scrollDisabled(isScrollingBlocked)
             // Pull-to-refresh re-fetches the post from origin. Etoland's
             // SSR is non-deterministic about including comments inline
             // (sometimes comments show up, sometimes the server bails
@@ -509,7 +506,7 @@ struct PostDetailView: View, Equatable {
 
     /// 블록별 메모이즈 — 댓글 `styledCache` 와 같은 역할. body 는 이미지
     /// 뷰어 열기/닫기(`selectedImage`+`dismissCovering`+`coverGeneration`),
-    /// 백 드래그의 `isScrollingBlocked` 플립(Equatable 통과) 등으로 수시로
+    /// 오버레이 가시성 플립(Equatable 통과) 등으로 수시로
     /// 재평가되는데, 그때마다 전 블록의 NSDataDetector 매칭 + AttributedString
     /// 조립을 다시 돌릴 이유가 없다. 출력이 segments 의 순수 함수이므로 내용
     /// 키로 캐시 — 같은 글 재파싱(pull-to-refresh)도 자연 재사용.

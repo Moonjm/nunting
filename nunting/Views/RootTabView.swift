@@ -76,6 +76,9 @@ final class DetailBackDrag {
                 horizontalLock = true
                 baseline = v.translation.width
                 scrollLocked = true
+                // 스크롤 잠금은 UIKit 쪽으로 — SwiftUI 상태로 두면 이 플립
+                // 하나에 상세 전체가 다시 평가된다(`DetailScrollLock` 참고).
+                DetailScrollLock.shared.isLocked = true
                 detail.offsetBase = detail.offset
                 gestureEvents = 0
                 gestureWorkSeconds = 0
@@ -120,6 +123,10 @@ final class DetailBackDrag {
         horizontalLock = nil
         baseline = 0
         scrollLocked = false
+        // 가로 드래그가 아니었으면 즉시 푼다. 가로였으면 정착(애니메이션 락)이
+        // 끝날 때 `beginAnimationLock` 쪽에서 푼다 — 스프링 도중 스크롤이
+        // 살아나면 contentOffset 이 흔들린다.
+        if !horizontal { DetailScrollLock.shared.isLocked = false }
         // 손을 뗀 뒤의 스프링 복귀/닫기 슬라이드까지 재고 마무리한다.
         // 스냅샷도 그 정착이 끝난 뒤에 걷는다(먼저 걷으면 정착 중 화면이 튄다).
         if horizontal {
@@ -338,7 +345,6 @@ struct RootTabView: View {
                             cache: detailCache,
                             tapGate: backDrag.tapGate,
                             isOverlayVisible: detail.isOverlayVisible,
-                            isScrollingBlocked: backDrag.scrollLocked || detail.animating,
                             onBack: { backDrag.dismiss() }
                         )
                     }
@@ -418,7 +424,6 @@ private struct PostDetailScreen: View {
     // 백드래그 공존용 — 드래그 중 내부 ScrollView 잠금 + 미디어 탭 억제.
     var tapGate: TapSuppressionGate? = nil
     var isOverlayVisible: Bool = true
-    var isScrollingBlocked: Bool = false
     /// 좌상단 뒤로(닫기) 버튼 동작. 오버레이를 닫는다.
     var onBack: (() -> Void)? = nil
 
@@ -431,7 +436,6 @@ private struct PostDetailScreen: View {
             cache: cache,
             tapGate: tapGate,
             isOverlayVisible: isOverlayVisible,
-            isScrollingBlocked: isScrollingBlocked
         )
         .equatable()
         // 게시판(사이트)명은 상세에서 표시하지 않는다 — 빈 타이틀로 두고
