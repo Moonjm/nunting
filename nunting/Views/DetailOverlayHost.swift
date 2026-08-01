@@ -39,8 +39,12 @@ final class DetailOverlayTransform {
     func track(_ newOffset: CGFloat) {
         offset = newOffset
         guard let target else { return }
-        // 진행 중인 애니메이션이 있으면 걷어낸다(드래그가 스프링을 가로챌 때).
-        target.layer.removeAnimation(forKey: "position")
+        // 진행 중인 스프링을 끊고 손가락을 따라간다. 키가 "position" 이 아니라
+        // "transform" 인 게 핵심이다 — 우리가 애니메이션하는 건 변환이므로,
+        // 엉뚱한 키를 지우면 프레젠테이션 레이어의 스프링이 그대로 살아남아
+        // 직접 대입과 싸운다(정착 스프링 도중 다시 잡으면 손가락을 안 따라오고
+        // 튄다). 이 레이어를 애니메이션하는 건 이 타입뿐이라 통째로 걷는다.
+        target.layer.removeAllAnimations()
         target.transform = CGAffineTransform(translationX: newOffset, y: 0)
     }
 

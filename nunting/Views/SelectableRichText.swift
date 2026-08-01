@@ -143,7 +143,11 @@ struct SelectableRichText: UIViewRepresentable {
         //   5  UIKitCore / 1~4 UIFoundation (TextKit 레이아웃)
         // 드래그 중 레이아웃이 한 번이라도 돌면 그려진 행 전부를 다시 재는데,
         // 내용이 그대로면 잴 필요가 없다.
-        let key = HeightKey(text: attributedString, font: font, width: width.rounded())
+        // 폭을 반올림하지 않는다 — 360.6 과 361.4 가 한 항목을 공유하면
+        // 줄바꿈 경계에 걸친 텍스트에서 줄 수가 달라져 캐시된 낮은 높이가
+        // 마지막 줄을 잘라먹는다. 제안 폭은 레이아웃마다 안정적이라 정확한
+        // 값으로 키잉해도 적중률이 떨어지지 않는다.
+        let key = HeightKey(text: attributedString, font: font, width: width)
         if let cached = Self.heightCache[key] {
             return CGSize(width: width, height: cached)
         }

@@ -73,6 +73,22 @@ final class DetailOverlayTransformTests: XCTestCase {
                        "드래그 추적이 SwiftUI 상태를 건드렸다")
     }
 
+    /// 정착 스프링이 도는 도중에 다시 잡으면 손가락을 따라가야 한다.
+    /// 애니메이션을 안 걷으면(또는 엉뚱한 키를 걷으면) 프레젠테이션 레이어의
+    /// 스프링이 살아남아 직접 대입과 싸운다 — 화면이 손가락과 다른 곳으로 튄다.
+    func testTrackingInterruptsARunningAnimation() {
+        let (transform, target) = makeTarget()
+        transform.animate(to: 393)
+        XCTAssertFalse(target.layer.animationKeys()?.isEmpty ?? true,
+                       "스프링이 시작되지 않아 이 검증이 무의미하다")
+
+        transform.track(100)
+
+        XCTAssertTrue(target.layer.animationKeys()?.isEmpty ?? true,
+                      "드래그를 다시 잡았는데 스프링이 살아 있다")
+        XCTAssertEqual(target.transform.tx, 100, accuracy: 0.01)
+    }
+
     // MARK: - 컨트롤러가 변환을 몰고 간다
 
     func testHideDrivesTheSharedTransform() async {

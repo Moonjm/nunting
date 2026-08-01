@@ -53,6 +53,54 @@ final class SelectableRichTextHeightCacheTests: XCTestCase {
         XCTAssertGreaterThan(large, small, "폰트가 커졌는데 높이가 그대로다 — 캐시가 폰트를 무시했다")
     }
 
+    /// 소수점만 다른 폭도 섞이면 안 된다 — 줄바꿈 경계에 걸친 텍스트에서
+    /// 줄 수가 달라지므로, 캐시된 낮은 높이가 마지막 줄을 잘라먹는다.
+    ///
+    /// 폭 쌍을 하드코딩하지 않고 **실제 줄바꿈 경계를 찾아서** 검증한다.
+    /// 임의의 두 폭(예: 360.6/361.4)은 대개 줄 수가 같아 검증이 공회전한다 —
+    /// 처음 이 테스트를 그렇게 썼다가, 반올림을 되돌려도 통과하는 걸 보고
+    /// 고쳤다. 폰트 메트릭이 바뀌어 경계를 못 찾으면 조용히 통과하지 말고
+    /// 실패해야 한다(그때는 표본 문장을 바꿔야 한다).
+    func testFractionallyDifferentWidthsAreNotConflated() throws {
+        let text = AttributedString(String(repeating: "가나다라마바사아 ", count: 14))
+
+        // 같은 정수로 반올림되면서(= 반올림 키가 뭉개는) 높이가 갈리는 폭 쌍.
+        var pair: (low: CGFloat, lowHeight: CGFloat, high: CGFloat, highHeight: CGFloat)?
+        var width: CGFloat = 300
+        var previous = try XCTUnwrap(freshHeight(text, width: width))
+        while width < 380, pair == nil {
+            width += 0.1
+            let current = try XCTUnwrap(freshHeight(text, width: width))
+            if current != previous {
+                let low = width - 0.1
+                if low.rounded() == width.rounded() {
+                    pair = (low, previous, width, current)
+                }
+                previous = current
+            }
+        }
+
+        let found = try XCTUnwrap(
+            pair,
+            "반올림 창(1pt) 안에서 줄바꿈이 갈리는 폭을 못 찾았다 — 표본 문장을 바꿔야 검증이 성립한다"
+        )
+
+        // 캐시를 비우고 낮은 쪽부터 재면, 높은 쪽이 그 값을 물려받으면 안 된다.
+        SelectableRichText.resetHeightCacheForTesting()
+        let cachedLow = try XCTUnwrap(measuredHeight(text, width: found.low))
+        let cachedHigh = try XCTUnwrap(measuredHeight(text, width: found.high))
+
+        XCTAssertEqual(cachedLow, found.lowHeight, accuracy: 0.5)
+        XCTAssertEqual(cachedHigh, found.highHeight, accuracy: 0.5,
+                       "소수점만 다른 폭이 앞선 항목의 높이를 물려받았다")
+    }
+
+    /// 캐시를 비우고 재는 "진짜" 높이.
+    private func freshHeight(_ text: AttributedString, width: CGFloat) -> CGFloat? {
+        SelectableRichText.resetHeightCacheForTesting()
+        return measuredHeight(text, width: width)
+    }
+
     /// 내용이 다르면 당연히 다른 높이 — 캐시가 서로 다른 댓글을 섞지 않는다.
     func testDifferentTextIsNotConflated() throws {
         let short = try XCTUnwrap(measuredHeight(AttributedString("한 줄")))
