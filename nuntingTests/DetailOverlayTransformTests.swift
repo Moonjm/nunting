@@ -89,6 +89,40 @@ final class DetailOverlayTransformTests: XCTestCase {
         XCTAssertEqual(target.transform.tx, 100, accuracy: 0.01)
     }
 
+    /// 슬라이드 인 도중 다른 글로 교체되면(= 스프링 중 `snap`), 새 글은
+    /// 지정한 자리에서 시작해야 한다. 스프링을 안 끊으면 새 글이 이전 글의
+    /// 어중간한 위치에서 계속 움직인다.
+    func testSnappingInterruptsARunningAnimation() {
+        let (transform, target) = makeTarget()
+        transform.snap(to: 393)      // 화면 밖에서 시작
+        transform.animate(to: 0)     // 슬라이드 인 중
+        XCTAssertFalse(target.layer.animationKeys()?.isEmpty ?? true,
+                       "스프링이 시작되지 않아 이 검증이 무의미하다")
+
+        transform.snap(to: 200)      // 그 도중 다른 글로 교체
+
+        XCTAssertTrue(target.layer.animationKeys()?.isEmpty ?? true,
+                      "즉시 이동인데 스프링이 살아 있다")
+        XCTAssertEqual(target.transform.tx, 200, accuracy: 0.01)
+    }
+
+    /// 닫기 스프링 도중 폭이 바뀌면(회전) 새 폭 기준으로 즉시 자리 잡아야
+    /// 한다 — 옛 폭을 향해 가던 애니메이션이 남아 있으면 튄다.
+    func testWidthChangeDuringTheHideSpringSettlesAtTheNewWidth() {
+        let controller = DetailOverlayController.shared
+        let target = UIView(frame: CGRect(x: 0, y: 0, width: 393, height: 852))
+        DetailOverlayTransform.shared.target = target
+        defer { DetailOverlayTransform.shared.target = nil }
+
+        controller.updateContainerWidth(393)
+        controller.hide()                       // 스프링 시작
+        controller.updateContainerWidth(800)    // 그 도중 회전
+
+        XCTAssertTrue(target.layer.animationKeys()?.isEmpty ?? true,
+                      "폭이 바뀌었는데 옛 폭을 향한 애니메이션이 남았다")
+        XCTAssertEqual(target.transform.tx, 800, accuracy: 0.01)
+    }
+
     // MARK: - 컨트롤러가 변환을 몰고 간다
 
     func testHideDrivesTheSharedTransform() async {

@@ -35,28 +35,51 @@ final class DetailOverlayTransform {
     /// 드래그 중에는 이 값만 바뀌고 SwiftUI 상태는 건드리지 않는다.
     private(set) var offset: CGFloat = 0
 
-    /// 손가락을 따라가는 즉시 반영 — 애니메이션 없이 변환만 갈아끼운다.
+    /// 손가락을 따라가는 즉시 반영.
     func track(_ newOffset: CGFloat) {
-        offset = newOffset
-        guard let target else { return }
-        // 진행 중인 스프링을 끊고 손가락을 따라간다. 키가 "position" 이 아니라
-        // "transform" 인 게 핵심이다 — 우리가 애니메이션하는 건 변환이므로,
-        // 엉뚱한 키를 지우면 프레젠테이션 레이어의 스프링이 그대로 살아남아
-        // 직접 대입과 싸운다(정착 스프링 도중 다시 잡으면 손가락을 안 따라오고
-        // 튄다). 이 레이어를 애니메이션하는 건 이 타입뿐이라 통째로 걷는다.
-        target.layer.removeAllAnimations()
-        target.transform = CGAffineTransform(translationX: newOffset, y: 0)
+        apply(newOffset, animated: false)
+    }
+
+    /// 애니메이션 없이 즉시 자리 잡기 — 첫 표시처럼 "그 자리에서 시작" 이
+    /// 필요한 경우, 그리고 폭 변경처럼 위치를 다시 계산해야 하는 경우.
+    func snap(to newOffset: CGFloat) {
+        apply(newOffset, animated: false)
     }
 
     /// 스프링으로 이동 — 손을 뗀 뒤의 복귀/닫기. `DetailOverlayController` 의
     /// 스프링 파라미터와 맞춘다.
     func animate(to newOffset: CGFloat, completion: (() -> Void)? = nil) {
+        apply(newOffset, animated: true, completion: completion)
+    }
+
+    /// 위치를 바꾸는 **유일한 지점**. 세 진입점(track/snap/animate)을 여기로
+    /// 모은 이유는 하나다 — 어떤 경로로 오든 진행 중인 스프링을 먼저 끊어야
+    /// 한다. UIKit 은 모델 변환에 대입해도 프레젠테이션 레이어의 애니메이션을
+    /// 취소하지 않으므로, 안 끊으면 화면이 이전 목표를 향해 계속 움직이다
+    /// 튄다:
+    ///   - 정착 스프링 도중 다시 드래그 → 손가락을 안 따라온다
+    ///   - 슬라이드 인 도중 다른 글로 교체 → 새 글이 이전 글의 어중간한
+    ///     위치에서 시작한다
+    ///   - 닫기 스프링 도중 회전(폭 변경) → 옛 폭을 향해 가다 튄다
+    /// 이 세 가지는 처음에 `track` 에만 취소를 넣었다가 하나씩 드러난 것들이라,
+    /// 취소를 개별 경로가 아니라 이 한 곳에 둔다.
+    private func apply(_ newOffset: CGFloat, animated: Bool, completion: (() -> Void)? = nil) {
         offset = newOffset
         guard let target else {
             completion?()
             return
         }
+        // 이 레이어를 애니메이션하는 건 이 타입뿐이라 통째로 걷는다. 키를
+        // 골라 지우면(예전 "position") 정작 우리가 만든 transform 애니메이션이
+        // 살아남는다.
+        target.layer.removeAllAnimations()
+
         let transform = CGAffineTransform(translationX: newOffset, y: 0)
+        guard animated else {
+            target.transform = transform
+            completion?()
+            return
+        }
         UIView.animate(
             withDuration: 0.32,
             delay: 0,
@@ -68,13 +91,6 @@ final class DetailOverlayTransform {
         } completion: { _ in
             completion?()
         }
-    }
-
-    /// 애니메이션 없이 즉시 자리 잡기 — 첫 표시처럼 "그 자리에서 시작" 이
-    /// 필요한 경우.
-    func snap(to newOffset: CGFloat) {
-        offset = newOffset
-        target?.transform = CGAffineTransform(translationX: newOffset, y: 0)
     }
 }
 
