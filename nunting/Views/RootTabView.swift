@@ -23,12 +23,6 @@ final class DetailBackDrag {
     @ObservationIgnored private var horizontalLock: Bool? = nil  // nil 미정 / true 가로 / false 세로
     @ObservationIgnored private var baseline: CGFloat = 0
 
-    // 진단 계측 — 드래그 한 번 동안 도착한 제스처 이벤트 수와 그 처리에 쓴 시간.
-    // 프레임 수와 나란히 놓고 보면 병목이 렌더인지 입력 처리인지 갈린다:
-    // 이벤트가 프레임보다 훨씬 많으면 렌더가 못 따라간 것이고, 이벤트 자체가
-    // 프레임 수만큼밖에 안 왔으면 메인 스레드가 그 앞에서 이미 포화된 것이다.
-    @ObservationIgnored private var gestureEvents = 0
-    @ObservationIgnored private var gestureWorkSeconds: Double = 0
 
     private var detail: DetailOverlayController { .shared }
 
@@ -79,24 +73,13 @@ final class DetailBackDrag {
                 // 스크롤 잠금은 UIKit 쪽으로 — SwiftUI 상태로 두면 이 플립
                 // 하나에 상세 전체가 다시 평가된다(`DetailScrollLock` 참고).
                 DetailScrollLock.shared.isLocked = true
-                DetailOverlayTransform.shared.hostUpdates = 0
                 detail.offsetBase = detail.offset
-                gestureEvents = 0
-                gestureWorkSeconds = 0
                 // 진단 계측 — 이 구간의 프레임 간격을 재서 히치가 있으면
                 // 서버로 올린다. 실체화된 댓글 행 수를 함께 실어 "댓글 많은
                 // 글에서만 버벅인다" 는 체감을 숫자로 확인/반증한다.
-                // 드래그 구간의 메인 스레드 정체 스택을 직접 뜬다 — 렌더 쪽
-                // 시도가 네 번 연속 무관했고, 남은 질문은 "그 100~150ms 동안
-                // 메인이 무엇을 하고 있나" 하나뿐이다.
-                HangWatchdog.dragProbe.noteEvent(
-                    "backdrag " + CommentRenderProbe.shared.summary
-                )
-                HangWatchdog.dragProbe.resume()
                 FrameHitchRecorder.shared.begin(
                     label: "backdrag",
                     context: CommentRenderProbe.shared.summary
-                        + " · hide:uikit-host"
                 )
             case .horizontalLeft, .vertical:
                 // 좌측 가로/세로는 닫기와 무관 — 스크롤/탭을 막지 않게 양보.
@@ -106,15 +89,12 @@ final class DetailBackDrag {
             }
         }
         if horizontalLock == true {
-            let workStart = CFAbsoluteTimeGetCurrent()
             tapGate.suppress()
             let dx = v.translation.width - baseline
             // SwiftUI 상태가 아니라 레이어 변환을 직접 옮긴다 — 프레임마다
             // 상태를 쓰면 그 값을 읽는 트리의 디스플레이 리스트가 통째로
             // 다시 그려진다(계측: 글리프 재래스터화로 100~150ms 정체).
             DetailOverlayTransform.shared.track(max(0, min(detail.containerWidth, dx)))
-            gestureEvents += 1
-            gestureWorkSeconds += CFAbsoluteTimeGetCurrent() - workStart
         }
     }
 
@@ -131,16 +111,7 @@ final class DetailBackDrag {
         // 손을 뗀 뒤의 스프링 복귀/닫기 슬라이드까지 재고 마무리한다.
         // 스냅샷도 그 정착이 끝난 뒤에 걷는다(먼저 걷으면 정착 중 화면이 튄다).
         if horizontal {
-            FrameHitchRecorder.shared.appendContext(
-                "gesture \(gestureEvents)ev \(String(format: "%.0f", gestureWorkSeconds * 1000))ms"
-                    + " · hostUpdates \(DetailOverlayTransform.shared.hostUpdates)"
-            )
             FrameHitchRecorder.shared.endAfterSettle()
-            // 정착까지 포함해 재운다 — 스프링 구간의 정체도 같은 원인일 수 있다.
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(500))
-                HangWatchdog.dragProbe.pause()
-            }
         }
         guard horizontal, detail.activePost != nil else { return }
         let traveled = v.translation.width - base

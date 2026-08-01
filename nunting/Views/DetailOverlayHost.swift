@@ -31,11 +31,6 @@ final class DetailOverlayTransform {
     /// 오버레이가 사라져도 이 싱글톤이 뷰를 붙들고 있으면 안 된다.
     weak var target: UIView?
 
-    /// 진단 계측 — 드래그 한 번 동안 호스팅 트리가 업데이트 패스를 몇 번
-    /// 받았는지. 레이아웃이 도는 계기를 찾는 축이다(0 이면 레이아웃은 다른
-    /// 데서 촉발된 것이고, 1 이상이면 셸 재평가가 여전히 새고 있다는 뜻).
-    var hostUpdates = 0
-
     /// 논리적 위치(0 = 완전히 보임, containerWidth = 오른쪽으로 완전히 숨음).
     /// 드래그 중에는 이 값만 바뀌고 SwiftUI 상태는 건드리지 않는다.
     private(set) var offset: CGFloat = 0
@@ -99,7 +94,6 @@ struct DetailOverlayHost<Content: View>: UIViewControllerRepresentable {
         _ controller: DetailOverlayContainerController<Content>,
         context: Context
     ) {
-        DetailOverlayTransform.shared.hostUpdates += 1
         controller.update(rootView: content)
         if DetailOverlayTransform.shared.target !== controller.movableView {
             DetailOverlayTransform.shared.target = controller.movableView

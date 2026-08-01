@@ -139,3 +139,15 @@ final class FrameHitchStatsTests: XCTestCase {
         XCTAssertEqual(FrameHitchStats.make(from: samples).droppedFrames, 0)
     }
 }
+
+/// 히치 리포트의 발화 기준 — 원인을 잡은 뒤에는 **회귀 경보**로만 남는다.
+/// 정상 범위(드래그당 1~6장 드랍)까지 올라오면 admin 뷰가 정상 기록으로
+/// 뒤덮여 정작 회귀가 묻힌다.
+@MainActor
+final class FrameHitchReportThresholdTests: XCTestCase {
+    func testThresholdSitsAboveTheHealthyRange() {
+        // 계측된 정상 최대치(6장)보다 위, 회귀로 본 값(10장 이상)보다 아래.
+        XCTAssertGreaterThan(FrameHitchRecorder.reportThreshold, 6)
+        XCTAssertLessThanOrEqual(FrameHitchRecorder.reportThreshold, 10)
+    }
+}

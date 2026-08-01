@@ -52,24 +52,6 @@ nonisolated final class HangWatchdog: Sendable {
         }
     })
 
-    /// 백드래그 전용 저임계 워치독. `shared`(임계 1.0s)는 백드래그의 정체를
-    /// 원리적으로 못 잡는다 — 계측상 이 구간의 정체는 100~150ms 단위로 끊겨서
-    /// 온다(드래그 한 번에 제스처 이벤트가 3~4개밖에 안 도착한 것이 그 증거다.
-    /// UIKit 은 메인이 막히면 터치를 합친다). 임계를 낮춘 두 번째 인스턴스를
-    /// **드래그 중에만** 깨워서 그 순간의 메인 스레드 스택을 직접 뜬다.
-    ///
-    /// 상시로 켜지 않는 이유: 100ms 임계는 스크롤·전환 등 정상 작업에서도
-    /// 흔히 걸려 리포트가 홍수가 된다.
-    static let dragProbe = HangWatchdog(pingInterval: 0.02, threshold: 0.1, onReport: { report in
-        Task { @MainActor in
-            do {
-                try await AlertSubscriptionService.shared.reportHang(report)
-            } catch {
-                NSLog("[HangWatchdog.dragProbe] report failed: \(error.localizedDescription)")
-            }
-        }
-    })
-
     /// 심볼화 전의 스택 샘플 — 캡처 시점엔 raw 주소만 커밋한다.
     private struct RawSample: Sendable {
         let atMs: Int

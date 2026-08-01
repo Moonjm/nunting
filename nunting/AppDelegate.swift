@@ -40,10 +40,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // hang 워치독 — MetricKit diagnostic(hang 콜스택)은 Xcode 설치 빌드에 오지
         // 않으므로, 메인 스레드 1초+ 정지를 직접 감지해 스택 샘플을 서버로 올린다.
         HangWatchdog.shared.start()
-        // 백드래그 진단용 저임계 워치독 — 메인 스레드 포트를 잡기 위해 여기서
-        // 시작하되 곧바로 재운다. 백드래그가 시작될 때만 깨어난다.
-        HangWatchdog.dragProbe.start()
-        HangWatchdog.dragProbe.pause()
 
         return true
     }

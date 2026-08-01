@@ -109,6 +109,10 @@ nonisolated struct FrameHitchStats: Sendable, Equatable {
 final class FrameHitchRecorder: NSObject {
     static let shared = FrameHitchRecorder()
 
+    /// 이 이상 프레임이 빠진 구간만 리포트한다 — 정상 범위(1~6장)와 회귀를
+    /// 가르는 선. 낮추면 매 드래그가 올라오고, 높이면 회귀를 놓친다.
+    static let reportThreshold = 8
+
     /// 기록 종료 후 이만큼 더 재고 끝낸다 — 손을 뗀 뒤의 스프링 복귀
     /// (`.spring(response: 0.32)`) 와 닫기 슬라이드가 이 구간에 들어온다.
     /// 사용자가 "버벅인다" 고 느끼는 구간은 손가락을 뗀 뒤까지 포함한다.
@@ -200,10 +204,11 @@ final class FrameHitchRecorder: NSObject {
         let durationMs = Int((CACurrentMediaTime() - startedAt) * 1000)
         samples.removeAll(keepingCapacity: true)
 
-        // 매끄러운 드래그는 올리지 않는다 — 세션당 수십 번 일어나는 동작이라
-        // 전부 올리면 admin 뷰가 정상 기록으로 뒤덮인다. 대신 `sessionDrags` 로
-        // "몇 번 중 몇 번이 걸렸는지" 비율을 볼 수 있게 한다.
-        guard stats.droppedFrames > 0 else { return }
+        // 회귀 경보로만 남긴다. 원인을 잡은 뒤의 정상 범위는 드래그당 1~6장
+        // (댓글 227행에서도 2~4장, 최악 프레임 27~67ms)이라, 그보다 확실히
+        // 나쁜 구간만 올린다 — 정상 기록으로 admin 뷰가 뒤덮이면 정작 회귀가
+        // 묻힌다. `sessionDrags` 로 "몇 번 중 몇 번이 걸렸는지" 는 여전히 보인다.
+        guard stats.droppedFrames >= Self.reportThreshold else { return }
 
         onReport(FrameHitchReportDTO(
             ts: Int(Date().timeIntervalSince1970),
