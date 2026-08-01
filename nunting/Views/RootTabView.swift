@@ -79,6 +79,7 @@ final class DetailBackDrag {
                 // 스크롤 잠금은 UIKit 쪽으로 — SwiftUI 상태로 두면 이 플립
                 // 하나에 상세 전체가 다시 평가된다(`DetailScrollLock` 참고).
                 DetailScrollLock.shared.isLocked = true
+                DetailOverlayTransform.shared.hostUpdates = 0
                 detail.offsetBase = detail.offset
                 gestureEvents = 0
                 gestureWorkSeconds = 0
@@ -132,6 +133,7 @@ final class DetailBackDrag {
         if horizontal {
             FrameHitchRecorder.shared.appendContext(
                 "gesture \(gestureEvents)ev \(String(format: "%.0f", gestureWorkSeconds * 1000))ms"
+                    + " · hostUpdates \(DetailOverlayTransform.shared.hostUpdates)"
             )
             FrameHitchRecorder.shared.endAfterSettle()
             // 정착까지 포함해 재운다 — 스프링 구간의 정체도 같은 원인일 수 있다.
