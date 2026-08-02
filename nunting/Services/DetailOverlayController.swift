@@ -177,6 +177,17 @@ final class DetailOverlayController {
     func beginAnimationLock() {
         animationLockTask?.cancel()
         animating = true
+        // 스크롤 잠금은 **모든 정착 구간**에 걸려야 한다. 종전
+        // `isScrollingBlocked = scrollLocked || animating` 은 헤더 뒤로 버튼
+        // 같은 프로그램적 닫기에서도 잠갔는데, 잠금을 UIKit 으로 옮기면서
+        // 드래그 경로에서만 켜고 여기서는 끄기만 했다 — 그 경로들에서는
+        // 스프링 도중 스크롤이 살아 있어 contentOffset 이 흔들린다.
+        // 스크롤 잠금은 **모든 정착 구간**에 걸려야 한다. 종전
+        // `isScrollingBlocked = scrollLocked || animating` 은 헤더 뒤로 버튼
+        // 같은 프로그램적 닫기에서도 잠갔는데, 잠금을 UIKit 으로 옮기면서
+        // 드래그 경로에서만 켜고 여기서는 끄기만 했다 — 그 경로들에서는
+        // 스프링 도중 스크롤이 살아 있어 contentOffset 이 흔들린다.
+        DetailScrollLock.shared.isLocked = true
         animationLockTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(Self.animationLockMs))
             guard !Task.isCancelled else { return }

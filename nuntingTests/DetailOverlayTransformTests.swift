@@ -164,6 +164,30 @@ final class DetailOverlayTransformTests: XCTestCase {
         XCTAssertEqual(target.transform.tx, 393, accuracy: 0.01)
     }
 
+    /// 스프링이 도는 중의 "지금 보이는 위치" — 드래그를 다시 잡을 때 기준선이
+    /// 된다. 논리 위치(목적지)를 쓰면 그 자리로 튄다.
+    func testVisibleOffsetReportsThePresentationPositionMidFlight() {
+        // 뷰를 `_` 로 버리면 ARC 가 해제해 weak target 이 nil 이 되고, 논리
+        // 위치로 폴백해 버린다(이 테스트가 처음 그렇게 실패했다).
+        let (transform, target) = makeTarget()
+        XCTAssertNotNil(target.superview ?? target)
+        transform.snap(to: 0)
+        transform.visibleTransform = { _ in CGAffineTransform(translationX: 137, y: 0) }
+        transform.animate(to: 393)
+
+        XCTAssertEqual(transform.visibleOffset, 137, accuracy: 0.01)
+    }
+
+    /// 보이는 값을 못 얻으면(정지 상태 등) 논리 위치로 떨어진다.
+    func testVisibleOffsetFallsBackToTheLogicalOffset() {
+        let (transform, target) = makeTarget()
+        transform.visibleTransform = { _ in nil }
+        transform.snap(to: 240)
+
+        XCTAssertEqual(transform.visibleOffset, 240, accuracy: 0.01)
+        XCTAssertEqual(target.transform.tx, 240, accuracy: 0.01)
+    }
+
     // MARK: - 컨트롤러가 변환을 몰고 간다
 
     func testHideDrivesTheSharedTransform() async {

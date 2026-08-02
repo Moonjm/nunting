@@ -22,6 +22,9 @@ final class DetailBackDrag {
 
     @ObservationIgnored private var horizontalLock: Bool? = nil  // nil 미정 / true 가로 / false 세로
     @ObservationIgnored private var baseline: CGFloat = 0
+    /// 드래그를 잡은 순간 화면에 보이던 위치. 스프링이 도는 중에 다시 잡으면
+    /// 0 이 아니므로, 여기서부터 손가락 이동량을 더해야 튀지 않는다.
+    @ObservationIgnored private var dragStartOffset: CGFloat = 0
 
 
     private var detail: DetailOverlayController { .shared }
@@ -37,6 +40,18 @@ final class DetailBackDrag {
         case horizontalRight
         case horizontalLeft
         case vertical
+    }
+
+    /// 드래그 중 오버레이가 있어야 할 위치 — 잡은 순간의 위치에 손가락
+    /// 이동량을 더하고 화면 폭 안으로 자른다. 우→(닫기) 방향만 다루므로
+    /// 0 아래로는 내려가지 않는다.
+    nonisolated static func trackedOffset(
+        startOffset: CGFloat,
+        translation: CGFloat,
+        baseline: CGFloat,
+        containerWidth: CGFloat
+    ) -> CGFloat {
+        max(0, min(containerWidth, startOffset + (translation - baseline)))
     }
 
     /// 드래그 초입의 축 판정. nil = 아직 미정(더 움직인 뒤 재판정).
@@ -67,20 +82,7 @@ final class DetailBackDrag {
             switch Self.lockDecision(translation: v.translation) {
             case .horizontalRight:
                 // 우측(닫기) 가로 드래그만 백드래그로 잡는다.
-                horizontalLock = true
-                baseline = v.translation.width
-                scrollLocked = true
-                // 스크롤 잠금은 UIKit 쪽으로 — SwiftUI 상태로 두면 이 플립
-                // 하나에 상세 전체가 다시 평가된다(`DetailScrollLock` 참고).
-                DetailScrollLock.shared.isLocked = true
-                detail.offsetBase = detail.offset
-                // 진단 계측 — 이 구간의 프레임 간격을 재서 히치가 있으면
-                // 서버로 올린다. 실체화된 댓글 행 수를 함께 실어 "댓글 많은
-                // 글에서만 버벅인다" 는 체감을 숫자로 확인/반증한다.
-                FrameHitchRecorder.shared.begin(
-                    label: "backdrag",
-                    context: CommentRenderProbe.shared.summary
-                )
+                beginHorizontalDrag(translationWidth: v.translation.width)
             case .horizontalLeft, .vertical:
                 // 좌측 가로/세로는 닫기와 무관 — 스크롤/탭을 막지 않게 양보.
                 horizontalLock = false
@@ -90,12 +92,46 @@ final class DetailBackDrag {
         }
         if horizontalLock == true {
             tapGate.suppress()
-            let dx = v.translation.width - baseline
-            // SwiftUI 상태가 아니라 레이어 변환을 직접 옮긴다 — 프레임마다
-            // 상태를 쓰면 그 값을 읽는 트리의 디스플레이 리스트가 통째로
-            // 다시 그려진다(계측: 글리프 재래스터화로 100~150ms 정체).
-            DetailOverlayTransform.shared.track(max(0, min(detail.containerWidth, dx)))
+            moveHorizontalDrag(translationWidth: v.translation.width)
         }
+    }
+
+    /// 가로 드래그가 잠기는 순간의 준비. 제스처 없이도 부를 수 있게 떼어 둔다
+    /// — 최근 회귀가 전부 "규칙은 맞는데 배선이 빠진" 자리에서 났다.
+    func beginHorizontalDrag(translationWidth: CGFloat) {
+        horizontalLock = true
+        baseline = translationWidth
+        scrollLocked = true
+        // 스크롤 잠금은 UIKit 쪽으로 — SwiftUI 상태로 두면 이 플립 하나에
+        // 상세 전체가 다시 평가된다(`DetailScrollLock` 참고).
+        DetailScrollLock.shared.isLocked = true
+        detail.offsetBase = detail.offset
+        // 스프링이 도는 중에 다시 잡았다면 지금 **보이는** 그 자리가 시작점이다.
+        // 손가락 이동량만으로 계산하면 그 순간 화면이 목적지(또는 0)로 튄 뒤에
+        // 따라오기 시작한다.
+        dragStartOffset = DetailOverlayTransform.shared.visibleOffset
+        DetailOverlayTransform.shared.track(dragStartOffset)
+        // 진단 계측 — 이 구간의 프레임 간격을 재서 히치가 있으면 서버로
+        // 올린다. 실체화된 댓글 행 수를 함께 실어 "댓글 많은 글에서만
+        // 버벅인다" 는 체감을 숫자로 확인/반증한다.
+        FrameHitchRecorder.shared.begin(
+            label: "backdrag",
+            context: CommentRenderProbe.shared.summary
+        )
+    }
+
+    /// 드래그 중 한 번의 이동. SwiftUI 상태가 아니라 레이어 변환을 직접 옮긴다
+    /// — 프레임마다 상태를 쓰면 그 값을 읽는 트리의 디스플레이 리스트가 통째로
+    /// 다시 그려진다(계측: 글리프 재래스터화로 100~150ms 정체).
+    func moveHorizontalDrag(translationWidth: CGFloat) {
+        DetailOverlayTransform.shared.track(
+            Self.trackedOffset(
+                startOffset: dragStartOffset,
+                translation: translationWidth,
+                baseline: baseline,
+                containerWidth: detail.containerWidth
+            )
+        )
     }
 
     private func onEnded(_ v: DragGesture.Value) {

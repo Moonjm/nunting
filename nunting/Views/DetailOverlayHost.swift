@@ -44,6 +44,14 @@ final class DetailOverlayTransform {
     /// 드래그 중에는 이 값만 바뀌고 SwiftUI 상태는 건드리지 않는다.
     private(set) var offset: CGFloat = 0
 
+    /// 지금 화면에 보이는 위치. 스프링이 도는 중이면 그 중간값이고, 아니면
+    /// 논리 위치다. 드래그를 다시 잡을 때 **기준선**으로 쓴다 — 이걸 안 쓰면
+    /// 손가락 이동량만으로 위치를 새로 계산해 화면이 목적지로 튄다.
+    var visibleOffset: CGFloat {
+        guard let target, let visible = visibleTransform(target) else { return offset }
+        return visible.tx
+    }
+
     /// 손가락을 따라가는 즉시 반영.
     func track(_ newOffset: CGFloat) {
         apply(newOffset, animated: false)

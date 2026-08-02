@@ -76,6 +76,18 @@ final class DetailScrollLockTests: XCTestCase {
         XCTAssertTrue(scrollView.isScrollEnabled, "잠금을 풀었는데 스크롤이 죽어 있다")
     }
 
+    /// 헤더 뒤로 버튼처럼 **드래그 없이** 닫을 때도 스프링 동안 스크롤이
+    /// 잠겨야 한다. 종전 `scrollLocked || animating` 은 그랬는데, 잠금을
+    /// UIKit 으로 옮기며 드래그 경로에서만 켜고 있었다 — 그 사이 스크롤이
+    /// 살아 있으면 정착 중 contentOffset 이 흔들린다.
+    func testProgrammaticDismissLocksScrollingDuringTheSpring() {
+        DetailScrollLock.shared.isLocked = false
+        DetailOverlayController.shared.beginAnimationLock()
+
+        XCTAssertTrue(DetailScrollLock.shared.isLocked,
+                      "드래그 없이 닫는 경로에서 스크롤이 안 잠겼다")
+    }
+
     /// 애니메이션 락이 풀릴 때 스크롤 잠금도 같이 풀린다 — 이 배선이 끊기면
     /// 백드래그를 취소한 뒤 상세가 영영 스크롤되지 않는다.
     func testAnimationLockReleaseUnlocksScrolling() async {
