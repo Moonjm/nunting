@@ -244,17 +244,21 @@ final class FrameHitchRecorder: NSObject {
     /// 테스트 전용 — 지금 기록 중인지.
     var isRecordingForTesting: Bool { link != nil }
 
+    /// 리포트 없이 중단 — 제스처가 취소된 구간(백그라운드 전환, 시스템 제스처
+    /// 개입 등)에 쓴다. `finish()` 로 끝내면 안 되는 이유: 전환 때 벌어진 거대한
+    /// 간격이 그대로 "드랍 수십 장" 짜리 가짜 히치로 올라가고, 손을 뗀 적이 없어
+    /// mark 도 없으니 드래그/정착 구분도 안 된다. 진단 가치가 없는 구간이다.
+    func abort() {
+        stopLink()
+    }
+
     /// 즉시 마무리(구간이 취소된 경우 등).
     func finish() {
-        stopTask?.cancel()
-        stopTask = nil
-        guard let link else { return }
-        link.invalidate()
-        self.link = nil
+        let collected = samples
+        guard stopLink() else { return }
 
-        let stats = FrameHitchStats.make(from: samples, markAt: markAt)
+        let stats = FrameHitchStats.make(from: collected, markAt: markAt)
         let durationMs = Int((CACurrentMediaTime() - startedAt) * 1000)
-        samples.removeAll(keepingCapacity: true)
 
         // 회귀 경보로만 남긴다. 원인을 잡은 뒤의 정상 범위는 드래그당 1~6장
         // (댓글 227행에서도 2~4장, 최악 프레임 27~67ms)이라, 그보다 확실히
@@ -279,6 +283,18 @@ final class FrameHitchRecorder: NSObject {
             dropsBeforeMark: stats.dropsBeforeMark,
             dropsAfterMark: stats.dropsAfterMark
         ))
+    }
+
+    /// 링크와 정착 대기를 내린다. false = 기록 중이 아니었다(중복 호출).
+    @discardableResult
+    private func stopLink() -> Bool {
+        stopTask?.cancel()
+        stopTask = nil
+        guard let link else { return false }
+        link.invalidate()
+        self.link = nil
+        samples.removeAll(keepingCapacity: true)
+        return true
     }
 
     @objc private func tick(_ link: CADisplayLink) {

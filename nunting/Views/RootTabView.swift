@@ -164,6 +164,32 @@ final class DetailBackDrag {
         }
     }
 
+    /// `onEnded` 없이 끝나는 경로의 정리. SwiftUI `DragGesture` 는 백그라운드
+    /// 전환·시스템 제스처 개입 같은 취소에서 onEnded 를 부르지 않을 수 있는데,
+    /// 그러면 드래그 시작 때 켠 것들이 전부 켜진 채로 남는다:
+    ///  - `DetailScrollLock` — 상세 스크롤이 죽은 채로 남는다(체감 결함).
+    ///  - `FrameHitchRecorder` — CADisplayLink 가 스케줄된 채 매 프레임 틱을
+    ///    계속 돌고(표본도 계속 쌓인다), 그 구간이 다음 드래그 리포트에 섞인다.
+    ///  - 오버레이 — 끌던 자리에 반쯤 열린 채 멈춘다.
+    /// 손을 뗀 것과 같게 되돌린다. 다만 취소 구간은 진단 가치가 없으므로
+    /// 리포트 없이 버린다(`abort`).
+    func cancel() {
+        guard let wasHorizontal = horizontalLock else { return }
+        horizontalLock = nil
+        baseline = 0
+        scrollLocked = false
+        FrameHitchRecorder.shared.abort()
+        guard wasHorizontal else {
+            // 세로/좌측 드래그는 아무것도 잠그지 않았다 — onEnded 와 같게 푼다.
+            DetailScrollLock.shared.isLocked = false
+            return
+        }
+        // 취소는 닫기 판정이 아니다 — 제자리로 되돌린다. 잠금은 정착 스프링이
+        // 끝날 때 `beginAnimationLock` 쪽에서 풀린다.
+        detail.beginAnimationLock()
+        detail.settleBack()
+    }
+
     /// 닫기 — 슬라이드 아웃만 하고 activePost 는 살려둔다(keep-alive). 헤더 뒤로
     /// 버튼·백드래그 공용. 히스토리 버튼이 이 살아있는 오버레이를 다시 슬라이드
     /// 인한다. 다음 글을 열면 그때 이전 오버레이가 교체·해제된다.
@@ -414,6 +440,13 @@ struct RootTabView: View {
                 FootprintLogger.shared.onBackground()
                 // suspend 된 메인 큐를 hang 으로 오인하지 않게 워치독 정지.
                 HangWatchdog.shared.pause()
+                // .inactive 를 건너뛰는 경로가 있어도 드래그가 남지 않게(중복
+                // 호출은 no-op).
+                backDrag.cancel()
+            case .inactive:
+                // 진행 중이던 백드래그는 여기서 끝난다 — 앱이 터치를 못 받는
+                // 구간이고, SwiftUI 는 이 취소에서 onEnded 를 안 부를 수 있다.
+                backDrag.cancel()
             case .active:
                 HangWatchdog.shared.resume()
                 FootprintLogger.shared.record("scenePhase:active")

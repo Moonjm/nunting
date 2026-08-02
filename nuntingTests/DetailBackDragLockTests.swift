@@ -120,5 +120,52 @@ final class DetailBackDragLockTests: XCTestCase {
 
         XCTAssertEqual(target.transform.tx, 210, accuracy: 0.5,
                        "이동량이 잡은 자리에 더해지지 않았다")
+        FrameHitchRecorder.shared.abort()
+    }
+
+    // MARK: - 취소(onEnded 없이 끝나는 경로)
+
+    /// SwiftUI DragGesture 는 백그라운드 전환·시스템 제스처 개입에서 `onEnded`
+    /// 를 안 부를 수 있다. 그러면 드래그가 켠 것들이 켜진 채로 남는다 —
+    /// 계측기는 CADisplayLink 를 매 프레임 돌리며 표본을 계속 쌓고, 그 구간이
+    /// 다음 드래그 리포트에 섞인다.
+    @MainActor
+    func testCancellingADragStopsTheHitchRecorder() {
+        let drag = DetailBackDrag()
+        defer { FrameHitchRecorder.shared.abort() }
+
+        drag.beginHorizontalDrag(translationWidth: 14)
+        XCTAssertTrue(FrameHitchRecorder.shared.isRecordingForTesting, "전제: 기록이 시작돼야 한다")
+
+        drag.cancel()
+
+        XCTAssertFalse(FrameHitchRecorder.shared.isRecordingForTesting,
+                       "취소된 드래그의 계측 구간이 살아남았다")
+    }
+
+    /// 같은 누락의 더 아픈 쪽 — 스크롤 잠금이 영영 안 풀리면 상세 스크롤이
+    /// 죽은 채로 남는다. 취소도 손을 뗀 것과 같게 정착 스프링을 거쳐 풀려야 한다.
+    @MainActor
+    func testCancellingADragEventuallyReleasesTheScrollLock() {
+        let drag = DetailBackDrag()
+        defer {
+            FrameHitchRecorder.shared.abort()
+            DetailScrollLock.shared.isLocked = false
+        }
+
+        drag.beginHorizontalDrag(translationWidth: 14)
+        XCTAssertTrue(DetailScrollLock.shared.isLocked, "전제: 드래그가 스크롤을 잠근다")
+
+        drag.cancel()
+
+        // 정착 스프링이 끝나면 풀린다(`beginAnimationLock`).
+        let released = expectation(description: "스크롤 잠금 해제")
+        Task { @MainActor in
+            for _ in 0..<40 {
+                if !DetailScrollLock.shared.isLocked { released.fulfill(); return }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+        }
+        wait(for: [released], timeout: 3)
     }
 }
