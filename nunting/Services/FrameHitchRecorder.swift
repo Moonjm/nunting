@@ -99,6 +99,40 @@ nonisolated struct FrameHitchStats: Sendable, Equatable {
     }
 }
 
+/// 디스플레이 링크 콜백 시퀀스를 표본(실제 간격 + 그 간격의 기대치)으로 바꾸는
+/// 상태기.
+///
+/// 핵심은 **짝짓기**다. `targetTimestamp - timestamp` 는 그 콜백 *다음* 간격의
+/// 기대치인 반면, 그 자리에서 잴 수 있는 실제 간격은 *직전* 콜백부터 지금까지의
+/// 것이다. 둘을 그대로 나누면 주사율이 바뀌는 순간에만 어긋난다 — 고정 주사율
+/// 에서는 값이 같아 티가 안 나지만, ProMotion 기기는 스크롤/드래그가 잦아들면
+/// 주사율을 내리므로 재는 구간마다 전환이 실제로 일어난다.
+///   60→120Hz: 정상 16.7ms 간격이 8.3ms 기대와 비교돼 드랍 1장으로 잡힌다.
+///   120→60Hz: 진짜 빠진 16.7ms 간격이 16.7ms 기대와 비교돼 묻힌다.
+/// 그래서 직전 콜백이 예고한 기대치를 들고 있다가 다음 실제 간격과 짝짓는다.
+struct FrameIntervalSampler {
+    private var lastTimestamp: CFTimeInterval = 0
+    private var lastExpected: CFTimeInterval = 0
+
+    /// 콜백 하나를 표본으로. 첫 콜백은 이전 시각이 없어 간격을 못 만든다(nil).
+    mutating func sample(
+        timestamp: CFTimeInterval,
+        targetTimestamp: CFTimeInterval,
+        startedAt: CFTimeInterval
+    ) -> (at: Double, actual: Double, expected: Double)? {
+        defer {
+            lastTimestamp = timestamp
+            lastExpected = targetTimestamp - timestamp
+        }
+        guard lastTimestamp > 0 else { return nil }
+        return (
+            at: timestamp - startedAt,
+            actual: timestamp - lastTimestamp,
+            expected: lastExpected
+        )
+    }
+}
+
 /// 특정 인터랙션 구간의 프레임 간격을 재는 진단 계측기.
 ///
 /// 왜 필요했나: "댓글 많은 글에서 뒤로 스와이프하면 버벅인다" 를 기기 밖에서
@@ -129,7 +163,7 @@ final class FrameHitchRecorder: NSObject {
     private var samples: [(at: Double, actual: Double, expected: Double)] = []
     private var markLabel = ""
     private var markAt: Double?
-    private var lastTimestamp: CFTimeInterval = 0
+    private var sampler = FrameIntervalSampler()
     private var startedAt: CFTimeInterval = 0
     private var label = ""
     private var context = ""
@@ -165,7 +199,7 @@ final class FrameHitchRecorder: NSObject {
         self.label = label
         self.context = context
         samples.removeAll(keepingCapacity: true)
-        lastTimestamp = 0
+        sampler = FrameIntervalSampler()
         markLabel = ""
         markAt = nil
         startedAt = CACurrentMediaTime()
@@ -248,15 +282,12 @@ final class FrameHitchRecorder: NSObject {
     }
 
     @objc private func tick(_ link: CADisplayLink) {
-        defer { lastTimestamp = link.timestamp }
-        // 첫 틱은 이전 프레임 시각이 없어 간격을 못 만든다.
-        guard lastTimestamp > 0 else { return }
-        let expected = link.targetTimestamp - link.timestamp
-        samples.append((
-            at: link.timestamp - startedAt,
-            actual: link.timestamp - lastTimestamp,
-            expected: expected
-        ))
+        guard let sample = sampler.sample(
+            timestamp: link.timestamp,
+            targetTimestamp: link.targetTimestamp,
+            startedAt: startedAt
+        ) else { return }
+        samples.append(sample)
     }
 }
 
