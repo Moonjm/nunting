@@ -166,6 +166,45 @@ final class CommentRenderWindowTests: XCTestCase {
         )
     }
 
+    /// 같은 유실인데 위 테스트가 못 잡는 경우: 그린 구간이 **청크 경계에 딱
+    /// 맞는** 새로고침(30→60, 50→80 …).
+    ///
+    /// 40→80 은 그리는 개수가 40 에서 50 으로 늘며 인덱스 40 에 센티넬이 새로
+    /// 생기고, 그 센티넬은 지오메트리를 처음 계산하므로 사슬이 스스로 이어진다.
+    /// 반면 30 개를 다 그린 상태에서 60 개가 되면 그리는 구간(0..<30)이 그대로라
+    /// 센티넬 집합도 그대로고, 이미 true 인 가시성 값은 변하지 않는다.
+    /// `onGeometryChange` 는 값이 바뀔 때만 액션을 부르므로 성장이 영영 안 돈다.
+    func testRefreshAtAChunkBoundaryStillOpensTheWindow() throws {
+        let host = UIHostingController(rootView: RefreshHarness(comments: comments(30)))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 393, height: 852))
+        window.rootViewController = host
+        window.isHidden = false
+        host.view.frame = window.bounds
+        host.view.layoutIfNeeded()
+        settle(host.view)
+
+        // 끝까지 내려간다 — 센티넬(인덱스 20)이 "여기까지 왔다" 를 보고하지만
+        // 이 시점엔 그린 개수 == 전체라 성장 자격이 없다.
+        let scroll = try XCTUnwrap(Self.firstScrollView(host.view))
+        scroll.contentOffset = CGPoint(
+            x: 0,
+            y: max(0, scroll.contentSize.height - scroll.bounds.height)
+        )
+        host.view.layoutIfNeeded()
+        settle(host.view)
+        XCTAssertEqual(Self.countTextViews(host.view), 30,
+                       "전제: 30개는 전부 그려져 있어야 한다")
+
+        host.rootView = RefreshHarness(comments: comments(60))
+        host.view.layoutIfNeeded()
+        settle(host.view)
+
+        XCTAssertGreaterThan(
+            Self.countTextViews(host.view), 30,
+            "청크 경계에서 새로고침하니 늘어난 댓글이 영영 가려졌다"
+        )
+    }
+
     /// 댓글 배열만 갈아끼우는 하네스 — 새로고침 재현용.
     private struct RefreshHarness: View {
         let comments: [PostComment]

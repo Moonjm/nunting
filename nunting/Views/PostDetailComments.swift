@@ -86,6 +86,11 @@ struct PostDetailCommentsSection: View {
     /// 지금까지 그린 댓글 수. 늘어나기만 한다(`CommentRenderWindow` 참고).
     @State private var renderedCount = CommentRenderWindow.initialCount
 
+    /// 사용자가 지금까지 내려온 가장 깊은 센티넬. 성장 자격이 없던 시점의
+    /// 도달도 기억해 둬야 새로고침 때 그 지점을 다시 평가할 수 있다
+    /// (`growIfNeeded` 참고).
+    @State private var deepestReachedSentinel: Int?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -149,6 +154,16 @@ struct PostDetailCommentsSection: View {
                       initial: true) { _, counts in
                 CommentRenderProbe.shared.update(rendered: counts.rendered, total: counts.total)
             }
+            // 새로고침으로 전체가 늘면 성장 조건을 **다시** 따진다. 센티넬의
+            // 지오메트리만으로는 이 순간을 잡을 수 없다: 그린 구간이 청크
+            // 경계에 딱 맞으면(30·50·70…) 새로 그려지는 행이 없어 센티넬 집합이
+            // 그대로고, 이미 true 인 가시성 값은 변하지 않는다 —
+            // `onGeometryChange` 는 값이 바뀔 때만 액션을 부르므로 성장이 영영
+            // 안 돈다(30→60 이면 뒤 30개가 접근 불가). 40→80 처럼 그리는 구간이
+            // 늘어나는 경우만 새 센티넬이 생겨 사슬이 스스로 이어졌다.
+            .onChange(of: comments.count) { _, total in
+                growIfNeeded(sentinelAfter: deepestReachedSentinel, total: total)
+            }
         }
     }
 
@@ -186,18 +201,27 @@ struct PostDetailCommentsSection: View {
                 guard let visible = proxy.bounds(of: .scrollView) else { return false }
                 return visible.maxY >= 0
             } action: { reached in
-                guard reached,
-                      CommentRenderWindow.shouldGrow(
-                          sentinelAfter: index,
-                          rendered: rendered,
-                          total: comments.count
-                      )
-                else { return }
-                // 그리는 개수(`rendered`)가 아니라 **상태**에서 자란다 —
-                // rendered 는 전체 개수로 잘린 값이라 그걸 기준으로 자라면
-                // 위 정렬이 깨진다.
-                renderedCount = CommentRenderWindow.grown(from: renderedCount)
+                guard reached else { return }
+                // 지금 자격이 없어도(창 == 전체) 도달 사실은 남긴다 —
+                // 새로고침으로 전체가 늘면 그때 이 지점을 다시 평가한다.
+                deepestReachedSentinel = max(deepestReachedSentinel ?? index, index)
+                growIfNeeded(sentinelAfter: index, total: comments.count)
             }
+    }
+
+    /// 그 센티넬 기준으로 성장 자격이 있으면 한 청크 늘린다. 센티넬의 가시성
+    /// 변화와 댓글 수 변화, 두 경로가 같은 판정을 쓰도록 한 군데로 모았다.
+    private func growIfNeeded(sentinelAfter index: Int?, total: Int) {
+        guard let index,
+              CommentRenderWindow.shouldGrow(
+                  sentinelAfter: index,
+                  rendered: CommentRenderWindow.clamped(renderedCount, total: total),
+                  total: total
+              )
+        else { return }
+        // 그리는 개수가 아니라 **상태**에서 자란다 — 그리는 개수는 전체
+        // 개수로 잘린 값이라 그걸 기준으로 자라면 청크 정렬이 깨진다.
+        renderedCount = CommentRenderWindow.grown(from: renderedCount)
     }
 }
 
