@@ -128,30 +128,48 @@ final class PostDetailLoader {
         forceFresh: Bool = false
     ) async {
         loadGeneration += 1
+        // 캐시본이 낡았다고 판정한 순간부터는 prefetch 본도 못 쓴다 — 아래
+        // warm 경로가 이 값을 보고 건너뛴다.
+        var staleCacheDetected = false
         // Pull-to-refresh path: drop the in-memory cache entry so the
         // load below goes back to the network. URLSession may still serve
         // a cached HTTP response; that's a separate layer to revisit if
         // refresh stops feeling fresh in the wild.
         if forceFresh {
             cache.remove(id: post.id)
-        } else if let entry = cache.get(id: post.id),
-                  !Self.cacheIsStale(
-                      cachedComments: entry.detail.comments.count,
-                      listCommentCount: post.commentCount
-                  ) {
-            detail = entry.detail
-            isLoading = false
-            // 댓글 실패 본은 캐시에 안 넣지만, 다른 화면의 loader 가 같은
-            // 글을 성공적으로 캐시했을 수 있다 — 히트 복원 시 배너는 내린다.
-            commentsFailed = false
-            commentRetryContext = nil
-            // 캐시 히트도 이미지 서브트리를 다시 세운다 — SDImageCache 가
-            // 메모리 압박/백그라운드 해제로 비워졌으면 같은 GIF 를 재디코드해
-            // 스파이크가 재현될 수 있다. cold 경로와 같은 태그를 남겨 그 순간을
-            // 특정 글로 귀속시킨다(캐시 detail.post 는 resolved 라 site 일치).
-            FootprintLogger.shared.record(
-                Self.mediaLabel(for: entry.detail.blocks, site: entry.detail.post.site, postID: post.id))
-            return
+        } else if let entry = cache.get(id: post.id) {
+            if Self.cacheIsStale(
+                cachedComments: entry.detail.comments.count,
+                listCommentCount: post.commentCount
+            ) {
+                // 낡은 캐시를 버렸으면 같은 나이의 prefetch 본도 같이 버린다.
+                // 프리페치는 목록 로드 시점 본이라 캐시본과 같은 시대의
+                // 문서고(둘 다 새 댓글 이전), 그대로 두면 아래 cold 경로가
+                // 그걸 소비해 방금 무효화한 내용을 글자 그대로 되살린다.
+                // 창고에서 빼는 것(consume)과 이 로드에서 안 쓰는 것(플래그)을
+                // 함께 한다 — 제거만 믿으면 warm 공급자 구현이 바뀔 때 조용히
+                // 되살아난다.
+                //
+                // 프리페치가 소비됐다 다시 담긴 경우엔 warm 이 캐시보다 신선할
+                // 수도 있지만 둘을 구분할 신호가 없다. RTT 한 번 내고 확실한
+                // 쪽을 택한다 — pull-to-refresh 가 warm 을 무시하는 것과 같은 판단.
+                _ = warmHTML(post.id)
+                staleCacheDetected = true
+            } else {
+                detail = entry.detail
+                isLoading = false
+                // 댓글 실패 본은 캐시에 안 넣지만, 다른 화면의 loader 가 같은
+                // 글을 성공적으로 캐시했을 수 있다 — 히트 복원 시 배너는 내린다.
+                commentsFailed = false
+                commentRetryContext = nil
+                // 캐시 히트도 이미지 서브트리를 다시 세운다 — SDImageCache 가
+                // 메모리 압박/백그라운드 해제로 비워졌으면 같은 GIF 를 재디코드해
+                // 스파이크가 재현될 수 있다. cold 경로와 같은 태그를 남겨 그 순간을
+                // 특정 글로 귀속시킨다(캐시 detail.post 는 resolved 라 site 일치).
+                FootprintLogger.shared.record(
+                    Self.mediaLabel(for: entry.detail.blocks, site: entry.detail.post.site, postID: post.id))
+                return
+            }
         }
         guard !Task.isCancelled else { return }
         isLoading = true
@@ -220,11 +238,11 @@ final class PostDetailLoader {
                     html = try await Networking.applyBotCheckGuard(url: resolvedURL, body: decoded) {
                         try await captureFetcher(resolvedURL, resolvedEncoding)
                     }
-                } else if !forceFresh, let warm = warmHTML(post.id) {
+                } else if !forceFresh, !staleCacheDetected, let warm = warmHTML(post.id) {
                     // 목록에서 미리 받아 둔 본 — fetch 생략 (RTT 제거).
                     // warm 본은 `Networking.fetchHTML` 경유로 받은 것이라
-                    // 봇체크 가드를 이미 통과했다. pull-to-refresh 는 신선도
-                    // 보장을 위해 무시.
+                    // 봇체크 가드를 이미 통과했다. pull-to-refresh 와, 캐시본이
+                    // 낡아 버려진 경우는 신선도 보장을 위해 무시(위 참고).
                     html = warm
                 } else {
                     html = try await fetcher(resolved.url, resolved.site.encoding)
