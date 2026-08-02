@@ -134,8 +134,51 @@ struct SelectableRichText: UIViewRepresentable {
         // intrinsicContentSize returns a single-line width that
         // overflows the layout for any multi-line paragraph.
         guard let width = proposal.width, width.isFinite, width > 0 else { return nil }
+
+        // 측정 결과는 (텍스트, 폰트, 폭)의 순수 함수라 캐시한다. 이유는
+        // 기기에서 뜬 백드래그 정체 스택이다 — SwiftUI 레이아웃 패스가
+        // 이 함수를 타고 TextKit 측정으로 내려간 자리에서 메인 스레드가
+        // 175ms 멈췄다(댓글 159행):
+        //   7  nunting  SelectableRichText.sizeThatFits
+        //   5  UIKitCore / 1~4 UIFoundation (TextKit 레이아웃)
+        // 드래그 중 레이아웃이 한 번이라도 돌면 그려진 행 전부를 다시 재는데,
+        // 내용이 그대로면 잴 필요가 없다.
+        // 폭을 반올림하지 않는다 — 360.6 과 361.4 가 한 항목을 공유하면
+        // 줄바꿈 경계에 걸친 텍스트에서 줄 수가 달라져 캐시된 낮은 높이가
+        // 마지막 줄을 잘라먹는다. 제안 폭은 레이아웃마다 안정적이라 정확한
+        // 값으로 키잉해도 적중률이 떨어지지 않는다.
+        let key = HeightKey(text: attributedString, font: font, width: width)
+        if let cached = Self.heightCache[key] {
+            return CGSize(width: width, height: cached)
+        }
         let fitted = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
-        return CGSize(width: width, height: ceil(fitted.height))
+        let height = ceil(fitted.height)
+        Self.cacheHeight(height, for: key)
+        return CGSize(width: width, height: height)
+    }
+
+    /// 폭까지 키에 넣는다 — 회전/분할화면으로 폭이 바뀌면 높이도 달라진다.
+    /// 폰트는 Dynamic Type 을 반영한 실제 폰트라 글자 크기 변경도 여기서 갈린다.
+    nonisolated struct HeightKey: Hashable {
+        let text: AttributedString
+        let font: UIFont
+        let width: CGFloat
+    }
+
+    /// 화면에 살아 있는 행 수(수백)의 몇 배면 충분하다. 넘으면 통째로 비운다 —
+    /// LRU 를 굴릴 만큼 값이 비싸지 않고(재측정 1~2ms), 폭·폰트가 바뀌는
+    /// 순간에는 어차피 전부 무효가 된다.
+    static let heightCacheLimit = 2000
+    private static var heightCache: [HeightKey: CGFloat] = [:]
+
+    private static func cacheHeight(_ height: CGFloat, for key: HeightKey) {
+        if heightCache.count >= heightCacheLimit { heightCache.removeAll(keepingCapacity: true) }
+        heightCache[key] = height
+    }
+
+    /// 테스트 전용 — 캐시 상태에 의존하는 검증을 격리한다.
+    static func resetHeightCacheForTesting() {
+        heightCache.removeAll()
     }
 
     final class Coordinator: NSObject, UITextViewDelegate {

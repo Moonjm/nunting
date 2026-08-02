@@ -706,3 +706,59 @@ func TestAdminMetricsSummarizesHang(t *testing.T) {
 		t.Errorf("hang summary missing duration/label, body=%q", body)
 	}
 }
+
+// kind=hitch — iOS FrameHitchRecorder 가 올리는 인터랙션 구간 프레임 히치.
+// hang 임계(1s) 아래로 새는 "몇 프레임 빠짐" 을 보기 위한 채널.
+func TestPostMetricsAcceptsHitchKind(t *testing.T) {
+	srv, store := newTestServer(t)
+	defer srv.Close()
+	defer store.Close()
+
+	hitch := `{"ts":1753000000,"label":"backdrag","context":"comments 210/400",` +
+		`"durationMs":900,"frameCount":72,"droppedFrames":9,"worstFrameMs":68.2,` +
+		`"expectedFrameMs":8.3,"worstFrames":[68.2,41.7],"sessionDrags":13}`
+	if code, _ := do(t, "POST", srv.URL+"/me/metrics?kind=hitch", "nnt_x", hitch); code != 200 {
+		t.Fatalf("post hitch: want 200, got %d", code)
+	}
+
+	rows, err := store.ListMetricPayloads(t.Context(), 10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Kind != "hitch" {
+		t.Fatalf("unexpected rows: %+v", rows)
+	}
+}
+
+func TestAdminMetricsSummarizesHitch(t *testing.T) {
+	t.Setenv("NUNTING_ADMIN_KEY", "s3cret")
+	store := dbtest.New(t)
+	defer store.Close()
+	srv := httptest.NewServer(NewRouter(store))
+	defer srv.Close()
+
+	if err := store.UpsertUser(t.Context(), "nnt_x"); err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+	hitch := `{"ts":1753000000,"label":"backdrag","context":"comments 210/400",` +
+		`"durationMs":900,"frameCount":72,"droppedFrames":9,"worstFrameMs":68.2,` +
+		`"expectedFrameMs":8.3,"worstFrames":[68.2,41.7],"sessionDrags":13}`
+	if err := store.InsertMetricPayload(t.Context(), "nnt_x", "hitch", hitch); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	code, body := do(t, "GET", srv.URL+"/admin/metrics?key=s3cret", "", "")
+	if code != 200 {
+		t.Fatalf("admin: want 200, got %d", code)
+	}
+	// 요약에 원인 특정용 세 축(드랍 수, 최악 프레임, context)이 다 보여야 한다.
+	for _, want := range []string{"9 dropped", "68ms", "backdrag", "comments 210/400"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("hitch summary missing %q, body=%q", want, body)
+		}
+	}
+	// dropped frames 카드에 누적된다.
+	if !strings.Contains(body, "dropped frames") {
+		t.Errorf("dropped frames card missing, body=%q", body)
+	}
+}

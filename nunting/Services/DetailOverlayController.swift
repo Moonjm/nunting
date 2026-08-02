@@ -30,7 +30,7 @@ final class DetailOverlayController {
     /// 0 = overlay fully shown; `containerWidth` = fully hidden off the
     /// right edge. Driven by `show`/`hide` springs and tracked directly
     /// by the pan gesture during interactive back-drags.
-    var offset: CGFloat = 0
+    var offset: CGFloat = 0 { didSet { refreshVisibilityFlags() } }
     /// `offset` snapshot taken when the horizontal drag lock engages.
     /// Lets the gesture classify the drag as back-swipe (base 0) vs
     /// forward-reveal (base `containerWidth`) regardless of how far
@@ -44,7 +44,7 @@ final class DetailOverlayController {
     /// Mirrors the container width measured by `RootTabView` (via
     /// GeometryReader, fed in through `updateContainerWidth`). The
     /// controller needs it to compute hide offsets and visibility predicates.
-    var containerWidth: CGFloat = 0
+    var containerWidth: CGFloat = 0 { didSet { refreshVisibilityFlags() } }
 
     /// In-flight deferred animation from `show(_:)`'s replace branch.
     /// Tracked so `hide()` (and a subsequent `show(_:)`) can cancel it
@@ -86,14 +86,16 @@ final class DetailOverlayController {
         // Drop any pending deferred-show before scheduling a new one.
         showTask?.cancel()
         if activePost?.id == post.id {
-            withAnimation(.spring(response: Self.springResponse, dampingFraction: Self.springDamping)) {
-                offset = 0
-            }
+            // 위치는 레이어 변환이 소유한다 — SwiftUI 애니메이션으로 밀면
+            // 상세 전체가 매 프레임 다시 그려진다(`DetailOverlayHost` 참고).
+            offset = 0
+            DetailOverlayTransform.shared.animate(to: 0)
             return
         }
         // Fallback to a finite off-screen offset on the very first
         // open before the GeometryReader has measured `containerWidth`.
         offset = containerWidth > 0 ? containerWidth : Self.unmeasuredContainerFallback
+        DetailOverlayTransform.shared.snap(to: offset)
         activePost = post
         showTask = Task { @MainActor [weak self] in
             // Yield once so SwiftUI observes the off-screen anchor
@@ -104,9 +106,8 @@ final class DetailOverlayController {
             // `DispatchQueue.main.async` semantic this used to use.
             await Task.yield()
             guard let self, !Task.isCancelled else { return }
-            withAnimation(.spring(response: Self.springResponse, dampingFraction: Self.springDamping)) {
-                self.offset = 0
-            }
+            self.offset = 0
+            DetailOverlayTransform.shared.animate(to: 0)
         }
     }
 
@@ -153,10 +154,20 @@ final class DetailOverlayController {
     func hide(alongsideAnimation: (() -> Void)? = nil) {
         showTask?.cancel()
         beginAnimationLock()
-        withAnimation(.spring(response: Self.springResponse, dampingFraction: Self.springDamping)) {
-            offset = containerWidth
-            alongsideAnimation?()
+        offset = containerWidth
+        DetailOverlayTransform.shared.animate(to: containerWidth)
+        if let alongsideAnimation {
+            withAnimation(.spring(response: Self.springResponse, dampingFraction: Self.springDamping)) {
+                alongsideAnimation()
+            }
         }
+    }
+
+    /// 백드래그를 놓아 제자리로 되돌리는 경로 — 닫기(`hide`)의 반대편.
+    /// 애니메이션 락은 호출부가 이미 잡은 뒤에 부른다.
+    func settleBack() {
+        offset = 0
+        DetailOverlayTransform.shared.animate(to: 0)
     }
 
     /// Hold `animating` true for slightly longer than the spring's
@@ -166,10 +177,17 @@ final class DetailOverlayController {
     func beginAnimationLock() {
         animationLockTask?.cancel()
         animating = true
+        // 스크롤 잠금은 **모든 정착 구간**에 걸려야 한다. 종전
+        // `isScrollingBlocked = scrollLocked || animating` 은 헤더 뒤로 버튼
+        // 같은 프로그램적 닫기에서도 잠갔는데, 잠금을 UIKit 으로 옮기면서
+        // 드래그 경로에서만 켜고 여기서는 끄기만 했다 — 그 경로들에서는
+        // 스프링 도중 스크롤이 살아 있어 contentOffset 이 흔들린다.
+        DetailScrollLock.shared.isLocked = true
         animationLockTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(Self.animationLockMs))
             guard !Task.isCancelled else { return }
             self?.animating = false
+            DetailScrollLock.shared.isLocked = false
         }
     }
 
@@ -179,7 +197,10 @@ final class DetailOverlayController {
     func updateContainerWidth(_ newWidth: CGFloat) {
         let wasHidden = offset >= containerWidth - 0.5 && containerWidth > 0
         containerWidth = newWidth
-        if wasHidden { offset = newWidth }
+        if wasHidden {
+            offset = newWidth
+            DetailOverlayTransform.shared.snap(to: newWidth)
+        }
     }
 
     /// Pan-gesture commit predicate: did the back-drag travel far
@@ -197,15 +218,29 @@ final class DetailOverlayController {
 
     /// True while the overlay's tappable area should receive hit-tests.
     /// `containerWidth == 0` covers the brief pre-measurement window.
-    var allowsHitTesting: Bool {
-        containerWidth == 0 || offset < containerWidth - 0.5
-    }
+    private(set) var allowsHitTesting: Bool = true
 
     /// True when the overlay is at least partially visible. Used by
     /// `PostDetailView`'s `isOverlayVisible` so cached image-decode and
     /// inline video playback know whether the user can actually see
     /// the result.
-    var isOverlayVisible: Bool {
-        containerWidth > 0 && offset < containerWidth - 0.5
+    private(set) var isOverlayVisible: Bool = false
+
+    /// 두 값은 `offset`/`containerWidth` 에서 유도되지만 **저장 프로퍼티**다.
+    /// 계산 프로퍼티였을 때는 이 값을 읽는 것이 곧 `offset` 을 구독하는 것이라,
+    /// 백드래그가 손가락 이동마다 `offset` 을 쓸 때 이 값을 읽는 뷰
+    /// (RootTabView 셸 전체)의 body 가 매 프레임 다시 평가됐다. 애니메이션으로
+    /// 미는 경로(`show`/`hide` 의 withAnimation)는 offset 을 한 번만 쓰고
+    /// SwiftUI 가 내부에서 보간하므로 body 재평가가 없다 — 사용자가 관측한
+    /// "버튼으로 다시 열 땐 부드러운데 스와이프는 버벅인다" 의 정체가 이 차이다.
+    ///
+    /// 값이 실제로 바뀔 때만 대입하는 것이 핵심이다. `@Observable` 은 같은 값을
+    /// 다시 대입해도 관찰자를 깨우므로, 가드 없이 매 프레임 대입하면 계산
+    /// 프로퍼티였을 때와 똑같아진다.
+    private func refreshVisibilityFlags() {
+        let visible = containerWidth > 0 && offset < containerWidth - 0.5
+        if isOverlayVisible != visible { isOverlayVisible = visible }
+        let hitTesting = containerWidth == 0 || offset < containerWidth - 0.5
+        if allowsHitTesting != hitTesting { allowsHitTesting = hitTesting }
     }
 }

@@ -215,6 +215,13 @@ final class AlertSubscriptionService {
         _ = try await post("/me/metrics?kind=hang", jsonBody: body)
     }
 
+    /// 인터랙션 구간의 프레임 히치 리포트(FrameHitchRecorder). hang 과 같은
+    /// 채널을 쓰되 kind 로 갈라 admin 뷰가 따로 요약한다.
+    func reportFrameHitch(_ report: FrameHitchReportDTO) async throws {
+        let body = try JSONEncoder().encode(report)
+        _ = try await post("/me/metrics?kind=hitch", jsonBody: body)
+    }
+
     /// 메모리 footprint 샘플 배치를 서버로 전송. FootprintLogger 가 버퍼가 차거나
     /// 백그라운드/메모리경고 시 호출. 서버는 저장하고 admin 뷰가 타임라인으로 렌더.
     func reportFootprint(_ samples: [FootprintSampleDTO]) async throws {

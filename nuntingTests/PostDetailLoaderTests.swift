@@ -29,7 +29,7 @@ final class PostDetailLoaderTests: XCTestCase {
     </body></html>
     """
 
-    private func bobaePost(id: String = "bobae-1") -> Post {
+    private func bobaePost(id: String = "bobae-1", commentCount: Int = 0) -> Post {
         Post(
             id: id,
             site: .bobae,
@@ -38,7 +38,7 @@ final class PostDetailLoaderTests: XCTestCase {
             author: "작성자",
             date: nil,
             dateText: "방금",
-            commentCount: 0,
+            commentCount: commentCount,
             url: URL(string: "https://m.bobaedream.co.kr/board/bbs_view/freeb/\(id)")!
         )
     }
@@ -105,6 +105,122 @@ final class PostDetailLoaderTests: XCTestCase {
         XCTAssertEqual(loader.detail?.fullDateText, "캐시")
         XCTAssertFalse(loader.isLoading)
         XCTAssertNil(loader.errorMessage)
+    }
+
+    /// 읽고 나온 사이 댓글이 달린 경우 — 목록이 말하는 댓글 수가 캐시본보다
+    /// 많으면 캐시를 버리고 다시 받아야 한다. 캐시는 세션 동안 재검증도 TTL 도
+    /// 없어서, 이 판정이 없으면 앱을 끄기 전까지 옛 화면이 계속 나온다.
+    func testCacheHitRefetchesWhenTheListShowsMoreComments() async {
+        let fetchCount = TestCounter()
+        let loader = PostDetailLoader(
+            fetcher: { _, _ in
+                fetchCount.increment()
+                return ""
+            },
+            resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) },
+            telemetry: noopTelemetry()
+        )
+        let cache = PostDetailCache(capacity: 4)
+        let cached = PostDetail(
+            post: bobaePost(commentCount: 3),
+            blocks: [.text("warm")],
+            fullDateText: "캐시",
+            viewCount: 99,
+            source: nil,
+            comments: (0..<3).map {
+                PostComment(id: "c\($0)", author: "닉", dateText: "",
+                            content: "본문", likeCount: 0, isReply: false)
+            }
+        )
+        cache.put(id: cached.post.id, detail: cached)
+
+        // 목록은 이제 댓글 7개라고 말한다.
+        await loader.load(post: bobaePost(commentCount: 7), cache: cache, renderReadyAt: now())
+
+        XCTAssertEqual(fetchCount.value, 1, "댓글이 늘었는데 캐시로 끝냈다")
+    }
+
+    /// 목록에 댓글 수가 없는 보드(인벤처럼 마크업에 그 정보가 없어 0 으로
+    /// 떨어지는 경우) — 0 을 "댓글 없음" 으로 읽어 캐시를 버리면 그 보드는
+    /// 캐시가 상시 무효가 된다.
+    func testCacheHitKeepsCacheWhenTheListHasNoCommentCount() async {
+        let fetchCount = TestCounter()
+        let loader = PostDetailLoader(
+            fetcher: { _, _ in
+                fetchCount.increment()
+                return ""
+            },
+            resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) },
+            telemetry: noopTelemetry()
+        )
+        let cache = PostDetailCache(capacity: 4)
+        let cached = PostDetail(
+            post: bobaePost(commentCount: 0),
+            blocks: [.text("warm")],
+            fullDateText: "캐시",
+            viewCount: 99,
+            source: nil,
+            comments: (0..<12).map {
+                PostComment(id: "c\($0)", author: "닉", dateText: "",
+                            content: "본문", likeCount: 0, isReply: false)
+            }
+        )
+        cache.put(id: cached.post.id, detail: cached)
+
+        await loader.load(post: bobaePost(commentCount: 0), cache: cache, renderReadyAt: now())
+
+        XCTAssertEqual(fetchCount.value, 0,
+                       "목록에 댓글 수가 없는 보드에서 캐시가 무효화됐다")
+        XCTAssertEqual(loader.detail?.comments.count, 12)
+    }
+
+    /// 낡은 캐시를 버렸으면 **프리페치 본도 같이 버려야** 한다.
+    ///
+    /// 프리페치는 목록 로드 시점 본이라 캐시본과 같은 나이다(둘 다 새 댓글
+    /// 이전). 캐시만 버리고 cold 경로로 넘어가면 그 경로가 warm 본을 소비해
+    /// 방금 무효화한 내용을 글자 그대로 되살린다 — 사용자는 새로고침을 했는데
+    /// 여전히 새 댓글을 못 보고, 그 낡은 본이 캐시에 다시 들어간다.
+    ///
+    /// 프리페치가 사라졌다 새로 담기는 경우엔 warm 본이 캐시보다 신선할 수도
+    /// 있지만, 그걸 구분할 방법이 없으므로 RTT 한 번을 내고 확실한 쪽을 택한다
+    /// (pull-to-refresh 가 warm 을 무시하는 것과 같은 판단).
+    func testStaleCacheAlsoDiscardsThePrefetchedHTML() async {
+        let fetchCount = TestCounter()
+        let warmReads = TestCounter()
+        let loader = PostDetailLoader(
+            fetcher: { [bobaeDeletedHTML] _, _ in
+                fetchCount.increment()
+                return bobaeDeletedHTML
+            },
+            resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) },
+            // 소비(제거)를 흉내내지 않고 매번 같은 본을 준다 — 구현이 "창고에서
+            // 빠졌겠지" 에 기대면 이 테스트가 잡는다.
+            warmHTML: { [bobaeDeletedHTML] _ in
+                warmReads.increment()
+                return bobaeDeletedHTML
+            },
+            telemetry: noopTelemetry()
+        )
+        let cache = PostDetailCache(capacity: 4)
+        let cached = PostDetail(
+            post: bobaePost(commentCount: 3),
+            blocks: [.text("warm")],
+            fullDateText: "캐시",
+            viewCount: 99,
+            source: nil,
+            comments: (0..<3).map {
+                PostComment(id: "c\($0)", author: "닉", dateText: "",
+                            content: "본문", likeCount: 0, isReply: false)
+            }
+        )
+        cache.put(id: cached.post.id, detail: cached)
+
+        await loader.load(post: bobaePost(commentCount: 7), cache: cache, renderReadyAt: now())
+
+        XCTAssertEqual(fetchCount.value, 1,
+                       "낡다고 버린 캐시를 같은 나이의 prefetch 본으로 되살렸다")
+        XCTAssertEqual(warmReads.value, 1,
+                       "낡다고 판정한 warm 본을 창고에서 안 버렸다")
     }
 
     // MARK: - Cold path
