@@ -77,7 +77,14 @@ nonisolated struct FrameHitchStats: Sendable, Equatable {
 
         let worst = samples.max { $0.actual < $1.actual }
         let intervalsMs = samples.map { $0.actual * 1000 }.sorted(by: >)
-        let expected = samples.map(\.expected).reduce(0, +) / Double(samples.count) * 1000
+        // 기대 간격이 0 인 표본(디스플레이 링크가 targetTimestamp 를 못 준
+        // 경우)은 드랍 판정에서 건너뛰므로 평균에서도 빼야 한다. 안 그러면
+        // 0 이 섞여 기대값이 실제보다 작게 나오고, admin 에 찍히는 "기대 16ms"
+        // 가 왜곡된다.
+        let validExpected = samples.map(\.expected).filter { $0 > 0 }
+        let expected = validExpected.isEmpty
+            ? 0
+            : validExpected.reduce(0, +) / Double(validExpected.count) * 1000
 
         return FrameHitchStats(
             frameCount: samples.count,
@@ -149,7 +156,11 @@ final class FrameHitchRecorder: NSObject {
     func begin(label: String, context: String) {
         stopTask?.cancel()
         stopTask = nil
-        guard link == nil else { return }
+        // 앞 구간이 아직 살아 있으면(정착 창 500ms 안에 새 드래그가 들어옴)
+        // 거기서 끊고 새로 시작한다. 합치면 멀쩡한 두 드래그가 한 표본 집합이
+        // 되어 임계를 함께 넘길 수 있고, 횟수는 한 번만 세지며, duration·context
+        // 는 어느 쪽도 설명하지 못한다.
+        if link != nil { finish() }
 
         self.label = label
         self.context = context
@@ -185,12 +196,19 @@ final class FrameHitchRecorder: NSObject {
     }
 
     /// 구간 안의 특정 사건 시각을 기록한다 — 드랍 프레임을 그 앞/뒤로 갈라
-    /// "드래그 중"과 "그 뒤(스냅샷 해제·정착)" 중 어디서 걸리는지 본다.
+    /// "손가락이 닿아 있는 동안"과 "손을 뗀 뒤(정착 스프링)" 중 어디서
+    /// 걸리는지 본다.
     func mark(_ label: String) {
         guard link != nil, markAt == nil else { return }
         markLabel = label
         markAt = CACurrentMediaTime() - startedAt
     }
+
+    /// 테스트 전용 — 이 라벨로 시작한 구간 수. "제스처마다 한 번" 계약 검증용.
+    func sessionDragsForTesting(label: String) -> Int { dragCounts[label] ?? 0 }
+
+    /// 테스트 전용 — 지금 기록 중인지.
+    var isRecordingForTesting: Bool { link != nil }
 
     /// 즉시 마무리(구간이 취소된 경우 등).
     func finish() {

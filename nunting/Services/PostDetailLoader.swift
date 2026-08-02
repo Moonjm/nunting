@@ -98,6 +98,22 @@ final class PostDetailLoader {
 
     // MARK: - Public API
 
+    /// 캐시본이 낡았는지 — 목록이 말하는 댓글 수가 캐시본보다 많으면 그 사이에
+    /// 댓글이 달린 것이다. 목록은 보드에 들어올 때마다 새로 받으므로(캐시 안 씀)
+    /// 이 값은 신뢰할 수 있다.
+    ///
+    /// **0 은 "댓글 없음"이 아니라 "목록에 그 정보가 없음"일 수 있다** — 인벤처럼
+    /// 목록 마크업에 댓글 수가 없으면 파싱이 0으로 떨어진다. `>` 비교라 그 경우는
+    /// 자연히 캐시를 그대로 쓴다(0 은 어떤 캐시본보다도 크지 않다). 푸시 알림으로
+    /// 들어오는 경로도 commentCount 가 0 이라 같은 이유로 안전하다.
+    ///
+    /// 반대 방향(목록이 캐시본보다 적음)은 무시한다 — 댓글 삭제는 다시 받을
+    /// 만큼 급한 변화가 아니고, 사이트가 삭제 댓글을 개수에서 빼는지 여부에
+    /// 따라 캐시가 상시 무효가 될 수 있다.
+    nonisolated static func cacheIsStale(cachedComments: Int, listCommentCount: Int) -> Bool {
+        listCommentCount > cachedComments
+    }
+
     /// Drive from `PostDetailView.task(id: post.id)`. Cache hit restores
     /// instantly with no render gate (the image subtree was already
     /// materialised this session, so the navigation push isn't at risk).
@@ -118,7 +134,11 @@ final class PostDetailLoader {
         // refresh stops feeling fresh in the wild.
         if forceFresh {
             cache.remove(id: post.id)
-        } else if let entry = cache.get(id: post.id) {
+        } else if let entry = cache.get(id: post.id),
+                  !Self.cacheIsStale(
+                      cachedComments: entry.detail.comments.count,
+                      listCommentCount: post.commentCount
+                  ) {
             detail = entry.detail
             isLoading = false
             // 댓글 실패 본은 캐시에 안 넣지만, 다른 화면의 loader 가 같은

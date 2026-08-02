@@ -138,6 +138,18 @@ final class FrameHitchStatsTests: XCTestCase {
                        (at: 0.5 + sixty, actual: sixty, expected: sixty)]
         XCTAssertEqual(FrameHitchStats.make(from: samples).droppedFrames, 0)
     }
+
+    /// 그 무효 표본은 **기대 간격 평균에서도** 빠져야 한다. 안 그러면 0 이
+    /// 섞여 기대값이 실제보다 작게 나오고, admin 에 찍히는 "기대 16ms" 가
+    /// 왜곡돼 드랍 판정 기준을 잘못 읽게 된다.
+    func testZeroExpectedIntervalIsExcludedFromTheAverage() {
+        var samples = evenSamples(count: 10, interval: sixty)
+        samples[3] = (at: samples[3].at, actual: sixty, expected: 0)
+
+        let stats = FrameHitchStats.make(from: samples)
+        XCTAssertEqual(stats.expectedFrameMs, 1000 / 60, accuracy: 0.01,
+                       "무효 표본이 기대 간격 평균을 끌어내렸다")
+    }
 }
 
 /// 히치 리포트의 발화 기준 — 원인을 잡은 뒤에는 **회귀 경보**로만 남는다.

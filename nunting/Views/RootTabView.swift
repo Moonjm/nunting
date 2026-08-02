@@ -111,6 +111,10 @@ final class DetailBackDrag {
         // 손을 뗀 뒤의 스프링 복귀/닫기 슬라이드까지 재고 마무리한다.
         // 스냅샷도 그 정착이 끝난 뒤에 걷는다(먼저 걷으면 정착 중 화면이 튄다).
         if horizontal {
+            // 손을 뗀 시점을 경계로 남긴다 — 드랍이 드래그 중에 났는지 정착
+            // 스프링에서 났는지 가르는 유일한 축이다. (이 호출은 원래 스냅샷
+            // 해제 지점에 있었고, 스냅샷 기계장치를 지울 때 같이 사라졌다.)
+            FrameHitchRecorder.shared.mark("release")
             FrameHitchRecorder.shared.endAfterSettle()
         }
         guard horizontal, detail.activePost != nil else { return }
