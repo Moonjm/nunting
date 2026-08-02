@@ -43,9 +43,17 @@ enum CommentRenderWindow {
         min(max(count, initialCount), total)
     }
 
-    /// 다음 성장 후의 개수.
-    static func grown(from current: Int, total: Int) -> Int {
-        clamped(current + chunkSize, total: total)
+    /// 다음 성장 후의 개수. **전체 개수로 자르지 않는다** — 자른 값을 상태로
+    /// 되돌려 쓰면 청크 정렬이 깨져 성장 사슬이 끊긴다.
+    ///
+    /// 예: 창 30 에서 한 번 자라 50 이 됐는데 댓글이 40개뿐이라 40 으로 잘려
+    /// 저장되면, 다음 성장은 40+20=60 이 된다. 센티넬은 20·40·60… 에 고정인데
+    /// 성장 조건은 `index >= rendered - growthMargin`(=50) 이라 40 짜리 센티넬은
+    /// 자격을 잃고, 60 짜리는 아직 안 그려져 존재하지 않는다 → 더 못 자란다.
+    /// 자르기는 그릴 때만 하고(`clamped`), 상태는 30·50·70… 으로 정렬을
+    /// 유지한다. 그래야 새로고침으로 댓글이 늘어도 사슬이 이어진다.
+    static func grown(from current: Int) -> Int {
+        current + chunkSize
     }
 
     /// `index` 행 뒤에 성장 센티넬을 두는지. 청크 경계에 **고정**으로 둔다 —
@@ -173,7 +181,10 @@ struct PostDetailCommentsSection: View {
                           total: comments.count
                       )
                 else { return }
-                renderedCount = CommentRenderWindow.grown(from: rendered, total: comments.count)
+                // 그리는 개수(`rendered`)가 아니라 **상태**에서 자란다 —
+                // rendered 는 전체 개수로 잘린 값이라 그걸 기준으로 자라면
+                // 위 정렬이 깨진다.
+                renderedCount = CommentRenderWindow.grown(from: renderedCount)
             }
     }
 }

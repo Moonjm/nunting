@@ -186,6 +186,12 @@ struct PostDetailView: View, Equatable {
             // every other site.
             .refreshable { await reloadDetail() }
         }
+        // 진단 프로브 초기화 — 댓글 섹션이 없는 글(댓글 0개, 아직 로딩 중)은
+        // 자기 수치를 보고할 기회가 없어, 프로세스 전역 프로브에 이전 글의
+        // 값이 남는다. 그 상태로 히치가 올라가면 엉뚱한 글의 댓글 수가 실린다.
+        .onChange(of: post.id, initial: true) { _, _ in
+            CommentRenderProbe.shared.update(rendered: 0, total: 0)
+        }
         // Fill the hosted container even when the SwiftUI ideal size would
         // otherwise be smaller — UIHostingController inside our overlay
         // representable sizes to its SwiftUI ideal by default, which left

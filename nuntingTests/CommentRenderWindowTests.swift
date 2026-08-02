@@ -123,6 +123,63 @@ final class CommentRenderWindowTests: XCTestCase {
         )
     }
 
+    /// 새로고침으로 댓글이 늘면 그만큼 더 볼 수 있어야 한다.
+    ///
+    /// 회귀: 창이 이미 끝까지 열린 상태(그린 개수 == 전체)에서는 센티넬의
+    /// 가시성 값이 이미 true 라 변하지 않는다. `onGeometryChange` 는 값이
+    /// **바뀔 때만** 액션을 부르므로 성장이 다시 촉발되지 않고, 새로 받은
+    /// 뒷부분이 영영 안 보인다 — 성능이 아니라 데이터 유실이다.
+    func testRefreshedCommentsBeyondTheWindowBecomeReachable() throws {
+        let initial = comments(40)
+        let host = UIHostingController(
+            rootView: RefreshHarness(comments: initial)
+        )
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 393, height: 852))
+        window.rootViewController = host
+        window.isHidden = false
+        host.view.frame = window.bounds
+        host.view.layoutIfNeeded()
+        settle(host.view)
+
+        // 끝까지 스크롤해 창을 전부 연다(40개 < 창+청크라 전부 그려진다).
+        let scroll = try XCTUnwrap(Self.firstScrollView(host.view))
+        scroll.contentOffset = CGPoint(
+            x: 0,
+            y: max(0, scroll.contentSize.height - scroll.bounds.height)
+        )
+        host.view.layoutIfNeeded()
+        settle(host.view)
+        XCTAssertEqual(Self.countTextViews(host.view), initial.count,
+                       "전제: 40개는 전부 그려져 있어야 한다")
+
+        // 새로고침으로 댓글이 두 배가 됐다.
+        host.rootView = RefreshHarness(comments: comments(80))
+        host.view.layoutIfNeeded()
+        settle(host.view)
+
+        // 콘텐츠 높이가 아니라 **그려진 행 수**로 본다 — 높이는 마지막 행에
+        // 구분선이 하나 붙는 것만으로도 늘어나(전체 개수가 커졌으므로)
+        // 실제로는 아무것도 더 안 그려졌는데 통과한다(처음 이 테스트가 그랬다).
+        XCTAssertGreaterThan(
+            Self.countTextViews(host.view), initial.count,
+            "새로고침으로 늘어난 댓글이 영영 가려졌다"
+        )
+    }
+
+    /// 댓글 배열만 갈아끼우는 하네스 — 새로고침 재현용.
+    private struct RefreshHarness: View {
+        let comments: [PostComment]
+        var body: some View {
+            ScrollView {
+                PostDetailCommentsSection(
+                    comments: comments,
+                    onImageTap: { _ in },
+                    onVideoDismissBegin: {}
+                )
+            }
+        }
+    }
+
     // MARK: - 창 규칙
 
     func testClampNeverGoesBelowInitialOrAboveTotal() {
@@ -133,21 +190,35 @@ final class CommentRenderWindowTests: XCTestCase {
         XCTAssertEqual(CommentRenderWindow.clamped(120, total: 5), 5)
     }
 
-    /// 성장은 단조 증가하고 전체 개수에서 멈춘다.
-    func testGrowthIsMonotonicAndStopsAtTotal() {
+    /// 성장은 단조 증가하고, **그리는 개수**는 전체에서 멈춘다.
+    /// (상태 자체는 자르지 않는다 — 아래 정렬 불변식 참고.)
+    func testGrowthIsMonotonicAndRenderStopsAtTotal() {
         let total = 137
-        var count = CommentRenderWindow.initialCount
+        var state = CommentRenderWindow.initialCount
         var steps = 0
-        while count < total {
-            let next = CommentRenderWindow.grown(from: count, total: total)
-            XCTAssertGreaterThan(next, count, "성장이 진행되지 않으면 끝에서 멈춘다")
-            count = next
+        while CommentRenderWindow.clamped(state, total: total) < total {
+            let next = CommentRenderWindow.grown(from: state)
+            XCTAssertGreaterThan(next, state, "성장이 진행되지 않는다")
+            state = next
             steps += 1
             XCTAssertLessThan(steps, 100, "성장이 수렴하지 않는다")
         }
-        XCTAssertEqual(count, total)
-        // 끝에 닿은 뒤로는 더 늘지 않는다.
-        XCTAssertEqual(CommentRenderWindow.grown(from: count, total: total), total)
+        XCTAssertEqual(CommentRenderWindow.clamped(state, total: total), total)
+    }
+
+    /// **정렬 불변식**: 어떤 성장 단계에서도 "창 끝에서 마진만큼 앞" 지점에
+    /// 센티넬이 정확히 놓여야 한다. 이게 깨지면 다음 청크를 촉발할 센티넬이
+    /// 없어 성장 사슬이 조용히 끊긴다(그 상태로 남은 댓글은 영영 안 보인다).
+    /// 상태를 전체 개수로 잘라 저장하면 바로 이게 깨졌다.
+    func testEveryGrowthStepKeepsASentinelAtTheTriggerPoint() {
+        var state = CommentRenderWindow.initialCount
+        for _ in 0..<10 {
+            XCTAssertTrue(
+                CommentRenderWindow.hasSentinel(after: state - CommentRenderWindow.growthMargin),
+                "창 \(state) 에서 촉발 지점(\(state - CommentRenderWindow.growthMargin))에 센티넬이 없다"
+            )
+            state = CommentRenderWindow.grown(from: state)
+        }
     }
 
     /// 센티넬은 창 끝보다 `growthMargin` 앞에 놓여, 사용자가 실제 끝에 닿기
@@ -207,7 +278,7 @@ final class CommentRenderWindowTests: XCTestCase {
     func testGrowingTheWindowDoesNotResizeAlreadyRenderedRows() {
         let all = comments(200)
         let initial = CommentRenderWindow.initialCount
-        let grown = CommentRenderWindow.grown(from: initial, total: all.count)
+        let grown = CommentRenderWindow.grown(from: initial)
 
         let before = hostedHeight(of: Array(all.prefix(initial)))
         let after = hostedHeight(of: Array(all.prefix(grown)))

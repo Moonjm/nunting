@@ -123,6 +123,47 @@ final class DetailOverlayTransformTests: XCTestCase {
         XCTAssertEqual(target.transform.tx, 800, accuracy: 0.01)
     }
 
+    /// 정착 도중 끊을 때는 **지금 보이는 위치**에서 이어져야 한다. 모델 변환은
+    /// 애니메이션이 시작되는 순간 이미 목적지 값이라, 그대로 걷어내면 그
+    /// 목적지로 순간이동한 뒤 새 동작이 시작된다 — 눈에 보이는 점프다.
+    ///
+    /// 실제 연속성(프레젠테이션 레이어)은 이 프로세스에서 확인할 수 없다 —
+    /// 렌더 서버가 없어 `presentation()` 이 nil 이다. 대신 "끊는 경로마다 보이는
+    /// 위치를 읽는가" 를 고정한다. 이 읽기가 빠지면 기기에서 점프가 돌아온다.
+    func testEveryMoveConsultsTheVisiblePosition() {
+        let (transform, target) = makeTarget()
+        var consulted = 0
+        transform.visibleTransform = { _ in
+            consulted += 1
+            return nil
+        }
+
+        transform.track(50)
+        XCTAssertEqual(consulted, 1, "드래그 추적이 보이는 위치를 안 읽었다")
+        transform.snap(to: 100)
+        XCTAssertEqual(consulted, 2, "즉시 이동이 보이는 위치를 안 읽었다")
+        transform.animate(to: 0)
+        XCTAssertEqual(consulted, 3, "스프링 이동이 보이는 위치를 안 읽었다")
+        XCTAssertEqual(target.transform.tx, 0, accuracy: 0.01)
+    }
+
+    /// 보이는 위치가 있으면 그 값이 먼저 모델에 반영된다 — 그래야 이어지는
+    /// 스프링이 그 지점에서 출발한다(`.beginFromCurrentState`).
+    func testVisiblePositionIsAppliedBeforeMoving() {
+        let (transform, target) = makeTarget()
+        transform.snap(to: 0)
+
+        var seenBeforeMove: CGFloat?
+        transform.visibleTransform = { view in
+            seenBeforeMove = view.transform.tx
+            return CGAffineTransform(translationX: 200, y: 0)
+        }
+        transform.animate(to: 393)
+
+        XCTAssertEqual(seenBeforeMove, 0, "읽는 시점이 이미 이동한 뒤다")
+        XCTAssertEqual(target.transform.tx, 393, accuracy: 0.01)
+    }
+
     // MARK: - 컨트롤러가 변환을 몰고 간다
 
     func testHideDrivesTheSharedTransform() async {

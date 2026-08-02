@@ -31,6 +31,15 @@ final class DetailOverlayTransform {
     /// 오버레이가 사라져도 이 싱글톤이 뷰를 붙들고 있으면 안 된다.
     weak var target: UIView?
 
+    /// 지금 화면에 실제로 보이는 변환 — 애니메이션이 도는 중이면 그 중간값이다.
+    /// 클로저로 열어 둔 이유: 테스트 프로세스에는 렌더 서버가 없어
+    /// `presentation()` 이 항상 nil 이라(계측으로 확인) 이 배선을 검증할 방법이
+    /// 없다. 같은 결함(끊을 때의 위치 처리)이 세 번 나왔던 자리라 최소한
+    /// "끊기 전에 보이는 위치를 읽는다" 는 사실만이라도 고정한다.
+    var visibleTransform: (UIView) -> CGAffineTransform? = { view in
+        view.layer.presentation().map { CATransform3DGetAffineTransform($0.transform) }
+    }
+
     /// 논리적 위치(0 = 완전히 보임, containerWidth = 오른쪽으로 완전히 숨음).
     /// 드래그 중에는 이 값만 바뀌고 SwiftUI 상태는 건드리지 않는다.
     private(set) var offset: CGFloat = 0
@@ -68,6 +77,13 @@ final class DetailOverlayTransform {
         guard let target else {
             completion?()
             return
+        }
+        // 끊기 전에 **지금 화면에 보이는 위치**를 모델로 옮긴다. 모델 변환은
+        // 애니메이션이 시작되는 순간 이미 목적지 값이라, 그대로 애니메이션만
+        // 걷으면 그 목적지로 순간이동한 뒤 새 동작이 시작된다 — 정착 도중
+        // 다시 잡거나 닫히는 중에 다시 열면 눈에 보이는 점프가 된다.
+        if let visible = visibleTransform(target) {
+            target.transform = visible
         }
         // 이 레이어를 애니메이션하는 건 이 타입뿐이라 통째로 걷는다. 키를
         // 골라 지우면(예전 "position") 정작 우리가 만든 transform 애니메이션이
