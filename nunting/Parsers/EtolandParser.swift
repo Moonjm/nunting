@@ -344,22 +344,39 @@ public struct EtolandParser: BoardParser {
     /// 두 경로를 같은 마커로 합치면서 그 안전망이 사라졌다 — 오탐 후보는
     /// 디코드에서 걸러내고 다음 후보로 넘어간다.
     nonisolated static func inlineComments(from html: String) -> [PostComment]? {
-        // 빈 배열로 디코드된 후보는 곧장 채택하지 않고 보류한다. 본문이
-        // `\"commentList\":[]` 를 품은 경우 그것도 "성공적으로" 디코드되므로,
-        // 뒤에 진짜 payload 가 있으면 그쪽이 이기게 한다.
-        var sawEmptyArray = false
+        // 빈 배열은 디코드만으로 구분이 안 된다 — 본문에 붙여넣어진
+        // `\"commentList\":[]` 조각도 "성공적으로" `[]` 로 디코드된다. 그래서
+        // 곧장 채택하지 않고, (a) 뒤에 진짜 payload 가 있으면 그쪽을 쓰고
+        // (b) 없으면 flight 페이로드 소속임이 확인된 것만 "진짜 0개"로 친다.
+        var sawPayloadEmptyArray = false
         for start in inlineCommentArrayStarts(in: html) {
-            guard let arrayJSON = commentsArrayJS(in: html, from: start) else { continue }
-            let unescaped = ParserText.unescapeJSString("[" + arrayJSON + "]")
+            guard let candidate = commentsArrayJS(in: html, from: start) else { continue }
+            let unescaped = ParserText.unescapeJSString("[" + candidate.json + "]")
             guard let data = unescaped.data(using: .utf8),
                   let raw = try? JSONDecoder().decode([RawComment].self, from: data)
             else { continue }
-            guard !raw.isEmpty else { sawEmptyArray = true; continue }
+            guard !raw.isEmpty else {
+                if isFlightPayloadSite(in: html, after: candidate.after) { sawPayloadEmptyArray = true }
+                continue
+            }
             var out: [PostComment] = []
             for r in raw { flatten(r, into: &out, isReply: false) }
             return out
         }
-        return sawEmptyArray ? [] : nil
+        return sawPayloadEmptyArray ? [] : nil
+    }
+
+    /// 빈 배열 후보가 진짜 flight 페이로드에 속하는지 — 실제 SSR 은 댓글
+    /// 배열 바로 뒤에 pagination 형제 키를 붙인다:
+    /// `\"commentList\":[],\"commentListPagination\":{\"page\":1,…}`
+    /// (2026-08-06 댓글 0개 글 라이브 확인). 본문에 인용된 조각에는 그게 없다.
+    ///
+    /// 이 앵커가 언젠가 같이 바뀌면 댓글 0개 글이 API 폴백을 한 번 더 타는
+    /// 정도로 끝난다 — 실패 방향이 "헛왕복"이지 "댓글 유실"이 아니라 안전한
+    /// 쪽이다. 옛 봉투(`\"data\":{\"comments\":[`)의 빈 배열은 대응하는 앵커
+    /// 샘플이 없으므로 채택하지 않고 폴백으로 보낸다.
+    nonisolated private static func isFlightPayloadSite(in html: String, after: String.Index) -> Bool {
+        html[after...].hasPrefix(#",\"commentListPagination\":"#)
     }
 
     /// SSR flight 페이로드에서 댓글 배열이 실리는 키 — JS-escaped 형태.
@@ -398,11 +415,14 @@ public struct EtolandParser: BoardParser {
     }
 
     /// Return the contents of the comments array starting at `from`, exclusive
-    /// of the outer brackets, still in JS-escaped form. The walker keeps a
+    /// of the outer brackets, still in JS-escaped form, plus the index just
+    /// past its closing bracket (`after`, 형제 키 확인용). The walker keeps a
     /// depth counter for `[`/`{` and `]`/`}`, toggling string state on `\"`
     /// and consuming any `\X` escape pair in one step (so brackets that appear
     /// inside string content don't throw the depth count off).
-    nonisolated private static func commentsArrayJS(in html: String, from start: String.Index) -> String? {
+    nonisolated private static func commentsArrayJS(
+        in html: String, from start: String.Index
+    ) -> (json: String, after: String.Index)? {
         let chars = Array(html[start...])
         var depth = 1
         var inString = false
@@ -423,7 +443,7 @@ public struct EtolandParser: BoardParser {
                 } else if c == "]" || c == "}" {
                     depth -= 1
                     if depth == 0 {
-                        return String(chars[0..<i])
+                        return (String(chars[0..<i]), html.index(start, offsetBy: i + 1))
                     }
                 }
             }

@@ -121,13 +121,37 @@ final class EtolandCommentStructureTests: XCTestCase {
     }
 
     func testGenuinelyEmptyInlineListStillShortCircuits() async throws {
-        // 진짜로 댓글 0개인 글은 인라인이 이긴 것 — 헛왕복 금지.
+        // 진짜로 댓글 0개인 글은 인라인이 이긴 것 — 헛왕복 금지. 판정 근거는
+        // 배열 바로 뒤의 pagination 형제 키(라이브 페이로드와 동일 배치).
         let html = inlineHTML(commentsKey: "commentList", comments: false)
         let comments = try await parser.fetchAllComments(for: post(), detailHTML: html) { _ in
             XCTFail("빈 인라인 배열도 인라인이 이긴 것")
             return ""
         }
         XCTAssertTrue(comments.isEmpty)
+    }
+
+    func testEmptyArrayQuotedInBodyAloneStillFallsBackToAPI() async throws {
+        // 본문에 붙여넣어진 `\"commentList\":[]` 는 디코드는 되지만 flight
+        // 페이로드가 아니다 — 형제 키가 없다. 이걸 "진짜 0개"로 받아들이면
+        // SSR bailout 글의 댓글이 통째로 사라진다. (Codex 리뷰 P2 2차)
+        let html = """
+        <html><body>
+        <article>
+          <h1><span class="truncate">제목</span></h1>
+          <div class="view-content"><p>응답이 {\\"commentList\\":[]} 로만 와요</p></div>
+        </article>
+        <template data-dgst="BAILOUT_TO_CLIENT_SIDE_RENDERING"></template>
+        </body></html>
+        """
+        let api = #"{"status":"ETOCD200000","data":{"comments":[{"commentId":9,"parentId":null,"writeDateTimestamp":1,"recommendCount":0,"content":"진짜 댓글","isAnonymous":false,"member":{"nickname":"a"},"file":null,"childrenComments":[]}]}}"#
+        let fetched = TestFlag()
+        let comments = try await parser.fetchAllComments(for: post(), detailHTML: html) { _ in
+            fetched.set()
+            return api
+        }
+        XCTAssertTrue(fetched.value, "형제 키 없는 빈 배열은 인라인으로 인정하면 안 된다")
+        XCTAssertEqual(comments.map(\.content), ["진짜 댓글"])
     }
 
     func testLegacyCommentsKeyStillExtracted() throws {
