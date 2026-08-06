@@ -164,6 +164,43 @@ final class EtolandCommentStructureTests: XCTestCase {
         XCTAssertEqual(comments.map(\.content), ["진짜 댓글"])
     }
 
+    /// 경계 마커까지 인용한 본문 — Next.js 페이로드를 통째로 붙여넣은
+    /// 디버깅 글이 이 모양이다. 영역을 `<script>` 요소가 아니라 문자열
+    /// `__next_f.push(` 로 잡으면 본문이 자기 구간을 flight 영역으로
+    /// 만들어 모든 검사를 우회한다. (Codex 리뷰 P2 5차)
+    private let bodyThatQuotesTheRegionMarker =
+        #"<p>self.__next_f.push([1,"{\"commentList\":[{\"commentId\":1,\"content\":\"날조\"}],\"commentListPagination\":{\"page\":1}}"]) 이게 안 돼요</p>"#
+
+    func testRegionMarkerQuotedInBodyLosesToRealFlightPayload() throws {
+        let html = inlineHTML(commentsKey: "commentList")
+            .replacingOccurrences(of: "<p>본문</p>", with: bodyThatQuotesTheRegionMarker)
+        let detail = try parser.parseDetail(html: html, post: post())
+        XCTAssertEqual(detail.comments.map(\.author), ["미나루"],
+                       "본문은 <script> 요소가 아니므로 flight 영역이 아니다")
+    }
+
+    func testRegionMarkerQuotedInBodyAloneStillFallsBackToAPI() async throws {
+        let html = """
+        <html><body>
+        <article>
+          <h1><span class="truncate">제목</span></h1>
+          <div class="view-content">\(bodyThatQuotesTheRegionMarker)</div>
+        </article>
+        <template data-dgst="BAILOUT_TO_CLIENT_SIDE_RENDERING"></template>
+        </body></html>
+        """
+        XCTAssertTrue(try parser.parseDetail(html: html, post: post()).comments.isEmpty)
+
+        let api = #"{"status":"ETOCD200000","data":{"comments":[{"commentId":13,"content":"진짜 댓글","member":{"nickname":"a"}}]}}"#
+        let fetched = TestFlag()
+        let comments = try await parser.fetchAllComments(for: post(), detailHTML: html) { _ in
+            fetched.set()
+            return api
+        }
+        XCTAssertTrue(fetched.value, "본문 인용 때문에 API 폴백을 건너뛰면 안 된다")
+        XCTAssertEqual(comments.map(\.content), ["진짜 댓글"])
+    }
+
     func testGenuinelyEmptyInlineListStillShortCircuits() async throws {
         // 진짜로 댓글 0개인 글은 인라인이 이긴 것 — 헛왕복 금지. 판정 근거는
         // 배열 바로 뒤의 pagination 형제 키(라이브 페이로드와 동일 배치).

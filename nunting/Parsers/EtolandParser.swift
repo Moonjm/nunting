@@ -427,18 +427,29 @@ public struct EtolandParser: BoardParser {
     /// 실리더라도 한 단계 더 이스케이프돼(`\\\"commentList\\\":[`) 마커에
     /// 안 걸린다.
     ///
-    /// 범위를 일반 `<script>` 가 아니라 `__next_f.push` 로 좁힌 이유:
-    /// JSON-LD(`application/ld+json`) 스크립트는 본문을 같은 `\"` 이스케이프로
-    /// 싣기 때문에, "스크립트 안"만으로는 같은 오탐이 그대로 통과한다.
+    /// 경계는 **`<script>` 요소**로 잡는다. `__next_f.push(` 문자열을 찾아
+    /// 거기서부터 다음 `</script>` 까지를 영역으로 삼으면, 그 문자열을 본문에
+    /// 인용한 글(Next.js 페이로드를 붙여넣은 디버깅 글)이 자기 본문 구간을
+    /// 통째로 "flight 영역"으로 만들어 버려 우회가 된다. 요소 단위로 자르면
+    /// 본문은 애초에 어떤 영역에도 안 들어간다 — 사용자 텍스트의 `<script`
+    /// 는 렌더 시 이스케이프되므로(안 그러면 이토랜드 쪽 XSS다) 원문의
+    /// `<script` 는 진짜 스크립트 요소로 봐도 된다.
+    ///
+    /// 스크립트 중에서도 `__next_f.push(` 를 담은 것만 쓴다. JSON-LD
+    /// (`application/ld+json`)는 본문을 같은 `\"` 이스케이프로 싣기 때문에,
+    /// "아무 스크립트 안"으로 두면 같은 오탐이 그대로 통과한다.
     nonisolated private static func flightPayloadRegions(in html: String) -> [Range<String.Index>] {
         var out: [Range<String.Index>] = []
-        var searchFrom = html.startIndex
-        while let push = html.range(of: "__next_f.push(", range: searchFrom..<html.endIndex) {
-            let end = html.range(of: "</script", range: push.upperBound..<html.endIndex)?.lowerBound
+        var cursor = html.startIndex
+        while let open = html.range(of: "<script", range: cursor..<html.endIndex) {
+            // 여는 태그의 `>` 다음이 스크립트 내용의 시작.
+            guard let gt = html.range(of: ">", range: open.upperBound..<html.endIndex) else { break }
+            let end = html.range(of: "</script", range: gt.upperBound..<html.endIndex)?.lowerBound
                 ?? html.endIndex
-            out.append(push.upperBound..<end)
-            searchFrom = end
-            if searchFrom == html.endIndex { break }
+            let content = gt.upperBound..<end
+            if html[content].contains("__next_f.push(") { out.append(content) }
+            cursor = end
+            if cursor == html.endIndex { break }
         }
         return out
     }
