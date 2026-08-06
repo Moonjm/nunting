@@ -125,6 +125,45 @@ final class EtolandCommentStructureTests: XCTestCase {
         XCTAssertEqual(comments.map(\.content), ["API 댓글"])
     }
 
+    /// 앵커까지 통째로 인용한 본문 — 마커·형제 키·디코드를 전부 통과한다.
+    /// 남은 구분선은 "flight 스크립트 소속인가" 하나뿐. (Codex 리뷰 P2 4차)
+    private let bodyThatQuotesTheWholePayload =
+        #"<p>이렇게 옵니다: {\"commentList\":[{\"commentId\":1,\"content\":\"날조\"}],\"commentListPagination\":{\"page\":1}}</p>"#
+
+    func testWholePayloadQuotedInBodyLosesToRealFlightPayload() throws {
+        // 렌더된 본문은 문서상 flight payload 보다 **앞**이라(라이브 23.8K vs
+        // 352K), 영역 제한이 없으면 이 인용이 먼저 잡혀 진짜 댓글을 가린다.
+        // bailout 글만의 문제가 아니라 정상 글에서도 터진다.
+        let html = inlineHTML(commentsKey: "commentList")
+            .replacingOccurrences(of: "<p>본문</p>", with: bodyThatQuotesTheWholePayload)
+        let detail = try parser.parseDetail(html: html, post: post())
+        XCTAssertEqual(detail.comments.map(\.author), ["미나루"],
+                       "본문 인용이 아니라 flight payload 의 댓글이어야 함")
+    }
+
+    func testWholePayloadQuotedInBodyAloneStillFallsBackToAPI() async throws {
+        let html = """
+        <html><body>
+        <article>
+          <h1><span class="truncate">제목</span></h1>
+          <div class="view-content">\(bodyThatQuotesTheWholePayload)</div>
+        </article>
+        <template data-dgst="BAILOUT_TO_CLIENT_SIDE_RENDERING"></template>
+        </body></html>
+        """
+        XCTAssertTrue(try parser.parseDetail(html: html, post: post()).comments.isEmpty,
+                      "flight 스크립트 밖의 인용은 인라인이 아니다")
+
+        let api = #"{"status":"ETOCD200000","data":{"comments":[{"commentId":11,"content":"진짜 댓글","member":{"nickname":"a"}}]}}"#
+        let fetched = TestFlag()
+        let comments = try await parser.fetchAllComments(for: post(), detailHTML: html) { _ in
+            fetched.set()
+            return api
+        }
+        XCTAssertTrue(fetched.value, "인용 때문에 API 폴백을 건너뛰면 안 된다")
+        XCTAssertEqual(comments.map(\.content), ["진짜 댓글"])
+    }
+
     func testGenuinelyEmptyInlineListStillShortCircuits() async throws {
         // 진짜로 댓글 0개인 글은 인라인이 이긴 것 — 헛왕복 금지. 판정 근거는
         // 배열 바로 뒤의 pagination 형제 키(라이브 페이로드와 동일 배치).

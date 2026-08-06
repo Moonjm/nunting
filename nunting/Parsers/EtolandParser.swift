@@ -337,12 +337,15 @@ public struct EtolandParser: BoardParser {
     /// (→ API 폴백을 타야 함), `[]` 는 "인라인이 실제로 댓글 0개". 이 구분이
     /// `fetchAllComments` 의 skip 판정 근거이므로 뭉개면 안 된다.
     ///
-    /// 후보는 **flight 페이로드 소속임이 확인되고 디코드까지 성공해야** 채택
-    /// 한다(`isFlightPayloadSite`). 마커는 결국 문자열 매칭이라, 이스케이프된
-    /// JSON 을 붙여넣은 본문(프로그래밍 스레드)이 `\"commentList\":[` 를
-    /// 그대로 품으면 렌더된 HTML 에서 그대로 걸린다 — `commentId` 만 필수라
-    /// `[{\"commentId\":1}]` 같은 인용도 디코드에 성공해 버리므로, 디코드
-    /// 성공만으로는 본문과 payload 를 못 가른다.
+    /// 후보 판정은 세 겹이다 — 어느 것도 단독으론 본문발 오탐을 못 막는다:
+    /// (1) `flightPayloadRegions` 안에서만 찾고(구조적 차단선),
+    /// (2) 배열 뒤에 pagination 형제 키가 붙어야 하고(`isFlightPayloadSite`),
+    /// (3) `[RawComment]` 로 디코드까지 돼야 한다.
+    /// 마커는 결국 문자열 매칭이라, 이스케이프된 JSON 을 붙여넣은 본문
+    /// (프로그래밍 스레드)이 `\"commentList\":[` 를 그대로 품으면 렌더된
+    /// HTML 에서 걸린다. `commentId` 만 필수라 `[{\"commentId\":1}]` 같은
+    /// 인용도 디코드에 성공하므로 (3) 만으로는 못 가르고, 응답을 통째로
+    /// 붙여넣으면 (2) 도 통과하므로 (1) 이 필요하다.
     nonisolated static func inlineComments(from html: String) -> [PostComment]? {
         for start in inlineCommentArrayStarts(in: html) {
             guard let candidate = commentsArrayJS(in: html, from: start),
@@ -394,15 +397,48 @@ public struct EtolandParser: BoardParser {
     nonisolated private static let maxInlineCommentCandidates = 8
 
     /// 마커에 걸린 후보들의 "여는 `[` 바로 다음" 인덱스, 앞선 것부터.
-    /// 후보가 복수인 이유는 위 오탐 가능성 때문 — 하나만 보고 단정하지 않고
-    /// 앵커+디코드를 통과하는 것이 나올 때까지 순서대로 시도한다.
+    /// 탐색 범위는 flight 페이로드 영역으로 한정한다(아래 참고). 그 안에서도
+    /// 후보를 복수로 모으는 건 한 영역에 댓글 관련 키가 여럿 실릴 수 있어서다
+    /// — 앵커+디코드를 통과하는 것이 나올 때까지 순서대로 시도한다.
     nonisolated private static func inlineCommentArrayStarts(in html: String) -> [String.Index] {
         var out: [String.Index] = []
+        for region in flightPayloadRegions(in: html) {
+            var searchFrom = region.lowerBound
+            while out.count < maxInlineCommentCandidates,
+                  let r = html.range(of: inlineCommentMarker, range: searchFrom..<region.upperBound) {
+                out.append(r.upperBound)
+                searchFrom = r.upperBound
+            }
+        }
+        return out
+    }
+
+    /// flight 페이로드 영역 — `self.__next_f.push([1,"…"])` 스크립트의 내용.
+    ///
+    /// 후보 탐색을 여기로 한정하는 게 본문발 오탐의 **구조적** 차단선이다.
+    /// 마커·앵커는 결국 문자열이라, 본문에 이스케이프된 SSR 응답을 통째로
+    /// 붙여넣으면(`\"commentList\":[…],\"commentListPagination\":{…}`) 인접
+    /// 키 검사까지 통과한다. 게다가 렌더된 본문은 문서상 payload 보다 훨씬
+    /// 앞이라(라이브 실측 23.8K vs 352K) 그 오탐이 진짜 payload 를 이긴다 —
+    /// bailout 글만의 문제가 아니라 정상 글에서도 날조된 댓글이 뜬다.
+    ///
+    /// 영역으로 자르면 그게 원천 차단된다: 렌더된 본문은 이 영역 밖이고
+    /// (라이브 3건 확인 — flight 안 `view-content` 0건), 본문이 flight 에
+    /// 실리더라도 한 단계 더 이스케이프돼(`\\\"commentList\\\":[`) 마커에
+    /// 안 걸린다.
+    ///
+    /// 범위를 일반 `<script>` 가 아니라 `__next_f.push` 로 좁힌 이유:
+    /// JSON-LD(`application/ld+json`) 스크립트는 본문을 같은 `\"` 이스케이프로
+    /// 싣기 때문에, "스크립트 안"만으로는 같은 오탐이 그대로 통과한다.
+    nonisolated private static func flightPayloadRegions(in html: String) -> [Range<String.Index>] {
+        var out: [Range<String.Index>] = []
         var searchFrom = html.startIndex
-        while out.count < maxInlineCommentCandidates,
-              let r = html.range(of: inlineCommentMarker, range: searchFrom..<html.endIndex) {
-            out.append(r.upperBound)
-            searchFrom = r.upperBound
+        while let push = html.range(of: "__next_f.push(", range: searchFrom..<html.endIndex) {
+            let end = html.range(of: "</script", range: push.upperBound..<html.endIndex)?.lowerBound
+                ?? html.endIndex
+            out.append(push.upperBound..<end)
+            searchFrom = end
+            if searchFrom == html.endIndex { break }
         }
         return out
     }
