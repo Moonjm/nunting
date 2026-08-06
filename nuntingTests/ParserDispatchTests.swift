@@ -29,7 +29,7 @@ final class ParserDispatchTests: XCTestCase {
             commentCount: 0,
             url: URL(string: "https://etoland.co.kr/b/etohumor07/view/-1")!
         )
-        let inlineHTML = #"<script>self.__next_f.push([1,"...\"data\":{\"comments\":[{\"commentId\":1}]}..."])</script>"#
+        let inlineHTML = #"<script>self.__next_f.push([1,"...\"commentList\":[{\"commentId\":1}],\"commentListPagination\":{\"page\":1}..."])</script>"#
 
         nonisolated(unsafe) var fetched = false
         let comments = try await parser.fetchAllComments(

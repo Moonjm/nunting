@@ -83,8 +83,12 @@ final class EtolandCommentStructureTests: XCTestCase {
     /// 이스케이프된 JSON 을 붙여넣은 본문(프로그래밍 스레드)은 마커 문자열을
     /// 그대로 품는다. 마커는 문자열 매칭이라 이걸 못 가리므로, 디코드까지
     /// 성공해야 "인라인이 이겼다"고 본다.
+    /// **디코드까지 성공하는** 인용이라는 점이 핵심 — `RawComment` 는
+    /// `commentId` 만 필수라 이 조각도 댓글 1개로 멀쩡히 디코드된다. 그래서
+    /// 디코드 성공만으로는 본문과 payload 를 가를 수 없고, flight 페이로드
+    /// 형제 키(`commentListPagination`)가 최종 판정 근거다.
     private let bodyThatQuotesTheMarker =
-        #"<p>이 응답 이렇게 옵니다: {\"commentList\":[1,2,3]} 왜 이러죠?</p>"#
+        #"<p>이 응답 이렇게 옵니다: {\"commentList\":[{\"commentId\":1}]} 왜 이러죠?</p>"#
 
     func testDecodableInlinePayloadWinsOverMarkerQuotedInBody() throws {
         // 본문 오탐이 진짜 payload보다 **앞**에 있어도 진짜 쪽이 이겨야 한다.
@@ -97,7 +101,8 @@ final class EtolandCommentStructureTests: XCTestCase {
 
     func testMarkerQuotedInBodyAloneStillFallsBackToAPI() async throws {
         // 오탐만 있고 진짜 payload 가 없으면(=SSR bailout) API 폴백을 타야 한다.
-        // 여기서 short-circuit 하면 그 글은 댓글을 통째로 잃는다.
+        // 여기서 short-circuit 하면 인용된 조각이 댓글로 표시되고, 진짜 댓글은
+        // 통째로 사라진다. (Codex 리뷰 P2 3차 — 비어 있지 않은 인용)
         let html = """
         <html><body>
         <article>
@@ -108,7 +113,7 @@ final class EtolandCommentStructureTests: XCTestCase {
         </body></html>
         """
         XCTAssertTrue(try parser.parseDetail(html: html, post: post()).comments.isEmpty,
-                      "오탐은 디코드에서 걸러진다")
+                      "형제 키 없는 인용은 디코드에 성공해도 인라인이 아니다")
 
         let api = #"{"status":"ETOCD200000","data":{"comments":[{"commentId":7,"parentId":null,"writeDateTimestamp":1,"recommendCount":0,"content":"API 댓글","isAnonymous":false,"member":{"nickname":"a"},"file":null,"childrenComments":[]}]}}"#
         let fetched = TestFlag()
@@ -154,20 +159,29 @@ final class EtolandCommentStructureTests: XCTestCase {
         XCTAssertEqual(comments.map(\.content), ["진짜 댓글"])
     }
 
-    func testLegacyCommentsKeyStillExtracted() throws {
-        // 롤백/부분 배포 대비로 옛 봉투(`\"data\":{\"comments\":[`)도 유지.
+    func testLegacyCommentsKeyFallsBackToAPI() async throws {
+        // 옛 봉투(`\"data\":{\"comments\":[`)는 더 이상 인라인으로 안 친다 —
+        // 라이브에 0건이고 검증된 앵커 샘플도 없어, 남기면 앵커 없는 오탐
+        // 경로만 하나 더 생긴다. 이토랜드가 되돌리면 API 폴백이 받아낸다.
         let legacy = """
         <html><body>
         <article>
           <h1><span class="truncate">제목</span></h1>
           <div class="view-content"><p>본문</p></div>
         </article>
-        <script>self.__next_f.push([1,"6:[\\"$\\",\\"$L32\\",null,{\\"data\\":{\\"comments\\":[{\\"commentId\\":1,\\"parentId\\":null,\\"writeDateTimestamp\\":1,\\"recommendCount\\":0,\\"content\\":\\"옛 봉투\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"a\\"},\\"file\\":null,\\"childrenComments\\":[]}]}}]"])</script>
+        <script>self.__next_f.push([1,"6:[\\"$\\",\\"$L32\\",null,{\\"data\\":{\\"comments\\":[{\\"commentId\\":1,\\"content\\":\\"옛 봉투\\",\\"member\\":{\\"nickname\\":\\"a\\"},\\"childrenComments\\":[]}]}}]"])</script>
         </body></html>
         """
-        let detail = try parser.parseDetail(html: legacy, post: post())
-        XCTAssertEqual(detail.comments.count, 1)
-        XCTAssertEqual(detail.comments[0].content, "옛 봉투")
+        XCTAssertTrue(try parser.parseDetail(html: legacy, post: post()).comments.isEmpty)
+
+        let api = #"{"status":"ETOCD200000","data":{"comments":[{"commentId":3,"content":"API 댓글","member":{"nickname":"a"}}]}}"#
+        let fetched = TestFlag()
+        let comments = try await parser.fetchAllComments(for: post(), detailHTML: legacy) { _ in
+            fetched.set()
+            return api
+        }
+        XCTAssertTrue(fetched.value, "옛 봉투는 폴백으로 넘어가야 한다")
+        XCTAssertEqual(comments.map(\.content), ["API 댓글"])
     }
 
     // MARK: - (2) Accept content negotiation

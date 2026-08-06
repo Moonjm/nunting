@@ -11,7 +11,7 @@ import SwiftSoup
 /// post can ship the array inline on one request and emit a
 /// `BAILOUT_TO_CLIENT_SIDE_RENDERING` template on the next. The inline key
 /// is `\"commentList\":[…]` as of 2026-08 (previously `\"comments\":[…]`);
-/// see `inlineCommentMarkers`. When the inline payload is missing,
+/// see `inlineCommentMarker`. When the inline payload is missing,
 /// `fetchAllComments` falls back to the public API at
 /// `/api/v1/board/{boTable}/article/slug/{slug}/comments`
 /// (reverse-engineered from the etoland Next.js client chunks) and decodes
@@ -337,62 +337,57 @@ public struct EtolandParser: BoardParser {
     /// (→ API 폴백을 타야 함), `[]` 는 "인라인이 실제로 댓글 0개". 이 구분이
     /// `fetchAllComments` 의 skip 판정 근거이므로 뭉개면 안 된다.
     ///
-    /// **디코드 성공까지 확인한 뒤에야** 인라인이 이겼다고 본다. 마커는 결국
-    /// 문자열 매칭이라, 이스케이프된 JSON 을 붙여넣은 본문(프로그래밍 스레드)
-    /// 이 `\"commentList\":[` 를 그대로 품으면 오탐한다. 종전엔 그런 오탐이
-    /// 나도 skip 판정이 다른(더 긴) 마커를 써서 API 폴백이 글을 구했는데,
-    /// 두 경로를 같은 마커로 합치면서 그 안전망이 사라졌다 — 오탐 후보는
-    /// 디코드에서 걸러내고 다음 후보로 넘어간다.
+    /// 후보는 **flight 페이로드 소속임이 확인되고 디코드까지 성공해야** 채택
+    /// 한다(`isFlightPayloadSite`). 마커는 결국 문자열 매칭이라, 이스케이프된
+    /// JSON 을 붙여넣은 본문(프로그래밍 스레드)이 `\"commentList\":[` 를
+    /// 그대로 품으면 렌더된 HTML 에서 그대로 걸린다 — `commentId` 만 필수라
+    /// `[{\"commentId\":1}]` 같은 인용도 디코드에 성공해 버리므로, 디코드
+    /// 성공만으로는 본문과 payload 를 못 가른다.
     nonisolated static func inlineComments(from html: String) -> [PostComment]? {
-        // 빈 배열은 디코드만으로 구분이 안 된다 — 본문에 붙여넣어진
-        // `\"commentList\":[]` 조각도 "성공적으로" `[]` 로 디코드된다. 그래서
-        // 곧장 채택하지 않고, (a) 뒤에 진짜 payload 가 있으면 그쪽을 쓰고
-        // (b) 없으면 flight 페이로드 소속임이 확인된 것만 "진짜 0개"로 친다.
-        var sawPayloadEmptyArray = false
         for start in inlineCommentArrayStarts(in: html) {
-            guard let candidate = commentsArrayJS(in: html, from: start) else { continue }
+            guard let candidate = commentsArrayJS(in: html, from: start),
+                  isFlightPayloadSite(in: html, after: candidate.after)
+            else { continue }
             let unescaped = ParserText.unescapeJSString("[" + candidate.json + "]")
             guard let data = unescaped.data(using: .utf8),
                   let raw = try? JSONDecoder().decode([RawComment].self, from: data)
             else { continue }
-            guard !raw.isEmpty else {
-                if isFlightPayloadSite(in: html, after: candidate.after) { sawPayloadEmptyArray = true }
-                continue
-            }
             var out: [PostComment] = []
             for r in raw { flatten(r, into: &out, isReply: false) }
             return out
         }
-        return sawPayloadEmptyArray ? [] : nil
+        return nil
     }
 
-    /// 빈 배열 후보가 진짜 flight 페이로드에 속하는지 — 실제 SSR 은 댓글
-    /// 배열 바로 뒤에 pagination 형제 키를 붙인다:
-    /// `\"commentList\":[],\"commentListPagination\":{\"page\":1,…}`
-    /// (2026-08-06 댓글 0개 글 라이브 확인). 본문에 인용된 조각에는 그게 없다.
+    /// 후보가 진짜 flight 페이로드에 속하는지 — 실제 SSR 은 댓글 배열 바로
+    /// 뒤에 pagination 형제 키를 붙인다:
+    /// `\"commentList\":[…],\"commentListPagination\":{\"page\":1,…}`
+    /// (2026-08-06 라이브 확인 — 댓글 0개/5개/43개 글 모두 동일 배치).
+    /// 본문에 인용된 조각에는 그게 없다.
     ///
-    /// 이 앵커가 언젠가 같이 바뀌면 댓글 0개 글이 API 폴백을 한 번 더 타는
+    /// 배열이 비었든 아니든 같은 기준을 적용한다. 비어 있을 때만 검사하면
+    /// 인용된 `[{\"commentId\":1}]` 가 그대로 댓글로 표시되고, 뒤에 오는 진짜
+    /// payload 는 무시된다.
+    ///
+    /// 이 앵커가 언젠가 같이 바뀌면 인라인이 통째로 안 잡혀 API 폴백을 타는
     /// 정도로 끝난다 — 실패 방향이 "헛왕복"이지 "댓글 유실"이 아니라 안전한
-    /// 쪽이다. 옛 봉투(`\"data\":{\"comments\":[`)의 빈 배열은 대응하는 앵커
-    /// 샘플이 없으므로 채택하지 않고 폴백으로 보낸다.
+    /// 쪽이다.
     nonisolated private static func isFlightPayloadSite(in html: String, after: String.Index) -> Bool {
         html[after...].hasPrefix(#",\"commentListPagination\":"#)
     }
 
     /// SSR flight 페이로드에서 댓글 배열이 실리는 키 — JS-escaped 형태.
-    ///
     /// 2026-08 이토랜드가 `"comments"` → `"commentList"` 로 이름을 바꿨다.
-    /// 롤백/부분 배포에도 안 깨지게 옛 키도 남겨 두되, 옛 쪽은 봉투째
-    /// (`"data":{"comments":[`) 매칭한다 — 맨 `"comments":[` 는 본문에 그
-    /// 문자열이 들어간 사용자 댓글(JSON/프로그래밍 스레드)에 오탐한다.
     ///
-    /// 새 키는 접두 `\"` 가 이웃한 `\"bestCommentList\":[` 를 배제하고, 끝의
-    /// `[` 가 `\"commentListPagination\":{` 를 배제한다. 본문발 오탐까지는
-    /// 막지 못하므로 최종 판정은 `inlineComments` 의 디코드가 한다.
-    nonisolated private static let inlineCommentMarkers = [
-        #"\"commentList\":["#,
-        #"\"data\":{\"comments\":["#,
-    ]
+    /// 접두 `\"` 가 이웃한 `\"bestCommentList\":[` 를 배제하고, 끝의 `[` 가
+    /// `\"commentListPagination\":{` 를 배제한다. 본문발 오탐은 마커로 막지
+    /// 못하므로 최종 판정은 `isFlightPayloadSite` + 디코드가 한다.
+    ///
+    /// 옛 키(`\"data\":{\"comments\":[`)는 뺐다. 라이브에 0건이고, 그쪽엔
+    /// 검증된 앵커 샘플이 없어 남겨 두면 앵커 없는 오탐 경로만 하나 더
+    /// 생긴다. 이토랜드가 되돌리면 인라인이 안 잡혀 API 폴백을 타는데,
+    /// 그게 정확히 폴백이 있는 이유다(비용은 왕복 한 번).
+    nonisolated private static let inlineCommentMarker = #"\"commentList\":["#
 
     /// 후보 상한. 마커를 반복해 품은 본문이 브래킷 워크를 문서 길이만큼
     /// 여러 번 돌리는 걸 막는다 — 진짜 payload 는 앞쪽 몇 개 안에 있다.
@@ -400,18 +395,16 @@ public struct EtolandParser: BoardParser {
 
     /// 마커에 걸린 후보들의 "여는 `[` 바로 다음" 인덱스, 앞선 것부터.
     /// 후보가 복수인 이유는 위 오탐 가능성 때문 — 하나만 보고 단정하지 않고
-    /// 디코드되는 것이 나올 때까지 순서대로 시도한다.
+    /// 앵커+디코드를 통과하는 것이 나올 때까지 순서대로 시도한다.
     nonisolated private static func inlineCommentArrayStarts(in html: String) -> [String.Index] {
         var out: [String.Index] = []
-        for marker in inlineCommentMarkers {
-            var searchFrom = html.startIndex
-            while out.count < maxInlineCommentCandidates,
-                  let r = html.range(of: marker, range: searchFrom..<html.endIndex) {
-                out.append(r.upperBound)
-                searchFrom = r.upperBound
-            }
+        var searchFrom = html.startIndex
+        while out.count < maxInlineCommentCandidates,
+              let r = html.range(of: inlineCommentMarker, range: searchFrom..<html.endIndex) {
+            out.append(r.upperBound)
+            searchFrom = r.upperBound
         }
-        return out.sorted()
+        return out
     }
 
     /// Return the contents of the comments array starting at `from`, exclusive
