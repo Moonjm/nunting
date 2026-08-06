@@ -318,6 +318,34 @@ final class PostDetailLoaderTests: XCTestCase {
         XCTAssertNil(loader.errorMessage, "본문은 성공 — 댓글 실패가 본문 에러로 승격되면 안 됨")
     }
 
+    func testEtolandCommentLegRequestsJSONWhileDetailKeepsBrowserAccept() async {
+        // 이토랜드 댓글 API 는 Accept 로 content negotiation 을 한다 — 브라우저
+        // Accept 로 부르면 XML 이 와서 JSONDecoder 가 전멸(2026-08 파손). 파서
+        // hook 이 실제 요청까지 닿는지 시임에서 확인하고, 상세 HTML 요청은
+        // 기본 Accept 를 유지하는지도 같이 못 박는다.
+        let recorder = FetchRecorder()
+        let loader = PostDetailLoader(
+            fetcher: { url, options in
+                recorder.record(url: url, options: options)
+                return url.path.hasPrefix("/api/")
+                    ? #"{"status":"ETOCD200000","data":{"comments":[]}}"#
+                    : "<html><body>삭제되거나 이동된 게시물입니다.</body></html>"
+            },
+            resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) },
+            telemetry: noopTelemetry()
+        )
+
+        await loader.load(post: etolandPost(), cache: PostDetailCache(capacity: 4), renderReadyAt: now())
+
+        let calls = recorder.all
+        let detail = calls.first { !$0.url.path.hasPrefix("/api/") }
+        let comments = calls.first { $0.url.path.hasPrefix("/api/") }
+        XCTAssertNil(detail?.options.accept, "상세 HTML 은 기본(브라우저) Accept 유지")
+        XCTAssertEqual(comments?.options.accept, "application/json",
+                       "댓글 API 는 JSON 을 명시해야 XML 이 안 온다")
+        XCTAssertFalse(loader.commentsFailed)
+    }
+
     func testRetryCommentsStructureChangedReportsTelemetry() async {
         // 첫 댓글 실패가 일반 네트워크 에러(리포트 대상 아님)여도, 재시도에서
         // structureChanged 가 처음 드러나면 리포트돼야 한다 — retryComments 의
@@ -484,8 +512,8 @@ final class PostDetailLoaderTests: XCTestCase {
                           "전제: ppomppu(CP949) 와 aagag(UTF-8) 인코딩이 실제로 다름")
         let recorder = FetchRecorder()
         let loader = PostDetailLoader(
-            fetcher: { url, encoding in
-                recorder.record(url: url, encoding: encoding)
+            fetcher: { url, options in
+                recorder.record(url: url, options: options)
                 return "<html></html>"
             },
             resolver: { url in Networking.ResolvedRedirect(url: url, prefetchedBody: nil) },
@@ -509,7 +537,7 @@ final class PostDetailLoaderTests: XCTestCase {
         guard let first = recorder.first else { XCTFail("detail fetcher 미호출"); return }
         XCTAssertEqual(first.url.host, "m.ppomppu.co.kr",
                        "원본 ppomppu URL 로 직접 fetch")
-        XCTAssertEqual(first.encoding, Site.ppomppu.encoding,
+        XCTAssertEqual(first.options.encoding, Site.ppomppu.encoding,
                        "상세는 원본(ppomppu, CP949) 인코딩으로 fetch — aagag UTF-8 아님")
     }
 
@@ -1063,19 +1091,26 @@ private final class TestFlag: @unchecked Sendable {
 /// fetcher 로 넘어온 (url, encoding) 을 순서대로 기록하는 스레드-세이프 레코더.
 /// 직접-디스패치 경로가 원본 사이트 인코딩을 쓰는지 검증하는 데 쓴다.
 private final class FetchRecorder: @unchecked Sendable {
-    private var calls: [(url: URL, encoding: String.Encoding)] = []
+    typealias Call = (url: URL, options: PostDetailLoader.FetchOptions)
+    private var calls: [Call] = []
     private let lock = NSLock()
 
-    func record(url: URL, encoding: String.Encoding) {
+    func record(url: URL, options: PostDetailLoader.FetchOptions) {
         lock.lock()
         defer { lock.unlock() }
-        calls.append((url, encoding))
+        calls.append((url, options))
     }
 
-    var first: (url: URL, encoding: String.Encoding)? {
+    var first: Call? {
         lock.lock()
         defer { lock.unlock() }
         return calls.first
+    }
+
+    var all: [Call] {
+        lock.lock()
+        defer { lock.unlock() }
+        return calls
     }
 }
 

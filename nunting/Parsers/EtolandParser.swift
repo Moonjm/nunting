@@ -8,13 +8,16 @@ import SwiftSoup
 /// the full comment tree are rendered into the initial HTML inside a
 /// `__next_f.push([1, "<JS-string>"])` payload. parseDetail extracts all of
 /// those. Comments specifically are non-deterministic in SSR — the same
-/// post can ship with `\"comments\":[…]` inline on one request and emit a
-/// `BAILOUT_TO_CLIENT_SIDE_RENDERING` template on the next. When the
-/// inline payload is missing, `fetchAllComments` falls back to the public
-/// API at `/api/v1/board/{boTable}/article/slug/{slug}/comments`
+/// post can ship the array inline on one request and emit a
+/// `BAILOUT_TO_CLIENT_SIDE_RENDERING` template on the next. The inline key
+/// is `\"commentList\":[…]` as of 2026-08 (previously `\"comments\":[…]`);
+/// see `inlineCommentMarker`. When the inline payload is missing,
+/// `fetchAllComments` falls back to the public API at
+/// `/api/v1/board/{boTable}/article/slug/{slug}/comments`
 /// (reverse-engineered from the etoland Next.js client chunks) and decodes
 /// the same `RawComment` shape so attachments / etocon emoji / replies
-/// surface either way.
+/// surface either way. That API negotiates on `Accept` — see
+/// `acceptHeader(for:)`.
 public struct EtolandParser: BoardParser {
     public let site: Site = .etoland
 
@@ -87,7 +90,7 @@ public struct EtolandParser: BoardParser {
             fullDateText: meta.dateText,
             viewCount: meta.viewCount,
             source: nil,
-            comments: Self.extractComments(from: html)
+            comments: Self.inlineComments(from: html) ?? []
         )
     }
 
@@ -101,23 +104,30 @@ public struct EtolandParser: BoardParser {
         Self.commentsAPIURL(for: post.url)
     }
 
+    /// 이토랜드 댓글 API 는 `Accept` 로 content negotiation 을 한다. 앱의 기본
+    /// 브라우저 Accept(`text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8`)
+    /// 로 부르면 JSON 이 아니라 `application/xhtml+xml` 로 감싼
+    /// `<BaseResponse><status>…` XML 이 와서 `JSONDecoder` 가 통째로 실패한다
+    /// (2026-08-06 라이브 확인 — 같은 URL 을 `Accept: application/json` 또는
+    /// `*/*` 로 부르면 정상 JSON). 상세 HTML 요청은 건드리면 안 되므로 댓글
+    /// API URL 에만 적용한다.
+    public nonisolated func acceptHeader(for url: URL) -> String? {
+        url.path.hasPrefix("/api/") ? "application/json" : nil
+    }
+
     /// Skip the network round-trip when `parseDetail` already extracted
-    /// comments from the SSR blob — checking for the JS-escaped envelope
-    /// shape is a 1-shot string scan, much cheaper than the API call.
-    /// When the marker is absent, fall through to the public comments
-    /// endpoint and JSON-decode the response.
+    /// comments from the SSR blob. 판정은 `parseDetail` 과 **같은 함수**를
+    /// 다시 돌려서 한다 — 마커 유무만 보면 "인라인이 이겼다"는 판단과 실제로
+    /// 뽑히는 배열이 어긋날 수 있고(본문발 오탐), 그러면 API 폴백도 건너뛴
+    /// 채 댓글이 통째로 사라진다. 디코드 비용은 인라인이 실제로 있을 때만
+    /// 드는 데다 API 왕복보다 훨씬 싸다.
+    /// 인라인이 없으면(`nil`) 공개 댓글 API 로 폴백해 JSON 을 디코드한다.
     public nonisolated func fetchAllComments(
         for post: Post,
         detailHTML: String?,
         fetcher: @escaping @Sendable (URL) async throws -> String
     ) async throws -> [PostComment] {
-        // Match the wire envelope `"data":{"comments":[…]}` rather than the
-        // bare `"comments":[` substring — the latter false-positives on
-        // any user comment whose body literally contains `"comments":[`
-        // (programming/JSON discussion threads). Etoland always wraps the
-        // array under `data` in the SSR push, so the longer marker has
-        // effectively zero false-positive surface.
-        if let html = detailHTML, html.contains(#"\"data\":{\"comments\":["#) {
+        if let html = detailHTML, Self.inlineComments(from: html) != nil {
             // Inline path won; whatever parseDetail surfaced is correct,
             // so don't replace it with a parallel network result.
             return []
@@ -138,6 +148,9 @@ public struct EtolandParser: BoardParser {
         } catch {
             throw ParserError.structureChanged("etoland 댓글 응답 디코드 실패")
         }
+        // 댓글이 막힌 게시판(중고차 장터 등)은 성공적으로 "읽을 수 없음"을
+        // 답한다 — 파손이 아니라 "댓글 없는 글"이므로 throw 하면 헛배너다.
+        guard response.status != "ETOCD400015" else { return [] }
         guard response.status == "ETOCD200000" else {
             throw ParserError.structureChanged("etoland 댓글 status \(response.status)")
         }
@@ -314,31 +327,143 @@ public struct EtolandParser: BoardParser {
 
     /// Etoland's Next.js page ships the full comment tree inline in a
     /// `__next_f.push([1, "<JS-string>"])` script tag — the same data the
-    /// hydrated client would render. Pull the `"comments":[…]` array out
-    /// of the JS string by bracket-walking the HTML bytes (tracking
-    /// `\"` quote toggles and `\\` escapes), unescape JS string syntax
-    /// to recover real JSON, then decode and flatten the nested
-    /// `childrenComments` into a flat `[PostComment]` with reply markers.
-    nonisolated private static func extractComments(from html: String) -> [PostComment] {
-        guard let arrayJSON = extractCommentsArrayJS(from: html) else { return [] }
-        let unescaped = ParserText.unescapeJSString("[" + arrayJSON + "]")
-        guard let data = unescaped.data(using: .utf8) else { return [] }
-        guard let raw = try? JSONDecoder().decode([RawComment].self, from: data) else { return [] }
-        var out: [PostComment] = []
-        for r in raw { flatten(r, into: &out, isReply: false) }
+    /// hydrated client would render. Pull the comments array out of the JS
+    /// string by bracket-walking the HTML bytes (tracking `\"` quote toggles
+    /// and `\\` escapes), unescape JS string syntax to recover real JSON,
+    /// then decode and flatten the nested `childrenComments` into a flat
+    /// `[PostComment]` with reply markers.
+    ///
+    /// 반환값의 `nil` 과 `[]` 는 다른 뜻이다 — `nil` 은 "인라인 payload 없음"
+    /// (→ API 폴백을 타야 함), `[]` 는 "인라인이 실제로 댓글 0개". 이 구분이
+    /// `fetchAllComments` 의 skip 판정 근거이므로 뭉개면 안 된다.
+    ///
+    /// 후보 판정은 세 겹이다 — 어느 것도 단독으론 본문발 오탐을 못 막는다:
+    /// (1) `flightPayloadRegions` 안에서만 찾고(구조적 차단선),
+    /// (2) 배열 뒤에 pagination 형제 키가 붙어야 하고(`isFlightPayloadSite`),
+    /// (3) `[RawComment]` 로 디코드까지 돼야 한다.
+    /// 마커는 결국 문자열 매칭이라, 이스케이프된 JSON 을 붙여넣은 본문
+    /// (프로그래밍 스레드)이 `\"commentList\":[` 를 그대로 품으면 렌더된
+    /// HTML 에서 걸린다. `commentId` 만 필수라 `[{\"commentId\":1}]` 같은
+    /// 인용도 디코드에 성공하므로 (3) 만으로는 못 가르고, 응답을 통째로
+    /// 붙여넣으면 (2) 도 통과하므로 (1) 이 필요하다.
+    nonisolated static func inlineComments(from html: String) -> [PostComment]? {
+        for start in inlineCommentArrayStarts(in: html) {
+            guard let candidate = commentsArrayJS(in: html, from: start),
+                  isFlightPayloadSite(in: html, after: candidate.after)
+            else { continue }
+            let unescaped = ParserText.unescapeJSString("[" + candidate.json + "]")
+            guard let data = unescaped.data(using: .utf8),
+                  let raw = try? JSONDecoder().decode([RawComment].self, from: data)
+            else { continue }
+            var out: [PostComment] = []
+            for r in raw { flatten(r, into: &out, isReply: false) }
+            return out
+        }
+        return nil
+    }
+
+    /// 후보가 진짜 flight 페이로드에 속하는지 — 실제 SSR 은 댓글 배열 바로
+    /// 뒤에 pagination 형제 키를 붙인다:
+    /// `\"commentList\":[…],\"commentListPagination\":{\"page\":1,…}`
+    /// (2026-08-06 라이브 확인 — 댓글 0개/5개/43개 글 모두 동일 배치).
+    /// 본문에 인용된 조각에는 그게 없다.
+    ///
+    /// 배열이 비었든 아니든 같은 기준을 적용한다. 비어 있을 때만 검사하면
+    /// 인용된 `[{\"commentId\":1}]` 가 그대로 댓글로 표시되고, 뒤에 오는 진짜
+    /// payload 는 무시된다.
+    ///
+    /// 이 앵커가 언젠가 같이 바뀌면 인라인이 통째로 안 잡혀 API 폴백을 타는
+    /// 정도로 끝난다 — 실패 방향이 "헛왕복"이지 "댓글 유실"이 아니라 안전한
+    /// 쪽이다.
+    nonisolated private static func isFlightPayloadSite(in html: String, after: String.Index) -> Bool {
+        html[after...].hasPrefix(#",\"commentListPagination\":"#)
+    }
+
+    /// SSR flight 페이로드에서 댓글 배열이 실리는 키 — JS-escaped 형태.
+    /// 2026-08 이토랜드가 `"comments"` → `"commentList"` 로 이름을 바꿨다.
+    ///
+    /// 접두 `\"` 가 이웃한 `\"bestCommentList\":[` 를 배제하고, 끝의 `[` 가
+    /// `\"commentListPagination\":{` 를 배제한다. 본문발 오탐은 마커로 막지
+    /// 못하므로 최종 판정은 `isFlightPayloadSite` + 디코드가 한다.
+    ///
+    /// 옛 키(`\"data\":{\"comments\":[`)는 뺐다. 라이브에 0건이고, 그쪽엔
+    /// 검증된 앵커 샘플이 없어 남겨 두면 앵커 없는 오탐 경로만 하나 더
+    /// 생긴다. 이토랜드가 되돌리면 인라인이 안 잡혀 API 폴백을 타는데,
+    /// 그게 정확히 폴백이 있는 이유다(비용은 왕복 한 번).
+    nonisolated private static let inlineCommentMarker = #"\"commentList\":["#
+
+    /// 후보 상한. 마커를 반복해 품은 본문이 브래킷 워크를 문서 길이만큼
+    /// 여러 번 돌리는 걸 막는다 — 진짜 payload 는 앞쪽 몇 개 안에 있다.
+    nonisolated private static let maxInlineCommentCandidates = 8
+
+    /// 마커에 걸린 후보들의 "여는 `[` 바로 다음" 인덱스, 앞선 것부터.
+    /// 탐색 범위는 flight 페이로드 영역으로 한정한다(아래 참고). 그 안에서도
+    /// 후보를 복수로 모으는 건 한 영역에 댓글 관련 키가 여럿 실릴 수 있어서다
+    /// — 앵커+디코드를 통과하는 것이 나올 때까지 순서대로 시도한다.
+    nonisolated private static func inlineCommentArrayStarts(in html: String) -> [String.Index] {
+        var out: [String.Index] = []
+        for region in flightPayloadRegions(in: html) {
+            var searchFrom = region.lowerBound
+            while out.count < maxInlineCommentCandidates,
+                  let r = html.range(of: inlineCommentMarker, range: searchFrom..<region.upperBound) {
+                out.append(r.upperBound)
+                searchFrom = r.upperBound
+            }
+        }
         return out
     }
 
-    /// Return the contents of the first `\"comments\":[ … ]` array we find
-    /// in the HTML, exclusive of the outer brackets, still in JS-escaped
-    /// form. The walker keeps a depth counter for `[`/`{` and `]`/`}`,
-    /// toggling string state on `\"` and consuming any `\X` escape pair
-    /// in one step (so brackets that appear inside string content don't
-    /// throw the depth count off).
-    nonisolated private static func extractCommentsArrayJS(from html: String) -> String? {
-        let marker = #"\"comments\":["#
-        guard let r = html.range(of: marker) else { return nil }
-        let chars = Array(html[r.upperBound...])
+    /// flight 페이로드 영역 — `self.__next_f.push([1,"…"])` 스크립트의 내용.
+    ///
+    /// 후보 탐색을 여기로 한정하는 게 본문발 오탐의 **구조적** 차단선이다.
+    /// 마커·앵커는 결국 문자열이라, 본문에 이스케이프된 SSR 응답을 통째로
+    /// 붙여넣으면(`\"commentList\":[…],\"commentListPagination\":{…}`) 인접
+    /// 키 검사까지 통과한다. 게다가 렌더된 본문은 문서상 payload 보다 훨씬
+    /// 앞이라(라이브 실측 23.8K vs 352K) 그 오탐이 진짜 payload 를 이긴다 —
+    /// bailout 글만의 문제가 아니라 정상 글에서도 날조된 댓글이 뜬다.
+    ///
+    /// 영역으로 자르면 그게 원천 차단된다: 렌더된 본문은 이 영역 밖이고
+    /// (라이브 3건 확인 — flight 안 `view-content` 0건), 본문이 flight 에
+    /// 실리더라도 한 단계 더 이스케이프돼(`\\\"commentList\\\":[`) 마커에
+    /// 안 걸린다.
+    ///
+    /// 경계는 **`<script>` 요소**로 잡는다. `__next_f.push(` 문자열을 찾아
+    /// 거기서부터 다음 `</script>` 까지를 영역으로 삼으면, 그 문자열을 본문에
+    /// 인용한 글(Next.js 페이로드를 붙여넣은 디버깅 글)이 자기 본문 구간을
+    /// 통째로 "flight 영역"으로 만들어 버려 우회가 된다. 요소 단위로 자르면
+    /// 본문은 애초에 어떤 영역에도 안 들어간다 — 사용자 텍스트의 `<script`
+    /// 는 렌더 시 이스케이프되므로(안 그러면 이토랜드 쪽 XSS다) 원문의
+    /// `<script` 는 진짜 스크립트 요소로 봐도 된다.
+    ///
+    /// 스크립트 중에서도 `__next_f.push(` 를 담은 것만 쓴다. JSON-LD
+    /// (`application/ld+json`)는 본문을 같은 `\"` 이스케이프로 싣기 때문에,
+    /// "아무 스크립트 안"으로 두면 같은 오탐이 그대로 통과한다.
+    nonisolated private static func flightPayloadRegions(in html: String) -> [Range<String.Index>] {
+        var out: [Range<String.Index>] = []
+        var cursor = html.startIndex
+        while let open = html.range(of: "<script", range: cursor..<html.endIndex) {
+            // 여는 태그의 `>` 다음이 스크립트 내용의 시작.
+            guard let gt = html.range(of: ">", range: open.upperBound..<html.endIndex) else { break }
+            let end = html.range(of: "</script", range: gt.upperBound..<html.endIndex)?.lowerBound
+                ?? html.endIndex
+            let content = gt.upperBound..<end
+            if html[content].contains("__next_f.push(") { out.append(content) }
+            cursor = end
+            if cursor == html.endIndex { break }
+        }
+        return out
+    }
+
+    /// Return the contents of the comments array starting at `from`, exclusive
+    /// of the outer brackets, still in JS-escaped form, plus the index just
+    /// past its closing bracket (`after`, 형제 키 확인용). The walker keeps a
+    /// depth counter for `[`/`{` and `]`/`}`, toggling string state on `\"`
+    /// and consuming any `\X` escape pair in one step (so brackets that appear
+    /// inside string content don't throw the depth count off).
+    nonisolated private static func commentsArrayJS(
+        in html: String, from start: String.Index
+    ) -> (json: String, after: String.Index)? {
+        let chars = Array(html[start...])
         var depth = 1
         var inString = false
         var i = 0
@@ -358,7 +483,7 @@ public struct EtolandParser: BoardParser {
                 } else if c == "]" || c == "}" {
                     depth -= 1
                     if depth == 0 {
-                        return String(chars[0..<i])
+                        return (String(chars[0..<i]), html.index(start, offsetBy: i + 1))
                     }
                 }
             }

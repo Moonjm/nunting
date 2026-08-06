@@ -1004,7 +1004,9 @@ final class ParserDetailTests: XCTestCase {
         // Marker matches the wire envelope `"data":{"comments":[…]}`,
         // not the bare `"comments":[` substring (which would false-positive
         // on any user comment whose body literally contains that string).
-        let inlineHTML = #"<script>self.__next_f.push([1,"...\"data\":{\"comments\":[{}]}..."])</script>"#
+        // 배열은 실제로 디코드돼야 "인라인이 이겼다"로 친다 — 마커만으로
+        // 판정하면 본문이 마커를 품은 글에서 API 폴백까지 건너뛴다.
+        let inlineHTML = #"<script>self.__next_f.push([1,"...\"commentList\":[{\"commentId\":1}],\"commentListPagination\":{\"page\":1}..."])</script>"#
 
         let recorder = FetchRecorder()
         let comments = try await parser.fetchAllComments(
@@ -1070,7 +1072,7 @@ final class ParserDetailTests: XCTestCase {
           <div><div class="caption-s"><span class="nickname">x</span><time>2026-05-06 20:22</time></div></div>
           <div class="view-content"><p>본문</p></div>
         </article>
-        <script>self.__next_f.push([1,"6:[\\"$\\",\\"$L32\\",null,{\\"data\\":{\\"comments\\":[{\\"commentId\\":1,\\"parentId\\":null,\\"writeDateTimestamp\\":1,\\"recommendCount\\":0,\\"content\\":\\"\\\\uAC00\\\\uC871 \\\\u2764\\\\uFE0F \\\\uD83D\\\\uDC36\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"u\\"},\\"file\\":null,\\"childrenComments\\":[]}]}}]"])</script>
+        <script>self.__next_f.push([1,"6:[\\"$\\",\\"$L32\\",null,{\\"commentList\\":[{\\"commentId\\":1,\\"parentId\\":null,\\"writeDateTimestamp\\":1,\\"recommendCount\\":0,\\"content\\":\\"\\\\uAC00\\\\uC871 \\\\u2764\\\\uFE0F \\\\uD83D\\\\uDC36\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"u\\"},\\"file\\":null,\\"childrenComments\\":[]}],\\"commentListPagination\\":{\\"page\\":1}}]"])</script>
         </body></html>
         """
         let parser = EtolandParser()
@@ -1097,7 +1099,7 @@ final class ParserDetailTests: XCTestCase {
           <div><div class="caption-s"><span class="nickname">x</span><time>2026-05-06 20:22</time></div></div>
           <div class="view-content"><p>본문</p></div>
         </article>
-        <script>self.__next_f.push([1,"6:[\\"$\\",\\"$L32\\",null,{\\"data\\":{\\"comments\\":[{\\"commentId\\":99,\\"parentId\\":null,\\"writeDateTimestamp\\":1,\\"recommendCount\\":0,\\"content\\":\\"\\",\\"emojiId\\":570,\\"emojiItem\\":{\\"id\\":570,\\"etoconId\\":23,\\"path\\":\\"https://btcdn.etoland.co.kr/static/media/images/etocon/23/22.gif\\",\\"order\\":22},\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"u\\"},\\"file\\":null,\\"childrenComments\\":[]}]}}]"])</script>
+        <script>self.__next_f.push([1,"6:[\\"$\\",\\"$L32\\",null,{\\"commentList\\":[{\\"commentId\\":99,\\"parentId\\":null,\\"writeDateTimestamp\\":1,\\"recommendCount\\":0,\\"content\\":\\"\\",\\"emojiId\\":570,\\"emojiItem\\":{\\"id\\":570,\\"etoconId\\":23,\\"path\\":\\"https://btcdn.etoland.co.kr/static/media/images/etocon/23/22.gif\\",\\"order\\":22},\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"u\\"},\\"file\\":null,\\"childrenComments\\":[]}],\\"commentListPagination\\":{\\"page\\":1}}]"])</script>
         </body></html>
         """
         let parser = EtolandParser()
@@ -1130,7 +1132,7 @@ final class ParserDetailTests: XCTestCase {
           <div><div class="caption-s"><span class="nickname">x</span><time>2026-05-06 20:22</time></div></div>
           <div class="view-content"><p>본문</p></div>
         </article>
-        <script>self.__next_f.push([1,"6:[\\"$\\",\\"$L32\\",null,{\\"data\\":{\\"comments\\":[{\\"commentId\\":1,\\"parentId\\":null,\\"writeDateTimestamp\\":1,\\"recommendCount\\":0,\\"content\\":\\"이미지 첨부\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"a\\"},\\"file\\":{\\"bfFile\\":\\"/media/etohumor07/test/img.jpg\\",\\"bfType\\":\\"image\\",\\"bfMp4File\\":null},\\"childrenComments\\":[]},{\\"commentId\\":2,\\"parentId\\":null,\\"writeDateTimestamp\\":2,\\"recommendCount\\":0,\\"content\\":\\"비디오 첨부\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"b\\"},\\"file\\":{\\"bfFile\\":\\"/media/etohumor07/test/orig.mov\\",\\"bfType\\":\\"video\\",\\"bfMp4File\\":\\"/media/etohumor07/test/clip.mp4\\"},\\"childrenComments\\":[]},{\\"commentId\\":3,\\"parentId\\":null,\\"writeDateTimestamp\\":3,\\"recommendCount\\":0,\\"content\\":\\"https://btcdn.etoland.co.kr/static/media/etc/meme.jpg\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"c\\"},\\"file\\":null,\\"childrenComments\\":[]},{\\"commentId\\":4,\\"parentId\\":null,\\"writeDateTimestamp\\":4,\\"recommendCount\\":0,\\"content\\":\\"그냥 텍스트\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"d\\"},\\"file\\":null,\\"childrenComments\\":[]}]}}]"])</script>
+        <script>self.__next_f.push([1,"6:[\\"$\\",\\"$L32\\",null,{\\"commentList\\":[{\\"commentId\\":1,\\"parentId\\":null,\\"writeDateTimestamp\\":1,\\"recommendCount\\":0,\\"content\\":\\"이미지 첨부\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"a\\"},\\"file\\":{\\"bfFile\\":\\"/media/etohumor07/test/img.jpg\\",\\"bfType\\":\\"image\\",\\"bfMp4File\\":null},\\"childrenComments\\":[]},{\\"commentId\\":2,\\"parentId\\":null,\\"writeDateTimestamp\\":2,\\"recommendCount\\":0,\\"content\\":\\"비디오 첨부\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"b\\"},\\"file\\":{\\"bfFile\\":\\"/media/etohumor07/test/orig.mov\\",\\"bfType\\":\\"video\\",\\"bfMp4File\\":\\"/media/etohumor07/test/clip.mp4\\"},\\"childrenComments\\":[]},{\\"commentId\\":3,\\"parentId\\":null,\\"writeDateTimestamp\\":3,\\"recommendCount\\":0,\\"content\\":\\"https://btcdn.etoland.co.kr/static/media/etc/meme.jpg\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"c\\"},\\"file\\":null,\\"childrenComments\\":[]},{\\"commentId\\":4,\\"parentId\\":null,\\"writeDateTimestamp\\":4,\\"recommendCount\\":0,\\"content\\":\\"그냥 텍스트\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"d\\"},\\"file\\":null,\\"childrenComments\\":[]}],\\"commentListPagination\\":{\\"page\\":1}}]"])</script>
         </body></html>
         """
         let parser = EtolandParser()
@@ -1186,7 +1188,7 @@ final class ParserDetailTests: XCTestCase {
           <div><div class="caption-s"><span class="nickname">작성자</span><time>2026-05-06 20:22</time></div></div>
           <div class="view-content"><p>본문</p></div>
         </article>
-        <script>self.__next_f.push([1,"6:[\\"$\\",\\"$L32\\",null,{\\"data\\":{\\"comments\\":[{\\"wrId\\":1,\\"commentId\\":100,\\"parentId\\":null,\\"writeDateTimestamp\\":1778066655000,\\"recommendCount\\":8,\\"content\\":\\"첫 댓글 [대괄호 포함]\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"갑\\",\\"image\\":\\"https://etoland.co.kr/avatar1\\"},\\"childrenComments\\":[]},{\\"wrId\\":1,\\"commentId\\":200,\\"parentId\\":null,\\"writeDateTimestamp\\":1778067000000,\\"recommendCount\\":3,\\"content\\":\\"두번째\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"을\\",\\"image\\":null},\\"childrenComments\\":[{\\"wrId\\":1,\\"commentId\\":201,\\"parentId\\":200,\\"writeDateTimestamp\\":1778067100000,\\"recommendCount\\":0,\\"content\\":\\"답글\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"병\\",\\"image\\":null},\\"childrenComments\\":[]}]}]}}]"])</script>
+        <script>self.__next_f.push([1,"6:[\\"$\\",\\"$L32\\",null,{\\"commentList\\":[{\\"wrId\\":1,\\"commentId\\":100,\\"parentId\\":null,\\"writeDateTimestamp\\":1778066655000,\\"recommendCount\\":8,\\"content\\":\\"첫 댓글 [대괄호 포함]\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"갑\\",\\"image\\":\\"https://etoland.co.kr/avatar1\\"},\\"childrenComments\\":[]},{\\"wrId\\":1,\\"commentId\\":200,\\"parentId\\":null,\\"writeDateTimestamp\\":1778067000000,\\"recommendCount\\":3,\\"content\\":\\"두번째\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"을\\",\\"image\\":null},\\"childrenComments\\":[{\\"wrId\\":1,\\"commentId\\":201,\\"parentId\\":200,\\"writeDateTimestamp\\":1778067100000,\\"recommendCount\\":0,\\"content\\":\\"답글\\",\\"isAnonymous\\":false,\\"member\\":{\\"nickname\\":\\"병\\",\\"image\\":null},\\"childrenComments\\":[]}]}],\\"commentListPagination\\":{\\"page\\":1}}]"])</script>
         </body></html>
         """
         let parser = EtolandParser()

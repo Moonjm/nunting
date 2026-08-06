@@ -22,10 +22,31 @@ import Observation
 @Observable
 @MainActor
 final class PostDetailLoader {
+    /// 요청 단위로 파서가 정하는 전송 옵션. charset 만 있던 자리를 구조체로
+    /// 넓힌 것 — 이토랜드 댓글 API 처럼 `Accept` 를 명시해야 JSON 이 오는
+    /// 엔드포인트가 생겨서다. 파서 hook(`responseEncoding` / `acceptHeader`)
+    /// 이 URL 별로 채운다.
+    struct FetchOptions: Sendable {
+        var encoding: String.Encoding
+        var accept: String?
+
+        init(encoding: String.Encoding, accept: String? = nil) {
+            self.encoding = encoding
+            self.accept = accept
+        }
+
+        /// 파서 hook 두 개를 한 번에 적용 — 호출부가 매번 같은 쌍을 조립하지
+        /// 않게. `any BoardParser` 로 불러야 override 가 산다.
+        init(parser: any BoardParser, url: URL) {
+            self.init(encoding: parser.responseEncoding(for: url),
+                      accept: parser.acceptHeader(for: url))
+        }
+    }
+
     /// Routes every HTML fetch through one seam so test fakes can intercept
     /// detail + comment traffic uniformly. Production wires both legs to
-    /// `Networking.fetchHTML(url:encoding:)`.
-    typealias Fetcher = @Sendable (URL, String.Encoding) async throws -> String
+    /// `Networking.fetchHTML(url:encoding:accept:)`.
+    typealias Fetcher = @Sendable (URL, FetchOptions) async throws -> String
 
     /// Aagag mirror items 301-redirect through `aagag.com/mirror/re?ss=…`
     /// to a source-site URL. Routing the resolution through a seam lets
@@ -75,8 +96,9 @@ final class PostDetailLoader {
     private var loadGeneration = 0
 
     init(
-        fetcher: @escaping Fetcher = { url, encoding in
-            try await Networking.fetchHTML(url: url, encoding: encoding)
+        fetcher: @escaping Fetcher = { url, options in
+            try await Networking.fetchHTML(
+                url: url, encoding: options.encoding, accept: options.accept)
         },
         resolver: @escaping Resolver = { url in
             await Networking.resolveFinalURL(url)
@@ -233,10 +255,10 @@ final class PostDetailLoader {
                     // that interstitial straight to `AagagParser`.
                     let decoded = Networking.decodeHTML(data: prefetched, encoding: resolved.site.encoding)
                     let resolvedURL = resolved.url
-                    let resolvedEncoding = resolved.site.encoding
+                    let resolvedOptions = FetchOptions(encoding: resolved.site.encoding)
                     let captureFetcher = self.fetcher
                     html = try await Networking.applyBotCheckGuard(url: resolvedURL, body: decoded) {
-                        try await captureFetcher(resolvedURL, resolvedEncoding)
+                        try await captureFetcher(resolvedURL, resolvedOptions)
                     }
                 } else if !forceFresh, !staleCacheDetected, let warm = warmHTML(post.id) {
                     // 목록에서 미리 받아 둔 본 — fetch 생략 (RTT 제거).
@@ -245,7 +267,7 @@ final class PostDetailLoader {
                     // 낡아 버려진 경우는 신선도 보장을 위해 무시(위 참고).
                     html = warm
                 } else {
-                    html = try await fetcher(resolved.url, resolved.site.encoding)
+                    html = try await fetcher(resolved.url, FetchOptions(encoding: resolved.site.encoding))
                 }
                 // 애객 미러 인터스티셜 2차 안전망. 1차 detector(fetchHTML /
                 // applyBotCheckGuard 내부의 `looksLikeBotCheck`)는 마커 substring
@@ -263,7 +285,7 @@ final class PostDetailLoader {
                    html.count < 3_000 {
                     await challenger(resolved.url)
                     try Task.checkCancellation()
-                    html = try await fetcher(resolved.url, resolved.site.encoding)
+                    html = try await fetcher(resolved.url, FetchOptions(encoding: resolved.site.encoding))
                     // 재요청 결과도 같은 조건으로 재검증. 사용자가 시트를 닫았거나
                     // 쿠키 처리가 실패하면 두 번째 응답도 짧은 인터스티셜일 수 있다 —
                     // 그걸 AagagParser 로 흘리면 "불러오기 실패"로 뭉개지므로,
@@ -321,10 +343,12 @@ final class PostDetailLoader {
                             for: resolved,
                             detailHTML: parsedHTML
                         ) { url in
-                            // 파서가 URL 별 charset 을 지정 — ppomppu 댓글 JSON 은
-                            // UTF-8, 페이지는 CP949 라 사이트 단일 인코딩으로는
-                            // 한글이 깨진다. `responseEncoding` 이 URL 로 판별.
-                            try await fetcher(url, parser.responseEncoding(for: url))
+                            // 파서가 URL 별 charset/Accept 를 지정 — ppomppu 댓글
+                            // JSON 은 UTF-8, 페이지는 CP949 라 사이트 단일 인코딩
+                            // 으로는 한글이 깨지고(`responseEncoding`), 이토랜드
+                            // 댓글 API 는 브라우저 Accept 로 부르면 XML 을 준다
+                            // (`acceptHeader`).
+                            try await fetcher(url, FetchOptions(parser: parser, url: url))
                         })
                     } catch {
                         return .failure(error)
@@ -436,7 +460,7 @@ final class PostDetailLoader {
                     for: context.post,
                     detailHTML: context.detailHTML
                 ) { url in
-                    try await fetcher(url, parser.responseEncoding(for: url))
+                    try await fetcher(url, FetchOptions(parser: parser, url: url))
                 }
             }()
             let extras = try await extrasTask
