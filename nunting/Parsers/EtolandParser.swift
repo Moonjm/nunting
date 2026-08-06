@@ -8,13 +8,16 @@ import SwiftSoup
 /// the full comment tree are rendered into the initial HTML inside a
 /// `__next_f.push([1, "<JS-string>"])` payload. parseDetail extracts all of
 /// those. Comments specifically are non-deterministic in SSR — the same
-/// post can ship with `\"comments\":[…]` inline on one request and emit a
-/// `BAILOUT_TO_CLIENT_SIDE_RENDERING` template on the next. When the
-/// inline payload is missing, `fetchAllComments` falls back to the public
-/// API at `/api/v1/board/{boTable}/article/slug/{slug}/comments`
+/// post can ship the array inline on one request and emit a
+/// `BAILOUT_TO_CLIENT_SIDE_RENDERING` template on the next. The inline key
+/// is `\"commentList\":[…]` as of 2026-08 (previously `\"comments\":[…]`);
+/// see `inlineCommentMarkers`. When the inline payload is missing,
+/// `fetchAllComments` falls back to the public API at
+/// `/api/v1/board/{boTable}/article/slug/{slug}/comments`
 /// (reverse-engineered from the etoland Next.js client chunks) and decodes
 /// the same `RawComment` shape so attachments / etocon emoji / replies
-/// surface either way.
+/// surface either way. That API negotiates on `Accept` — see
+/// `acceptHeader(for:)`.
 public struct EtolandParser: BoardParser {
     public let site: Site = .etoland
 
@@ -101,6 +104,17 @@ public struct EtolandParser: BoardParser {
         Self.commentsAPIURL(for: post.url)
     }
 
+    /// 이토랜드 댓글 API 는 `Accept` 로 content negotiation 을 한다. 앱의 기본
+    /// 브라우저 Accept(`text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8`)
+    /// 로 부르면 JSON 이 아니라 `application/xhtml+xml` 로 감싼
+    /// `<BaseResponse><status>…` XML 이 와서 `JSONDecoder` 가 통째로 실패한다
+    /// (2026-08-06 라이브 확인 — 같은 URL 을 `Accept: application/json` 또는
+    /// `*/*` 로 부르면 정상 JSON). 상세 HTML 요청은 건드리면 안 되므로 댓글
+    /// API URL 에만 적용한다.
+    public nonisolated func acceptHeader(for url: URL) -> String? {
+        url.path.hasPrefix("/api/") ? "application/json" : nil
+    }
+
     /// Skip the network round-trip when `parseDetail` already extracted
     /// comments from the SSR blob — checking for the JS-escaped envelope
     /// shape is a 1-shot string scan, much cheaper than the API call.
@@ -111,13 +125,7 @@ public struct EtolandParser: BoardParser {
         detailHTML: String?,
         fetcher: @escaping @Sendable (URL) async throws -> String
     ) async throws -> [PostComment] {
-        // Match the wire envelope `"data":{"comments":[…]}` rather than the
-        // bare `"comments":[` substring — the latter false-positives on
-        // any user comment whose body literally contains `"comments":[`
-        // (programming/JSON discussion threads). Etoland always wraps the
-        // array under `data` in the SSR push, so the longer marker has
-        // effectively zero false-positive surface.
-        if let html = detailHTML, html.contains(#"\"data\":{\"comments\":["#) {
+        if let html = detailHTML, Self.inlineCommentsArrayStart(in: html) != nil {
             // Inline path won; whatever parseDetail surfaced is correct,
             // so don't replace it with a parallel network result.
             return []
@@ -138,6 +146,9 @@ public struct EtolandParser: BoardParser {
         } catch {
             throw ParserError.structureChanged("etoland 댓글 응답 디코드 실패")
         }
+        // 댓글이 막힌 게시판(중고차 장터 등)은 성공적으로 "읽을 수 없음"을
+        // 답한다 — 파손이 아니라 "댓글 없는 글"이므로 throw 하면 헛배너다.
+        guard response.status != "ETOCD400015" else { return [] }
         guard response.status == "ETOCD200000" else {
             throw ParserError.structureChanged("etoland 댓글 status \(response.status)")
         }
@@ -329,16 +340,40 @@ public struct EtolandParser: BoardParser {
         return out
     }
 
-    /// Return the contents of the first `\"comments\":[ … ]` array we find
-    /// in the HTML, exclusive of the outer brackets, still in JS-escaped
-    /// form. The walker keeps a depth counter for `[`/`{` and `]`/`}`,
-    /// toggling string state on `\"` and consuming any `\X` escape pair
-    /// in one step (so brackets that appear inside string content don't
-    /// throw the depth count off).
+    /// SSR flight 페이로드에서 댓글 배열이 실리는 키 — JS-escaped 형태.
+    ///
+    /// 2026-08 이토랜드가 `"comments"` → `"commentList"` 로 이름을 바꿨다.
+    /// 롤백/부분 배포에도 안 깨지게 옛 키도 남겨 두되, 옛 쪽은 봉투째
+    /// (`"data":{"comments":[`) 매칭한다 — 맨 `"comments":[` 는 본문에 그
+    /// 문자열이 들어간 사용자 댓글(JSON/프로그래밍 스레드)에 오탐한다.
+    ///
+    /// 새 키는 접두 `\"` 가 이웃한 `\"bestCommentList\":[` 를 배제하고, 끝의
+    /// `[` 가 `\"commentListPagination\":{` 를 배제한다.
+    nonisolated private static let inlineCommentMarkers = [
+        #"\"commentList\":["#,
+        #"\"data\":{\"comments\":["#,
+    ]
+
+    /// 인라인 댓글 배열의 여는 `[` **바로 다음** 인덱스. 어느 마커가 먼저
+    /// 나오든 가장 앞선 것을 고른다. 마커 유무 판정과 실제 추출이 같은
+    /// 함수를 쓰게 해, "인라인이 이겼다"는 판단과 실제로 뽑히는 배열이
+    /// 어긋나지 않도록 한다(예전엔 skip 판정과 추출이 서로 다른 마커를 써서
+    /// 한쪽만 바뀌어도 조용히 어긋날 수 있었다).
+    nonisolated private static func inlineCommentsArrayStart(in html: String) -> String.Index? {
+        inlineCommentMarkers
+            .compactMap { html.range(of: $0)?.upperBound }
+            .min()
+    }
+
+    /// Return the contents of the first inline comments array we find in the
+    /// HTML, exclusive of the outer brackets, still in JS-escaped form. The
+    /// walker keeps a depth counter for `[`/`{` and `]`/`}`, toggling string
+    /// state on `\"` and consuming any `\X` escape pair in one step (so
+    /// brackets that appear inside string content don't throw the depth
+    /// count off).
     nonisolated private static func extractCommentsArrayJS(from html: String) -> String? {
-        let marker = #"\"comments\":["#
-        guard let r = html.range(of: marker) else { return nil }
-        let chars = Array(html[r.upperBound...])
+        guard let start = inlineCommentsArrayStart(in: html) else { return nil }
+        let chars = Array(html[start...])
         var depth = 1
         var inString = false
         var i = 0

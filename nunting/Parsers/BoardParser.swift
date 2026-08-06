@@ -43,6 +43,15 @@ public protocol BoardParser: Sendable {
     /// correctly. Must be a protocol requirement — the loader calls it on an
     /// `any BoardParser`, so an extension-only impl would skip the override.
     nonisolated func responseEncoding(for url: URL) -> String.Encoding
+
+    /// `Accept` 헤더 override — 기본(`nil`)이면 `Networking` 의 브라우저용
+    /// HTML Accept 를 쓴다. JSON API 엔드포인트를 가진 파서가 URL 단위로
+    /// 덮어쓴다: 이토랜드 댓글 API 는 Accept 로 content negotiation 을 해서,
+    /// 브라우저 Accept(`…application/xml;q=0.9,*/*;q=0.8`) 로 부르면 JSON 이
+    /// 아니라 XML(`<BaseResponse>`)을 돌려준다(2026-08 확인). `responseEncoding`
+    /// 과 같은 이유로 프로토콜 요구사항이어야 한다 — 호출부가 `any BoardParser`
+    /// 라서 extension-only 구현은 override 가 무시된다.
+    nonisolated func acceptHeader(for url: URL) -> String?
 }
 
 extension BoardParser {
@@ -62,6 +71,7 @@ extension BoardParser {
     public nonisolated func commentsURL(for post: Post) -> URL? { nil }
     public nonisolated func parseComments(html: String) throws -> [PostComment] { [] }
     public nonisolated func responseEncoding(for url: URL) -> String.Encoding { site.encoding }
+    public nonisolated func acceptHeader(for url: URL) -> String? { nil }
 
     /// SwiftSoup 파싱+추출을 한 `autoreleasepool` 스코프에 묶는다. 파싱이
     /// nonisolated async/`Task.detached`(협력 풀) 컨텍스트에서 돌면 런루프가 없어

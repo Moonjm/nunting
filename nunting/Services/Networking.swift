@@ -115,6 +115,11 @@ struct Networking {
         /// 와 같은 계약). 다모앙 댓글 API 가 page≥2 를 무-Referer 요청에
         /// 403 으로 거절하는 게 현재 유일한 수요처.
         referer: URL? = nil,
+        /// `Accept` 헤더 override. 기본(`nil`)은 브라우저용 HTML Accept —
+        /// 그런데 그걸 content negotiation 하는 JSON API 가 있어(이토랜드 댓글
+        /// API 는 XML 로 답한다) 파서가 `BoardParser.acceptHeader(for:)` 로
+        /// URL 단위 override 를 내려보낸다.
+        accept: String? = nil,
         session: URLSession = Networking.session
     ) async throws -> String {
         let retry: @Sendable () async throws -> String = {
@@ -125,6 +130,7 @@ struct Networking {
                 handlesCookies: handlesCookies,
                 cachePolicy: cachePolicy,
                 referer: referer,
+                accept: accept,
                 session: session
             )
         }
@@ -136,6 +142,7 @@ struct Networking {
                 handlesCookies: handlesCookies,
                 cachePolicy: cachePolicy,
                 referer: referer,
+                accept: accept,
                 session: session
             )
             return try await applyBotCheckGuard(url: url, body: html, retry: retry)
@@ -159,6 +166,7 @@ struct Networking {
         handlesCookies: Bool,
         cachePolicy: URLRequest.CachePolicy,
         referer: URL? = nil,
+        accept: String? = nil,
         session: URLSession
     ) async throws -> String {
         var request = URLRequest(url: url)
@@ -170,7 +178,9 @@ struct Networking {
         if let referer {
             request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer")
         }
-        request.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
+        request.setValue(
+            accept ?? "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            forHTTPHeaderField: "Accept")
         request.setValue("ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7", forHTTPHeaderField: "Accept-Language")
 
         let maxAttempts = 2
