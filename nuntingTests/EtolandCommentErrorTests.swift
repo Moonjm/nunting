@@ -45,8 +45,9 @@ final class EtolandCommentErrorTests: XCTestCase {
     }
 
     func testInlineWonPathReturnsEmptyWithoutFetching() async throws {
-        // detailHTML 에 SSR 댓글 마커가 있으면 네트워크 fetch 없이 즉시 [].
-        let html = #"<script>{\"data\":{\"comments\":[{}]}}</script>"#
+        // detailHTML 에 디코드 가능한 SSR 댓글 배열이 있으면 네트워크 fetch
+        // 없이 즉시 []. (마커만 있고 디코드가 안 되면 폴백을 타야 한다.)
+        let html = #"<script>{\"data\":{\"comments\":[{\"commentId\":1}]}}</script>"#
         let comments = try await parser.fetchAllComments(
             for: post, detailHTML: html
         ) { _ in

@@ -24,9 +24,12 @@ final class EtolandCommentStructureTests: XCTestCase {
     }
 
     /// 라이브 페이로드 축약본 — `commentList` 앞뒤로 실제와 같은 이웃 키를
-    /// 두어 마커가 그것들에 걸리지 않는지도 함께 본다.
-    private func inlineHTML(commentsKey: String) -> String {
-        let comment = #"{\"wrId\":9241075,\"commentId\":70469751,\"parentId\":null,\"writeDateTimestamp\":1786000579000,\"recommendCount\":3,\"content\":\"본문 [대괄호] 포함\",\"isAnonymous\":false,\"member\":{\"nickname\":\"미나루\",\"image\":null},\"file\":null,\"childrenComments\":[]}"#
+    /// 두어 마커가 그것들에 걸리지 않는지도 함께 본다. `comments` 를 비우면
+    /// "진짜 댓글 0개인 글" 페이로드가 된다.
+    private func inlineHTML(commentsKey: String, comments: Bool = true) -> String {
+        let comment = comments
+            ? #"{\"wrId\":9241075,\"commentId\":70469751,\"parentId\":null,\"writeDateTimestamp\":1786000579000,\"recommendCount\":3,\"content\":\"본문 [대괄호] 포함\",\"isAnonymous\":false,\"member\":{\"nickname\":\"미나루\",\"image\":null},\"file\":null,\"childrenComments\":[]}"#
+            : ""
         return """
         <html><body>
         <article>
@@ -73,6 +76,58 @@ final class EtolandCommentStructureTests: XCTestCase {
         </body></html>
         """
         XCTAssertTrue(try parser.parseDetail(html: html, post: post()).comments.isEmpty)
+    }
+
+    // MARK: - 본문발 마커 오탐 (Codex 리뷰 P2)
+
+    /// 이스케이프된 JSON 을 붙여넣은 본문(프로그래밍 스레드)은 마커 문자열을
+    /// 그대로 품는다. 마커는 문자열 매칭이라 이걸 못 가리므로, 디코드까지
+    /// 성공해야 "인라인이 이겼다"고 본다.
+    private let bodyThatQuotesTheMarker =
+        #"<p>이 응답 이렇게 옵니다: {\"commentList\":[1,2,3]} 왜 이러죠?</p>"#
+
+    func testDecodableInlinePayloadWinsOverMarkerQuotedInBody() throws {
+        // 본문 오탐이 진짜 payload보다 **앞**에 있어도 진짜 쪽이 이겨야 한다.
+        let html = inlineHTML(commentsKey: "commentList")
+            .replacingOccurrences(of: "<p>본문</p>", with: bodyThatQuotesTheMarker)
+        let detail = try parser.parseDetail(html: html, post: post())
+        XCTAssertEqual(detail.comments.count, 1, "본문 오탐 뒤의 진짜 payload 를 찾아야 함")
+        XCTAssertEqual(detail.comments[0].author, "미나루")
+    }
+
+    func testMarkerQuotedInBodyAloneStillFallsBackToAPI() async throws {
+        // 오탐만 있고 진짜 payload 가 없으면(=SSR bailout) API 폴백을 타야 한다.
+        // 여기서 short-circuit 하면 그 글은 댓글을 통째로 잃는다.
+        let html = """
+        <html><body>
+        <article>
+          <h1><span class="truncate">제목</span></h1>
+          <div class="view-content">\(bodyThatQuotesTheMarker)</div>
+        </article>
+        <template data-dgst="BAILOUT_TO_CLIENT_SIDE_RENDERING"></template>
+        </body></html>
+        """
+        XCTAssertTrue(try parser.parseDetail(html: html, post: post()).comments.isEmpty,
+                      "오탐은 디코드에서 걸러진다")
+
+        let api = #"{"status":"ETOCD200000","data":{"comments":[{"commentId":7,"parentId":null,"writeDateTimestamp":1,"recommendCount":0,"content":"API 댓글","isAnonymous":false,"member":{"nickname":"a"},"file":null,"childrenComments":[]}]}}"#
+        let fetched = TestFlag()
+        let comments = try await parser.fetchAllComments(for: post(), detailHTML: html) { _ in
+            fetched.set()
+            return api
+        }
+        XCTAssertTrue(fetched.value, "오탐 때문에 API 폴백을 건너뛰면 안 된다")
+        XCTAssertEqual(comments.map(\.content), ["API 댓글"])
+    }
+
+    func testGenuinelyEmptyInlineListStillShortCircuits() async throws {
+        // 진짜로 댓글 0개인 글은 인라인이 이긴 것 — 헛왕복 금지.
+        let html = inlineHTML(commentsKey: "commentList", comments: false)
+        let comments = try await parser.fetchAllComments(for: post(), detailHTML: html) { _ in
+            XCTFail("빈 인라인 배열도 인라인이 이긴 것")
+            return ""
+        }
+        XCTAssertTrue(comments.isEmpty)
     }
 
     func testLegacyCommentsKeyStillExtracted() throws {
@@ -127,5 +182,23 @@ final class EtolandCommentStructureTests: XCTestCase {
         let body = #"{"status":"ETOCD400015","data":null,"message":"이 글은 댓글을 읽거나 작성할 수 없습니다."}"#
         let comments = try await parser.fetchAllComments(for: post(), detailHTML: nil) { _ in body }
         XCTAssertTrue(comments.isEmpty)
+    }
+}
+
+/// `@Sendable` fetcher 클로저 안에서 "불렸다"를 기록하는 최소 플래그.
+private final class TestFlag: @unchecked Sendable {
+    private var flag = false
+    private let lock = NSLock()
+
+    func set() {
+        lock.lock()
+        defer { lock.unlock() }
+        flag = true
+    }
+
+    var value: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return flag
     }
 }

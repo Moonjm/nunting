@@ -90,7 +90,7 @@ public struct EtolandParser: BoardParser {
             fullDateText: meta.dateText,
             viewCount: meta.viewCount,
             source: nil,
-            comments: Self.extractComments(from: html)
+            comments: Self.inlineComments(from: html) ?? []
         )
     }
 
@@ -116,16 +116,18 @@ public struct EtolandParser: BoardParser {
     }
 
     /// Skip the network round-trip when `parseDetail` already extracted
-    /// comments from the SSR blob — checking for the JS-escaped envelope
-    /// shape is a 1-shot string scan, much cheaper than the API call.
-    /// When the marker is absent, fall through to the public comments
-    /// endpoint and JSON-decode the response.
+    /// comments from the SSR blob. 판정은 `parseDetail` 과 **같은 함수**를
+    /// 다시 돌려서 한다 — 마커 유무만 보면 "인라인이 이겼다"는 판단과 실제로
+    /// 뽑히는 배열이 어긋날 수 있고(본문발 오탐), 그러면 API 폴백도 건너뛴
+    /// 채 댓글이 통째로 사라진다. 디코드 비용은 인라인이 실제로 있을 때만
+    /// 드는 데다 API 왕복보다 훨씬 싸다.
+    /// 인라인이 없으면(`nil`) 공개 댓글 API 로 폴백해 JSON 을 디코드한다.
     public nonisolated func fetchAllComments(
         for post: Post,
         detailHTML: String?,
         fetcher: @escaping @Sendable (URL) async throws -> String
     ) async throws -> [PostComment] {
-        if let html = detailHTML, Self.inlineCommentsArrayStart(in: html) != nil {
+        if let html = detailHTML, Self.inlineComments(from: html) != nil {
             // Inline path won; whatever parseDetail surfaced is correct,
             // so don't replace it with a parallel network result.
             return []
@@ -325,19 +327,39 @@ public struct EtolandParser: BoardParser {
 
     /// Etoland's Next.js page ships the full comment tree inline in a
     /// `__next_f.push([1, "<JS-string>"])` script tag — the same data the
-    /// hydrated client would render. Pull the `"comments":[…]` array out
-    /// of the JS string by bracket-walking the HTML bytes (tracking
-    /// `\"` quote toggles and `\\` escapes), unescape JS string syntax
-    /// to recover real JSON, then decode and flatten the nested
-    /// `childrenComments` into a flat `[PostComment]` with reply markers.
-    nonisolated private static func extractComments(from html: String) -> [PostComment] {
-        guard let arrayJSON = extractCommentsArrayJS(from: html) else { return [] }
-        let unescaped = ParserText.unescapeJSString("[" + arrayJSON + "]")
-        guard let data = unescaped.data(using: .utf8) else { return [] }
-        guard let raw = try? JSONDecoder().decode([RawComment].self, from: data) else { return [] }
-        var out: [PostComment] = []
-        for r in raw { flatten(r, into: &out, isReply: false) }
-        return out
+    /// hydrated client would render. Pull the comments array out of the JS
+    /// string by bracket-walking the HTML bytes (tracking `\"` quote toggles
+    /// and `\\` escapes), unescape JS string syntax to recover real JSON,
+    /// then decode and flatten the nested `childrenComments` into a flat
+    /// `[PostComment]` with reply markers.
+    ///
+    /// 반환값의 `nil` 과 `[]` 는 다른 뜻이다 — `nil` 은 "인라인 payload 없음"
+    /// (→ API 폴백을 타야 함), `[]` 는 "인라인이 실제로 댓글 0개". 이 구분이
+    /// `fetchAllComments` 의 skip 판정 근거이므로 뭉개면 안 된다.
+    ///
+    /// **디코드 성공까지 확인한 뒤에야** 인라인이 이겼다고 본다. 마커는 결국
+    /// 문자열 매칭이라, 이스케이프된 JSON 을 붙여넣은 본문(프로그래밍 스레드)
+    /// 이 `\"commentList\":[` 를 그대로 품으면 오탐한다. 종전엔 그런 오탐이
+    /// 나도 skip 판정이 다른(더 긴) 마커를 써서 API 폴백이 글을 구했는데,
+    /// 두 경로를 같은 마커로 합치면서 그 안전망이 사라졌다 — 오탐 후보는
+    /// 디코드에서 걸러내고 다음 후보로 넘어간다.
+    nonisolated static func inlineComments(from html: String) -> [PostComment]? {
+        // 빈 배열로 디코드된 후보는 곧장 채택하지 않고 보류한다. 본문이
+        // `\"commentList\":[]` 를 품은 경우 그것도 "성공적으로" 디코드되므로,
+        // 뒤에 진짜 payload 가 있으면 그쪽이 이기게 한다.
+        var sawEmptyArray = false
+        for start in inlineCommentArrayStarts(in: html) {
+            guard let arrayJSON = commentsArrayJS(in: html, from: start) else { continue }
+            let unescaped = ParserText.unescapeJSString("[" + arrayJSON + "]")
+            guard let data = unescaped.data(using: .utf8),
+                  let raw = try? JSONDecoder().decode([RawComment].self, from: data)
+            else { continue }
+            guard !raw.isEmpty else { sawEmptyArray = true; continue }
+            var out: [PostComment] = []
+            for r in raw { flatten(r, into: &out, isReply: false) }
+            return out
+        }
+        return sawEmptyArray ? [] : nil
     }
 
     /// SSR flight 페이로드에서 댓글 배열이 실리는 키 — JS-escaped 형태.
@@ -348,31 +370,39 @@ public struct EtolandParser: BoardParser {
     /// 문자열이 들어간 사용자 댓글(JSON/프로그래밍 스레드)에 오탐한다.
     ///
     /// 새 키는 접두 `\"` 가 이웃한 `\"bestCommentList\":[` 를 배제하고, 끝의
-    /// `[` 가 `\"commentListPagination\":{` 를 배제한다.
+    /// `[` 가 `\"commentListPagination\":{` 를 배제한다. 본문발 오탐까지는
+    /// 막지 못하므로 최종 판정은 `inlineComments` 의 디코드가 한다.
     nonisolated private static let inlineCommentMarkers = [
         #"\"commentList\":["#,
         #"\"data\":{\"comments\":["#,
     ]
 
-    /// 인라인 댓글 배열의 여는 `[` **바로 다음** 인덱스. 어느 마커가 먼저
-    /// 나오든 가장 앞선 것을 고른다. 마커 유무 판정과 실제 추출이 같은
-    /// 함수를 쓰게 해, "인라인이 이겼다"는 판단과 실제로 뽑히는 배열이
-    /// 어긋나지 않도록 한다(예전엔 skip 판정과 추출이 서로 다른 마커를 써서
-    /// 한쪽만 바뀌어도 조용히 어긋날 수 있었다).
-    nonisolated private static func inlineCommentsArrayStart(in html: String) -> String.Index? {
-        inlineCommentMarkers
-            .compactMap { html.range(of: $0)?.upperBound }
-            .min()
+    /// 후보 상한. 마커를 반복해 품은 본문이 브래킷 워크를 문서 길이만큼
+    /// 여러 번 돌리는 걸 막는다 — 진짜 payload 는 앞쪽 몇 개 안에 있다.
+    nonisolated private static let maxInlineCommentCandidates = 8
+
+    /// 마커에 걸린 후보들의 "여는 `[` 바로 다음" 인덱스, 앞선 것부터.
+    /// 후보가 복수인 이유는 위 오탐 가능성 때문 — 하나만 보고 단정하지 않고
+    /// 디코드되는 것이 나올 때까지 순서대로 시도한다.
+    nonisolated private static func inlineCommentArrayStarts(in html: String) -> [String.Index] {
+        var out: [String.Index] = []
+        for marker in inlineCommentMarkers {
+            var searchFrom = html.startIndex
+            while out.count < maxInlineCommentCandidates,
+                  let r = html.range(of: marker, range: searchFrom..<html.endIndex) {
+                out.append(r.upperBound)
+                searchFrom = r.upperBound
+            }
+        }
+        return out.sorted()
     }
 
-    /// Return the contents of the first inline comments array we find in the
-    /// HTML, exclusive of the outer brackets, still in JS-escaped form. The
-    /// walker keeps a depth counter for `[`/`{` and `]`/`}`, toggling string
-    /// state on `\"` and consuming any `\X` escape pair in one step (so
-    /// brackets that appear inside string content don't throw the depth
-    /// count off).
-    nonisolated private static func extractCommentsArrayJS(from html: String) -> String? {
-        guard let start = inlineCommentsArrayStart(in: html) else { return nil }
+    /// Return the contents of the comments array starting at `from`, exclusive
+    /// of the outer brackets, still in JS-escaped form. The walker keeps a
+    /// depth counter for `[`/`{` and `]`/`}`, toggling string state on `\"`
+    /// and consuming any `\X` escape pair in one step (so brackets that appear
+    /// inside string content don't throw the depth count off).
+    nonisolated private static func commentsArrayJS(in html: String, from start: String.Index) -> String? {
         let chars = Array(html[start...])
         var depth = 1
         var inString = false

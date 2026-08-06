@@ -1004,7 +1004,9 @@ final class ParserDetailTests: XCTestCase {
         // Marker matches the wire envelope `"data":{"comments":[…]}`,
         // not the bare `"comments":[` substring (which would false-positive
         // on any user comment whose body literally contains that string).
-        let inlineHTML = #"<script>self.__next_f.push([1,"...\"data\":{\"comments\":[{}]}..."])</script>"#
+        // 배열은 실제로 디코드돼야 "인라인이 이겼다"로 친다 — 마커만으로
+        // 판정하면 본문이 마커를 품은 글에서 API 폴백까지 건너뛴다.
+        let inlineHTML = #"<script>self.__next_f.push([1,"...\"data\":{\"comments\":[{\"commentId\":1}]}..."])</script>"#
 
         let recorder = FetchRecorder()
         let comments = try await parser.fetchAllComments(
