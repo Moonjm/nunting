@@ -72,32 +72,78 @@ struct BoardListView: View, Equatable {
         isActive ? key + "|active" : key
     }
 
+    /// 목록 자리에 무엇을 그릴지. 보드 전환 스위처는 이 상태와 **무관하게**
+    /// 항상 그려진다 — 목록이 있으면 List 첫 행으로, 없으면 상태 뷰 위에.
+    /// `nonisolated` — 뷰(@MainActor)의 중첩 타입이라 그냥 두면 Equatable 적합이
+    /// 액터 격리돼 `contentState` 같은 nonisolated 문맥/테스트에서 못 쓴다.
+    nonisolated enum ContentState: Equatable {
+        case loading
+        case failed(String)
+        /// 연관값은 트리밍된 검색어.
+        case searchEmpty(String)
+        case empty
+        case list
+    }
+
+    /// 순수 함수로 뽑아 단위 테스트로 핀 — 분기 하나가 어긋나면 보드가 통째로
+    /// 안 보이는 종류의 회귀라, body 안에 두지 않는다.
+    nonisolated static func contentState(
+        isActive: Bool,
+        isLoading: Bool,
+        errorMessage: String?,
+        postCount: Int,
+        searchQuery: String?
+    ) -> ContentState {
+        // 글이 하나라도 있으면 목록이 이긴다 — 리로드 스피너나 페이징 실패가
+        // 이미 보이는 목록을 덮으면 안 된다.
+        if postCount > 0 { return .list }
+        // 비활성 페이지는 fetch 를 안 했으므로 빈 목록이 정상 — 드래그로 살짝
+        // 노출될 때 "글이 없습니다" 로 오표시하지 않고 스피너. 활성화(도착)되면
+        // .task 재시작(activate)이 스피너를 이어받는다.
+        if !isActive || isLoading { return .loading }
+        if let errorMessage { return .failed(errorMessage) }
+        if let query = searchQuery?.trimmingCharacters(in: .whitespacesAndNewlines), !query.isEmpty {
+            return .searchEmpty(query)
+        }
+        return .empty
+    }
+
+    /// 스위처를 상태 뷰 위에 따로 얹어야 하는지. 목록이 있을 땐 스크롤어웨이
+    /// 첫 행이 담당하므로 false — 둘 다 그리면 보드명이 두 번 나온다.
+    nonisolated static func showsStandaloneSwitcher(
+        showsBoardNameHeader: Bool,
+        state: ContentState
+    ) -> Bool {
+        showsBoardNameHeader && state != .list
+    }
+
     @State private var loader = BoardListLoader()
 
     var body: some View {
-        Group {
-            if !isActive && loader.posts.isEmpty {
-                // 비활성 페이지는 fetch 를 안 했으므로 빈 목록이 정상 — 드래그로
-                // 살짝 노출될 때 "글이 없습니다" 로 오표시하지 않고 스피너.
-                // 활성화(도착)되면 .task 재시작(activate)이 스피너를 이어받는다.
-                loadingView
-            } else if loader.isLoading && loader.posts.isEmpty {
-                loadingView
-            } else if let errorMessage = loader.errorMessage, loader.posts.isEmpty {
-                ContentUnavailableView("불러오기 실패", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
-            } else if loader.posts.isEmpty {
-                if let query = searchQuery?.trimmingCharacters(in: .whitespacesAndNewlines),
-                   !query.isEmpty {
-                    ContentUnavailableView(
-                        "검색 결과가 없어요",
-                        systemImage: "magnifyingglass",
-                        description: Text("'\(query)'에 대한 글을 찾지 못했어요.")
-                    )
-                } else {
-                    ContentUnavailableView("글이 없습니다", systemImage: "doc.text")
-                }
-            } else {
+        let state = Self.contentState(
+            isActive: isActive,
+            isLoading: loader.isLoading,
+            errorMessage: loader.errorMessage,
+            postCount: loader.posts.count,
+            searchQuery: searchQuery
+        )
+        return Group {
+            if state == .list {
                 listView
+            } else {
+                // 목록을 못 그리는 상태에서도 보드 스위처는 남긴다 — 없으면 글을
+                // 못 불러온 보드(맨 앞 보드면 특히)에 갇혀 스와이프 말곤 다른
+                // 보드로 갈 방법이 없다.
+                VStack(spacing: 0) {
+                    if Self.showsStandaloneSwitcher(showsBoardNameHeader: showsBoardNameHeader, state: state) {
+                        boardSwitcher
+                            // List 행일 때의 listRowInsets 와 동일한 여백 —
+                            // 목록↔플레이스홀더 전환에서 헤더가 튀지 않게.
+                            .padding(EdgeInsets(top: 10, leading: 20, bottom: 14, trailing: 20))
+                    }
+                    placeholderView(state: state)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -131,6 +177,62 @@ struct BoardListView: View, Equatable {
         .frame(maxWidth: .infinity)
     }
 
+    @ViewBuilder
+    private func placeholderView(state: ContentState) -> some View {
+        switch state {
+        case .loading:
+            loadingView
+        case .failed(let message):
+            ContentUnavailableView("불러오기 실패", systemImage: "exclamationmark.triangle", description: Text(message))
+        case .searchEmpty(let query):
+            ContentUnavailableView(
+                "검색 결과가 없어요",
+                systemImage: "magnifyingglass",
+                description: Text("'\(query)'에 대한 글을 찾지 못했어요.")
+            )
+        case .empty:
+            ContentUnavailableView("글이 없습니다", systemImage: "doc.text")
+        case .list:
+            EmptyView()
+        }
+    }
+
+    /// 보드 전환 스위처(⌄ 메뉴, Apple News/Reddit 식). 목록이 있으면 List 첫
+    /// 행(스크롤어웨이)으로, 없으면 상태 뷰 위에 그대로 쓰인다.
+    private var boardSwitcher: some View {
+        Menu {
+            ForEach(switchableBoards) { b in
+                Button { onSelectBoard(b.id) } label: {
+                    if b.id == board.id {
+                        Label(b.name, systemImage: "checkmark")
+                    } else {
+                        Text(b.name)
+                    }
+                }
+            }
+            Divider()
+            Button { onEditOrder() } label: {
+                Label("보드 순서 편집", systemImage: "arrow.up.arrow.down")
+            }
+        } label: {
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(board.site.accentColor)
+                    .frame(width: 8, height: 8)
+                Text(board.name)
+                    .font(.headline)
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.secondary)
+            }
+            .foregroundStyle(.primary)
+        }
+        // Menu 기본 accent 틴트(파란 글씨) 대신 라벨을 내가 지정한 색으로.
+        .tint(.primary)
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
     private var listView: some View {
         ScrollViewReader { proxy in
         List {
@@ -139,38 +241,8 @@ struct BoardListView: View, Equatable {
                 // 리스트 첫 콘텐츠 행이라 스크롤 시 함께 밀려 사라지고, 쉬는 위치
                 // 에선 첫 글을 아래로 내려 한손 도달 개선. ⌄ 탭 → 모음 보드 목록
                 // 메뉴(현재 페이지 보드에 체크).
-                Menu {
-                    ForEach(switchableBoards) { b in
-                        Button { onSelectBoard(b.id) } label: {
-                            if b.id == board.id {
-                                Label(b.name, systemImage: "checkmark")
-                            } else {
-                                Text(b.name)
-                            }
-                        }
-                    }
-                    Divider()
-                    Button { onEditOrder() } label: {
-                        Label("보드 순서 편집", systemImage: "arrow.up.arrow.down")
-                    }
-                } label: {
-                    HStack(spacing: 7) {
-                        Circle()
-                            .fill(board.site.accentColor)
-                            .frame(width: 8, height: 8)
-                        Text(board.name)
-                            .font(.headline)
-                            .lineLimit(1)
-                        Image(systemName: "chevron.down")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(.secondary)
-                    }
-                    .foregroundStyle(.primary)
-                }
-                // Menu 기본 accent 틴트(파란 글씨) 대신 라벨을 내가 지정한 색으로.
-                .tint(.primary)
-                .frame(maxWidth: .infinity, alignment: .center)
-                .listRowInsets(EdgeInsets(top: 10, leading: 20, bottom: 14, trailing: 20))
+                boardSwitcher
+                    .listRowInsets(EdgeInsets(top: 10, leading: 20, bottom: 14, trailing: 20))
                 .listRowSeparator(.hidden)
                 // 행 배경을 흰색(기본) 대신 투명 처리 — 뒤 AppSurface 가 비쳐 글
                 // 행들과 일체.
