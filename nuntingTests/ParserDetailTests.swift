@@ -70,6 +70,150 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertTrue(combined.contains("아래 본문 텍스트"))
     }
 
+    func testClienOutImgLocalPathLinkIsDropped() throws {
+        // Real shape from m.clien.net/service/board/cm_iphonien/19245878: the
+        // author pasted a screenshot straight from their Mac, so Clien's editor
+        // wrapped the *local file path* in its 외부이미지 chrome
+        // (`span.out_img > a.search_link` labelled "LINK"). Base-resolving that
+        // href against clien.net yields a syntactically valid https URL that
+        // points nowhere — the reader sees a blue underlined "LINK" that 404s.
+        // The chrome label is not user prose, so the whole anchor is dropped.
+        let html = """
+        <html><body>
+        <div class="post_article">
+            <p>월렛에서 패스 생성하는 기능입니다.</p>
+            <p><span class="out_img"><a class="search_link" href="/Users/seominseok/Downloads/SE-9f54.png" target="_blank" ori-url="/Users/seominseok/Downloads/SE-9f54.png">&nbsp;LINK</a></span></p>
+            <p>본문 마지막 문단</p>
+        </div>
+        <div class="post_date">2026-08-11 21:30</div>
+        </body></html>
+        """
+        let parser = ClienParser()
+        let post = Post.fixture(
+            id: "clien-cm_iphonien-19245878",
+            site: .clien,
+            boardID: "clien-cm_iphonien",
+            url: URL(string: "https://m.clien.net/service/board/cm_iphonien/19245878")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+
+        XCTAssertTrue(detail.blocks.links.isEmpty,
+                      "로컬 파일 경로 out_img 앵커는 링크로 emit 되면 안 됨: \(detail.blocks.links)")
+        XCTAssertFalse(detail.blocks.plainText.contains("LINK"),
+                       "out_img chrome 라벨 'LINK' 가 본문에 남음: \(detail.blocks.plainText)")
+        XCTAssertTrue(detail.blocks.plainText.contains("월렛에서 패스 생성하는 기능입니다."))
+        XCTAssertTrue(detail.blocks.plainText.contains("본문 마지막 문단"))
+    }
+
+    func testClienOutImgExternalURLStaysLinked() throws {
+        // Counterpart to the above: when the pasted source really is an
+        // external http(s) URL, Clien's out_img chrome is the only way the
+        // reader can reach it (clien refuses to hotlink), so the anchor must
+        // survive — label and all.
+        let html = """
+        <html><body>
+        <div class="post_article">
+            <p>외부 이미지입니다.</p>
+            <p><span class="out_img"><a class="search_link" href="https://example.com/photo.png" target="_blank" ori-url="https://example.com/photo.png">&nbsp;LINK</a></span></p>
+        </div>
+        </body></html>
+        """
+        let parser = ClienParser()
+        let post = Post.fixture(
+            id: "clien-test",
+            site: .clien,
+            boardID: "clien-news",
+            url: URL(string: "https://m.clien.net/service/board/news/0")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+
+        XCTAssertEqual(detail.blocks.links.count, 1)
+        XCTAssertEqual(detail.blocks.links.first?.0.absoluteString, "https://example.com/photo.png")
+    }
+
+    func testClienOutImgProtocolRelativeURLStaysLinked() throws {
+        // `//host/path` names its own host and borrows only the scheme, so it's
+        // a genuine external address — unlike the single-slash local path it
+        // superficially resembles. Must survive the out_img dead-link filter.
+        let html = """
+        <html><body>
+        <div class="post_article">
+            <p><span class="out_img"><a class="search_link" href="//cdn.example.com/photo.png" ori-url="//cdn.example.com/photo.png">&nbsp;LINK</a></span></p>
+        </div>
+        </body></html>
+        """
+        let parser = ClienParser()
+        let post = Post.fixture(
+            id: "clien-test",
+            site: .clien,
+            boardID: "clien-news",
+            url: URL(string: "https://m.clien.net/service/board/news/0")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+
+        XCTAssertEqual(detail.blocks.links.count, 1, "프로토콜 상대 URL 은 정상 외부 링크로 유지")
+        XCTAssertEqual(detail.blocks.links.first?.0.absoluteString, "https://cdn.example.com/photo.png")
+    }
+
+    func testClienOutImgSchemeWithoutHostIsDropped() throws {
+        // `https:/Users/foo.png` parses with an https scheme but a nil host —
+        // scheme-only validation would wave it through and the reader gets the
+        // same unreachable "LINK". Requires the host check.
+        let html = """
+        <html><body>
+        <div class="post_article">
+            <p><span class="out_img"><a class="search_link" href="https:/Users/seominseok/Downloads/SE-9f54.png">&nbsp;LINK</a></span></p>
+        </div>
+        </body></html>
+        """
+        let parser = ClienParser()
+        let post = Post.fixture(
+            id: "clien-test",
+            site: .clien,
+            boardID: "clien-news",
+            url: URL(string: "https://m.clien.net/service/board/news/0")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+
+        XCTAssertTrue(detail.blocks.links.isEmpty,
+                      "host 없는 https 값도 죽은 링크: \(detail.blocks.links)")
+        XCTAssertFalse(detail.blocks.plainText.contains("LINK"))
+    }
+
+    func testClienRelativeSearchLinkOutsideOutImgIsUntouched() throws {
+        // The dead-link filter targets the `span.out_img > a.search_link`
+        // chrome specifically. A relative anchor carrying the same class (or an
+        // `ori-url`) WITHOUT the out_img wrapper is something else — dropping
+        // it would silently eat a real link and its label, so it keeps the old
+        // base-resolved behaviour.
+        let html = """
+        <html><body>
+        <div class="post_article">
+            <p><a class="search_link" href="/service/board/park/19184976">다른 글 보기</a></p>
+        </div>
+        </body></html>
+        """
+        let parser = ClienParser()
+        let post = Post.fixture(
+            id: "clien-test",
+            site: .clien,
+            boardID: "clien-news",
+            url: URL(string: "https://m.clien.net/service/board/news/0")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+
+        XCTAssertEqual(detail.blocks.links.count, 1, "out_img 밖 상대 링크는 그대로 유지")
+        XCTAssertEqual(detail.blocks.links.first?.0.absoluteString,
+                       "https://www.clien.net/service/board/park/19184976")
+        // 라벨은 `.link` 세그먼트가 들고 있다 — plainText 는 `.text` 만 모은다.
+        XCTAssertEqual(detail.blocks.links.first?.1, "다른 글 보기")
+    }
+
     func testClienJirumAttachedLinkEmitsDealLinkBlock() throws {
         // Real shape from m.clien.net 알뜰구매(jirum) posts. The 구매링크 lives in
         // `<div class="attached_link ...">` which on MOBILE is a SIBLING of (and
