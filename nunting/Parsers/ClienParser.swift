@@ -88,7 +88,9 @@ public struct ClienParser: BoardParser {
         // 과 data-img-width/height aspect ratio 추출을 한다. standard
         // resolveImageURL/imageBlock 으로는 둘 다 표현 불가.
         rules.customElement = { [self] el in
-            guard el.tagName().lowercased() == "img" else { return nil }
+            let tag = el.tagName().lowercased()
+            if tag == "a", try isDeadOutImageLink(el) { return [] }
+            guard tag == "img" else { return nil }
             guard let info = try image(from: el) else { return [] }
             return [.image(info.url, aspectRatio: info.aspectRatio)]
         }
@@ -111,6 +113,66 @@ public struct ClienParser: BoardParser {
             source: source,
             comments: comments
         )
+    }
+
+    /// Whether `el` is Clien's 외부이미지 chrome pointing at nothing reachable.
+    ///
+    /// Clien refuses to hotlink images, so the editor replaces an externally
+    /// sourced `<img>` with `<span class="out_img"><a class="search_link"
+    /// href=… ori-url=…>&nbsp;LINK</a></span>` — a bare "LINK" label carrying
+    /// the *original* address. That address is meant to be absolute, but when
+    /// an author pastes a screenshot straight off their desktop the editor
+    /// stores the local file path verbatim (`/Users/…/foo.png`, seen on
+    /// cm_iphonien/19245878). `anchor(from:)` base-resolves it against
+    /// clien.net into a syntactically valid — and permanently 404 — https URL,
+    /// so the reader gets a blue underlined "LINK" that goes nowhere.
+    ///
+    /// Require the raw href to name its own host: an out_img anchor that leans
+    /// on baseURL for the *path* isn't a real external address. A network-path
+    /// reference (`//cdn.example.com/photo.png`) still counts — it names the
+    /// host and borrows only the scheme, which `anchor(from:)` resolves to
+    /// https correctly. Dead anchors are claimed (dropped label and all)
+    /// rather than falling back to text — "LINK" is editor chrome, not the
+    /// author's prose, same rationale as the GIF download `<button>` above.
+    /// Anchors with a genuine external URL fall through to the walker and
+    /// stay tappable.
+    ///
+    /// Dropping a label is destructive, so the predicate insists on the full
+    /// chrome shape — `search_link` / `ori-url` **inside** an `out_img`
+    /// wrapper. A relative anchor carrying either marker on its own is
+    /// something else (or markup we haven't seen) and keeps its old
+    /// base-resolved behaviour rather than vanishing silently.
+    nonisolated private func isDeadOutImageLink(_ el: Element) throws -> Bool {
+        let classes = try el.classNames()
+        guard classes.contains("search_link") || el.hasAttr("ori-url"),
+              isInsideOutImageWrapper(el)
+        else { return false }
+        let href = try el.attr("href").trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolved = href.hasPrefix("//")
+            ? URL(string: href, relativeTo: site.baseURL)?.absoluteURL
+            : URL(string: href)
+        guard let url = resolved,
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              // Scheme alone isn't enough: `https:/Users/foo.png` parses with
+              // an https scheme and a nil host, which resolves to the same
+              // unreachable address the filter exists to kill.
+              !(url.host ?? "").isEmpty
+        else { return true }
+        return false
+    }
+
+    /// Whether any ancestor of `el` is Clien's `out_img` 외부이미지 wrapper.
+    /// Walks the parent chain instead of `el.parent()` alone — the editor
+    /// nests the anchor directly today, but a wrapping `<span>`/`<em>` from a
+    /// hand-edited post shouldn't reopen the dead-link hole.
+    nonisolated private func isInsideOutImageWrapper(_ el: Element) -> Bool {
+        var node = el.parent()
+        while let current = node {
+            if let classes = try? current.classNames(), classes.contains("out_img") { return true }
+            node = current.parent()
+        }
+        return false
     }
 
     /// Extracts `.dealLink` blocks from the jirum 구매링크 affordance
