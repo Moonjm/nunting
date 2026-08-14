@@ -159,11 +159,6 @@ struct NetworkImage: View {
     /// before it fires.
     @State private var releaseTask: Task<Void, Never>?
 
-    /// Phase-3 teardown: drives the `appActive` decode gate so backgrounding
-    /// drops `releasesWhenOffscreen` body decodes (keep-alive detail's resident
-    /// bitmaps) without waiting for a scroll-driven release.
-    @Environment(\.scenePhase) private var scenePhase
-
     /// Off-screen dwell before a `releasesWhenOffscreen` image drops its
     /// decode. Long enough that a small scroll wobble across the viewport edge
     /// (or a fast fling that briefly uncovers a row) doesn't drop-and-redecode;
@@ -185,11 +180,7 @@ struct NetworkImage: View {
             visibilityGated: visibilityGated,
             hasBeenVisible: hasBeenVisible,
             releasesWhenOffscreen: releasesWhenOffscreen,
-            isOnscreen: isOnscreen,
-            // Drop `releasesWhenOffscreen` decodes while suspended; `.inactive`
-            // (app switcher / control center) keeps them so the snapshot looks
-            // right — only true `.background` tears down.
-            appActive: scenePhase != .background
+            isOnscreen: isOnscreen
         )
 
         Group {
@@ -314,7 +305,7 @@ struct NetworkImage: View {
         return AnimatedImage(url: url.atsSafe, context: thumbnailContext) {
             loadingPlaceholder
         }
-        .onSuccess { image, _, _ in handleLoadSuccess(image) }
+        .onSuccess { image, _, cacheType in handleLoadSuccess(image, cacheType: cacheType) }
         .onFailure { error in handleLoadFailure(error) }
         // Cap decoded-frame memory for animated WebP/GIF (짤방 are 100-300
         // frames; SDAnimatedImageView's default `maxBufferSize = 0` decodes
@@ -333,15 +324,55 @@ struct NetworkImage: View {
     /// first-frame 정지컷 경로(구버전/외부)가 남긴 잔재다. 지우면 다음
     /// 로드가 디스크 원본에서 lazy 재디코드한다(네트워크 재요청 없음).
     /// 유닛 테스트용 internal.
-    nonisolated static func purgePoisonedMemoryEntry(
+    @MainActor
+    static func purgePoisonedMemoryEntry(
         for url: URL, context: [SDWebImageContextOption: Any]?
     ) {
         guard url.pathExtension.lowercased() == "webp",
               let key = SDWebImageManager.shared.cacheKey(for: url, context: context),
+              purgeCheckedKeys.insert(key).inserted,
               let cached = SDImageCache.shared.imageFromMemoryCache(forKey: key),
               !(cached is SDAnimatedImage)
         else { return }
         SDImageCache.shared.removeImageFromMemory(forKey: key)
+    }
+
+    /// 이미 오염 검사를 마친 캐시 키. **키당 1회**로 묶는 이유가 이 가드의
+    /// 핵심이다 — 검사가 body 평가마다 돌면, 우리 로드가 방금 넣은 **정상**
+    /// 엔트리까지 지운다. 썸네일 박스(`imageThumbnailPixelSize`) 디코드는
+    /// `SDAnimatedImage` 가 아니라 일반 `UIImage` 를 돌려주므로 위 클래스
+    /// 체크에 그대로 걸리기 때문이다. 기기 실측: 로드 성공 5ms 뒤 곧바로
+    /// PURGING 이 찍히고, 이후 모든 로드가 `src=disk` — 본문 이미지의 메모리
+    /// 캐시가 영영 안 남아 재진입·백그라운드 복귀마다 10MP 짜리 세로 패널을
+    /// 디스크에서 다시 디코드했다(장당 0.5~4.2s, 그 사이 흰 슬롯).
+    ///
+    /// 1회로 줄여도 원래 목적은 그대로다: 메모리 캐시는 **프로세스 안에서만**
+    /// 살아서 앱 재실행 때 이미 비어 있고, 오염이 문제가 되는 순간은 이 뷰가
+    /// 로드를 **시작하기 직전** 한 번뿐이다(그 자리에서 여전히 검사한다).
+    @MainActor private static var purgeCheckedKeys: Set<String> = []
+
+    /// 디스크 히트를 메모리 캐시로 승격한다.
+    ///
+    /// SDWebImage 5.21.7 의 디스크 조회 경로는 **메모리 캐시에 되쓰지 않는다**
+    /// — `SDImageCache.m` 의 `queryDiskImageBlock` 이 `shouldCacheToMemory` 를
+    /// 계산만 하고 `storeImageToMemory:` 를 부르는 곳이 없다(소스 확인).
+    /// 메모리 저장은 **다운로드 직후 한 번**뿐이라, 한 번 디스크에 들어간
+    /// 이미지는 그 뒤 표시할 때마다 디스크 읽기 + 디코드를 다시 문다.
+    ///
+    /// 본문 이미지엔 그 비용이 크다 — 기기 실측(aagag 세로 패널 2장):
+    /// 백그라운드 왕복마다 `src=disk` 0.5s / 1.2~4.2s, 그동안 슬롯이 흰 채로
+    /// 남는다. `releasesWhenOffscreen` 이 디코드를 버리는 설계라 재조회가
+    /// 잦은데, 그 재조회가 전부 풀 디코드로 떨어지고 있었다.
+    ///
+    /// 되쓰기의 메모리 성격은 뷰가 붙들던 것과 다르다: NSCache 소유라
+    /// 압박이 오면 시스템이 걷어간다(뷰 소유 비트맵은 그러지 못해 OOM 의
+    /// 원인이었다). 상한은 `SDWebImageSetup` 의 200MB.
+    private func promoteToMemoryCache(_ image: PlatformImage, cacheType: SDImageCacheType) {
+        guard cacheType == .disk,
+              let key = SDWebImageManager.shared.cacheKey(for: url.atsSafe,
+                                                          context: thumbnailContext)
+        else { return }
+        SDImageCache.shared.storeImage(toMemory: image, forKey: key)
     }
 
     /// Shared `.onSuccess` handler for the body-image path.
@@ -354,7 +385,8 @@ struct NetworkImage: View {
     /// frame on retina. `DispatchQueue.main.async` defers the `@State` write
     /// past the in-flight render (SD can fire `.onSuccess` synchronously on a
     /// memory-cache hit, which would trip "Modifying state during view update").
-    private func handleLoadSuccess(_ image: PlatformImage) {
+    private func handleLoadSuccess(_ image: PlatformImage, cacheType: SDImageCacheType) {
+        promoteToMemoryCache(image, cacheType: cacheType)
         // 오염 자가치유: 구버전(first-frame 정지컷 경로)이 메모리 캐시에 남긴
         // 정지 UIImage 를 같은 키로 집어온 경우다. SDWebImage 의
         // `.matchAnimatedImageClass` 는 디스크 조회 블록의 #3523 메모리
@@ -418,14 +450,18 @@ struct NetworkImage: View {
     ///   에서 비트맵을 폐기(placeholder 로). 둘 다 통과해야 heavy 이미지를 그린다.
     /// gated + 미진입 이미지는 `isOnscreen` 기본값(true) 과 무관하게 항상 false
     /// — off-screen gated 누출 불변식.
-    /// `appActive` (scenePhase != .background) is the phase-3 background-teardown
-    /// gate: a keep-alive detail's body images sit on-screen with no scroll to
-    /// fire a visibility release, so they'd hold their decode the whole time the
-    /// app is suspended (a documented suspended-OOM contributor). Treating
-    /// background as "everything off-screen" drops every `releasesWhenOffscreen`
-    /// decode on suspend; on foreground `isOnscreen` (preserved @State, still the
-    /// last viewport value) re-shows only the visible ones. Non-releasing images
-    /// are unaffected — `appActive` only gates the release-eligible ones.
+    /// 한때 여기에 `appActive`(scenePhase != .background) 축이 하나 더 있었다 —
+    /// 백그라운드 진입 시 on-screen 본문 디코드까지 버려 suspend 중 footprint 를
+    /// 줄이려던 장치. 제거했다. 이유는 측정이다:
+    ///  - 아끼는 게 없다. 뷰가 놓아도 같은 비트맵을 `SDImageCache` 가 들고
+    ///    있으므로(promoteToMemoryCache) 실제로 해제되는 메모리가 없다.
+    ///  - 그런데 복귀 비용은 확실하다. 시스템이 백그라운드에서 NSCache 를
+    ///    걷어가므로(기기 실측: 저장 직후 readback=ok, 같은 키가 복귀 시
+    ///    mem=miss) 복귀할 때마다 디스크 재디코드를 문다 — 세로 패널 장당
+    ///    0.5~2.9s, 그동안 슬롯이 흰 채로 남는다.
+    /// OOM ratchet 의 진짜 원인은 SwiftSoup `.select()` 누수였고 2.13.6 으로
+    /// 해소됐다(peak 3.27GB→0.58GB). 뷰포트 기반 해제(`isOnscreen`)는 그와
+    /// 별개의 실측(15패널 웹툰 640MB 뷰-소유 디코드)에 근거하므로 그대로 둔다.
     /// 표시/예약에 쓸 종횡비 결정 — 우선순위: 디코드 실측값 > 파서 선언값 >
     /// fallback. `static` 이라 우선순위 계약을 단위테스트로 핀. fallback 이
     /// nil 이면(아이콘/스티커 등 비-본문 호출부) 셋 다 없을 때 nil 을 반환해
@@ -468,11 +504,10 @@ struct NetworkImage: View {
         visibilityGated: Bool,
         hasBeenVisible: Bool,
         releasesWhenOffscreen: Bool,
-        isOnscreen: Bool,
-        appActive: Bool
+        isOnscreen: Bool
     ) -> Bool {
         let loadEligible = !visibilityGated || hasBeenVisible
-        return loadEligible && (!releasesWhenOffscreen || (isOnscreen && appActive))
+        return loadEligible && (!releasesWhenOffscreen || isOnscreen)
     }
 
     /// Fire `onBecameVisible` at most once. Called from the gate-open path
