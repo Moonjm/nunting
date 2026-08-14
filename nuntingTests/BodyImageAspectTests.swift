@@ -24,6 +24,34 @@ final class BodyImageAspectTests: XCTestCase {
                        "aspect-ratio 없으면 width/height 속성으로")
     }
 
+    func testFallsBackToDataSizeAttribute() {
+        // 뽐뿌 모바일 실제 마크업 — `src` 는 600px 폭 `m_` 변형이지만
+        // `data-size` 가 원본 크기를 들고 있다(비율 동일).
+        let aspect = ParserBlockWalker.declaredAspectRatio(
+            style: "", width: "", height: "", dataSize: "960x1305"
+        )
+        XCTAssertEqual(aspect ?? 0, 960.0 / 1305.0, accuracy: 0.001,
+                       "style/속성이 없으면 data-size=\"WxH\" 로")
+    }
+
+    func testDataSizeIgnoresNonDimensionValues() {
+        // 같은 이름을 파일 크기 등 다른 뜻으로 쓰는 마크업은 걸러져야 한다.
+        XCTAssertNil(ParserBlockWalker.declaredAspectRatio(
+            style: "", width: "", height: "", dataSize: "1024"))
+        XCTAssertNil(ParserBlockWalker.declaredAspectRatio(
+            style: "", width: "", height: "", dataSize: "0x500"))
+        XCTAssertNil(ParserBlockWalker.declaredAspectRatio(
+            style: "", width: "", height: "", dataSize: "largexsmall"))
+    }
+
+    func testDeclaredDimensionsWinOverDataSize() {
+        // 우선순위 유지 — data-size 는 마지막 수단이다.
+        let aspect = ParserBlockWalker.declaredAspectRatio(
+            style: "", width: "800", height: "600", dataSize: "100x900"
+        )
+        XCTAssertEqual(aspect ?? 0, 800.0 / 600.0, accuracy: 0.001)
+    }
+
     func testFallsBackToStylePixelDimensions() {
         let aspect = ParserBlockWalker.declaredAspectRatio(
             style: "width: 710px; height: 482px;", width: "", height: ""

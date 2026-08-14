@@ -746,6 +746,55 @@ final class ParserDetailTests: XCTestCase {
         )
     }
 
+    func testAagagStillImageCarriesDeclaredAspectRatio() throws {
+        // 실제 글(aagag.com/issue/?idx=1648010)의 극단 세로 패널 모양 —
+        // 렌더러가 `<div class="stag img" style="width:966px; height:9977px">`
+        // 로 찍는 그 크기가 sTag 페이로드에 그대로 있다. 이걸 블록에 실어야
+        // 상세가 첫 레이아웃부터 최종 높이를 예약하고(1:1 fallback → 실제 비율로
+        // 자라며 본문이 밀리는 일이 없다), 극단 세로형의 이중 디코드도 사라진다.
+        let html = #"""
+        <html><body>
+        <h1 class="title">tall panel</h1>
+        <script>
+        AAGAG_AA.content = "[sTag]{\"m\":\"img\",\"q\":\"KphN7\",\"width\":966,\"height\":9977,\"byte\":900}[/sTag]";
+        </script>
+        </body></html>
+        """#
+        let parser = AagagParser()
+        let post = Post.fixture(site: .aagag, url: URL(string: "https://aagag.com/issue/?idx=1648010")!)
+
+        let detail = try parser.parseDetail(html: html, post: post)
+        let aspects: [CGFloat?] = detail.blocks.compactMap {
+            if case .image(_, _, let aspect) = $0.kind { return aspect }
+            return nil
+        }
+        XCTAssertEqual(aspects.count, 1)
+        XCTAssertEqual(aspects[0] ?? 0, 966.0 / 9977.0, accuracy: 0.0001,
+                       "sTag 페이로드의 width/height 가 블록 aspectRatio 로 실려야 함")
+    }
+
+    func testAagagStillImageWithoutDimensionsHasNoAspect() throws {
+        // 크기 필드가 없는 구형 페이로드 — nil 을 실어 NetworkImage 의
+        // fallbackAspect 가 종전대로 받게 한다(1:1 예약 → 디코드 후 보정).
+        let html = #"""
+        <html><body>
+        <h1 class="title">no dimensions</h1>
+        <script>
+        AAGAG_AA.content = "[sTag]{\"m\":\"img\",\"q\":\"BareImg\"}[/sTag]";
+        </script>
+        </body></html>
+        """#
+        let parser = AagagParser()
+        let post = Post.fixture(site: .aagag, url: URL(string: "https://aagag.com/issue/?idx=3")!)
+
+        let detail = try parser.parseDetail(html: html, post: post)
+        for block in detail.blocks {
+            if case .image(_, _, let aspect) = block.kind {
+                XCTAssertNil(aspect, "크기 정보 없는 페이로드는 aspect nil")
+            }
+        }
+    }
+
     func testAagagStillImageSkipsPixelDownsizedOptimizedVariant() throws {
         // Real payload shape measured live (2026-07-12): the `/o/` optimizer
         // caps width at ~966px, and a downsized variant self-reports its own

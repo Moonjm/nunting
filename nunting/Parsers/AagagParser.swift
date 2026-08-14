@@ -536,7 +536,31 @@ public struct AagagParser: BoardParser {
         }
 
         guard let url = URL(string: imageURL(q: q, json: json)) else { return nil }
-        return .image(url)
+        return .image(url, aspectRatio: Self.declaredAspect(from: json))
+    }
+
+    /// sTag 페이로드의 원본 픽셀 크기 → 종횡비. aagag 렌더러가
+    /// `<div class="stag img" style="width:966px; height:9977px">` 로 찍는 그
+    /// 값이고, 우리도 `isPixelDownsized` 에서 이미 읽고 있던 필드다 — 비율은
+    /// 처음부터 있었는데 블록에만 안 실렸다.
+    ///
+    /// 안 실으면 `NetworkImage` 가 비율을 **디코드로 알아낸다**. 대가가 둘:
+    ///  - 첫 레이아웃이 `fallbackAspect` 1:1 로 예약됐다가 디코드 후 실제 비율로
+    ///    자라, 본문 높이가 통째로 움직인다(기기 실측 1710 → 5157 → 7049).
+    ///  - 극단 세로형은 1차 디코드(표준 박스, 높이 8192 캡)가 폭을 깎은 뒤
+    ///    측정 비율로 tall 박스를 다시 잡아 **같은 이미지를 두 번 디코드**한다
+    ///    (실측 794x8192 → 978x10096, +1.2s). 비율을 미리 주면 첫 디코드부터
+    ///    tall 박스라 2차가 아예 없다.
+    ///
+    /// `/o/` 변형을 고르는 경로여도 top-level 값을 쓴다 — `isPixelDownsized` 가
+    /// 픽셀이 작아지는 변형을 이미 배제하므로 비율이 같다. 크기 필드가 없는
+    /// 구형 페이로드는 nil → 종전대로 `fallbackAspect` 가 받는다.
+    nonisolated static func declaredAspect(from json: [String: Any]) -> CGFloat? {
+        guard let width = (json["width"] as? NSNumber)?.doubleValue,
+              let height = (json["height"] as? NSNumber)?.doubleValue,
+              width > 0, height > 0
+        else { return nil }
+        return CGFloat(width / height)
     }
 
     /// Resolve a still-image URL the same way aagag's own renderer
