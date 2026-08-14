@@ -61,9 +61,18 @@ final class BodyImageAspectTests: XCTestCase {
 
     // MARK: - NetworkImage.effectiveAspect 우선순위
 
-    func testEffectiveAspectPrefersParserValue() {
-        // 파서 실제값이 있으면 measured/fallback 무시 (Clien/인벤 정확 경로).
+    func testEffectiveAspectPrefersMeasuredValue() {
+        // 실측값이 파서값을 이긴다 — `pinnedToAspect` 가 이 값으로 행 높이를
+        // 확정하므로, 틀린 파서값을 우선하면 이미지가 레터박스로 갇힌다.
+        // 디코드 후 `scaledToFit` 이 행을 다시 잡던 자기교정 경로의 대체.
         let a = NetworkImage.effectiveAspect(aspectRatio: 1.5, measuredAspect: 0.8, fallbackAspect: 1.0)
+        XCTAssertEqual(a ?? 0, 0.8, accuracy: 0.0001)
+    }
+
+    func testEffectiveAspectUsesParserValueBeforeDecode() {
+        // 디코드 전(실측값 없음)엔 파서값으로 최종 프레임을 예약 — 이미지가
+        // 늦게 도착해도 행이 자라지 않는다 (Clien/인벤 정확 경로).
+        let a = NetworkImage.effectiveAspect(aspectRatio: 1.5, measuredAspect: nil, fallbackAspect: 1.0)
         XCTAssertEqual(a ?? 0, 1.5, accuracy: 0.0001)
     }
 

@@ -88,8 +88,8 @@ struct NetworkImage: View {
     /// the frontmost-OOM driver.
     ///
     /// This flag keeps the layout eager (height stays pinned via
-    /// `effectiveAspect`, so the placeholder swap is invisible and can't
-    /// collapse the scroll position) while making the *decode* viewport-bound:
+    /// `effectiveAspect` — see `pinnedToAspect`, which is what actually makes
+    /// the swap invisible) while making the *decode* viewport-bound:
     /// off-screen → placeholder → bitmap freed; on-screen → re-shown from cache.
     /// Trades a re-decode (CPU, brief spinner if evicted past SD's memory
     /// cache) for a hard ceiling on resident decode — the right trade when the
@@ -178,8 +178,9 @@ struct NetworkImage: View {
         )
         // Load gate (gated images wait for the viewport) AND decode gate
         // (`releasesWhenOffscreen` images drop their bitmap off-screen). Both
-        // fall through to `gatePlaceholder`, which is frame-pinned by
-        // `effectiveAspect` — so neither swap resizes the row.
+        // fall through to `gatePlaceholder`. 어느 쪽으로 뒤집혀도 행 크기가 안
+        // 변하는 건 아래 `pinnedToAspect` 덕분이다 — 브랜치가 스스로 크기를
+        // 맞춘다고 믿으면 안 된다(그렇게 믿었다가 난 버그가 pinnedToAspect 주석).
         let showsHeavyImage = Self.shouldShowHeavyImage(
             visibilityGated: visibilityGated,
             hasBeenVisible: hasBeenVisible,
@@ -194,7 +195,10 @@ struct NetworkImage: View {
         Group {
             if failed {
                 if showsPlaceholder {
-                    retryButton
+                    // 핀된 슬롯 안에서는 상자를 채우기만 한다 — 자기 최소 높이를
+                    // 고집하면 행 밖으로 삐져나온다(overlay 는 부모에 제약되지
+                    // 않고 클립되지도 않는다). `pinnedToAspect` 참고.
+                    retryButton(pinned: effectiveAspect != nil)
                 } else {
                     // Match browser behaviour for broken `<img>` on
                     // decorative slots — render nothing, don't draw
@@ -230,7 +234,7 @@ struct NetworkImage: View {
                 gatePlaceholder
             }
         }
-        .applyAspect(effectiveAspect)
+        .pinnedToAspect(effectiveAspect)
         .frame(maxWidth: clampsToNaturalWidth ? (measuredNaturalPointWidth ?? .infinity) : .infinity)
         .gateOnVisibility(enabled: visibilityGated || releasesWhenOffscreen) { visible in
             // visibility callback 자체는 SwiftUI 의 view-update 사이클
@@ -422,16 +426,24 @@ struct NetworkImage: View {
     /// decode on suspend; on foreground `isOnscreen` (preserved @State, still the
     /// last viewport value) re-shows only the visible ones. Non-releasing images
     /// are unaffected — `appActive` only gates the release-eligible ones.
-    /// 표시/예약에 쓸 종횡비 결정 — 우선순위: 파서 선언값 > 디코드 실측값 >
+    /// 표시/예약에 쓸 종횡비 결정 — 우선순위: 디코드 실측값 > 파서 선언값 >
     /// fallback. `static` 이라 우선순위 계약을 단위테스트로 핀. fallback 이
     /// nil 이면(아이콘/스티커 등 비-본문 호출부) 셋 다 없을 때 nil 을 반환해
-    /// 종전 `applyAspect(nil)` no-op 동작을 유지한다.
+    /// 종전 `pinnedToAspect(nil)` no-op 동작을 유지한다.
+    ///
+    /// 실측값이 파서값보다 앞서는 이유 — `pinnedToAspect` 가 이 값으로 행 높이를
+    /// **확정**하기 때문이다. 종전엔 이 함수가 파서값을 돌려줘도 디코드 후
+    /// `scaledToFit` 이 실제 비율로 행을 다시 잡아 틀린 파서값이 스스로 교정됐다.
+    /// 이제 그 교정 경로가 없으므로, 파서값을 계속 우선하면 `<img width height>`
+    /// 가 실물과 다른 사이트에서 이미지가 상자 안에 레터박스로 갇힌다. 파서값은
+    /// **디코드 전 예약**에만 쓰고(그 구간엔 실측값이 없어 자연히 파서값이 선택
+    /// 된다), 실물이 확인되면 실물을 따른다 — 화면에 나오는 결과는 종전과 같다.
     nonisolated static func effectiveAspect(
         aspectRatio: CGFloat?,
         measuredAspect: CGFloat?,
         fallbackAspect: CGFloat?
     ) -> CGFloat? {
-        aspectRatio ?? measuredAspect ?? fallbackAspect
+        measuredAspect ?? aspectRatio ?? fallbackAspect
     }
 
     /// 본문 이미지 프리페치 제외 판정 — BodyImagePrefetcher 입력(PostDetailView
@@ -530,7 +542,11 @@ struct NetworkImage: View {
         }
     }
 
-    private var retryButton: some View {
+    /// 실패 슬롯의 재시도 UI. `pinned` 이면 프레임을 `pinnedToAspect` 상자에
+    /// 맡기고(채우기만), 아니면 종전대로 최소 120pt 를 스스로 확보한다 —
+    /// 비율을 모르는 호출부(아이콘/스티커)는 상자가 없어 그 최소치가 유일한
+    /// 탭 영역이다.
+    private func retryButton(pinned: Bool) -> some View {
         Button {
             failed = false
             // Force the gate open on retry — if the user is tapping
@@ -546,7 +562,9 @@ struct NetworkImage: View {
                     .font(.caption2)
             }
             .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, minHeight: 120)
+            .frame(maxWidth: .infinity,
+                   minHeight: pinned ? nil : 120,
+                   maxHeight: pinned ? .infinity : nil)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -631,12 +649,31 @@ struct NetworkImage: View {
 }
 
 private extension View {
-    /// SwiftUI's `aspectRatio(_:contentMode:)` rejects nil — but we want
-    /// the modifier to be a no-op when no aspect is known yet.
+    /// 행 높이를 `aspect` 로 **확정**한다 — 알려진 비율이 없으면 no-op
+    /// (SwiftUI 의 `aspectRatio(_:contentMode:)` 는 nil 을 못 받는다).
+    ///
+    /// 왜 `.aspectRatio` 를 그냥 걸지 않는가 — 그건 자식이 자기 크기를 스스로
+    /// 정하면 무력하다. `AnimatedImage.resizable().scaledToFit()` 은 비트맵이
+    /// 없는 동안 정사각으로 배치되고, 그 크기가 바깥 `aspectRatio` 를 이긴다
+    /// (기기 실측: eff=0.1636 이라 370x2261 이어야 할 프레임이 **370x370**). 비트맵이
+    /// 없는 구간은 드물지 않다 — 첫 마운트, SD 메모리 캐시 축출, 그리고
+    /// `releasesWhenOffscreen` 이 백그라운드에서 디코드를 버린 뒤의 복귀가 전부
+    /// 여기에 해당한다. 그때마다 이미지 행이 정사각으로 무너지면서 상세
+    /// contentSize 가 통째로 줄고, UIScrollView 가 contentOffset 을 clamp 한다.
+    /// 재디코드가 끝나 높이가 돌아와도 offset 은 clamp 된 자리에 남는다 —
+    /// "백그라운드 갔다 오면 스크롤 위치가 튄다" 의 정체(실측: 7049 → 1710 로
+    /// 붕괴, offset 4181 → 870 clamp, 이후 7049 복구되지만 offset 은 그대로).
+    ///
+    /// 그래서 높이의 주인을 이미지에서 뺏어 온다: 비율만 아는 빈 상자가 행
+    /// 크기를 잡고, 이미지/플레이스홀더는 그 안에 overlay 로 들어간다. overlay
+    /// 는 부모 크기에 영향을 주지 못하므로 비트맵 유무와 무관하게 높이가
+    /// 고정된다. 비율을 아는 경로가 `measuredAspect` 든 파서 값이든 동일.
     @ViewBuilder
-    func applyAspect(_ aspect: CGFloat?) -> some View {
+    func pinnedToAspect(_ aspect: CGFloat?) -> some View {
         if let aspect, aspect > 0 {
-            self.aspectRatio(aspect, contentMode: .fit)
+            Color.clear
+                .aspectRatio(aspect, contentMode: .fit)
+                .overlay { self }
         } else {
             self
         }
