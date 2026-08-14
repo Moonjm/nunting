@@ -9,14 +9,13 @@ import XCTest
 ///    폐기(placeholder)해 긴 글의 라이브 디코드를 ~뷰포트분으로 상한.
 final class NetworkImageVisibilityTests: XCTestCase {
     private func shows(
-        gated: Bool, visible: Bool, releases: Bool, onscreen: Bool, appActive: Bool = true
+        gated: Bool, visible: Bool, releases: Bool, onscreen: Bool
     ) -> Bool {
         NetworkImage.shouldShowHeavyImage(
             visibilityGated: gated,
             hasBeenVisible: visible,
             releasesWhenOffscreen: releases,
-            isOnscreen: onscreen,
-            appActive: appActive
+            isOnscreen: onscreen
         )
     }
 
@@ -61,25 +60,14 @@ final class NetworkImageVisibilityTests: XCTestCase {
         )
     }
 
-    // MARK: 백그라운드 teardown (appActive == false, phase-3)
+    // MARK: 백그라운드는 게이트 축이 아니다 (구 phase-3 teardown 제거)
 
-    func testBackgroundDropsResidentDecode() {
-        // 화면에 떠 있던(on-screen) release 이미지도 백그라운드(appActive=false)면
-        // 디코드 폐기 — suspend 중 keep-alive 본문 비트맵을 떨군다.
-        XCTAssertFalse(shows(gated: true, visible: true, releases: true, onscreen: true, appActive: false))
-        XCTAssertFalse(shows(gated: false, visible: false, releases: true, onscreen: true, appActive: false))
-    }
-
-    func testForegroundRestoresVisibleDecode() {
-        // 복귀(appActive=true) 시 보이던(onscreen) 것은 다시 뜨고, 안 보이던 건 계속 폐기.
-        XCTAssertTrue(shows(gated: true, visible: true, releases: true, onscreen: true, appActive: true))
-        XCTAssertFalse(shows(gated: true, visible: true, releases: true, onscreen: false, appActive: true))
-    }
-
-    func testBackgroundDoesNotAffectNonReleasingImages() {
-        // appActive 는 release 이미지에만 작용 — 일반 이미지(아이콘/본문-0 등)는
-        // 백그라운드여도 게이트에 영향 없음(불필요한 리로드 방지).
-        XCTAssertTrue(shows(gated: false, visible: true, releases: false, onscreen: true, appActive: false))
-        XCTAssertTrue(shows(gated: true, visible: true, releases: false, onscreen: true, appActive: false))
+    func testGateDependsOnlyOnViewportNotAppPhase() {
+        // 종전엔 `appActive` 축이 있어 백그라운드 진입만으로 on-screen 디코드까지
+        // 버렸다. 제거했으므로 판정은 뷰포트 하나로만 결정된다 — 백그라운드 왕복이
+        // 표시 상태를 바꾸지 않아야 복귀 시 흰 슬롯 + 디스크 재디코드가 없다.
+        // (제거 근거는 `NetworkImage.shouldShowHeavyImage` 위 주석의 실측.)
+        XCTAssertTrue(shows(gated: true, visible: true, releases: true, onscreen: true))
+        XCTAssertFalse(shows(gated: true, visible: true, releases: true, onscreen: false))
     }
 }
