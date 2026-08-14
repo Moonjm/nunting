@@ -190,7 +190,8 @@ public struct ParserBlockWalker: Sendable {
                 let aspect = Self.declaredAspectRatio(
                     style: (try? el.attr("style")) ?? "",
                     width: (try? el.attr("width")) ?? "",
-                    height: (try? el.attr("height")) ?? ""
+                    height: (try? el.attr("height")) ?? "",
+                    dataSize: (try? el.attr("data-size")) ?? ""
                 )
                 blocks.append(rules.imageBlock(url, aspect))
             }
@@ -252,11 +253,20 @@ public struct ParserBlockWalker: Sendable {
     ///   1. CSS `aspect-ratio: W / H` (what Inven emits)
     ///   2. `width` / `height` attributes (older markup)
     ///   3. CSS `width: Wpx; height: Hpx`
+    ///   4. `data-size="WxH"` (뽐뿌 모바일 본문 업로드)
     /// Returns nil when no usable positive dimensions are declared — the
     /// caller then leaves `aspectRatio` nil and `NetworkImage` applies its
     /// fallback. Pure string parsing (no SwiftSoup, no per-call regex alloc)
     /// so it adds zero parse/leak surface to the existing detail walk.
-    nonisolated static func declaredAspectRatio(style: String, width: String, height: String) -> CGFloat? {
+    ///
+    /// 선언값이 있는데 못 읽으면 대가가 크다 — 비율을 모르면 `NetworkImage` 가
+    /// 디코드로 알아내야 하고, 그때까지 슬롯이 1:1 로 예약돼 이미지가 뜰 때마다
+    /// 본문 높이가 자란다. 극단 세로형은 표준 박스로 1차 디코드한 뒤 tall 박스로
+    /// 다시 디코드까지 한다(애객 실측 +1.2s). 그래서 사이트가 어디에 적어 두든
+    /// 최대한 주워 온다.
+    nonisolated static func declaredAspectRatio(
+        style: String, width: String, height: String, dataSize: String = ""
+    ) -> CGFloat? {
         let lowered = style.lowercased()
 
         // 1. CSS `aspect-ratio: W / H` — 인벤 본문 이미지가 주는 형식.
@@ -277,6 +287,19 @@ public struct ParserBlockWalker: Sendable {
 
         // 3. CSS `width: Wpx; height: Hpx`.
         if let w = cssPixels("width", in: lowered), let h = cssPixels("height", in: lowered), w > 0, h > 0 {
+            return CGFloat(w / h)
+        }
+
+        // 4. `data-size="960x1305"` — 뽐뿌 모바일이 본문 업로드에 붙이는 원본
+        // 크기(실측 m.ppomppu.co.kr freeboard). `src` 는 600px 폭 `m_` 변형을
+        // 가리키지만 비율은 같다. 두 양수의 `W x H` 형태만 인정하므로, 같은
+        // 이름을 파일 크기 등 다른 뜻으로 쓰는 마크업(`data-size="1024"`)은
+        // 자연히 걸러진다.
+        let sizeParts = dataSize.lowercased().split(separator: "x")
+        if sizeParts.count == 2,
+           let w = Double(sizeParts[0].trimmingCharacters(in: .whitespaces)),
+           let h = Double(sizeParts[1].trimmingCharacters(in: .whitespaces)),
+           w > 0, h > 0 {
             return CGFloat(w / h)
         }
 
