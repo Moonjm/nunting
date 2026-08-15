@@ -255,6 +255,8 @@ struct PostDetailView: View, Equatable {
         // superseded post stops warming its tail.
         .onChange(of: bodyImageURLs) { _, urls in
             imagePrefetcher?.cancel()
+            // 글 경계 = 이미지 로드 출처 집계의 경계(직전 글 집계를 먼저 방출).
+            BodyImageLoadStats.shared.begin(postID: post.id)
             guard !urls.isEmpty else { imagePrefetcher = nil; return }
             // thumbnail 컨텍스트는 본문 NetworkImage 호출부와 *반드시* 동일
             // 해야 한다 — 컨텍스트가 SD 캐시 키를 변형하므로, 다르면 워밍이
@@ -299,9 +301,17 @@ struct PostDetailView: View, Equatable {
         // stops the moment the user leaves the post. `.onDisappear` still
         // covers genuine teardown (scene exit).
         .onChange(of: isOverlayVisible) { _, visible in
-            if !visible { imagePrefetcher?.cancel() }
+            if !visible {
+                imagePrefetcher?.cancel()
+                // 글을 떠나는 시점 — 여기서 내보내야 "이 글에서 재로드가 몇 번
+                // disk 였나" 가 그 글의 타임라인 구간에 붙는다.
+                BodyImageLoadStats.shared.flush()
+            }
         }
-        .onDisappear { imagePrefetcher?.cancel() }
+        .onDisappear {
+            imagePrefetcher?.cancel()
+            BodyImageLoadStats.shared.flush()
+        }
         .fullScreenCover(item: $selectedImage) { item in
             ImageViewer(url: item.url, onDismissBegin: { beginDismissCover() })
         }
@@ -467,6 +477,8 @@ struct PostDetailView: View, Equatable {
                             // 를 살리고, 디코드되면 measuredAspect 가 실제 비율로
                             // 보정한다(파서값이 있으면 그게 우선이라 무영향).
                             fallbackAspect: 1.0,
+                            // 한시 진단 — 메모리 캡 200MB 가 이 글을 담는지.
+                            tracksLoadStats: true,
                             // Each visible body image warms the next few below
                             // it so scrolling lands on cache hits.
                             onBecameVisible: {
