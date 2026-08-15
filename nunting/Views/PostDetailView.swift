@@ -301,15 +301,9 @@ struct PostDetailView: View, Equatable {
         .onChange(of: isOverlayVisible) { _, visible in
             if !visible {
                 imagePrefetcher?.cancel()
-                // 글을 떠나는 시점 — 여기서 내보내야 "이 글에서 재로드가 몇 번
-                // disk 였나" 가 그 글의 타임라인 구간에 붙는다.
-                BodyImageLoadStats.shared.flush()
             }
         }
-        .onDisappear {
-            imagePrefetcher?.cancel()
-            BodyImageLoadStats.shared.flush()
-        }
+        .onDisappear { imagePrefetcher?.cancel() }
         .fullScreenCover(item: $selectedImage) { item in
             ImageViewer(url: item.url, onDismissBegin: { beginDismissCover() })
         }
@@ -475,8 +469,6 @@ struct PostDetailView: View, Equatable {
                             // 를 살리고, 디코드되면 measuredAspect 가 실제 비율로
                             // 보정한다(파서값이 있으면 그게 우선이라 무영향).
                             fallbackAspect: 1.0,
-                            // 한시 진단 — 메모리 캡 200MB 가 이 글을 담는지.
-                            tracksLoadStats: true,
                             // Each visible body image warms the next few below
                             // it so scrolling lands on cache hits.
                             onBecameVisible: {

@@ -460,14 +460,10 @@ struct RootTabView: View {
         }
     }
 
-    /// 글 열기 공통 경로 — 목록/둘러보기 어느 쪽에서 열든 같은 태깅을 받게
-    /// 한 자리로 모은다. 이미지 로드 출처 집계의 글 경계를 **선택 시점**에
-    /// 잡는 이유: 종전엔 본문 이미지 URL 목록이 바뀔 때 경계를 잡았는데,
-    /// 같은 글을 연달아 다시 열면 그 목록이 그대로라 경계가 안 잡혀 집계가
-    /// id 없이 찍혔다(실측: `imgcache:…,MB=37` — id 유실).
+    /// 글 열기 공통 경로 — 목록/둘러보기 어느 쪽에서 열든 같은 footprint
+    /// 태깅을 받게 한 자리로 모은다.
     private func openPost(_ post: Post, detail: DetailOverlayController) {
         FootprintLogger.shared.record("post-open")
-        BodyImageLoadStats.shared.begin(postID: post.id)
         detail.show(post)
     }
 }

@@ -121,12 +121,6 @@ struct NetworkImage: View {
     /// 한다. 디코드되면 `measuredAspect` 가 이 값을 덮어써 실제 비율로 보정된다.
     var fallbackAspect: CGFloat? = nil
 
-    /// 로드 출처(memory/disk/network)를 `BodyImageLoadStats` 에 보고할지.
-    /// 본문 이미지 호출부만 켠다 — 진단 대상이 "본문 패널이 메모리 캐시에
-    /// 남는가" 이고, 아이콘/스티커(수백 개, 수 KB)가 섞이면 분포가 그쪽으로
-    /// 희석된다. 한시 진단 플래그라 결론이 나면 호출부와 함께 제거한다.
-    var tracksLoadStats: Bool = false
-
     /// Fired once, the first time this image becomes eligible to load — for
     /// gated images that's when the viewport gate opens; for eager
     /// (`visibilityGated == false`) images it's on first appear. Body images
@@ -366,13 +360,6 @@ struct NetworkImage: View {
     /// past the in-flight render (SD can fire `.onSuccess` synchronously on a
     /// memory-cache hit, which would trip "Modifying state during view update").
     private func handleLoadSuccess(_ image: PlatformImage, cacheType: SDImageCacheType) {
-        // 승격 **전에** 기록한다 — `promoteToMemoryCache` 가 방금 disk 히트를
-        // 메모리에 올리므로, 뒤에 재면 이 로드의 실제 출처가 흐려진다.
-        if tracksLoadStats {
-            BodyImageLoadStats.shared.record(
-                url: url.atsSafe, context: thumbnailContext,
-                cacheType: cacheType, image: image)
-        }
         promoteToMemoryCache(image, cacheType: cacheType)
         let aspect: CGFloat? = (image.size.height > 0) ? image.size.width / image.size.height : nil
         let naturalPointWidth = image.size.width * image.scale
