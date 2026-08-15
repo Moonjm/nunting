@@ -255,8 +255,6 @@ struct PostDetailView: View, Equatable {
         // superseded post stops warming its tail.
         .onChange(of: bodyImageURLs) { _, urls in
             imagePrefetcher?.cancel()
-            // 글 경계 = 이미지 로드 출처 집계의 경계(직전 글 집계를 먼저 방출).
-            BodyImageLoadStats.shared.begin(postID: post.id)
             guard !urls.isEmpty else { imagePrefetcher = nil; return }
             // thumbnail 컨텍스트는 본문 NetworkImage 호출부와 *반드시* 동일
             // 해야 한다 — 컨텍스트가 SD 캐시 키를 변형하므로, 다르면 워밍이
