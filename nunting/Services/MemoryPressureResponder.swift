@@ -24,6 +24,14 @@ import UIKit
 /// cleared — they don't contribute to memory pressure and dropping them
 /// would force a cold re-download of recently-viewed bodies/images on
 /// the next access. Only the in-memory layer is shed.
+///
+/// 그 계약이 URLCache 쪽에서 한동안 깨져 있었다: `removeAllCachedResponses()`
+/// 는 이름과 달리 메모리 **와 디스크**를 전부 비운다. 그래서 메모리 경고 한
+/// 번에 200MB 디스크 응답 캐시까지 통째로 날아갔다 — 압박 완화에 기여하는
+/// 부분은 하나도 없으면서 다음 접근을 전부 콜드로 만드는 순손실. URLCache 엔
+/// "메모리만" API 가 없으므로 `memoryCapacity` 를 0 으로 내렸다 되돌리는
+/// 문서화된 절단 동작(setter 는 호출 시점에 인메모리 내용을 주어진 크기로
+/// truncate 한다)으로 대체한다. 디스크는 그대로 남는다.
 @MainActor
 final class MemoryPressureResponder {
     static let shared = MemoryPressureResponder()
@@ -78,7 +86,11 @@ final class MemoryPressureResponder {
             SDImageCache.shared.clearMemory()
         }
         clearURLMemoryCache = {
-            URLCache.shared.removeAllCachedResponses()
+            // 디스크는 건드리지 않는다 — 위 doccomment 참조.
+            let cache = URLCache.shared
+            let capacity = cache.memoryCapacity
+            cache.memoryCapacity = 0
+            cache.memoryCapacity = capacity
         }
     }
 }

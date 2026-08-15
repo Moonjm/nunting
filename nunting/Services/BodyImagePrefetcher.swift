@@ -21,16 +21,11 @@ final class BodyImagePrefetcher {
     /// `imageBecameVisible(at:)` is a position in this list.
     private let urls: [URL]
     private let window: Int
-    /// `atsSafe` URLs that must never be prefetched — animated-WebP 짤방
-    /// (poster-backed 웃대 직접첨부 + `.webp` 확장자 일반). Prefetching warms
-    /// the cache via a decode **without** `animatedImageClass`, which
-    /// materialises every frame — 287-frame / 13.6 MB webp measured 9,032 ms
-    /// (simulator) on `SDImageCache`'s **serial** decode queue — and that one
-    /// decode blocks every other image queued behind it, so the whole post
-    /// below the 짤방 stays blank (observed: pds#1412160, ~14 s on device).
-    /// The inline render itself is safe — `AnimatedImage` opens the same file
-    /// as a lazy `SDAnimatedImage` in ~27 ms (see
-    /// `NetworkImage.skipsPrefetch`) — so only the prefetch is suppressed.
+    /// `atsSafe` URLs that must never be prefetched — poster-backed 웃대
+    /// 직접첨부 짤방(15 MB 급)뿐이다. 다운로드 자체가 비싼데 blur-up 포스터가
+    /// 이미 대기 화면을 채워 룩어헤드의 실익이 거의 없다. 확장자 기반
+    /// (`.webp`/`.gif`) 제외는 걷어냈다 — 그 근거였던 전-프레임 실체화는
+    /// `lazyAnimatedContext` 가 원천에서 없앤다(`NetworkImage.skipsPrefetch`).
     /// They still occupy their slot in `urls` (index math / dedup unchanged).
     private let skipPrefetch: Set<URL>
     /// A dedicated instance (not `.shared`) so `cancel()` only drops this
@@ -77,8 +72,34 @@ final class BodyImagePrefetcher {
 
     /// URL 별 워밍 컨텍스트 — override 맵 우선, 없으면 공유 컨텍스트.
     /// internal 인 이유: 표시 로드와의 키-일치 불변식을 테스트가 핀.
-    func prefetchContext(for url: URL) -> [SDWebImageContextOption: Any]? {
-        contextByURL[url.atsSafe] ?? prefetchContext
+    func prefetchContext(for url: URL) -> [SDWebImageContextOption: Any] {
+        Self.lazyAnimatedContext(contextByURL[url.atsSafe] ?? prefetchContext)
+    }
+
+    /// 프리페치 컨텍스트에 **항상** 얹는 지연 디코드 지시자.
+    ///
+    /// `SDWebImagePrefetcher` 는 스스로 `animatedImageClass` 를 붙이지 않아,
+    /// 이게 없으면 애니메이션 WebP/GIF 가 워밍 시점에 전 프레임을 실체화한다
+    /// (287프레임/13.6MB 실측 9,032ms 가 `SDImageCache` 직렬 디코드 큐를 점유,
+    /// Clien 본문 GIF 는 footprint 1.4GB peak). 종전엔 그래서 `.webp`/`.gif` 를
+    /// 프리페치에서 통째로 뺐는데, 한국 게시판 본문 이미지의 상당수가 그 두
+    /// 확장자라 룩어헤드가 사실상 무력했다. `SDAnimatedImage` 를 지정하면
+    /// 워밍도 표시 경로(`AnimatedImage`)와 **같은 lazy 디코드**(같은 파일
+    /// 27ms)로 열리므로 제외할 이유 자체가 사라진다 — 워밍이 버는 건
+    /// 다운로드 + 디스크 저장 + 메모리 엔트리이고, 프레임 디코드는 재생
+    /// 시점으로 그대로 미뤄진다.
+    ///
+    /// 캐시 키 불변식에 안전하다: SD 의 키는 `thumbnailPixelSize` 와
+    /// `cacheKeyFilter` 만 변형하고 `animatedImageClass` 는 키에 안 들어간다
+    /// (`SDWebImageManager.cacheKeyForURL:context:`). 덤으로 워밍이 표시
+    /// 경로와 **같은 클래스**로 메모리 캐시를 채우게 돼, 정지컷이 섞여
+    /// 들어가 움짤이 멈춰 보이던 오염 경로가 원천에서 닫힌다.
+    nonisolated static func lazyAnimatedContext(
+        _ base: [SDWebImageContextOption: Any]?
+    ) -> [SDWebImageContextOption: Any] {
+        var context = base ?? [:]
+        context[.animatedImageClass] = SDAnimatedImage.self
+        return context
     }
 
     /// The image at `index` became visible — warm the next `window` URLs that
@@ -94,10 +115,10 @@ final class BodyImagePrefetcher {
         // 배치당 컨텍스트 하나라, 섞으면 캐시 키가 표시 로드와 어긋난다.
         let standard = fresh.filter { contextByURL[$0] == nil }
         if !standard.isEmpty {
-            _ = prefetcher.prefetchURLs(standard, options: .lowPriority, context: prefetchContext, progress: nil, completed: nil)
+            _ = prefetcher.prefetchURLs(standard, options: .lowPriority, context: Self.lazyAnimatedContext(prefetchContext), progress: nil, completed: nil)
         }
         for url in fresh where contextByURL[url] != nil {
-            _ = prefetcher.prefetchURLs([url], options: .lowPriority, context: contextByURL[url], progress: nil, completed: nil)
+            _ = prefetcher.prefetchURLs([url], options: .lowPriority, context: prefetchContext(for: url), progress: nil, completed: nil)
         }
     }
 

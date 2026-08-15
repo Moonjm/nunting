@@ -80,6 +80,27 @@ final class MemoryPressureResponderTests: XCTestCase {
         XCTAssertEqual(counter.urlClearCalls, 0)
     }
 
+    /// 프로덕션 URLCache 핸들러는 **인메모리만** 턴다. 종전엔
+    /// `removeAllCachedResponses()` 라 메모리 경고 한 번에 200MB 디스크
+    /// 응답 캐시까지 통째로 날아갔다(압박 완화 기여는 0, 다음 접근은 전부
+    /// 콜드). 대체 구현이 `memoryCapacity` 를 0 으로 내렸다 **되돌리는지**
+    /// 를 핀 — 안 되돌리면 이후 인메모리 캐싱이 영구히 죽는다.
+    func testDefaultURLHandlerPreservesDiskCacheAndRestoresCapacity() {
+        let cache = URLCache.shared
+        let memoryBefore = cache.memoryCapacity
+        let diskBefore = cache.diskCapacity
+
+        responder.installDefaultHandlers()
+        defer {
+            responder.clearImageMemoryCache = {}
+            responder.clearURLMemoryCache = {}
+        }
+        responder.clearURLMemoryCache()
+
+        XCTAssertEqual(cache.memoryCapacity, memoryBefore, "인메모리 용량 복원")
+        XCTAssertEqual(cache.diskCapacity, diskBefore, "디스크 캐시는 손대지 않음")
+    }
+
     func testStartReplacesPriorObserver() {
         // Calling start() twice should not result in respond() being
         // invoked twice per notification.

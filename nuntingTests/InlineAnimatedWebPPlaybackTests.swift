@@ -94,15 +94,17 @@ final class InlineAnimatedWebPPlaybackTests: XCTestCase {
         XCTAssertTrue(advanced, "재생 중이면 currentFrameIndex 가 전진해야 함")
     }
 
-    func testInlineBodyImageSelfHealsPoisonedStaticMemoryEntry() throws {
-        // 구버전 인라인 경로(first-frame 정지컷)가 메모리 캐시에 남긴 정지
-        // UIImage 를 새 경로가 같은 키로 집어가는 시나리오. SDWebImage 의
-        // `.matchAnimatedImageClass` 는 디스크 조회 블록의 #3523 메모리
-        // 재확인이 클래스 체크 없이 오염 엔트리를 재획득해 무력(실측) —
-        // `purgePoisonedMemoryEntry`(로드 시작 전 선제 제거)가 있어야
-        // 움짤이 정지컷으로 고착되지 않는다.
+    /// 프리페치가 메모리 캐시를 **정지컷으로 오염시키지 않는다**는 불변식.
+    ///
+    /// 종전엔 워밍이 `animatedImageClass` 없이 디코드해 움짤이 정지컷으로
+    /// 고착될 수 있었고, 그걸 `NetworkImage.purgePoisonedMemoryEntry`(로드
+    /// 직전 선제 제거)로 사후 방어했다. 그 가드는 정적 webp 전체에 오탐이라
+    /// 프리페치 결과까지 지워버려 제거했고, 대신 워밍 컨텍스트가 표시 경로와
+    /// **같은 lazy 클래스**를 쓰도록 원천을 막았다 — 여기서 그걸 핀한다.
+    /// 워밍이 남긴 엔트리를 인라인 경로가 그대로 받아 재생까지 가는지 본다.
+    func testPrefetchContextWarmsMemoryCacheWithAnimatedClass() throws {
         let data = try makeAnimatedWebPData()
-        let url = URL(string: "https://unit.test/\(UUID().uuidString)/poisoned.webp")!
+        let url = URL(string: "https://unit.test/\(UUID().uuidString)/warm.webp")!
         let key = try XCTUnwrap(SDWebImageManager.shared.cacheKey(for: url))
 
         let seeded = expectation(description: "disk seed")
@@ -111,13 +113,27 @@ final class InlineAnimatedWebPPlaybackTests: XCTestCase {
         }
         wait(for: [seeded], timeout: 5)
 
-        // 오염 주입: 정지 첫 프레임 디코드를 메모리에 저장(구버전 잔재 재현).
-        let poisoned = try XCTUnwrap(
-            SDImageCacheDecodeImageData(data, key, [.decodeFirstFrameOnly], nil)
+        // 프리페치 워밍 재현 — `BodyImagePrefetcher` 가 발행하는 것과 같은
+        // 컨텍스트로 로드하면 메모리 캐시에 SDAnimatedImage 가 남아야 한다.
+        let warmed = expectation(description: "prefetch warm")
+        SDWebImageManager.shared.loadImage(
+            with: url,
+            options: .lowPriority,
+            context: BodyImagePrefetcher.lazyAnimatedContext(nil),
+            progress: nil
+        ) { image, _, _, _, _, _ in
+            XCTAssertTrue(image is SDAnimatedImage,
+                          "워밍 디코드 결과는 lazy SDAnimatedImage — got \(type(of: image as Any))")
+            warmed.fulfill()
+        }
+        wait(for: [warmed], timeout: 10)
+        XCTAssertTrue(
+            SDImageCache.shared.imageFromMemoryCache(forKey: key) is SDAnimatedImage,
+            "워밍이 남긴 메모리 엔트리도 SDAnimatedImage"
         )
-        XCTAssertFalse(poisoned is SDAnimatedImage)
-        SDImageCache.shared.storeImage(toMemory: poisoned, forKey: key)
 
+        // 그 엔트리를 인라인 경로가 그대로 물고 재생까지 가는지 — 오염이라면
+        // 여기서 정지 UIImage 가 잡힌다(캐시 키는 워밍/표시가 동일).
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
         let host = UIHostingController(rootView: NetworkImage(url: url, aspectRatio: 1.0))
         window.rootViewController = host
@@ -126,27 +142,17 @@ final class InlineAnimatedWebPPlaybackTests: XCTestCase {
         window.layoutIfNeeded()
         defer { window.isHidden = true }
 
-        // 자가치유(리로드 1회) 시간을 포함해 폴링 — 재마운트 직후엔 낡은
-        // 뷰가 계층에 잠깐 공존할 수 있어 전체를 훑어 아무 뷰나
-        // SDAnimatedImage 를 물면 성공으로 본다.
-        var healedImage: UIImage?
-        for _ in 0..<60 {
+        var mounted: UIImage?
+        for _ in 0..<40 {
             pump(0.05)
-            if let image = allAnimatedImageViews(in: window)
-                .compactMap(\.image).first(where: { $0 is SDAnimatedImage }) {
-                healedImage = image
+            if let image = allAnimatedImageViews(in: window).compactMap(\.image).first {
+                mounted = image
                 break
             }
         }
-        if healedImage == nil {
-            let views = allAnimatedImageViews(in: window)
-            print("[DIAG] final views: \(views.map { $0.image.map { String(describing: type(of: $0)) } ?? "nil" })")
-            let mem = SDImageCache.shared.imageFromMemoryCache(forKey: key)
-            print("[DIAG] memory after: \(mem.map { String(describing: type(of: $0)) } ?? "nil")")
-        }
         XCTAssertTrue(
-            healedImage is SDAnimatedImage,
-            "오염된 메모리 정지컷을 감지해 제거·리로드 후 SDAnimatedImage 로 회복해야 함"
+            mounted is SDAnimatedImage,
+            "워밍된 엔트리를 인라인이 그대로 받아야 함 — got \(type(of: mounted as Any))"
         )
     }
 }

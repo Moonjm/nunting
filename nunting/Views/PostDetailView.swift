@@ -85,10 +85,9 @@ struct PostDetailView: View, Equatable {
         }
     }
 
-    /// `atsSafe` URLs the prefetcher must skip: `SDWebImagePrefetcher` 는
-    /// `animatedImageClass` 없이 디코드해 애니메이션 webp 의 전 프레임을
-    /// 실체화한다(287프레임/13.6MB 실측 ~9s) — 공유 직렬 디코드 큐가 그만큼
-    /// 멈춘다. 인라인 렌더는 lazy 라 게이트가 없고, 프리페치만 제외한다.
+    /// `atsSafe` URLs the prefetcher must skip — 판정은
+    /// `NetworkImage.skipsPrefetch`(poster-backed 짤방 전용) 참조. 종전의
+    /// 확장자 기반 제외는 워밍이 lazy 디코드 컨텍스트를 쓰면서 걷어냈다.
     private var prefetchSkipURLs: Set<URL> {
         Set((loader.detail?.blocks ?? []).compactMap {
             if case .image(let url, let posterURL, _) = $0.kind,
