@@ -36,9 +36,24 @@ enum SDWebImageSetup {
         SDWebImageDownloader.shared.config.operationClass = HTTPSRedirectingDownloaderOperation.self
 
         let cache = SDImageCache.shared
-        // 200MB memory cap matches the prior `ImageCache` budget. NSCache-
-        // backed under the hood so jetsam-time eviction is automatic.
-        cache.config.maxMemoryCost = 200 * 1024 * 1024
+        // 400MB. 종전 200MB 는 "이전 `ImageCache` 예산에 맞춘" 값이었고 근거가
+        // 측정이 아니었다(이 주석의 원문도 "측정하면 튜닝하겠다" 였다). 기기
+        // 계측으로 부족이 확인돼 올린다.
+        //
+        // 실측(2026-08-15, 앱 재시작 직후 · 백그라운드 왕복 없음): 이슈모음에서
+        // 글 14개를 1분 남짓에 훑어 본문 이미지 누적 245MB. 그 뒤 **맨 처음 글**
+        // (12MB, 4장)을 다시 열자 4장 전부 디스크 재디코드였다 —
+        //   17:04:25  imgcache:f=m0/d4/n0,MB=12,id=…1648140
+        //   17:05:34  imgcache:f=m0/d4/n0,MB=12          ← 재방문, 메모리 0
+        // 즉 캡을 넘긴 누적이 초기 엔트리를 밀어냈다. 캡을 압박하는 건 "긴 글"
+        // 이 아니다 — 같은 세션 단일 글 최대가 40MB 였고, 짧은 글을 빠르게
+        // 넘겨보는 평범한 사용이 누적으로 넘긴다.
+        //
+        // 400MB 는 그 세션 전체(245MB)를 담고도 60% 여유. 이때 footprint 는
+        // peak 252MB / avail 3.1GB 였으므로, 캐시가 400MB 까지 차도 한도(≈3.35GB)
+        // 대비 여유가 크다. NSCache 소유라 압박 시 시스템이 걷어가고 백그라운드
+        // 왕복이 어차피 비우므로(실측), 상한을 키워도 상주 위험은 선형이 아니다.
+        cache.config.maxMemoryCost = 400 * 1024 * 1024
         // 500MB disk cap with a 7-day expiry. Cold-start to a recently-read
         // post should serve images from disk (the gap the old pipeline had —
         // URLCache evicts aggressively for image-sized payloads). 7 days is
