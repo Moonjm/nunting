@@ -36,12 +36,50 @@ final class BodyImagePrefetcherTests: XCTestCase {
             thumbnailContext: std,
             contextByURL: [url(1): tall!])
 
-        let tallBox = (p.prefetchContext(for: url(1))?[.imageThumbnailPixelSize] as? NSValue)?.cgSizeValue
+        let tallBox = (p.prefetchContext(for: url(1))[.imageThumbnailPixelSize] as? NSValue)?.cgSizeValue
         XCTAssertEqual(tallBox?.height, NetworkImage.tallImageHardMaxPixelHeight,
                        "맵에 있는 URL 은 tall 박스로 워밍")
-        let stdBox = (p.prefetchContext(for: url(0))?[.imageThumbnailPixelSize] as? NSValue)?.cgSizeValue
+        let stdBox = (p.prefetchContext(for: url(0))[.imageThumbnailPixelSize] as? NSValue)?.cgSizeValue
         XCTAssertEqual(stdBox, CGSize(width: 1179, height: NetworkImage.tallImageMaxPixelHeight),
                        "맵에 없는 URL 은 공유 컨텍스트")
+    }
+
+    /// 워밍 컨텍스트는 **항상** lazy `SDAnimatedImage` 를 지정한다 — 이게
+    /// 없으면 프리페처가 애니메이션 WebP/GIF 의 전 프레임을 즉시 실체화해
+    /// 직렬 디코드 큐를 점유한다(#82 의 14s 프리즈, GIF footprint 1.4GB peak).
+    /// 종전엔 그 회피책이 "확장자로 통째 스킵"이었고, 그래서 본문 이미지의
+    /// 상당수가 룩어헤드를 못 받았다.
+    func testPrefetchContextAlwaysRequestsLazyAnimatedDecode() {
+        let std = NetworkImage.thumbnailContext(maxPointSize: nil, maxPointWidth: 393, scale: 3)
+        let tall = NetworkImage.thumbnailContext(
+            maxPointSize: nil, maxPointWidth: 393, aspect: 1.0 / 30.0, scale: 3)
+        let p = BodyImagePrefetcher(
+            urls: urls(3), window: 3,
+            thumbnailContext: std,
+            contextByURL: [url(1): tall!])
+
+        for target in [url(0), url(1)] {
+            XCTAssertTrue(
+                p.prefetchContext(for: target)[.animatedImageClass] as? AnyClass === SDAnimatedImage.self,
+                "공유·override 컨텍스트 모두 lazy 디코드 지정")
+        }
+        // 컨텍스트가 아예 없는 호출부도 마찬가지 — 지정만 얹는다.
+        let bare = BodyImagePrefetcher(urls: urls(3), window: 3)
+        let bareCtx = bare.prefetchContext(for: url(0))
+        XCTAssertTrue(bareCtx[.animatedImageClass] as? AnyClass === SDAnimatedImage.self)
+        XCTAssertNil(bareCtx[.imageThumbnailPixelSize], "없던 다운샘플 박스를 만들어내진 않는다")
+    }
+
+    /// 캐시 키 불변식: `animatedImageClass` 는 SD 캐시 키에 안 들어가므로
+    /// 워밍 컨텍스트에 얹어도 표시 로드와 같은 키를 가리킨다. 이게 깨지면
+    /// 룩어헤드가 통째로 무효가 된다(위 키-일치 테스트와 같은 결).
+    func testLazyAnimatedContextDoesNotChangeCacheKey() {
+        let target = url(0)
+        let display = NetworkImage.thumbnailContext(maxPointSize: nil, maxPointWidth: 393, scale: 3)
+        let warm = BodyImagePrefetcher.lazyAnimatedContext(display)
+        XCTAssertEqual(
+            SDWebImageManager.shared.cacheKey(for: target, context: warm),
+            SDWebImageManager.shared.cacheKey(for: target, context: display))
     }
 
     func testClaimsWindowAheadOfVisibleIndex() {

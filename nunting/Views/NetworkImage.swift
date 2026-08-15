@@ -204,7 +204,8 @@ struct NetworkImage: View {
                 // 프레임 실체화였다 — 287프레임/13.6MB 실측: lazy 27ms vs
                 // 실체화 9,032ms. `AnimatedImage` 는 항상 lazy
                 // `SDAnimatedImage` 로 열므로(뷰어와 동일 경로) 인라인 재생이
-                // 안전하다. 프리페치 제외는 `skipsPrefetch` 가 계속 담당.
+                // 안전하다. 프리페치도 같은 lazy 경로를 쓴다
+                // (`BodyImagePrefetcher.lazyAnimatedContext`).
                 animatedBodyImage
                 // 디코드 박스가 바뀌면 강제 리마운트 — SDWebImageSwiftUI 는 URL
                 // 이 같으면 context 변경만으로 재디코드하지 않는다. 파서가
@@ -293,16 +294,22 @@ struct NetworkImage: View {
     /// `http://` (carisyou, some tistory mirrors) otherwise flooded the retry
     /// placeholder after the SD migration.
     private var animatedBodyImage: some View {
-        // 오염 선제 제거: 구버전(first-frame 정지컷 경로)이 메모리 캐시에
-        // 남긴 정지 UIImage 를 같은 키로 집어가면 움짤이 정지컷으로 고착된다.
-        // SDWebImage 의 `.matchAnimatedImageClass` 는 디스크 조회 블록의
-        // #3523 메모리 재확인이 클래스 체크 없이 오염 엔트리를 재획득해
-        // 무력(실측)이고, onSuccess 감지 → identity 리마운트 방식은 재로드
-        // 이미지가 뷰에 실리지 않는 타이밍 이슈가 있어(실측) 로드 시작 전
-        // 제거가 유일하게 결정적이다. body 평가마다 불리지만 NSCache 조회
-        // 1회 + idempotent 라 무해하다.
-        Self.purgePoisonedMemoryEntry(for: url.atsSafe, context: thumbnailContext)
-        return AnimatedImage(url: url.atsSafe, context: thumbnailContext) {
+        // 한때 여기서 메모리 캐시의 "오염"(정지 UIImage) 엔트리를 로드 전에
+        // 선제 제거했다 — 구버전 first-frame 정지컷 경로(#82)가 같은 키에
+        // 남긴 잔재를 집어가면 움짤이 멈춰 보였기 때문. 지웠다. 그 생산자가
+        // 이제 없다: first-frame 게이트는 #141 에서 제거됐고, 남은 다른
+        // 생산자였던 프리페치도 `lazyAnimatedContext` 로 표시 경로와 같은
+        // 클래스를 저장한다. 메모리 캐시는 프로세스 수명이라 이전 실행분이
+        // 넘어올 일도 없다.
+        //
+        // 반대로 비용은 실재했다. 정적 webp 는 표시 경로에서도 최종적으로
+        // 평범한 `UIImage` 로 캐시된다(`SDAnimatedImage` 로 열려도
+        // `sd_isAnimated == false` 면 force-decode 가 평범한 UIImage 사본을
+        // 돌려준다 — `SDImageCoderHelper.shouldDecodeImage:policy:`). 즉
+        // "webp 인데 SDAnimatedImage 가 아니면 오염" 이라는 판정은 정적 webp
+        // 전체에 대한 오탐이라, 남겨두면 프리페치가 채운 정상 엔트리를 표시
+        // 직전에 도로 지워 룩어헤드를 무효화한다.
+        AnimatedImage(url: url.atsSafe, context: thumbnailContext) {
             loadingPlaceholder
         }
         .onSuccess { image, _, cacheType in handleLoadSuccess(image, cacheType: cacheType) }
@@ -317,39 +324,6 @@ struct NetworkImage: View {
         .resizable()
         .scaledToFit()
     }
-
-    /// 메모리 캐시의 오염(정지 UIImage) 엔트리 선제 제거 — `.webp` URL 의
-    /// 애니메이션 로드 경로는 정적 webp 도 1프레임 `SDAnimatedImage` 로
-    /// 돌려주므로, 같은 키에 `SDAnimatedImage` 가 아닌 엔트리가 있다는 건
-    /// first-frame 정지컷 경로(구버전/외부)가 남긴 잔재다. 지우면 다음
-    /// 로드가 디스크 원본에서 lazy 재디코드한다(네트워크 재요청 없음).
-    /// 유닛 테스트용 internal.
-    @MainActor
-    static func purgePoisonedMemoryEntry(
-        for url: URL, context: [SDWebImageContextOption: Any]?
-    ) {
-        guard url.pathExtension.lowercased() == "webp",
-              let key = SDWebImageManager.shared.cacheKey(for: url, context: context),
-              purgeCheckedKeys.insert(key).inserted,
-              let cached = SDImageCache.shared.imageFromMemoryCache(forKey: key),
-              !(cached is SDAnimatedImage)
-        else { return }
-        SDImageCache.shared.removeImageFromMemory(forKey: key)
-    }
-
-    /// 이미 오염 검사를 마친 캐시 키. **키당 1회**로 묶는 이유가 이 가드의
-    /// 핵심이다 — 검사가 body 평가마다 돌면, 우리 로드가 방금 넣은 **정상**
-    /// 엔트리까지 지운다. 썸네일 박스(`imageThumbnailPixelSize`) 디코드는
-    /// `SDAnimatedImage` 가 아니라 일반 `UIImage` 를 돌려주므로 위 클래스
-    /// 체크에 그대로 걸리기 때문이다. 기기 실측: 로드 성공 5ms 뒤 곧바로
-    /// PURGING 이 찍히고, 이후 모든 로드가 `src=disk` — 본문 이미지의 메모리
-    /// 캐시가 영영 안 남아 재진입·백그라운드 복귀마다 10MP 짜리 세로 패널을
-    /// 디스크에서 다시 디코드했다(장당 0.5~4.2s, 그 사이 흰 슬롯).
-    ///
-    /// 1회로 줄여도 원래 목적은 그대로다: 메모리 캐시는 **프로세스 안에서만**
-    /// 살아서 앱 재실행 때 이미 비어 있고, 오염이 문제가 되는 순간은 이 뷰가
-    /// 로드를 **시작하기 직전** 한 번뿐이다(그 자리에서 여전히 검사한다).
-    @MainActor private static var purgeCheckedKeys: Set<String> = []
 
     /// 디스크 히트를 메모리 캐시로 승격한다.
     ///
@@ -387,14 +361,6 @@ struct NetworkImage: View {
     /// memory-cache hit, which would trip "Modifying state during view update").
     private func handleLoadSuccess(_ image: PlatformImage, cacheType: SDImageCacheType) {
         promoteToMemoryCache(image, cacheType: cacheType)
-        // 오염 자가치유: 구버전(first-frame 정지컷 경로)이 메모리 캐시에 남긴
-        // 정지 UIImage 를 같은 키로 집어온 경우다. SDWebImage 의
-        // `.matchAnimatedImageClass` 는 디스크 조회 블록의 #3523 메모리
-        // 재확인이 클래스 체크 없이 오염 엔트리를 재획득해 무력(실측) —
-        // 여기서 감지해 메모리 엔트리를 지우고 identity 변경으로 1회
-        // 리로드한다(디스크 원본에서 lazy 재디코드, 네트워크 재요청 없음).
-        // webp 는 애니메이션 경로에서 정적이어도 SDAnimatedImage(1프레임)로
-        // 오므로 UIImage 결과 = 오염 히트, 오탐 없음.
         let aspect: CGFloat? = (image.size.height > 0) ? image.size.width / image.size.height : nil
         let naturalPointWidth = image.size.width * image.scale
         let decodedPixels = CGSize(width: image.size.width * image.scale,
@@ -485,19 +451,21 @@ struct NetworkImage: View {
     /// 본문 이미지 프리페치 제외 판정 — BodyImagePrefetcher 입력(PostDetailView
     /// 의 skip 목록) 전용.
     ///
-    /// `SDWebImagePrefetcher` 는 `animatedImageClass` 없이 디코드하므로
-    /// 애니메이션 WebP 의 전 프레임을 즉시 실체화한다 — 287프레임/13.6MB
-    /// 실측 9,032ms(시뮬레이터)가 `SDImageCache` 직렬 큐를 점유해 아래
-    /// 이미지 전부가 blank 로 멈춘다(#82 의 14s 프리즈 진범). 인라인 렌더는
-    /// `AnimatedImage` 가 lazy `SDAnimatedImage`(같은 파일 27ms, 뷰어와 동일
-    /// 경로)로 열므로 게이트하지 않는다 — 이 판정은 프리페치에만 쓴다.
-    /// poster-backed(웃대 짤방) 또는 애니메이션 확장자(`.webp`/`.gif`)가 스킵
-    /// 대상. GIF 도 프리페치 시 전 프레임이 실체화돼 메모리 스파이크를 낸다
-    /// (footprint 실측: Clien 본문 GIF 열람 직후 1.4GB peak). 확장자 없는
-    /// URL 은 판별 불가 — best-effort 로 프리페치에 포함(실 파서는 본문
-    /// 이미지를 항상 확장자 있는 CDN URL 로 resolve 해 실질 노출 없음).
+    /// 스킵 대상은 poster-backed(웃대 직접첨부 짤방) 하나다. 그 파일들은
+    /// 15MB 급이라 **다운로드 자체**가 비싼데, blur-up 포스터가 이미 대기
+    /// 화면을 채우고 있어 룩어헤드로 벌 게 거의 없다.
+    ///
+    /// 종전엔 `.webp`/`.gif` 확장자도 전부 스킵했다. 근거는 프리페처가
+    /// `animatedImageClass` 없이 디코드해 전 프레임을 즉시 실체화한다는
+    /// 것이었다(287프레임/13.6MB 실측 9,032ms 가 `SDImageCache` 직렬 큐를
+    /// 점유 → #82 의 14s 프리즈, Clien 본문 GIF footprint 1.4GB peak). 그런데
+    /// 그건 프리페치 컨텍스트를 안 채운 탓이지 확장자 탓이 아니었다 —
+    /// `BodyImagePrefetcher.lazyAnimatedContext` 가 워밍에도 뷰어/인라인과
+    /// 같은 lazy `SDAnimatedImage`(같은 파일 27ms)를 지정하면서 원천에서
+    /// 사라졌다. 한국 게시판 본문 이미지의 상당수가 그 두 확장자라, 스킵을
+    /// 유지하면 룩어헤드가 사실상 무력했다.
     nonisolated static func skipsPrefetch(url: URL, posterURL: URL?) -> Bool {
-        posterURL != nil || ["webp", "gif"].contains(url.pathExtension.lowercased())
+        posterURL != nil
     }
 
     nonisolated static func shouldShowHeavyImage(
