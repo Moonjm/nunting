@@ -299,7 +299,9 @@ struct PostDetailView: View, Equatable {
         // stops the moment the user leaves the post. `.onDisappear` still
         // covers genuine teardown (scene exit).
         .onChange(of: isOverlayVisible) { _, visible in
-            if !visible { imagePrefetcher?.cancel() }
+            if !visible {
+                imagePrefetcher?.cancel()
+            }
         }
         .onDisappear { imagePrefetcher?.cancel() }
         .fullScreenCover(item: $selectedImage) { item in

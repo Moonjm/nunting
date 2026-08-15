@@ -299,7 +299,7 @@ struct RootTabView: View {
                     ArchiveHome(
                         favorites: favorites,
                         readStore: readStore,
-                        onSelectPost: { FootprintLogger.shared.record("post-open"); detail.show($0) },
+                        onSelectPost: { detail.show($0) },
                         isActive: rootTabSelectionState.selectedTab == 0,
                         searchByBoard: $searchByBoard,
                         currentBoardID: $currentBoardID,
@@ -309,7 +309,7 @@ struct RootTabView: View {
                 }
                 Tab("둘러보기", systemImage: "square.grid.2x2", value: 1) {
                     BrowseTab(catalog: catalog, favorites: favorites,
-                              readStore: readStore, onSelectPost: { FootprintLogger.shared.record("post-open"); detail.show($0) },
+                              readStore: readStore, onSelectPost: { detail.show($0) },
                               searchByBoard: $searchByBoard, browsingBoard: $browsingBoard,
                               onEditSearch: { searchSheetBoard = $0 })
                 }
