@@ -299,7 +299,7 @@ struct RootTabView: View {
                     ArchiveHome(
                         favorites: favorites,
                         readStore: readStore,
-                        onSelectPost: { openPost($0, detail: detail) },
+                        onSelectPost: { detail.show($0) },
                         isActive: rootTabSelectionState.selectedTab == 0,
                         searchByBoard: $searchByBoard,
                         currentBoardID: $currentBoardID,
@@ -309,7 +309,7 @@ struct RootTabView: View {
                 }
                 Tab("둘러보기", systemImage: "square.grid.2x2", value: 1) {
                     BrowseTab(catalog: catalog, favorites: favorites,
-                              readStore: readStore, onSelectPost: { openPost($0, detail: detail) },
+                              readStore: readStore, onSelectPost: { detail.show($0) },
                               searchByBoard: $searchByBoard, browsingBoard: $browsingBoard,
                               onEditSearch: { searchSheetBoard = $0 })
                 }
@@ -458,13 +458,6 @@ struct RootTabView: View {
                 break
             }
         }
-    }
-
-    /// 글 열기 공통 경로 — 목록/둘러보기 어느 쪽에서 열든 같은 footprint
-    /// 태깅을 받게 한 자리로 모은다.
-    private func openPost(_ post: Post, detail: DetailOverlayController) {
-        FootprintLogger.shared.record("post-open")
-        detail.show(post)
     }
 }
 
