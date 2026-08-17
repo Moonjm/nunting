@@ -437,6 +437,9 @@ struct RootTabView: View {
             case .background:
                 // 백그라운드 진입 시 footprint 버퍼 flush — 이게 없으면 버퍼가
                 // 서버로 안 가고 suspend 때 유실된다(구 셸 제거 때 누락됐던 배선).
+                // 다음 복귀 한 번을 이미지 회복 대상으로 표시 — 제어센터/알림
+                // 배너가 만드는 `.inactive → .active` 바운스와 구분한다.
+                ImageRetryPolicy.shared.noteBackground()
                 FootprintLogger.shared.onBackground()
                 // suspend 된 메인 큐를 hang 으로 오인하지 않게 워치독 정지.
                 HangWatchdog.shared.pause()
@@ -449,6 +452,10 @@ struct RootTabView: View {
                 backDrag.cancel()
             case .active:
                 HangWatchdog.shared.resume()
+                // 백그라운드로 잘린 다운로드가 남긴 실패 이력을 비운다 —
+                // 그게 없으면 그 이미지들은 이 실행 내내 "다시 시도" 로
+                // 고착된다(`ImageRetryPolicy`).
+                ImageRetryPolicy.shared.onForeground()
                 FootprintLogger.shared.record("scenePhase:active")
                 Networking.prewarmConnections()
                 ImageWarmup.warm()
