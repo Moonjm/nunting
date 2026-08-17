@@ -22,18 +22,18 @@ final class ImageRetryPolicyTests: XCTestCase {
     private var clearedURLs: [URL] = []
     private var clearAllCount = 0
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
         clearedURLs = []
         clearAllCount = 0
         ImageRetryPolicy.shared.clearFailedURL = { [self] in clearedURLs.append($0) }
         ImageRetryPolicy.shared.clearAllFailedURLs = { [self] in clearAllCount += 1 }
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
         ImageRetryPolicy.shared.clearFailedURL = { SDWebImageManager.shared.removeFailedURL($0) }
         ImageRetryPolicy.shared.clearAllFailedURLs = { SDWebImageManager.shared.removeAllFailedURLs() }
-        super.tearDown()
+        try await super.tearDown()
     }
 
     /// 누르면 블랙리스트가 풀려야 한다 — 이 계약이 없으면 버튼이 거짓말이다.
@@ -54,17 +54,16 @@ final class ImageRetryPolicyTests: XCTestCase {
     /// 백그라운드를 지나온 복귀는 실패 이력을 통째로 비우고 **방송한다**.
     /// 방송이 없으면 블랙리스트만 비고 화면은 그대로 "다시 시도" 다.
     func testForegroundAfterBackgroundClearsAllFailuresAndBroadcasts() {
-        var broadcasts = 0
-        let token = NotificationCenter.default.addObserver(
-            forName: ImageRetryPolicy.failuresClearedNotification,
-            object: nil, queue: .main) { _ in broadcasts += 1 }
-        defer { NotificationCenter.default.removeObserver(token) }
+        // 캡처한 지역 var 을 세지 않는다 — `addObserver` 의 블록은 @Sendable 라
+        // Swift 6 에서 동시 변경 경고가 난다. XCTestExpectation 은 스레드 안전.
+        let broadcast = expectation(forNotification: ImageRetryPolicy.failuresClearedNotification,
+                                    object: nil)
 
         ImageRetryPolicy.shared.noteBackground()
         XCTAssertTrue(ImageRetryPolicy.shared.onForeground())
 
+        wait(for: [broadcast], timeout: 1)
         XCTAssertEqual(clearAllCount, 1)
-        XCTAssertEqual(broadcasts, 1)
         XCTAssertTrue(clearedURLs.isEmpty, "전체 비움은 개별 경로를 타지 않는다")
     }
 
@@ -72,15 +71,14 @@ final class ImageRetryPolicyTests: XCTestCase {
     /// 제어센터, 알림 배너, 시스템 프롬프트. 그 바운스마다 비우면 죽은 URL 을
     /// 매번 다시 두드려 블랙리스트의 보호가 무력해진다.
     func testForegroundWithoutBackgroundDoesNothing() {
-        var broadcasts = 0
-        let token = NotificationCenter.default.addObserver(
-            forName: ImageRetryPolicy.failuresClearedNotification,
-            object: nil, queue: .main) { _ in broadcasts += 1 }
-        defer { NotificationCenter.default.removeObserver(token) }
+        let broadcast = expectation(forNotification: ImageRetryPolicy.failuresClearedNotification,
+                                    object: nil)
+        broadcast.isInverted = true
 
         XCTAssertFalse(ImageRetryPolicy.shared.onForeground())
+
+        wait(for: [broadcast], timeout: 0.3)
         XCTAssertEqual(clearAllCount, 0)
-        XCTAssertEqual(broadcasts, 0)
     }
 
     /// 표시는 복귀 **한 번**만 소비한다 — 이어지는 바운스는 다시 게이트에
@@ -95,14 +93,13 @@ final class ImageRetryPolicyTests: XCTestCase {
     /// 개별 재시도는 다른 슬롯까지 흔들지 않는다 — 누른 슬롯은 자기 상태를
     /// 스스로 푼다.
     func testPrepareRetryDoesNotBroadcast() {
-        var broadcasts = 0
-        let token = NotificationCenter.default.addObserver(
-            forName: ImageRetryPolicy.failuresClearedNotification,
-            object: nil, queue: .main) { _ in broadcasts += 1 }
-        defer { NotificationCenter.default.removeObserver(token) }
+        let broadcast = expectation(forNotification: ImageRetryPolicy.failuresClearedNotification,
+                                    object: nil)
+        broadcast.isInverted = true
 
         ImageRetryPolicy.shared.prepareRetry(for: URL(string: "https://cdn.example.com/a.jpg")!)
-        XCTAssertEqual(broadcasts, 0)
+
+        wait(for: [broadcast], timeout: 0.3)
     }
 }
 

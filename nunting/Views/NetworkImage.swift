@@ -158,6 +158,16 @@ struct NetworkImage: View {
     /// 다음 로드에 `.retryFailed` 를 실을지. 재시도 탭 / 실패 비움 방송으로
     /// 되살아나는 로드에만 켠다 — 자세한 이유는 `loadOptions` 참조.
     @State private var forceRetry = false
+    /// 실패 비움 방송 시점에 **아직 진행 중이던** 로드가 곧 실패하면, 그 실패를
+    /// 한 번은 자동 재시도로 흡수한다. 백그라운드에서 끊긴 요청은 복귀 **뒤에**
+    /// 실패 콜백을 전달할 수 있는데, 그 순간엔 `failed` 가 아직 false 라 방송이
+    /// 그 슬롯을 그냥 지나친다 — 그리고 지각한 실패가 슬롯을 재시도 UI 로
+    /// 굳혀버린다(Codex 리뷰 P2 4차). 무장은 실패/성공 어느 쪽이든 한 번 쓰면
+    /// 풀린다.
+    @State private var retryOnNextFailure = false
+    /// 자동 재시도용 리마운트 토큰 — 옵션만 바꾸면 SwiftUI 가 같은 identity 로
+    /// 보고 재로드하지 않으므로, 이 값을 올려 로더를 새로 만든다.
+    @State private var reloadToken = 0
     /// Pending debounced release; cancelled if the view re-enters the viewport
     /// before it fires.
     @State private var releaseTask: Task<Void, Never>?
@@ -225,7 +235,7 @@ struct NetworkImage: View {
                 // measuredAspect 가 tall 재배분을 발동시키는 순간 키가 딱 한 번
                 // 바뀌어(std 박스 → tall 박스) 선명한 2차 디코드로 교체된다.
                 // 데이터는 디스크 캐시에 있어 네트워크 재요청은 없다.
-                .id(decodeBoxID)
+                .id(loadIdentity)
             } else {
                 // Placeholder for two cases, both frame-pinned by
                 // `effectiveAspect` so the swap never resizes the row:
@@ -294,8 +304,14 @@ struct NetworkImage: View {
             Self.failuresClearedReceiptsForTests += 1
             #endif
             if failed {
+                // 이미 실패로 굳은 슬롯 — 즉시 되살린다.
                 forceRetry = true
                 failed = false
+            } else {
+                // 아직 로딩 중이거나 떠 있는 슬롯은 건드리지 않는다. 다만 지금
+                // 진행 중인 요청이 백그라운드에서 끊긴 것일 수 있으므로, 곧
+                // 도착할 실패 한 번은 자동 재시도로 흡수하도록 무장한다.
+                retryOnNextFailure = true
             }
         }
         #if DEBUG
@@ -389,7 +405,12 @@ struct NetworkImage: View {
     /// memory-cache hit, which would trip "Modifying state during view update").
     private func handleLoadSuccess(_ image: PlatformImage, cacheType: SDImageCacheType) {
         promoteToMemoryCache(image, cacheType: cacheType)
-        if forceRetry { DispatchQueue.main.async { forceRetry = false } }
+        if forceRetry || retryOnNextFailure {
+            DispatchQueue.main.async {
+                forceRetry = false
+                retryOnNextFailure = false
+            }
+        }
         let aspect: CGFloat? = (image.size.height > 0) ? image.size.width / image.size.height : nil
         let naturalPointWidth = image.size.width * image.scale
         let decodedPixels = CGSize(width: image.size.width * image.scale,
@@ -438,7 +459,18 @@ struct NetworkImage: View {
         // during querying the cache"). 무시하면 뷰가 살아 있는 한 다음
         // updateUIView 가 same-URL/no-image 경로로 자동 재로드한다.
         guard !Self.isCancellation(error) else { return }
-        DispatchQueue.main.async { failed = true }
+        DispatchQueue.main.async {
+            if retryOnNextFailure {
+                // 복귀 직후의 지각 실패 — 재시도 UI 로 굳히지 말고 한 번 다시
+                // 띄운다. `.retryFailed` 를 실어야 SD 가 방금 이 URL 을 다시
+                // 블랙리스트에 올렸어도 통과한다.
+                retryOnNextFailure = false
+                forceRetry = true
+                reloadToken &+= 1
+            } else {
+                failed = true
+            }
+        }
     }
 
     /// SD/URLSession 의 취소 신호 판별 — 뷰 교체·identity 변경·로드 경합에서
@@ -629,6 +661,12 @@ struct NetworkImage: View {
     /// 0→측정값으로 바뀌거나 native↔legacy 박스가 오가는 일반 케이스에서
     /// 리마운트(=전체 재디코드)가 발생하면 안 되기 때문. tall 박스는 조건상
     /// 높이가 항상 8192 초과라 이 판별로 정확히 구분된다.
+    /// 로더 identity — 디코드 박스가 바뀌거나(tall 재배분) 자동 재시도가
+    /// 걸리면 새 값이 되어 `AnimatedImage` 가 다시 만들어진다.
+    private var loadIdentity: String {
+        reloadToken == 0 ? decodeBoxID : "\(decodeBoxID)#\(reloadToken)"
+    }
+
     private var decodeBoxID: String {
         guard let box = (thumbnailContext?[.imageThumbnailPixelSize] as? NSValue)?.cgSizeValue,
               box.height > Self.tallImageMaxPixelHeight
