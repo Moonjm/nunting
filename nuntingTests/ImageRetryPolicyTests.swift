@@ -116,4 +116,13 @@ final class NetworkImageFailureBroadcastTests: XCTestCase {
             "마운트된 이미지 슬롯이 실패 비움 방송을 받아야 한다 — 안 받으면 "
             + "블랙리스트만 비고 화면은 그대로 \"다시 시도\" 다")
     }
+
+    /// 되살아나는 로드는 블랙리스트 검사를 건너뛴다. 이게 없으면, 백그라운드로
+    /// 중단된 다운로드가 복귀 **뒤에** 실패 콜백을 전달하며 URL 을 다시
+    /// 블랙리스트에 올려, 우리가 띄운 재로드가 곧바로 `BlackListed` 로 죽는다
+    /// (Codex 리뷰 P2 2차). 평상시 로드는 보호막을 그대로 둔다.
+    func testRevivedLoadBypassesBlacklistButNormalLoadDoesNot() {
+        XCTAssertTrue(NetworkImage.loadOptions(forceRetry: true).contains(.retryFailed))
+        XCTAssertFalse(NetworkImage.loadOptions(forceRetry: false).contains(.retryFailed))
+    }
 }

@@ -155,6 +155,9 @@ struct NetworkImage: View {
     /// back by `hasBeenVisible`, so this defaulting to `true` never leaks an
     /// off-screen gated image on-screen.
     @State private var isOnscreen = true
+    /// 다음 로드에 `.retryFailed` 를 실을지. 재시도 탭 / 실패 비움 방송으로
+    /// 되살아나는 로드에만 켠다 — 자세한 이유는 `loadOptions` 참조.
+    @State private var forceRetry = false
     /// Pending debounced release; cancelled if the view re-enters the viewport
     /// before it fires.
     @State private var releaseTask: Task<Void, Never>?
@@ -290,7 +293,10 @@ struct NetworkImage: View {
             #if DEBUG
             Self.failuresClearedReceiptsForTests += 1
             #endif
-            if failed { failed = false }
+            if failed {
+                forceRetry = true
+                failed = false
+            }
         }
         #if DEBUG
         .task(id: url) {
@@ -330,7 +336,8 @@ struct NetworkImage: View {
         // "webp 인데 SDAnimatedImage 가 아니면 오염" 이라는 판정은 정적 webp
         // 전체에 대한 오탐이라, 남겨두면 프리페치가 채운 정상 엔트리를 표시
         // 직전에 도로 지워 룩어헤드를 무효화한다.
-        AnimatedImage(url: url.atsSafe, context: thumbnailContext) {
+        AnimatedImage(url: url.atsSafe, options: Self.loadOptions(forceRetry: forceRetry),
+                      context: thumbnailContext) {
             loadingPlaceholder
         }
         .onSuccess { image, _, cacheType in handleLoadSuccess(image, cacheType: cacheType) }
@@ -382,6 +389,7 @@ struct NetworkImage: View {
     /// memory-cache hit, which would trip "Modifying state during view update").
     private func handleLoadSuccess(_ image: PlatformImage, cacheType: SDImageCacheType) {
         promoteToMemoryCache(image, cacheType: cacheType)
+        if forceRetry { DispatchQueue.main.async { forceRetry = false } }
         let aspect: CGFloat? = (image.size.height > 0) ? image.size.width / image.size.height : nil
         let naturalPointWidth = image.size.width * image.scale
         let decodedPixels = CGSize(width: image.size.width * image.scale,
@@ -397,6 +405,22 @@ struct NetworkImage: View {
             measuredNaturalPointWidth = Self.resolvedNaturalWidth(
                 current: measuredNaturalPointWidth, incoming: naturalPointWidth)
         }
+    }
+
+    /// 이 로드에 실을 SD 옵션.
+    ///
+    /// `.retryFailed` 는 블랙리스트 검사를 **건너뛴다**(`SDWebImageManager.m:221`).
+    /// 되살아나는 로드에만 켜는 이유는 경합 때문이다: 백그라운드로 중단된
+    /// 다운로드는 복귀 **뒤에** 실패 콜백을 전달할 수 있고, SD 는 그 시점에
+    /// URL 을 `failedURLs` 에 **다시** 넣는다. 그러면 포그라운드에서 이미 비운
+    /// 블랙리스트가 되살아나, 우리가 띄운 재로드가 곧바로 `BlackListed` 로
+    /// 죽는다(Codex 리뷰 P2). 옵션으로 검사 자체를 건너뛰면 그 타이밍과 무관
+    /// 하게 재로드가 성립한다.
+    ///
+    /// 평상시 로드에는 켜지 않는다 — 블랙리스트는 죽은 URL 을 계속 두드리지
+    /// 않게 하는 보호막이고, 성공하면(`handleLoadSuccess`) 곧바로 되돌린다.
+    nonisolated static func loadOptions(forceRetry: Bool) -> SDWebImageOptions {
+        forceRetry ? [.retryFailed] : []
     }
 
     /// natural width 갱신 규칙 — 더 큰(선명한) 디코드가 오면 따라 커지고,
@@ -577,6 +601,7 @@ struct NetworkImage: View {
             // 즉시 같은 실패로 되돌아오므로(실측 0.00s), 눌러도 화면은 그대로
             // "다시 시도" 다(`ImageRetryPolicy` 참조).
             ImageRetryPolicy.shared.prepareRetry(for: url)
+            forceRetry = true
             failed = false
             // Force the gate open on retry — if the user is tapping
             // they're plainly looking at it. Gated images that haven't
