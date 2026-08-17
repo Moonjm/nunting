@@ -551,6 +551,11 @@ struct NetworkImage: View {
     /// 탭 영역이다.
     private func retryButton(pinned: Bool) -> some View {
         Button {
+            // SD 의 실패 URL 블랙리스트에서 먼저 뺀다 — 이게 없으면 버튼이
+            // 거짓말이 된다. 블랙리스트에 걸린 URL 은 네트워크를 타지 않고
+            // 즉시 같은 실패로 되돌아오므로(실측 0.00s), 눌러도 화면은 그대로
+            // "다시 시도" 다(`ImageRetryPolicy` 참조).
+            ImageRetryPolicy.prepareRetry(for: url)
             failed = false
             // Force the gate open on retry — if the user is tapping
             // they're plainly looking at it. Gated images that haven't
