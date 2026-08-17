@@ -51,21 +51,45 @@ final class ImageRetryPolicyTests: XCTestCase {
                        "atsSafe 로 승격된 URL 이 실제 로드/블랙리스트 키")
     }
 
-    /// 포그라운드 복귀는 실패 이력을 통째로 비우고 **방송한다**. 방송이 없으면
-    /// 블랙리스트만 비고 화면은 그대로 "다시 시도" 다.
-    func testForegroundClearsAllFailuresAndBroadcasts() {
+    /// 백그라운드를 지나온 복귀는 실패 이력을 통째로 비우고 **방송한다**.
+    /// 방송이 없으면 블랙리스트만 비고 화면은 그대로 "다시 시도" 다.
+    func testForegroundAfterBackgroundClearsAllFailuresAndBroadcasts() {
         var broadcasts = 0
         let token = NotificationCenter.default.addObserver(
             forName: ImageRetryPolicy.failuresClearedNotification,
             object: nil, queue: .main) { _ in broadcasts += 1 }
         defer { NotificationCenter.default.removeObserver(token) }
 
-        ImageRetryPolicy.shared.onForeground()
-        ImageRetryPolicy.shared.onForeground()
+        ImageRetryPolicy.shared.noteBackground()
+        XCTAssertTrue(ImageRetryPolicy.shared.onForeground())
 
-        XCTAssertEqual(clearAllCount, 2)
-        XCTAssertEqual(broadcasts, 2)
+        XCTAssertEqual(clearAllCount, 1)
+        XCTAssertEqual(broadcasts, 1)
         XCTAssertTrue(clearedURLs.isEmpty, "전체 비움은 개별 경로를 타지 않는다")
+    }
+
+    /// `.active` 는 백그라운드 복귀 말고도 **`.inactive` 다음에** 온다 —
+    /// 제어센터, 알림 배너, 시스템 프롬프트. 그 바운스마다 비우면 죽은 URL 을
+    /// 매번 다시 두드려 블랙리스트의 보호가 무력해진다.
+    func testForegroundWithoutBackgroundDoesNothing() {
+        var broadcasts = 0
+        let token = NotificationCenter.default.addObserver(
+            forName: ImageRetryPolicy.failuresClearedNotification,
+            object: nil, queue: .main) { _ in broadcasts += 1 }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        XCTAssertFalse(ImageRetryPolicy.shared.onForeground())
+        XCTAssertEqual(clearAllCount, 0)
+        XCTAssertEqual(broadcasts, 0)
+    }
+
+    /// 표시는 복귀 **한 번**만 소비한다 — 이어지는 바운스는 다시 게이트에
+    /// 걸려야 한다.
+    func testBackgroundFlagIsConsumedOnce() {
+        ImageRetryPolicy.shared.noteBackground()
+        XCTAssertTrue(ImageRetryPolicy.shared.onForeground())
+        XCTAssertFalse(ImageRetryPolicy.shared.onForeground())
+        XCTAssertEqual(clearAllCount, 1)
     }
 
     /// 개별 재시도는 다른 슬롯까지 흔들지 않는다 — 누른 슬롯은 자기 상태를
@@ -108,6 +132,7 @@ final class NetworkImageFailureBroadcastTests: XCTestCase {
         defer { window.isHidden = true }
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.3))
 
+        ImageRetryPolicy.shared.noteBackground()
         ImageRetryPolicy.shared.onForeground()
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.3))
 

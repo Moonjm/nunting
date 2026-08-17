@@ -44,7 +44,19 @@ final class ImageRetryPolicy {
     var clearFailedURL: (URL) -> Void = { SDWebImageManager.shared.removeFailedURL($0) }
     var clearAllFailedURLs: () -> Void = { SDWebImageManager.shared.removeAllFailedURLs() }
 
+    /// 백그라운드를 실제로 지나왔는지. `.active` 는 백그라운드 복귀 말고도
+    /// **`.inactive` 다음에** 온다 — 제어센터를 내리거나, 알림 배너를 보거나,
+    /// 시스템 프롬프트가 떴다 사라질 때. 그 바운스마다 실패 이력을 비우면
+    /// 죽은 URL 을 매번 다시 두드려 블랙리스트의 보호가 통째로 무력해진다
+    /// (Codex 리뷰 P2 3차).
+    private var didBackground = false
+
     private init() {}
+
+    /// 백그라운드 진입 기록 — 다음 복귀 한 번만 회복 대상으로 만든다.
+    func noteBackground() {
+        didBackground = true
+    }
 
     /// 사용자가 "다시 시도" 를 눌렀을 때. **`atsSafe` 로 정규화해서** 지운다 —
     /// 블랙리스트의 키는 실제로 로드한 URL 이라(본문 이미지는 `url.atsSafe`
@@ -60,8 +72,15 @@ final class ImageRetryPolicy {
     /// 이라, 돌아온 시점엔 실패 이력이 더 이상 현재 조건을 반영하지 않는다 —
     /// 통째로 비우고 실패 슬롯을 되살린다. 성공한 이미지는 캐시에서 오므로
     /// 이 비움이 재다운로드를 유발하지 않는다.
-    func onForeground() {
+    ///
+    /// **백그라운드를 지나온 복귀에서만** 동작한다(`didBackground` 주석 참조).
+    /// 반환값은 실제로 비웠는지 — 테스트가 그 게이트를 핀한다.
+    @discardableResult
+    func onForeground() -> Bool {
+        guard didBackground else { return false }
+        didBackground = false
         clearAllFailedURLs()
         NotificationCenter.default.post(name: Self.failuresClearedNotification, object: nil)
+        return true
     }
 }

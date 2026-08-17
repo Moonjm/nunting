@@ -437,6 +437,9 @@ struct RootTabView: View {
             case .background:
                 // 백그라운드 진입 시 footprint 버퍼 flush — 이게 없으면 버퍼가
                 // 서버로 안 가고 suspend 때 유실된다(구 셸 제거 때 누락됐던 배선).
+                // 다음 복귀 한 번을 이미지 회복 대상으로 표시 — 제어센터/알림
+                // 배너가 만드는 `.inactive → .active` 바운스와 구분한다.
+                ImageRetryPolicy.shared.noteBackground()
                 FootprintLogger.shared.onBackground()
                 // suspend 된 메인 큐를 hang 으로 오인하지 않게 워치독 정지.
                 HangWatchdog.shared.pause()
