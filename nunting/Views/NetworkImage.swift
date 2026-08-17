@@ -159,6 +159,15 @@ struct NetworkImage: View {
     /// before it fires.
     @State private var releaseTask: Task<Void, Never>?
 
+    #if DEBUG
+    /// 테스트 전용 수신 카운터. 이 구독이 살아 있는지를 **뷰 계층으로는
+    /// 확인할 수 없다** — SwiftUI 는 실패 UI(`Text`/`Button`)를 호스팅 뷰의
+    /// 레이어에 직접 그려서 UIView 도 접근성 요소도 남기지 않는다(계층 덤프로
+    /// 확인). 그래서 "방송을 받긴 하는가" 만 여기서 세어 회귀를 막는다 —
+    /// Codex 리뷰 P2 가 지적한 결함이 정확히 "받는 쪽이 없음" 이었다.
+    @MainActor static var failuresClearedReceiptsForTests = 0
+    #endif
+
     /// Off-screen dwell before a `releasesWhenOffscreen` image drops its
     /// decode. Long enough that a small scroll wobble across the viewport edge
     /// (or a fast fling that briefly uncovers a row) doesn't drop-and-redecode;
@@ -270,6 +279,18 @@ struct NetworkImage: View {
             // so report on appear instead — keeps the prefetch look-ahead
             // anchored at the first body image (which loads immediately).
             if !visibilityGated { reportVisibleIfNeeded() }
+        }
+        // 실패 이력이 통째로 비워졌다(포그라운드 복귀) — 굳어 있던 실패
+        // 슬롯을 되살린다. 블랙리스트만 풀면 화면은 그대로다: `failed` 는
+        // 이 뷰의 @State 이고 상세 오버레이는 keep-alive 라 뷰가 살아 있어
+        // 재평가만으론 안 풀린다(Codex 리뷰 P2). 실패가 아닌 슬롯은 값만
+        // 읽고 아무것도 하지 않는다.
+        .onReceive(NotificationCenter.default.publisher(
+            for: ImageRetryPolicy.failuresClearedNotification)) { _ in
+            #if DEBUG
+            Self.failuresClearedReceiptsForTests += 1
+            #endif
+            if failed { failed = false }
         }
         #if DEBUG
         .task(id: url) {
@@ -555,7 +576,7 @@ struct NetworkImage: View {
             // 거짓말이 된다. 블랙리스트에 걸린 URL 은 네트워크를 타지 않고
             // 즉시 같은 실패로 되돌아오므로(실측 0.00s), 눌러도 화면은 그대로
             // "다시 시도" 다(`ImageRetryPolicy` 참조).
-            ImageRetryPolicy.prepareRetry(for: url)
+            ImageRetryPolicy.shared.prepareRetry(for: url)
             failed = false
             // Force the gate open on retry — if the user is tapping
             // they're plainly looking at it. Gated images that haven't

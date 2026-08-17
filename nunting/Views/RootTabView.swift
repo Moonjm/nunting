@@ -452,7 +452,7 @@ struct RootTabView: View {
                 // 백그라운드로 잘린 다운로드가 남긴 실패 이력을 비운다 —
                 // 그게 없으면 그 이미지들은 이 실행 내내 "다시 시도" 로
                 // 고착된다(`ImageRetryPolicy`).
-                ImageRetryPolicy.onForeground()
+                ImageRetryPolicy.shared.onForeground()
                 FootprintLogger.shared.record("scenePhase:active")
                 Networking.prewarmConnections()
                 ImageWarmup.warm()
