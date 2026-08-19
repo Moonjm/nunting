@@ -185,24 +185,6 @@ struct PostDetailView: View, Equatable {
             // every other site.
             .refreshable { await reloadDetail() }
         }
-        // 진단 프로브 초기화 — 댓글 섹션이 없는 글(댓글 0개, 아직 로딩 중)은
-        // 자기 수치를 보고할 기회가 없어, 프로세스 전역 프로브에 이전 글의
-        // 값이 남는다. 그 상태로 히치가 올라가면 엉뚱한 글의 댓글 수가 실린다.
-        //
-        // 글이 바뀔 때뿐 아니라 **같은 글에서 댓글이 사라질 때**도 봐야 한다:
-        // 이토랜드 SSR 은 댓글 포함 여부가 비결정적이라(위 `.refreshable` 참고)
-        // 새로고침 한 번에 30개짜리가 0개가 될 수 있다. 그때 섹션이 통째로
-        // 사라지므로 아무도 프로브를 갱신하지 않는다.
-        //
-        // 댓글이 **생길** 때는 아무것도 하지 않는다(guard) — 섹션이 자기 수치를
-        // 보고하므로, 여기서 0 을 쓰면 어느 쪽이 나중에 도느냐에 따라 그 값을
-        // 덮을 수 있다. 순서에 의존하지 않게 "섹션이 없을 때만 초기화" 로 둔다.
-        .onChange(of: ProbeResetKey(postID: post.id,
-                                    hasComments: !(loader.detail?.comments.isEmpty ?? true)),
-                  initial: true) { _, key in
-            guard !key.hasComments else { return }
-            CommentRenderProbe.shared.update(rendered: 0, total: 0)
-        }
         // Fill the hosted container even when the SwiftUI ideal size would
         // otherwise be smaller — UIHostingController inside our overlay
         // representable sizes to its SwiftUI ideal by default, which left
@@ -583,13 +565,6 @@ struct PostDetailView: View, Equatable {
             attr[attrRange].underlineStyle = .single
         }
         return attr
-    }
-
-    /// 프로브 초기화 판정에 쓰는 관찰 키 — 글이 바뀌거나 댓글 유무가 바뀌면
-    /// 다시 따진다.
-    private struct ProbeResetKey: Equatable {
-        let postID: String
-        let hasComments: Bool
     }
 }
 

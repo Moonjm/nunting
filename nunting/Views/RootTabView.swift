@@ -111,13 +111,6 @@ final class DetailBackDrag {
         // 따라오기 시작한다.
         dragStartOffset = DetailOverlayTransform.shared.visibleOffset
         DetailOverlayTransform.shared.track(dragStartOffset)
-        // 진단 계측 — 이 구간의 프레임 간격을 재서 히치가 있으면 서버로
-        // 올린다. 실체화된 댓글 행 수를 함께 실어 "댓글 많은 글에서만
-        // 버벅인다" 는 체감을 숫자로 확인/반증한다.
-        FrameHitchRecorder.shared.begin(
-            label: "backdrag",
-            context: CommentRenderProbe.shared.summary
-        )
     }
 
     /// 드래그 중 한 번의 이동. SwiftUI 상태가 아니라 레이어 변환을 직접 옮긴다
@@ -144,15 +137,6 @@ final class DetailBackDrag {
         // 끝날 때 `beginAnimationLock` 쪽에서 푼다 — 스프링 도중 스크롤이
         // 살아나면 contentOffset 이 흔들린다.
         if !horizontal { DetailScrollLock.shared.isLocked = false }
-        // 손을 뗀 뒤의 스프링 복귀/닫기 슬라이드까지 재고 마무리한다.
-        // 스냅샷도 그 정착이 끝난 뒤에 걷는다(먼저 걷으면 정착 중 화면이 튄다).
-        if horizontal {
-            // 손을 뗀 시점을 경계로 남긴다 — 드랍이 드래그 중에 났는지 정착
-            // 스프링에서 났는지 가르는 유일한 축이다. (이 호출은 원래 스냅샷
-            // 해제 지점에 있었고, 스냅샷 기계장치를 지울 때 같이 사라졌다.)
-            FrameHitchRecorder.shared.mark("release")
-            FrameHitchRecorder.shared.endAfterSettle()
-        }
         guard horizontal, detail.activePost != nil else { return }
         let traveled = v.translation.width - base
         let velocity = v.predictedEndTranslation.width - v.translation.width
@@ -168,17 +152,13 @@ final class DetailBackDrag {
     /// 전환·시스템 제스처 개입 같은 취소에서 onEnded 를 부르지 않을 수 있는데,
     /// 그러면 드래그 시작 때 켠 것들이 전부 켜진 채로 남는다:
     ///  - `DetailScrollLock` — 상세 스크롤이 죽은 채로 남는다(체감 결함).
-    ///  - `FrameHitchRecorder` — CADisplayLink 가 스케줄된 채 매 프레임 틱을
-    ///    계속 돌고(표본도 계속 쌓인다), 그 구간이 다음 드래그 리포트에 섞인다.
     ///  - 오버레이 — 끌던 자리에 반쯤 열린 채 멈춘다.
-    /// 손을 뗀 것과 같게 되돌린다. 다만 취소 구간은 진단 가치가 없으므로
-    /// 리포트 없이 버린다(`abort`).
+    /// 손을 뗀 것과 같게 되돌린다.
     func cancel() {
         guard let wasHorizontal = horizontalLock else { return }
         horizontalLock = nil
         baseline = 0
         scrollLocked = false
-        FrameHitchRecorder.shared.abort()
         guard wasHorizontal else {
             // 세로/좌측 드래그는 아무것도 잠그지 않았다 — onEnded 와 같게 푼다.
             DetailScrollLock.shared.isLocked = false

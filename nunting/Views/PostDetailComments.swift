@@ -142,18 +142,6 @@ struct PostDetailCommentsSection: View {
                     }
                 }
             }
-            // 진단 계측 — 실체화된 행 수를 FrameHitchRecorder 가 히치 리포트의
-            // context 로 쓴다. body 안에서 직접 쓰지 않고 onChange 로 흘리는
-            // 이유: 뷰 평가는 부작용이 없어야 한다(재평가마다 중복 실행됨).
-            //
-            // 그린 수와 전체 수를 **함께** 관찰한다. 그린 수만 보면 새로고침으로
-            // 전체가 늘어난 순간(창은 그대로)을 놓쳐, 80개짜리 글이 히치 리포트에
-            // "comments 30/40" 으로 실린다 — 상관 분석하려고 넣은 값이 오히려
-            // 오답을 준다.
-            .onChange(of: ProbeCounts(rendered: rendered, total: comments.count),
-                      initial: true) { _, counts in
-                CommentRenderProbe.shared.update(rendered: counts.rendered, total: counts.total)
-            }
             // 새로고침으로 전체가 늘면 성장 조건을 **다시** 따진다. 센티넬의
             // 지오메트리만으로는 이 순간을 잡을 수 없다: 그린 구간이 청크
             // 경계에 딱 맞으면(30·50·70…) 새로 그려지는 행이 없어 센티넬 집합이
@@ -165,12 +153,6 @@ struct PostDetailCommentsSection: View {
                 growIfNeeded(sentinelAfter: deepestReachedSentinel, total: total)
             }
         }
-    }
-
-    /// 프로브에 실어 보내는 두 값의 묶음 — 둘 중 하나만 바뀌어도 갱신되게.
-    private struct ProbeCounts: Equatable {
-        let rendered: Int
-        let total: Int
     }
 
     /// 청크 경계에 고정으로 놓이는 성장 트리거. 1pt 인 이유: 0pt 프레임은

@@ -219,28 +219,6 @@ final class CommentRenderWindowTests: XCTestCase {
         }
     }
 
-    /// 새로고침으로 **전체 수만** 바뀌어도 진단 프로브가 따라가야 한다.
-    /// 그린 수만 관찰하면 창이 아직 안 자란 사이의 백드래그가 "comments 30/40"
-    /// 처럼 옛 총수로 올라가, 히치와 댓글 수의 상관을 보려고 넣은 값이 오히려
-    /// 오답을 준다.
-    func testProbeFollowsTheRefreshedTotal() throws {
-        let host = UIHostingController(rootView: RefreshHarness(comments: comments(40)))
-        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 393, height: 852))
-        window.rootViewController = host
-        window.isHidden = false
-        host.view.frame = window.bounds
-        host.view.layoutIfNeeded()
-        settle(host.view)
-        XCTAssertEqual(CommentRenderProbe.shared.total, 40)
-
-        host.rootView = RefreshHarness(comments: comments(80))
-        host.view.layoutIfNeeded()
-        settle(host.view)
-
-        XCTAssertEqual(CommentRenderProbe.shared.total, 80,
-                       "새로고침으로 늘어난 총수를 프로브가 못 따라갔다")
-    }
-
     // MARK: - 창 규칙
 
     func testClampNeverGoesBelowInitialOrAboveTotal() {
