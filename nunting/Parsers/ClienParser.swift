@@ -256,6 +256,18 @@ public struct ClienParser: BoardParser {
         // decode and the slot stays on the broken placeholder. When `src`
         // doesn't look like an image URL, fall back to the best `srcset`
         // entry so the post actually renders.
+        //
+        // Froala also leaves *ghost* `<img>` tags behind — an upload that
+        // never attached keeps the resize query but loses the file:
+        // `<img src="?scale=width:740" data-file-sn="" data-img-width="">`
+        // (real shape, cm_car 19250419). That is a **pathless** relative
+        // reference, so resolving it against `site.baseURL` yields
+        // `https://www.clien.net?scale=width:740` — the Clien home page.
+        // Loading HTML as an image fails decode, and SDWebImage blacklists
+        // the URL, so the slot freezes on "다시 시도" for the rest of the
+        // session while the web page shows nothing there at all. No image
+        // URL can be pathless, so when there is no srcset to fall back to,
+        // emit no image block instead of a permanently broken slot.
         let chosenString: String
         if !rawSrc.isEmpty,
            let rawURL = URL(string: rawSrc, relativeTo: site.baseURL)?.absoluteURL,
@@ -263,6 +275,8 @@ public struct ClienParser: BoardParser {
             chosenString = rawSrc
         } else if let best = bestSrcsetURL(srcset) {
             chosenString = best
+        } else if Self.isPathlessReference(rawSrc) {
+            return nil
         } else {
             chosenString = rawSrc
         }
@@ -286,6 +300,18 @@ public struct ClienParser: BoardParser {
     nonisolated private static let imageExtensions: Set<String> = [
         "jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "heic", "heif", "avif",
     ]
+
+    /// Whether `raw` carries no scheme, no host and no path — i.e. it points
+    /// at the document itself rather than at any file (`""`, `"?q=1"`,
+    /// `"#anchor"`). Checked on the raw attribute, before baseURL
+    /// resolution, because resolution is exactly what turns such a reference
+    /// into a plausible-looking site URL.
+    nonisolated private static func isPathlessReference(_ raw: String) -> Bool {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return true }
+        guard let components = URLComponents(string: trimmed) else { return false }
+        return components.scheme == nil && components.host == nil && components.path.isEmpty
+    }
 
     nonisolated private func looksLikeImageURL(_ url: URL) -> Bool {
         let ext = url.pathExtension.lowercased()

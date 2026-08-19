@@ -385,6 +385,74 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertEqual(images.first?.1 ?? 0, CGFloat(1600.0 / 900.0), accuracy: CGFloat(0.0001))
     }
 
+    func testClienBodyDropsPathlessRelativeImageSrc() throws {
+        // Real shape from clien.net cm_car post 19250419 — the Froala editor
+        // left a ghost `<img src="?scale=width:740">` (no host, no path, only
+        // a query) ahead of the real upload. Resolved against `site.baseURL`
+        // that becomes `https://www.clien.net?scale=width:740`, i.e. the
+        // Clien home page HTML, which fails decode and freezes the slot on
+        // "다시 시도" forever (SDWebImage blacklists the URL). The web page
+        // shows one image; the app must too.
+        let html = """
+        <html><body>
+        <div class="post_article">
+            <p><img class="fr-fic fr-dib" src="?scale=width:740" data-role="" data-gif="" data-file-sn="" data-img-width="" data-img-height="" alt=""><br></p>
+            <p>&nbsp;</p>
+            <p><img class="fr-dib fr-fil full" src="https://edgio.clien.net/F01/2026/8/15803195/24f1a3fe52a269.jpeg?scale=width:480" data-role="attach-image" data-file-sn="15803195" data-img-width="3024" data-img-height="4032"></p>
+        </div>
+        <div class="post_date">2026-08-19 11:30</div>
+        </body></html>
+        """
+        let parser = ClienParser()
+        let post = Post.fixture(
+            id: "clien-ghost-img",
+            site: .clien,
+            boardID: "clien-cm_car",
+            url: URL(string: "https://m.clien.net/service/board/cm_car/19250419")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+        let images = detail.blocks.imageURLs
+
+        XCTAssertEqual(images.count, 1)
+        XCTAssertEqual(
+            images.first?.absoluteString,
+            "https://edgio.clien.net/F01/2026/8/15803195/24f1a3fe52a269.jpeg?scale=width:740"
+        )
+    }
+
+    func testClienPathlessImageSrcStillFallsBackToSrcset() throws {
+        // The ghost-src drop must not shadow the srcset fallback: when the
+        // pathless `src` sits next to a usable `srcset`, the real image still
+        // renders.
+        let html = """
+        <html><body>
+        <div class="post_article">
+            <p>
+              <img src="?scale=width:740"
+                   srcset="https://cdn.example.com/photo-1024.jpg 1024w"
+                   data-img-width="1600"
+                   data-img-height="900">
+            </p>
+        </div>
+        <div class="post_date">2026-08-19 11:30</div>
+        </body></html>
+        """
+        let parser = ClienParser()
+        let post = Post.fixture(
+            id: "clien-ghost-img-srcset",
+            site: .clien,
+            boardID: "clien-cm_car",
+            url: URL(string: "https://m.clien.net/service/board/cm_car/19250420")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+        let images = detail.blocks.imageURLs
+
+        XCTAssertEqual(images.count, 1)
+        XCTAssertEqual(images.first?.absoluteString, "https://cdn.example.com/photo-1024.jpg")
+    }
+
     func testClienBodyImageUpgradesScaleWidth480To740() throws {
         // Real shape from clien.net park post 19225331 — the mobile markup
         // ships body images as `?scale=width:480` (CDN honours only 480/740;
