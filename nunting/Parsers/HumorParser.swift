@@ -410,7 +410,7 @@ public struct HumorParser: BoardParser {
         guard let img = try li.select(".info a img.hu_icon, .sub_comm_info a img.hu_icon").first()
         else { return nil }
         let src = try img.attr("src")
-        guard !src.isEmpty,
+        guard !isPathlessReference(src),
               !src.contains("icon-humoruniv"),
               !src.contains("/images/icon-")
         else { return nil }

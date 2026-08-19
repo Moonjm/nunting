@@ -385,6 +385,74 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertEqual(images.first?.1 ?? 0, CGFloat(1600.0 / 900.0), accuracy: CGFloat(0.0001))
     }
 
+    func testClienBodyDropsPathlessRelativeImageSrc() throws {
+        // Real shape from clien.net cm_car post 19250419 — the Froala editor
+        // left a ghost `<img src="?scale=width:740">` (no host, no path, only
+        // a query) ahead of the real upload. Resolved against `site.baseURL`
+        // that becomes `https://www.clien.net?scale=width:740`, i.e. the
+        // Clien home page HTML, which fails decode and freezes the slot on
+        // "다시 시도" forever (SDWebImage blacklists the URL). The web page
+        // shows one image; the app must too.
+        let html = """
+        <html><body>
+        <div class="post_article">
+            <p><img class="fr-fic fr-dib" src="?scale=width:740" data-role="" data-gif="" data-file-sn="" data-img-width="" data-img-height="" alt=""><br></p>
+            <p>&nbsp;</p>
+            <p><img class="fr-dib fr-fil full" src="https://edgio.clien.net/F01/2026/8/15803195/24f1a3fe52a269.jpeg?scale=width:480" data-role="attach-image" data-file-sn="15803195" data-img-width="3024" data-img-height="4032"></p>
+        </div>
+        <div class="post_date">2026-08-19 11:30</div>
+        </body></html>
+        """
+        let parser = ClienParser()
+        let post = Post.fixture(
+            id: "clien-ghost-img",
+            site: .clien,
+            boardID: "clien-cm_car",
+            url: URL(string: "https://m.clien.net/service/board/cm_car/19250419")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+        let images = detail.blocks.imageURLs
+
+        XCTAssertEqual(images.count, 1)
+        XCTAssertEqual(
+            images.first?.absoluteString,
+            "https://edgio.clien.net/F01/2026/8/15803195/24f1a3fe52a269.jpeg?scale=width:740"
+        )
+    }
+
+    func testClienPathlessImageSrcStillFallsBackToSrcset() throws {
+        // The ghost-src drop must not shadow the srcset fallback: when the
+        // pathless `src` sits next to a usable `srcset`, the real image still
+        // renders.
+        let html = """
+        <html><body>
+        <div class="post_article">
+            <p>
+              <img src="?scale=width:740"
+                   srcset="https://cdn.example.com/photo-1024.jpg 1024w"
+                   data-img-width="1600"
+                   data-img-height="900">
+            </p>
+        </div>
+        <div class="post_date">2026-08-19 11:30</div>
+        </body></html>
+        """
+        let parser = ClienParser()
+        let post = Post.fixture(
+            id: "clien-ghost-img-srcset",
+            site: .clien,
+            boardID: "clien-cm_car",
+            url: URL(string: "https://m.clien.net/service/board/cm_car/19250420")!
+        )
+
+        let detail = try parser.parseDetail(html: html, post: post)
+        let images = detail.blocks.imageURLs
+
+        XCTAssertEqual(images.count, 1)
+        XCTAssertEqual(images.first?.absoluteString, "https://cdn.example.com/photo-1024.jpg")
+    }
+
     func testClienBodyImageUpgradesScaleWidth480To740() throws {
         // Real shape from clien.net park post 19225331 — the mobile markup
         // ships body images as `?scale=width:480` (CDN honours only 480/740;
@@ -1925,6 +1993,110 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertEqual(videoURL.absoluteString, "https://video.slrclub.com/clip.mp4", "<source src> + #t= strip")
         XCTAssertEqual(embedID, "abcdefghijk")
         XCTAssertEqual(tail.plainText.trimmingCharacters(in: .whitespacesAndNewlines), "아래 본문")
+    }
+
+    func testBodyDropsPathlessImageSrcAcrossSites() {
+        // Clien's ghost `<img src="?scale=width:740">` (cm_car 19250419) is not
+        // a Clien-only shape: every parser routes body images through
+        // `imageURL(from:attributes:)` → `resolveHTTPURL`, which resolves a
+        // pathless reference against `site.baseURL` and hands the loader the
+        // site's *home page HTML*. That fails decode, SDWebImage blacklists
+        // the URL, and the slot is stuck on "다시 시도" for the session. No
+        // image URL can be pathless, so the shared resolver must skip these
+        // candidates — and fall through to the next attribute when one exists.
+        struct Case {
+            let name: String
+            let parser: any BoardParser
+            let bodyHTML: String
+            let url: URL
+            let site: Site
+        }
+        let cases: [Case] = [
+            Case(
+                name: "SLR",
+                parser: SLRParser(),
+                bodyHTML: """
+                <div class="subject">제목</div>
+                <div id="userct">
+                  <p>앞</p>
+                  <img src="?scale=width:740">
+                  <img src="#anchor">
+                  <img src="" data-src="https://image.slrclub.com/real.jpg">
+                  <p>뒤</p>
+                </div>
+                """,
+                url: URL(string: "https://m.slrclub.com/m_view.php?id=free&no=2")!,
+                site: .slr
+            ),
+            Case(
+                name: "Ddanzi",
+                parser: DdanziParser(),
+                bodyHTML: """
+                <div class="boardR">
+                  <div class="read_content">
+                    <div class="xe_content">
+                      <p>앞</p>
+                      <img src="?scale=width:740">
+                      <img src="#anchor">
+                      <img src="" data-src="https://image.ddanzi.com/real.jpg">
+                      <p>뒤</p>
+                    </div>
+                  </div>
+                </div>
+                """,
+                url: URL(string: "https://www.ddanzi.com/free/2")!,
+                site: .ddanzi
+            ),
+            Case(
+                name: "Coolenjoy",
+                parser: CoolenjoyParser(),
+                bodyHTML: """
+                <article id="bo_v">
+                  <div class="view-content">
+                    <p>앞</p>
+                    <img src="?scale=width:740">
+                    <img src="#anchor">
+                    <img src="" data-src="https://image.coolenjoy.net/real.jpg">
+                    <p>뒤</p>
+                  </div>
+                </article>
+                """,
+                url: URL(string: "https://coolenjoy.net/bbs/free/2")!,
+                site: .coolenjoy
+            ),
+            Case(
+                name: "Cook82",
+                parser: Cook82Parser(),
+                bodyHTML: """
+                <div id="articleBody">
+                  <p>앞</p>
+                  <img src="?scale=width:740">
+                  <img src="#anchor">
+                  <img src="" data-src="https://image.82cook.com/real.jpg">
+                  <p>뒤</p>
+                </div>
+                """,
+                url: URL(string: "https://www.82cook.com/entiz/read.php?bn=15&num=2")!,
+                site: .cook82
+            ),
+        ]
+        for c in cases {
+            XCTContext.runActivity(named: c.name) { _ in
+                do {
+                    let html = "<html><body>\(c.bodyHTML)</body></html>"
+                    let post = Post.fixture(site: c.site, url: c.url)
+                    let detail = try c.parser.parseDetail(html: html, post: post)
+                    let images = detail.blocks.imageURLs
+                    XCTAssertEqual(images.count, 1, "\(c.name): 경로 없는 src 가 이미지 슬롯을 만들었다 — \(images)")
+                    XCTAssertEqual(images.first?.absoluteString.hasSuffix("/real.jpg"), true, "\(c.name): data-src 폴백 유실")
+                    let prose = detail.blocks.plainText
+                    XCTAssertTrue(prose.contains("앞"), "\(c.name): 앞 본문 보존")
+                    XCTAssertTrue(prose.contains("뒤"), "\(c.name): 뒤 본문 보존")
+                } catch {
+                    XCTFail("\(c.name): parseDetail threw \(error)")
+                }
+            }
+        }
     }
 
     func testBodyDropsHiddenSubtreeAndScriptTagsAcrossSites() {

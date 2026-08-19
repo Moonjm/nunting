@@ -305,8 +305,8 @@ public struct SLRParser: BoardParser {
                 var sticker: URL?
                 if sticker == nil, let img = try body.select("img").first() {
                     var src = try img.attr("src")
-                    if src.isEmpty { src = try img.attr("data-src") }
-                    if !src.isEmpty {
+                    if isPathlessReference(src) { src = try img.attr("data-src") }
+                    if !isPathlessReference(src) {
                         let normalized = src.hasPrefix("//") ? "https:" + src : src
                         if let url = URL(string: normalized, relativeTo: Site.slr.baseURL)?.absoluteURL,
                            let scheme = url.scheme?.lowercased(),

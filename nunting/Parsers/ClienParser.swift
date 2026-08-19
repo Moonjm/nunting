@@ -256,6 +256,18 @@ public struct ClienParser: BoardParser {
         // decode and the slot stays on the broken placeholder. When `src`
         // doesn't look like an image URL, fall back to the best `srcset`
         // entry so the post actually renders.
+        //
+        // Froala also leaves *ghost* `<img>` tags behind — an upload that
+        // never attached keeps the resize query but loses the file:
+        // `<img src="?scale=width:740" data-file-sn="" data-img-width="">`
+        // (real shape, cm_car 19250419). That is a **pathless** relative
+        // reference, so resolving it against `site.baseURL` yields
+        // `https://www.clien.net?scale=width:740` — the Clien home page.
+        // Loading HTML as an image fails decode, and SDWebImage blacklists
+        // the URL, so the slot freezes on "다시 시도" for the rest of the
+        // session while the web page shows nothing there at all. No image
+        // URL can be pathless, so when there is no srcset to fall back to,
+        // emit no image block instead of a permanently broken slot.
         let chosenString: String
         if !rawSrc.isEmpty,
            let rawURL = URL(string: rawSrc, relativeTo: site.baseURL)?.absoluteURL,
@@ -263,6 +275,8 @@ public struct ClienParser: BoardParser {
             chosenString = rawSrc
         } else if let best = bestSrcsetURL(srcset) {
             chosenString = best
+        } else if isPathlessReference(rawSrc) {
+            return nil
         } else {
             chosenString = rawSrc
         }
@@ -365,7 +379,8 @@ public struct ClienParser: BoardParser {
             // whitespace-padded src from leaking past the parser.
             let attachedImage: URL? = {
                 guard let img = try? row.select("img[data-role=attach-image]").first(),
-                      let src = try? img.attr("src")
+                      let src = try? img.attr("src"),
+                      !isPathlessReference(src)
                 else { return nil }
                 return resolveHTTPURL(src).map(Self.upgradingScaleWidth)
             }()
