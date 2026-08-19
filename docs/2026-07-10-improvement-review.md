@@ -17,12 +17,12 @@ SQL 인젝션 없음(전 쿼리 파라미터화), 시크릿(.p8/.env) git 추적
 
 ## 착수 순서 요약
 
-| 순위 | 항목 | 영역 | 크기 |
-| --- | --- | --- | --- |
-| 1 | 파서 실패 텔레메트리 + 목록 빈결과 센티널 (§1) | iOS+서버 | 중 |
-| 2 | 서버 인증 1+2단계 (§2) | 서버 | 중 |
-| 3 | WebP 프리즈 게이트 일반화 (§3.1) | iOS | 소 |
-| 4 | 나머지 (§3.2~, §4) | — | 소 |
+| 순위 | 항목 | 영역 | 크기 | 상태 |
+| --- | --- | --- | --- | --- |
+| 1 | 파서 실패 텔레메트리 + 목록 빈결과 센티널 (§1) | iOS+서버 | 중 | 완료 |
+| 2 | 서버 인증 1+2단계 (§2) | 서버 | 중 | 폐기(2026-07-10) |
+| 3 | WebP 프리즈 게이트 일반화 (§3.1) | iOS | 소 | 무효 — 원인 재진단 |
+| 4 | 나머지 (§3.2~, §4) | — | 소 | §3.2·§3.3·§3.4 완료 |
 
 ---
 
@@ -147,7 +147,16 @@ Secure Enclave attestation을 `/register`로 보내 서버가 Apple 인증서 �
 
 ## §3. iOS 앱
 
-### 3.1 애니메이션 WebP 프리즈 재발 예약 (High)
+### 3.1 애니메이션 WebP 프리즈 재발 예약 (High) — 무효 (2026-08-19 확인)
+
+> **이 항목은 더 이상 유효하지 않다.** 14초 프리즈의 원인이 재진단됐다:
+> 확장자가 아니라 프리페치 경로가 `animatedImageClass` 없이 돌아 전 프레임을
+> 즉시 실체화한 것이었다(287프레임/13.6MB 실측 — lazy 27ms vs 실체화
+> 9,032ms). `BodyImagePrefetcher.lazyAnimatedContext` 가 워밍에도 뷰어/인라인과
+> 같은 lazy `SDAnimatedImage` 를 지정하면서 원천에서 사라졌고, poster 에 묶여
+> 있던 first-frame 강등 게이트는 걷혔다(`NetworkImage.skipsPrefetch` 는 이제
+> poster 유무만 본다). 아래 원문은 기록용.
+
 
 `PostDetailView.swift:424-433` — ~14초 직렬 디코드 프리즈(354프레임 WebP가
 `SDImageCache` 직렬 ioQueue 점유)를 막는 first-frame-only 게이트가
@@ -157,7 +166,11 @@ Secure Enclave attestation을 `/register`로 보내 서버가 Apple 인증서 �
 poster 유무가 아니라 파일 확장자+크기 힌트(파서 플래그) 또는 디코드 시점
 Content-Length/프레임 수 기준으로.
 
-### 3.2 BoardPager 센티널이 실제 로더를 돌림 (High)
+### 3.2 BoardPager 센티널이 실제 로더를 돌림 (High) — 완료
+
+> `BoardListView` 에 `isActive` 게이트가 들어갔고(Equatable 입력에도 포함,
+> `BoardListViewActiveGateTests`), `ForEach` 키잉도 `\.element.id` 로 바뀌었다.
+
 
 `RootTabView.swift:707-713` — 무한루프 페이저의 head/tail 센티널이 완전한
 `BoardListView`(각자 `@State` 로더 + `.task` fetch +
@@ -168,7 +181,11 @@ Content-Length/프레임 수 기준으로.
 페이지만 fetch하는 `isActive` 게이트(네트워크 로그로 검증) + `board.id`
 키잉.
 
-### 3.3 FootprintLogger 백그라운드 flush 유실 (Medium)
+### 3.3 FootprintLogger 백그라운드 flush 유실 (Medium) — 완료 (2026-08-19)
+
+> `BackgroundFlushWindow` 로 업로드를 감쌌다. 겹친 flush 를 세어 마지막
+> 하나가 끝날 때만 창을 닫는다(`BackgroundFlushWindowTests`).
+
 
 `FootprintLogger.swift:69-80` — flush가 버퍼를 먼저 비우고 fire-and-forget
 POST. `onBackground()`(`RootTabView.swift:295`) 직후 iOS가 suspend하면 OOM
@@ -176,7 +193,12 @@ POST. `onBackground()`(`RootTabView.swift:295`) 직후 iOS가 suspend하면 OOM
 `UIApplication.beginBackgroundTask`로 감싸기, 또는 전송 실패 시 버퍼 복원,
 또는 백그라운드 시 디스크 저장 후 다음 실행 때 업로드.
 
-### 3.4 딥링크 진입 시 상세 헤더가 빈 값 (Medium)
+### 3.4 딥링크 진입 시 상세 헤더가 빈 값 (Medium) — 완료 (2026-08-19)
+
+> 입력 Post 가 **비어 있을 때만** 상세 값으로 메운다. 무조건 상세 우선으로
+> 두지 않은 이유: 파서 12개 중 6개만 상세에서 작성자를 채워, 그 6개에서만
+> 표시가 바뀌는 일관성 없는 변화가 된다.
+
 
 푸시 진입 `DetailOverlayController.present(url:title:)`
 (`DetailOverlayController.swift:116-137`)은 `author: ""`, `commentCount: 0`

@@ -130,13 +130,40 @@ struct PostDetailView: View, Equatable {
                         .frame(maxWidth: .infinity, alignment: .leading)
 
                     HStack(spacing: 10) {
-                        Text(post.author)
+                        // 입력 Post 가 비어 있을 때만 상세에서 메운다. 푸시
+                        // 딥링크(`DetailOverlayController.present`)는 URL 과
+                        // 제목만 아는 최소 Post 로 들어와 작성자·댓글수가
+                        // 공란인데, 로딩이 끝나도 헤더가 입력 Post 만 보고
+                        // 있어 계속 비어 있었다.
+                        //
+                        // `fullTitle`/`fullDateText` 처럼 무조건 상세 우선으로
+                        // 두지 않는 이유: 목록에서 연 글은 이미 목록의 값이
+                        // 정답이고, 파서 12개 중 6개만 상세에서 작성자를
+                        // 채운다(나머지는 입력 Post 를 그대로 통과시킨다).
+                        // 무조건 우선으로 두면 그 6개에서만 표시가 바뀌는
+                        // 일관성 없는 변화가 된다.
+                        Text(post.author.isEmpty
+                             ? (loader.detail?.post.author ?? "")
+                             : post.author)
                         Text(loader.detail?.fullDateText ?? post.dateText)
                         if let views = loader.detail?.viewCount {
                             Text("👁 \(views)")
                         }
-                        if post.commentCount > 0 {
-                            Text("💬 \(post.commentCount)")
+                        // 우선순위: 목록이 준 값 → 상세가 보고한 값 →
+                        // 실제로 받아 온 배열 크기. 배열 크기를 맨 뒤로 미루는
+                        // 이유는 그게 제일 못 믿을 값이기 때문이다 — 댓글 leg
+                        // 가 실패하면 0 이고(`commentsFailed` 배너가 뜨는
+                        // 상태), 페이지네이션이 덜 끝났으면 실제보다 적다.
+                        // 상세 Post 의 값은 파서가 상세 페이지에서 직접 읽은
+                        // 것이다(`enrichedForDetail(commentCount:)` — 에토랜드
+                        // 등이 채운다).
+                        let commentCount = [
+                            post.commentCount,
+                            loader.detail?.post.commentCount ?? 0,
+                            loader.detail?.comments.count ?? 0,
+                        ].first { $0 > 0 } ?? 0
+                        if commentCount > 0 {
+                            Text("💬 \(commentCount)")
                         }
                     }
                     .font(.caption)
