@@ -275,7 +275,7 @@ public struct ClienParser: BoardParser {
             chosenString = rawSrc
         } else if let best = bestSrcsetURL(srcset) {
             chosenString = best
-        } else if Self.isPathlessReference(rawSrc) {
+        } else if isPathlessReference(rawSrc) {
             return nil
         } else {
             chosenString = rawSrc
@@ -300,18 +300,6 @@ public struct ClienParser: BoardParser {
     nonisolated private static let imageExtensions: Set<String> = [
         "jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "heic", "heif", "avif",
     ]
-
-    /// Whether `raw` carries no scheme, no host and no path — i.e. it points
-    /// at the document itself rather than at any file (`""`, `"?q=1"`,
-    /// `"#anchor"`). Checked on the raw attribute, before baseURL
-    /// resolution, because resolution is exactly what turns such a reference
-    /// into a plausible-looking site URL.
-    nonisolated private static func isPathlessReference(_ raw: String) -> Bool {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return true }
-        guard let components = URLComponents(string: trimmed) else { return false }
-        return components.scheme == nil && components.host == nil && components.path.isEmpty
-    }
 
     nonisolated private func looksLikeImageURL(_ url: URL) -> Bool {
         let ext = url.pathExtension.lowercased()
@@ -391,7 +379,8 @@ public struct ClienParser: BoardParser {
             // whitespace-padded src from leaking past the parser.
             let attachedImage: URL? = {
                 guard let img = try? row.select("img[data-role=attach-image]").first(),
-                      let src = try? img.attr("src")
+                      let src = try? img.attr("src"),
+                      !isPathlessReference(src)
                 else { return nil }
                 return resolveHTTPURL(src).map(Self.upgradingScaleWidth)
             }()

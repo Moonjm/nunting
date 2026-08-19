@@ -427,7 +427,7 @@ public struct AagagParser: BoardParser {
         return (try? parsedBodyFragment(rawHTML) { doc -> URL? in
             guard let img = try? doc.select("img").first(),
                   let src = try? img.attr("src"),
-                  !src.isEmpty,
+                  !isPathlessReference(src),
                   let url = URL(string: src, relativeTo: site.baseURL)?.absoluteURL,
                   let scheme = url.scheme?.lowercased(),
                   scheme == "http" || scheme == "https"

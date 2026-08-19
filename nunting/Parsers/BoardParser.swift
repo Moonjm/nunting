@@ -442,6 +442,29 @@ extension BoardParser {
         return url
     }
 
+    /// Whether `raw` carries no scheme, no host and no path — a reference that
+    /// points at the document itself rather than at any file (`""`, `"?q=1"`,
+    /// `"#anchor"`).
+    ///
+    /// Editors leave these behind on `<img>` tags whose upload never attached:
+    /// Clien's Froala ships `<img src="?scale=width:740">` (real shape, cm_car
+    /// 19250419) — the resize query survived, the file didn't. Browsers render
+    /// nothing for such a src, but `resolveHTTPURL` turns it into
+    /// `https://www.clien.net?scale=width:740`, i.e. the site's *home page
+    /// HTML*, and the loader is handed HTML to decode as an image. That fails
+    /// (`BadImageData`), SDWebImage blacklists the URL, and the slot is stuck
+    /// on "다시 시도" for the rest of the session (see `ImageRetryPolicy`).
+    ///
+    /// Checked on the raw attribute, *before* baseURL resolution — resolution
+    /// is exactly what turns such a reference into a plausible-looking URL.
+    /// Image-only: a link may legitimately be `?page=2`, an image never can.
+    public nonisolated func isPathlessReference(_ raw: String) -> Bool {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return true }
+        guard let components = URLComponents(string: trimmed) else { return false }
+        return components.scheme == nil && components.host == nil && components.path.isEmpty
+    }
+
     /// First usable http(s) image URL among `element`'s candidate
     /// `attributes`, tried in priority order. Skips empty values and any
     /// whose value contains a `skipMarkers` substring (loading bars, icon
@@ -466,6 +489,9 @@ extension BoardParser {
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
             if skipMarkers.contains(where: trimmed.contains) { continue }
+            // A ghost `src="?scale=width:740"` must not shadow the real URL
+            // sitting in the next attribute — skip, don't bail.
+            if isPathlessReference(trimmed) { continue }
             if let url = resolveHTTPURL(trimmed) { return url }
         }
         return nil

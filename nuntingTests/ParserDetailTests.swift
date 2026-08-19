@@ -1995,6 +1995,110 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertEqual(tail.plainText.trimmingCharacters(in: .whitespacesAndNewlines), "아래 본문")
     }
 
+    func testBodyDropsPathlessImageSrcAcrossSites() {
+        // Clien's ghost `<img src="?scale=width:740">` (cm_car 19250419) is not
+        // a Clien-only shape: every parser routes body images through
+        // `imageURL(from:attributes:)` → `resolveHTTPURL`, which resolves a
+        // pathless reference against `site.baseURL` and hands the loader the
+        // site's *home page HTML*. That fails decode, SDWebImage blacklists
+        // the URL, and the slot is stuck on "다시 시도" for the session. No
+        // image URL can be pathless, so the shared resolver must skip these
+        // candidates — and fall through to the next attribute when one exists.
+        struct Case {
+            let name: String
+            let parser: any BoardParser
+            let bodyHTML: String
+            let url: URL
+            let site: Site
+        }
+        let cases: [Case] = [
+            Case(
+                name: "SLR",
+                parser: SLRParser(),
+                bodyHTML: """
+                <div class="subject">제목</div>
+                <div id="userct">
+                  <p>앞</p>
+                  <img src="?scale=width:740">
+                  <img src="#anchor">
+                  <img src="" data-src="https://image.slrclub.com/real.jpg">
+                  <p>뒤</p>
+                </div>
+                """,
+                url: URL(string: "https://m.slrclub.com/m_view.php?id=free&no=2")!,
+                site: .slr
+            ),
+            Case(
+                name: "Ddanzi",
+                parser: DdanziParser(),
+                bodyHTML: """
+                <div class="boardR">
+                  <div class="read_content">
+                    <div class="xe_content">
+                      <p>앞</p>
+                      <img src="?scale=width:740">
+                      <img src="#anchor">
+                      <img src="" data-src="https://image.ddanzi.com/real.jpg">
+                      <p>뒤</p>
+                    </div>
+                  </div>
+                </div>
+                """,
+                url: URL(string: "https://www.ddanzi.com/free/2")!,
+                site: .ddanzi
+            ),
+            Case(
+                name: "Coolenjoy",
+                parser: CoolenjoyParser(),
+                bodyHTML: """
+                <article id="bo_v">
+                  <div class="view-content">
+                    <p>앞</p>
+                    <img src="?scale=width:740">
+                    <img src="#anchor">
+                    <img src="" data-src="https://image.coolenjoy.net/real.jpg">
+                    <p>뒤</p>
+                  </div>
+                </article>
+                """,
+                url: URL(string: "https://coolenjoy.net/bbs/free/2")!,
+                site: .coolenjoy
+            ),
+            Case(
+                name: "Cook82",
+                parser: Cook82Parser(),
+                bodyHTML: """
+                <div id="articleBody">
+                  <p>앞</p>
+                  <img src="?scale=width:740">
+                  <img src="#anchor">
+                  <img src="" data-src="https://image.82cook.com/real.jpg">
+                  <p>뒤</p>
+                </div>
+                """,
+                url: URL(string: "https://www.82cook.com/entiz/read.php?bn=15&num=2")!,
+                site: .cook82
+            ),
+        ]
+        for c in cases {
+            XCTContext.runActivity(named: c.name) { _ in
+                do {
+                    let html = "<html><body>\(c.bodyHTML)</body></html>"
+                    let post = Post.fixture(site: c.site, url: c.url)
+                    let detail = try c.parser.parseDetail(html: html, post: post)
+                    let images = detail.blocks.imageURLs
+                    XCTAssertEqual(images.count, 1, "\(c.name): 경로 없는 src 가 이미지 슬롯을 만들었다 — \(images)")
+                    XCTAssertEqual(images.first?.absoluteString.hasSuffix("/real.jpg"), true, "\(c.name): data-src 폴백 유실")
+                    let prose = detail.blocks.plainText
+                    XCTAssertTrue(prose.contains("앞"), "\(c.name): 앞 본문 보존")
+                    XCTAssertTrue(prose.contains("뒤"), "\(c.name): 뒤 본문 보존")
+                } catch {
+                    XCTFail("\(c.name): parseDetail threw \(error)")
+                }
+            }
+        }
+    }
+
     func testBodyDropsHiddenSubtreeAndScriptTagsAcrossSites() {
         // Matrix: parser × wrapper HTML × URL. 4 사이트가 동일 assertion 통과해야 함.
         // 각 사이트 본문 wrapper 가 다르지만 (`<div id=userct>`, `xe_content`, ...)
