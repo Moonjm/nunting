@@ -29,12 +29,12 @@ final class BackgroundFlushWindowTests: XCTestCase {
     func testSingleUploadOpensAndClosesOnce() {
         let (window, begins, ends, _) = makeWindow()
 
-        window.enter()
+        let ticket = window.enter()
         XCTAssertTrue(window.isOpenForTesting)
         XCTAssertEqual(begins(), 1)
         XCTAssertEqual(ends(), 0)
 
-        window.leave()
+        window.leave(ticket)
         XCTAssertFalse(window.isOpenForTesting)
         XCTAssertEqual(ends(), 1)
     }
@@ -42,16 +42,16 @@ final class BackgroundFlushWindowTests: XCTestCase {
     func testOverlappingUploadsKeepTheWindowOpenUntilTheLastOne() {
         let (window, begins, ends, _) = makeWindow()
 
-        window.enter()
-        window.enter()
+        let first = window.enter()
+        let second = window.enter()
         XCTAssertEqual(begins(), 1, "겹친 업로드가 창을 두 번 열었다")
 
-        window.leave()
+        window.leave(first)
         XCTAssertTrue(window.isOpenForTesting,
                       "아직 날고 있는 업로드가 있는데 창이 닫혔다")
         XCTAssertEqual(ends(), 0)
 
-        window.leave()
+        window.leave(second)
         XCTAssertFalse(window.isOpenForTesting)
         XCTAssertEqual(ends(), 1)
     }
@@ -61,8 +61,8 @@ final class BackgroundFlushWindowTests: XCTestCase {
     func testExpirationClosesTheWindowEvenWithUploadsInFlight() {
         let (window, _, ends, expire) = makeWindow()
 
-        window.enter()
-        window.enter()
+        _ = window.enter()
+        _ = window.enter()
         expire()
 
         XCTAssertFalse(window.isOpenForTesting)
@@ -75,20 +75,50 @@ final class BackgroundFlushWindowTests: XCTestCase {
     func testLeaveAfterExpirationDoesNotCloseTwice() {
         let (window, _, ends, expire) = makeWindow()
 
-        window.enter()
+        let ticket = window.enter()
         expire()
-        window.leave()
+        window.leave(ticket)
 
         XCTAssertEqual(ends(), 1, "만료 뒤의 leave 가 창을 한 번 더 닫았다")
     }
 
-    /// 시작한 적 없는 업로드의 `leave()` 는 아무것도 하지 않는다.
-    func testUnbalancedLeaveIsIgnored() {
-        let (window, begins, ends, _) = makeWindow()
+    /// 만료로 창이 강제로 닫힌 뒤 그때 날고 있던 업로드가 뒤늦게 끝난다.
+    /// 그 사이 새 flush 가 창을 열었다면, 그 뒤늦은 완료가 **새 창**의
+    /// 카운터를 깎아 아직 보내는 중인데 창이 닫히면 안 된다 — 이 타입이
+    /// 막으려던 유실이 그대로 재현된다.
+    func testCompletionFromAnExpiredGenerationDoesNotCloseTheNextWindow() {
+        let (window, begins, ends, expire) = makeWindow()
 
-        window.leave()
+        let stale = window.enter()
+        expire()
+        XCTAssertEqual(ends(), 1)
 
-        XCTAssertEqual(begins(), 0)
-        XCTAssertEqual(ends(), 0)
+        let fresh = window.enter()
+        XCTAssertEqual(begins(), 2, "새 flush 가 창을 다시 열지 않았다")
+
+        window.leave(stale)
+        XCTAssertTrue(window.isOpenForTesting,
+                      "만료된 세대의 완료가 새 창을 닫았다")
+        XCTAssertEqual(ends(), 1)
+
+        window.leave(fresh)
+        XCTAssertFalse(window.isOpenForTesting)
+        XCTAssertEqual(ends(), 2)
+    }
+
+    /// 정상 종료로 닫힌 세대의 영수증도 마찬가지로 무효다 — 같은 영수증을
+    /// 두 번 넘겨도 다음 창을 건드리지 못한다.
+    func testReusingATicketAfterNormalCloseIsIgnored() {
+        let (window, _, ends, _) = makeWindow()
+
+        let ticket = window.enter()
+        window.leave(ticket)
+        XCTAssertEqual(ends(), 1)
+
+        _ = window.enter()
+        window.leave(ticket)
+
+        XCTAssertTrue(window.isOpenForTesting, "이미 쓴 영수증이 새 창을 닫았다")
+        XCTAssertEqual(ends(), 1)
     }
 }

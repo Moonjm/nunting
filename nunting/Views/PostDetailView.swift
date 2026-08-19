@@ -149,9 +149,19 @@ struct PostDetailView: View, Equatable {
                         if let views = loader.detail?.viewCount {
                             Text("👁 \(views)")
                         }
-                        let commentCount = post.commentCount > 0
-                            ? post.commentCount
-                            : (loader.detail?.comments.count ?? 0)
+                        // 우선순위: 목록이 준 값 → 상세가 보고한 값 →
+                        // 실제로 받아 온 배열 크기. 배열 크기를 맨 뒤로 미루는
+                        // 이유는 그게 제일 못 믿을 값이기 때문이다 — 댓글 leg
+                        // 가 실패하면 0 이고(`commentsFailed` 배너가 뜨는
+                        // 상태), 페이지네이션이 덜 끝났으면 실제보다 적다.
+                        // 상세 Post 의 값은 파서가 상세 페이지에서 직접 읽은
+                        // 것이다(`enrichedForDetail(commentCount:)` — 에토랜드
+                        // 등이 채운다).
+                        let commentCount = [
+                            post.commentCount,
+                            loader.detail?.post.commentCount ?? 0,
+                            loader.detail?.comments.count ?? 0,
+                        ].first { $0 > 0 } ?? 0
                         if commentCount > 0 {
                             Text("💬 \(commentCount)")
                         }

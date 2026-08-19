@@ -78,9 +78,9 @@ final class FootprintLogger {
         guard !buffer.isEmpty else { return }
         let batch = buffer
         buffer.removeAll(keepingCapacity: true)
-        flushWindow.enter()
+        let ticket = flushWindow.enter()
         Task { @MainActor in
-            defer { flushWindow.leave() }
+            defer { flushWindow.leave(ticket) }
             do {
                 try await service.reportFootprint(batch)
             } catch {
