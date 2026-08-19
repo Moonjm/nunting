@@ -30,6 +30,7 @@ final class FootprintLogger {
     private var buffer: [FootprintSampleDTO] = []
     private var lastSampledMB = 0
     private var samplerTask: Task<Void, Never>?
+    private let flushWindow = BackgroundFlushWindow()
 
     private let changeThresholdMB = 25
     private let flushThreshold = 60
@@ -69,11 +70,17 @@ final class FootprintLogger {
     }
 
     /// 버퍼를 서버로 보내고 비운다.
+    ///
+    /// 업로드는 `BackgroundFlushWindow` 로 감싼다 — `onBackground()` 직후의
+    /// flush 는 iOS 가 곧바로 suspend 하면 출발도 못 하고 증발하는데, 그
+    /// 배치에 실린 게 하필 백그라운드 진입 순간의 footprint 다.
     func flush() {
         guard !buffer.isEmpty else { return }
         let batch = buffer
         buffer.removeAll(keepingCapacity: true)
-        Task {
+        flushWindow.enter()
+        Task { @MainActor in
+            defer { flushWindow.leave() }
             do {
                 try await service.reportFootprint(batch)
             } catch {
