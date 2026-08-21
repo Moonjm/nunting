@@ -30,6 +30,7 @@ nonisolated enum AppSignpost {
 // 기본 MainActor 격리 추론이 붙은 오버라이드는 Swift 6 모드에서 "different
 // actor isolation" 에러가 된다. 디코드는 SD 의 백그라운드 큐에서 돈다.
 nonisolated final class SignpostWebPCoder: SDImageWebPCoder {
+
     override func decodedImage(with data: Data?, options: [SDImageCoderOption: Any]?) -> UIImage? {
         let id = OSSignpostID(log: AppSignpost.image)
         mxSignpost(.begin, log: AppSignpost.image, name: "webpStatic", signpostID: id)
@@ -37,6 +38,33 @@ nonisolated final class SignpostWebPCoder: SDImageWebPCoder {
         // 시그포스트는 MetricKit 의 하루 배치라 즉시 못 본다. 같은 구간을 벽시계로도
         // 재서 media 채널로 올린다 — "느린 게 디코드 자체냐, 디코드를 기다리는
         // 큐냐"를 show/net/queued 와 나란히 놓고 갈라야 한다.
+        // **정적 WebP 는 ImageIO 로 돌린다.** 픽셀당 디코드 비용이 libwebp 98ms/MP vs
+        // ImageIO 19~44ms/MP 였다(기기 계측 2026-08-21). 이 파이프라인은 디코드 CPU 에
+        // 묶여 있고(병렬화 시도 3전 3패, `SDWebImageSetup` 주석의 표들), 총 디코드
+        // 시간이 곧 체감의 하한이라(34장 합계 5,948ms ≈ 본문 show p90 5,785ms)
+        // 장당 비용을 깎는 게 화질을 안 건드리는 유일한 축이다.
+        //
+        // 애니메는 그대로 libwebp — 다중 프레임에선 libwebp 가 2-3배 빠르다는 기존
+        // 실측이 있고, 그게 애초에 이 코더를 등록한 이유다.
+        //
+        // ImageIO 가 nil 을 주면 libwebp 로 폴백한다. 코더 선택(`canDecode`)을
+        // 건드리지 않고 여기서 갈라야 하는 이유가 이 폴백이다 — `canDecode` 에서
+        // 거절하면 ImageIO 가 실패했을 때 되돌아올 곳이 없어 이미지가 통째로 깨진다.
+        // 라이브러리의 공용 ImageIO 코더를 직접 쓴다. 우리 `SignpostIOCoder` 로 보내면
+        // `ioStatic` 으로 기록돼 JPEG/PNG 와 섞이는데, 정작 재려는 건 "WebP 를 ImageIO 로
+        // 돌렸을 때" 의 비용이라 표에서 갈려야 한다 — 여기서 `webpViaIO` 로 따로 남긴다.
+        if let data, !WebPFormat.isAnimated(data) {
+            let startedAt = Date()
+            if let image = SDImageIOCoder.shared.decodedImage(with: data, options: options) {
+                let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
+                let event = MediaLoadEventDTO.decode(kind: "webpViaIO", ms: ms,
+                                                     pixels: Self.pixelCount(of: image),
+                                                     bytes: data.count)
+                Task { @MainActor in MediaLoadTelemetry.shared.record(event) }
+                return image
+            }
+        }
+
         let startedAt = Date()
         let image = super.decodedImage(with: data, options: options)
         let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
