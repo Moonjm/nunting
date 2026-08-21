@@ -41,6 +41,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // "느린 게 앱이냐 회선이냐"를 사후에 가를 수 있다.
         MediaLinkMonitor.shared.start()
 
+        // 메인 큐 정체 프로브 — 워치독(1초 이상 한 번 멈춤)이 못 잡는, 짧은 작업이
+        // 줄줄이 밀리는 정체를 본다. 이미지 오퍼레이션이 슬롯을 1.6초씩 붙잡는
+        // 원인 후보가 이것이다.
+        MainQueueLatencyProbe.shared.start()
+
         // hang 워치독 — MetricKit diagnostic(hang 콜스택)은 Xcode 설치 빌드에 오지
         // 않으므로, 메인 스레드 1초+ 정지를 직접 감지해 스택 샘플을 서버로 올린다.
         HangWatchdog.shared.start()

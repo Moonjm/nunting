@@ -104,6 +104,14 @@ nonisolated extension MediaLoadEventDTO {
                           pf: prefetch ? true : nil, post: postTransferMs)
     }
 
+    /// 메인 큐 관련 이벤트. `kind` 는 "lag"(큐 정체) | "apply"(도착한 이미지를 뷰에
+    /// 반영하는 우리 핸들러의 실행 시간). 둘이 갈려야 "메인이 밀려서" 와 "우리 핸들러가
+    /// 무거워서" 를 구분할 수 있다.
+    static func mainQueue(kind: String, ms: Int,
+                          ts: Int = Int(Date().timeIntervalSince1970)) -> MediaLoadEventDTO {
+        MediaLoadEventDTO(t: "main", ts: ts, ms: ms, kind: kind)
+    }
+
     /// 디코드 구간 이벤트. `pixels` 를 같이 실어야 "무거운 이미지였다"와
     /// "큐가 막혀 밀렸다"를 사후에 구분할 수 있다(디코드 비용 ∝ 픽셀).
     static func decode(kind: String, ms: Int, pixels: Int, bytes: Int,

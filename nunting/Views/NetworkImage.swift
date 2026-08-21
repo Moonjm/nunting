@@ -412,6 +412,17 @@ struct NetworkImage: View {
     /// past the in-flight render (SD can fire `.onSuccess` synchronously on a
     /// memory-cache hit, which would trip "Modifying state during view update").
     private func handleLoadSuccess(_ image: PlatformImage, cacheType: SDImageCacheType) {
+        // 이 핸들러의 실행 시간을 잰다. 오퍼레이션 수명의 94%가 "전송 후" 인데 그 안의
+        // 디코드는 11ms 뿐이라, 남은 1.5초가 (a) 메인 큐에서 차례를 기다린 시간인지
+        // (b) 우리 핸들러가 무거워서인지 갈라야 한다. (a)는 `MainQueueLatencyProbe`,
+        // (b)가 이 값이다.
+        let handlerStartedAt = Date()
+        defer {
+            let ms = Int(Date().timeIntervalSince(handlerStartedAt) * 1000)
+            if ms > 0 {
+                MediaLoadTelemetry.shared.record(.mainQueue(kind: "apply", ms: ms))
+            }
+        }
         recordShowTelemetry(cacheType: cacheType, ok: true)
         promoteToMemoryCache(image, cacheType: cacheType)
         if forceRetry || retryOnNextFailure {

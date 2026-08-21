@@ -618,26 +618,28 @@ type mediaPayloadJSON struct {
 // 퍼센타일을 내려면 원본 값이 필요해서 슬라이스로 들고 있는다 — 1인용 앱의
 // 하루치(수천 건) 기준으로 메모리는 문제가 되지 않는다.
 type mediaAgg struct {
-	Events     int
-	Fails      int
-	NetMs      []int
-	ShowMs     []int
-	VideoMs    []int
-	Bytes      int64
-	Src        map[string]int   // show 캐시 출처 분포
-	VideoKind  map[string]int   // mp4/webm 건수
-	LinkMs     map[string][]int // 링크별 net 소요
-	LinkBytes  map[string]int64
-	HostMs     map[string][]int // 호스트별 net 소요
-	QueuedMs   []int            // net 슬롯 대기 — 디코드가 슬롯을 붙잡는지 보는 축
-	QueuedPF   []int            // 그중 프리페치 요청의 대기
-	QueuedShow []int            // 그중 표시 요청의 대기
-	SlotMs     []int            // 슬롯을 잡고도 전송을 못 시작한 시간
-	OpMs       []int            // 오퍼레이션 수명 = 슬롯 점유 시간
-	OpPostMs   []int            // 그중 전송 완료 이후 구간
-	DecodeMs   []int
-	DecodePx   []int
-	DecodeBy   map[string]int // 코더별 디코드 건수
+	Events      int
+	Fails       int
+	NetMs       []int
+	ShowMs      []int
+	VideoMs     []int
+	Bytes       int64
+	Src         map[string]int   // show 캐시 출처 분포
+	VideoKind   map[string]int   // mp4/webm 건수
+	LinkMs      map[string][]int // 링크별 net 소요
+	LinkBytes   map[string]int64
+	HostMs      map[string][]int // 호스트별 net 소요
+	QueuedMs    []int            // net 슬롯 대기 — 디코드가 슬롯을 붙잡는지 보는 축
+	QueuedPF    []int            // 그중 프리페치 요청의 대기
+	QueuedShow  []int            // 그중 표시 요청의 대기
+	SlotMs      []int            // 슬롯을 잡고도 전송을 못 시작한 시간
+	OpMs        []int            // 오퍼레이션 수명 = 슬롯 점유 시간
+	OpPostMs    []int            // 그중 전송 완료 이후 구간
+	MainLagMs   []int            // 메인 큐 정체(프로브)
+	MainApplyMs []int            // 도착 이미지를 뷰에 반영하는 핸들러 실행 시간
+	DecodeMs    []int
+	DecodePx    []int
+	DecodeBy    map[string]int // 코더별 디코드 건수
 }
 
 func (a *mediaAgg) add(e mediaEventJSON) {
@@ -675,6 +677,12 @@ func (a *mediaAgg) add(e mediaEventJSON) {
 			a.QueuedPF = append(a.QueuedPF, e.Queued)
 		} else {
 			a.QueuedShow = append(a.QueuedShow, e.Queued)
+		}
+	case "main":
+		if e.Kind == "lag" {
+			a.MainLagMs = append(a.MainLagMs, e.Ms)
+		} else {
+			a.MainApplyMs = append(a.MainApplyMs, e.Ms)
 		}
 	case "op":
 		a.OpMs = append(a.OpMs, e.Ms)
@@ -781,6 +789,22 @@ func (a *mediaAgg) view() mediaView {
 			Layer: "op (슬롯 점유)", Count: len(a.OpMs),
 			P50: msLabel(percentile(a.OpMs, 50)), P90: msLabel(percentile(a.OpMs, 90)),
 			Note: opNote(a),
+		})
+	}
+	if len(a.MainLagMs) > 0 {
+		// 메인 큐가 밀린 정도. 이게 크면 완료 처리가 큐에서 차례를 기다리느라
+		// 오퍼레이션이 슬롯을 못 놓는다는 뜻이다.
+		v.Layers = append(v.Layers, mediaLayerRow{
+			Layer: "main lag (큐 정체)", Count: len(a.MainLagMs),
+			P50: msLabel(percentile(a.MainLagMs, 50)), P90: msLabel(percentile(a.MainLagMs, 90)),
+			Note: "임계 100ms 초과분만",
+		})
+	}
+	if len(a.MainApplyMs) > 0 {
+		v.Layers = append(v.Layers, mediaLayerRow{
+			Layer: "main apply (뷰 반영)", Count: len(a.MainApplyMs),
+			P50: msLabel(percentile(a.MainApplyMs, 50)), P90: msLabel(percentile(a.MainApplyMs, 90)),
+			Note: "한 장 도착 시 우리 핸들러 실행",
 		})
 	}
 	if len(a.DecodeMs) > 0 {
