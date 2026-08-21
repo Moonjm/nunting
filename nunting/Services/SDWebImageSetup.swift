@@ -84,18 +84,24 @@ enum SDWebImageSetup {
         cache.config.maxDiskAge = 7 * 24 * 60 * 60
 
         let downloader = SDWebImageDownloader.shared
-        // 4 슬롯. 이 값은 다운로드가 아니라 **다운로드+디코드** 동안 잡혀 있다 —
-        // SDWebImage 는 디코드를 오퍼레이션 안(`coderQueue`)에서 돌리고 오퍼레이션을
-        // 끝내는 `done` 은 그 뒤 barrier 로 부른다(`SDWebImageDownloaderOperation.m:363-425`).
+        // 8 슬롯 — **조건을 갖춘 재실험의 B 조건**이다. 이 값은 다운로드가 아니라
+        // 다운로드+디코드 동안 잡혀 있다(디코드가 오퍼레이션 안 `coderQueue` 에서 돌고
+        // `done` 은 그 뒤 barrier — `SDWebImageDownloaderOperation.m:363-425`).
         //
-        // **8 로 넓혀 봤고, 안 됐다**(2026-08-21 기기 계측, 사전에 정한 기준으로 판정):
-        //   슬롯 4: 대기 0ms 64% · >100ms 14% · >500ms 8% · 평균 136ms · peak 433MB
-        //   슬롯 8: 대기 0ms 58% · >100ms 14% · >500ms 8% · 평균 209ms · peak 577MB
-        // 대기 분포가 그대로고 메모리 피크만 +144MB 올랐다. 폭이 병목이었다면 2배로
-        // 늘렸을 때 대기 비율이 내려갔어야 한다 — 안 내려갔으므로 병목은 슬롯 수가
-        // 아니다(파이프라인이 그 아래 어딘가에서 이미 포화). 다시 넓히려는 사람은
-        // 이 숫자부터 반박할 것.
-        downloader.config.maxConcurrentDownloads = 4
+        // 1차 실험(4 vs 8)은 "대기 분포 동일" 로 반증했다고 판단했으나 **그 판정은
+        // 무효였다**: 두 세션 다 가벼운 워크로드라 대기 자체가 병목이 아니었다
+        // (대기 p90 325ms 수준). 증상이 없는 상태에서 두 조건을 비교한 셈이다.
+        //
+        // 무거운 글(webp 17장급)에서 재현한 A 조건(슬롯 4, 2026-08-21 21:24 세션):
+        //   다운로드 p50 58ms / p90 171ms  — 회선은 멀쩡하다
+        //   슬롯 대기 p50 424ms / p90 4,459ms / 최악 5,797ms (40건 중 15건이 1초 초과)
+        //   show p50 850ms / p90 4,831ms · 디코드 합계 3,185ms · footprint peak 207MB
+        //   (15KB 짜리가 다운로드 31ms 인데 5.8초를 기다린 사례가 있다)
+        //
+        // 판정: 같은 글을 같은 순서로 열어 대기 p90 을 비교한다. 대기가 유의하게
+        // 줄고 footprint peak 이 한도(≈3.35GB) 대비 여유를 유지하면 8 을 유지,
+        // 아니면 4 로 되돌린다. 세션 귀속은 배치의 `cfg`(slots/build)가 보장한다.
+        downloader.config.maxConcurrentDownloads = 8
         // 8s timeout per attempt to fast-fail stale keep-alive
         // connections (the iOS pool's -1005 / -1001 case after
         // backgrounding). SDWebImage's internal retry re-issues with
