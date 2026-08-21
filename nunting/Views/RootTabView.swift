@@ -421,6 +421,8 @@ struct RootTabView: View {
                 // 배너가 만드는 `.inactive → .active` 바운스와 구분한다.
                 ImageRetryPolicy.shared.noteBackground()
                 FootprintLogger.shared.onBackground()
+                // 같은 이유로 미디어 로드 이벤트 버퍼도 내보낸다(임계 미만 잔량 유실 방지).
+                MediaLoadTelemetry.shared.onBackground()
                 // suspend 된 메인 큐를 hang 으로 오인하지 않게 워치독 정지.
                 HangWatchdog.shared.pause()
                 // .inactive 를 건너뛰는 경로가 있어도 드래그가 남지 않게(중복

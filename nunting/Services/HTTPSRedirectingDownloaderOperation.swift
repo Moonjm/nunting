@@ -58,6 +58,47 @@ nonisolated class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOpera
         completionHandler(Self.upgradeHTTPToHTTPS(request))
     }
 
+    /// 이미지 **다운로드 계층** 계측. `SDWebImageDownloader` 는 수집된 태스크 메트릭을
+    /// 같은 포워딩 경로로 이 오퍼레이션에 넘긴다(`SDWebImageDownloader.m:541`) —
+    /// 리다이렉트 훅과 같은 대문자 셀렉터 함정이 있어 `@objc(...)` + `dynamic` 이 필요하다
+    /// (등록 여부는 `HTTPSRedirectingDownloaderOperationTests` 가 지킨다).
+    ///
+    /// 리다이렉트 훅과 **다른 점: `super` 를 반드시 부른다.** 부모는 이 셀렉터를 실제로
+    /// 구현하고 있고(`SDWebImageDownloaderOperation.m:702` — `self.metrics = metrics`),
+    /// 안 부르면 SD 가 노출하는 `metrics` 프로퍼티가 빈 채로 남는다.
+    ///
+    /// 마지막 트랜잭션만 싣는다 — 리다이렉트 체인(fmkorea getfile → …)은 앞 홉이
+    /// 수 ms 짜리 302 라 실제 사진을 가져온 마지막 홉이 체감 시간을 대표한다.
+    @objc(URLSession:task:didFinishCollectingMetrics:)
+    dynamic override func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didFinishCollecting metrics: URLSessionTaskMetrics
+    ) {
+        super.urlSession(session, task: task, didFinishCollecting: metrics)
+
+        guard let tx = metrics.transactionMetrics.last,
+              let host = tx.request.url?.host else { return }
+        let phases = MediaLoadNetworkPhases(
+            fetchStart: tx.fetchStartDate,
+            domainLookupStart: tx.domainLookupStartDate,
+            domainLookupEnd: tx.domainLookupEndDate,
+            connectStart: tx.connectStartDate,
+            connectEnd: tx.connectEndDate,
+            secureConnectionStart: tx.secureConnectionStartDate,
+            secureConnectionEnd: tx.secureConnectionEndDate,
+            requestStart: tx.requestStartDate,
+            responseStart: tx.responseStartDate,
+            responseEnd: tx.responseEndDate,
+            reusedConnection: tx.isReusedConnection,
+            networkProtocol: tx.networkProtocolName,
+            statusCode: (tx.response as? HTTPURLResponse)?.statusCode,
+            bytes: Int(tx.countOfResponseBodyBytesReceived))
+        guard let event = MediaLoadEventDTO.network(host: host, phases: phases) else { return }
+        // 이 콜백은 다운로더 세션 큐. 버퍼는 MainActor 소속이라 Sendable 인 DTO 만 넘긴다.
+        Task { @MainActor in MediaLoadTelemetry.shared.record(event) }
+    }
+
     /// Returns the request with `http://` upgraded to `https://`; any other
     /// scheme passes through unchanged. Headers/body/method are preserved.
     /// Delegates the URL transform itself to `URL.atsSafe` so source-URL

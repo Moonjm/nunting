@@ -144,6 +144,10 @@ struct ImageViewer: View {
         // completion 을 (cancelled 에러로) 호출하므로 continuation 은 누수 없이
         // nil 로 재개된다(실측: onFailure 로 전달되는 SD 2002 cancelled).
         let box = OperationBox()
+        // 표시 계층 계측의 기산점 — 뷰어는 본문과 다른 캐시 네임스페이스(박스별 키)를
+        // 쓰므로, 같은 사진이라도 여기서 처음부터 다시 받는 일이 잦다. ctx 로 갈라 본다.
+        let startedAt = Date()
+        let host = url.host ?? "?"
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 let operation = SDWebImageManager.shared.loadImage(
@@ -151,7 +155,9 @@ struct ImageViewer: View {
                     options: [.retryFailed],
                     context: context,
                     progress: nil
-                ) { uiImage, _, _, _, _, _ in
+                ) { uiImage, _, error, cacheType, _, _ in
+                    Self.recordViewerTelemetry(host: host, startedAt: startedAt,
+                                               cacheType: cacheType, image: uiImage, error: error)
                     continuation.resume(returning: uiImage)
                 }
                 box.store(operation)
@@ -159,6 +165,28 @@ struct ImageViewer: View {
         } onCancel: {
             box.cancel()
         }
+    }
+
+    /// 뷰어 로드 한 건을 계측 채널로 넘긴다. 취소(뷰어를 닫아 2차 디코드가 끊긴 경우)는
+    /// 실패가 아니므로 아예 싣지 않는다 — 실으면 실패율이 사용자의 스와이프 속도를
+    /// 따라 움직이는 무의미한 값이 된다.
+    ///
+    /// nonisolated + Task hop: SD 의 completion 은 @Sendable 클로저라 격리가 없다.
+    private nonisolated static func recordViewerTelemetry(
+        host: String, startedAt: Date, cacheType: SDImageCacheType,
+        image: UIImage?, error: Error?
+    ) {
+        if let error, NetworkImage.isCancellation(error) { return }
+        let ms = max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
+        let src: String
+        switch cacheType {
+        case .memory: src = "mem"
+        case .disk: src = "disk"
+        default: src = "net"
+        }
+        let event = MediaLoadEventDTO.show(host: host, ms: ms, src: src,
+                                           ctx: "viewer", ok: image != nil)
+        Task { @MainActor in MediaLoadTelemetry.shared.record(event) }
     }
 
     /// loadImage 의 operation 을 task 취소에 연결하는 스레드 안전 보관함 —

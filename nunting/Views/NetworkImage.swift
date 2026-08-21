@@ -172,6 +172,10 @@ struct NetworkImage: View {
     /// before it fires.
     @State private var releaseTask: Task<Void, Never>?
 
+    /// 표시 계층 계측의 기산점 — 무거운 이미지 뷰가 실제로 붙은 순간(=로드 시작).
+    /// `.id(loadIdentity)` 리마운트마다 다시 찍혀 재디코드도 한 건으로 잡힌다.
+    @State private var loadStartedAt: Date?
+
     #if DEBUG
     /// 테스트 전용 수신 카운터. 이 구독이 살아 있는지를 **뷰 계층으로는
     /// 확인할 수 없다** — SwiftUI 는 실패 UI(`Text`/`Button`)를 호스팅 뷰의
@@ -367,6 +371,10 @@ struct NetworkImage: View {
         .purgeable(true)
         .resizable()
         .scaledToFit()
+        // 표시 계층 계측의 기산점. 체인 맨 끝에 둔다 — `.onAppear` 는 `some View` 를
+        // 돌려주므로 위쪽에 끼우면 `maxBufferSize`/`purgeable` 같은 AnimatedImage
+        // 전용 모디파이어가 끊긴다.
+        .onAppear { if loadStartedAt == nil { loadStartedAt = Date() } }
     }
 
     /// 디스크 히트를 메모리 캐시로 승격한다.
@@ -404,6 +412,7 @@ struct NetworkImage: View {
     /// past the in-flight render (SD can fire `.onSuccess` synchronously on a
     /// memory-cache hit, which would trip "Modifying state during view update").
     private func handleLoadSuccess(_ image: PlatformImage, cacheType: SDImageCacheType) {
+        recordShowTelemetry(cacheType: cacheType, ok: true)
         promoteToMemoryCache(image, cacheType: cacheType)
         if forceRetry || retryOnNextFailure {
             DispatchQueue.main.async {
@@ -452,6 +461,25 @@ struct NetworkImage: View {
         max(current ?? 0, incoming)
     }
 
+    /// 표시 계층 계측 — 슬롯이 뜬 뒤 그림이 채워지기까지, 즉 사용자가 체감하는 시간.
+    /// 다운로드 계층(`HTTPSRedirectingDownloaderOperation`)과 달리 캐시 히트도 포함해야
+    /// "느린 게 회선이냐 캐시 미스냐"의 분모가 생긴다.
+    ///
+    /// `loadStartedAt` 이 nil 인 경우 = SD 가 뷰 생성 도중 **동기로** 콜백한 메모리 히트
+    /// (onAppear 보다 먼저 온다). 실제로 기다림이 없었던 경우라 0ms 로 싣는다.
+    private func recordShowTelemetry(cacheType: SDImageCacheType?, ok: Bool) {
+        let elapsed = loadStartedAt.map { Int(Date().timeIntervalSince($0) * 1000) } ?? 0
+        let src: String
+        switch cacheType {
+        case .memory: src = "mem"
+        case .disk: src = "disk"
+        default: src = "net"
+        }
+        MediaLoadTelemetry.shared.record(
+            .show(host: url.host ?? "?", ms: max(0, elapsed), src: src,
+                  ctx: visibilityGated ? "body" : "icon", ok: ok))
+    }
+
     private func handleLoadFailure(_ error: Error) {
         // 취소는 실패가 아니다 — failed 로 승격하면 retry UI 전환으로
         // AnimatedImage 가 뷰에서 제거되며 후속 로드까지 dismantle-취소돼
@@ -459,6 +487,7 @@ struct NetworkImage: View {
         // during querying the cache"). 무시하면 뷰가 살아 있는 한 다음
         // updateUIView 가 same-URL/no-image 경로로 자동 재로드한다.
         guard !Self.isCancellation(error) else { return }
+        recordShowTelemetry(cacheType: nil, ok: false)
         DispatchQueue.main.async {
             if retryOnNextFailure {
                 // 복귀 직후의 지각 실패 — 재시도 UI 로 굳히지 말고 한 번 다시

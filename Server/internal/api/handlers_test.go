@@ -762,3 +762,82 @@ func TestAdminMetricsSummarizesHitch(t *testing.T) {
 		t.Errorf("dropped frames card missing, body=%q", body)
 	}
 }
+
+func TestPostMetricsAcceptsMediaKind(t *testing.T) {
+	srv, store := newTestServer(t)
+	defer srv.Close()
+	defer store.Close()
+
+	media := `{"events":[{"t":"net","ts":1753000000,"ms":950,"host":"img.fmkorea.com",` +
+		`"link":"cell","bytes":812345,"dns":30,"conn":120,"tls":90,"ttfb":240,` +
+		`"proto":"h2","reused":false,"status":200}]}`
+	if code, _ := do(t, "POST", srv.URL+"/me/metrics?kind=media", "nnt_x", media); code != 200 {
+		t.Fatalf("post media: want 200, got %d", code)
+	}
+
+	rows, err := store.ListMetricPayloads(t.Context(), 10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Kind != "media" {
+		t.Fatalf("unexpected rows: %+v", rows)
+	}
+}
+
+// 미디어 섹션은 "느린 게 회선이냐 캐시냐 서버냐"를 한 화면에서 갈라야 한다 —
+// 계층별 분포, 캐시 출처, 링크별 비교, 느린 호스트가 모두 렌더돼야 한다.
+func TestAdminMetricsRendersMediaSection(t *testing.T) {
+	t.Setenv("NUNTING_ADMIN_KEY", "s3cret")
+	store := dbtest.New(t)
+	defer store.Close()
+	srv := httptest.NewServer(NewRouter(store))
+	defer srv.Close()
+
+	if err := store.UpsertUser(t.Context(), "nnt_x"); err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+	media := `{"events":[` +
+		`{"t":"net","ts":1753000000,"ms":950,"host":"img.fmkorea.com","link":"cell","bytes":800000,"ttfb":240,"proto":"h2","reused":false,"status":200},` +
+		`{"t":"net","ts":1753000001,"ms":150,"host":"i.namu.wiki","link":"wifi","bytes":20000,"ttfb":80,"proto":"h2","reused":true,"status":200},` +
+		`{"t":"show","ts":1753000002,"ms":12,"host":"img.fmkorea.com","link":"wifi","src":"mem","ctx":"body"},` +
+		`{"t":"show","ts":1753000003,"ms":980,"host":"img.fmkorea.com","link":"cell","src":"net","ctx":"body","ok":false},` +
+		`{"t":"video","ts":1753000004,"ms":1800,"host":"v.aagag.com","link":"wifi","kind":"webm","ctx":"body"}` +
+		`]}`
+	if err := store.InsertMetricPayload(t.Context(), "nnt_x", "media", media); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	code, body := do(t, "GET", srv.URL+"/admin/metrics?key=s3cret", "", "")
+	if code != 200 {
+		t.Fatalf("admin: want 200, got %d", code)
+	}
+	for _, want := range []string{
+		"미디어 로딩",          // 섹션
+		"img.fmkorea.com", // 느린 호스트
+		"wifi", "cell",    // 링크별 비교
+		"mem",   // 캐시 출처 분포
+		"webm",  // 영상 컨테이너
+		"950ms", // net p50(2건 중 느린 쪽이 p90, 여기선 값 노출 확인)
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("media section missing %q", want)
+		}
+	}
+}
+
+func TestPercentile(t *testing.T) {
+	vals := []int{50, 10, 40, 20, 30} // 정렬 안 된 입력도 받는다
+
+	if got := percentile(vals, 50); got != 30 {
+		t.Errorf("p50: want 30, got %d", got)
+	}
+	if got := percentile(vals, 90); got != 50 {
+		t.Errorf("p90: want 50, got %d", got)
+	}
+	if got := percentile(nil, 50); got != 0 {
+		t.Errorf("빈 입력은 0: got %d", got)
+	}
+	if got := percentile([]int{7}, 90); got != 7 {
+		t.Errorf("한 건이면 그 값: got %d", got)
+	}
+}

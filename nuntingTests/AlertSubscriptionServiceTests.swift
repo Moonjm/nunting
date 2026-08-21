@@ -202,6 +202,34 @@ final class AlertSubscriptionServiceTests: XCTestCase {
         XCTAssertTrue(body.contains(#""phase":"list""#), "body: \(body)")
         XCTAssertTrue(body.contains("목록 0건"), "body: \(body)")
     }
+
+    /// reportMediaLoads → POST /me/metrics?kind=media + {events:[...]}.
+    /// 배치 한 번에 여러 건을 싣는다(이미지 한 글에 수십 건이라 건별 POST 는 불가).
+    func testReportMediaLoadsPostsBatchToMetricsWithMediaKind() async throws {
+        let stub = StubHTTPRequester()
+        await stub.setNext(status: 204, body: "")
+        let service = AlertSubscriptionService(
+            baseURL: URL(string: "http://example.com")!,
+            requester: stub,
+            uuidStore: InMemoryUUIDStore(value: "nnt_test")
+        )
+
+        try await service.reportMediaLoads([
+            MediaLoadEventDTO.show(host: "img.clien.net", ms: 340, src: "net",
+                                   ctx: "body", ok: true, ts: 1_753_000_000),
+            MediaLoadEventDTO.video(kind: "webm", host: "v.aagag.com", ms: 1_800,
+                                    ctx: "body", ok: true, ts: 1_753_000_001),
+        ])
+
+        let recorded = await stub.lastRequest()
+        XCTAssertEqual(recorded?.url?.absoluteString, "http://example.com/me/metrics?kind=media")
+        XCTAssertEqual(recorded?.httpMethod, "POST")
+        let body = String(data: recorded?.httpBody ?? Data(), encoding: .utf8) ?? ""
+        XCTAssertTrue(body.contains(#""events":["#), "body: \(body)")
+        XCTAssertTrue(body.contains(#""t":"show""#), "body: \(body)")
+        XCTAssertTrue(body.contains(#""t":"video""#), "body: \(body)")
+        XCTAssertTrue(body.contains(#""kind":"webm""#), "body: \(body)")
+    }
 }
 
 // MARK: - Test stubs
