@@ -34,13 +34,44 @@ nonisolated final class SignpostWebPCoder: SDImageWebPCoder {
         let id = OSSignpostID(log: AppSignpost.image)
         mxSignpost(.begin, log: AppSignpost.image, name: "webpStatic", signpostID: id)
         defer { mxSignpost(.end, log: AppSignpost.image, name: "webpStatic", signpostID: id) }
-        return super.decodedImage(with: data, options: options)
+        // 시그포스트는 MetricKit 의 하루 배치라 즉시 못 본다. 같은 구간을 벽시계로도
+        // 재서 media 채널로 올린다 — "느린 게 디코드 자체냐, 디코드를 기다리는
+        // 큐냐"를 show/net/queued 와 나란히 놓고 갈라야 한다.
+        let startedAt = Date()
+        let image = super.decodedImage(with: data, options: options)
+        let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
+        let event = MediaLoadEventDTO.decode(kind: "webpStatic", ms: ms,
+                                             pixels: Self.pixelCount(of: image),
+                                             bytes: data?.count ?? 0)
+        Task { @MainActor in MediaLoadTelemetry.shared.record(event) }
+        return image
+    }
+
+    /// 디코드 **출력** 픽셀 수. 다운샘플(`imageThumbnailPixelSize`)이 걸리면 원본이
+    /// 아니라 이 값이 비용을 대표한다. `cgImage` 가 없으면(드묾) point×scale 로 환산.
+    static func pixelCount(of image: UIImage?) -> Int {
+        guard let image else { return 0 }
+        if let cg = image.cgImage { return cg.width * cg.height }
+        return Int(image.size.width * image.scale * image.size.height * image.scale)
     }
 
     override func animatedImageFrame(at index: UInt) -> UIImage? {
         let id = OSSignpostID(log: AppSignpost.image)
         mxSignpost(.begin, log: AppSignpost.image, name: "webpFrame", signpostID: id)
         defer { mxSignpost(.end, log: AppSignpost.image, name: "webpFrame", signpostID: id) }
-        return super.animatedImageFrame(at: index)
+        // **표시 경로의 진짜 디코드가 여기다.** SDWebImageSwiftUI 의 `AnimatedImage` 는
+        // 컨텍스트에 `animatedImageClass = SDAnimatedImage` 를 심으므로
+        // (AnimatedImage.swift:255) 본문/아이콘 이미지는 `decodedImage(with:)` 가 아니라
+        // 애니메 코더 경로로 열린다. 정적 WebP 도 마찬가지라 frame 0 디코드가 곧 그 이미지의
+        // 전체 디코드 비용이다. 프레임 0 만 재는 이유: 움짤은 100~300 프레임이라 전 프레임을
+        // 기록하면 배치가 프레임 이벤트로 뒤덮인다(그 비용은 signpost 쪽이 이미 본다).
+        guard index == 0 else { return super.animatedImageFrame(at: index) }
+        let startedAt = Date()
+        let frame = super.animatedImageFrame(at: index)
+        let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
+        let event = MediaLoadEventDTO.decode(kind: "webpFrame0", ms: ms,
+                                             pixels: Self.pixelCount(of: frame), bytes: 0)
+        Task { @MainActor in MediaLoadTelemetry.shared.record(event) }
+        return frame
     }
 }

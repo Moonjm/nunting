@@ -599,7 +599,9 @@ type mediaEventJSON struct {
 	TTFB   int    `json:"ttfb"`
 	Proto  string `json:"proto"`
 	Status int    `json:"status"`
-	OK     *bool  `json:"ok"` // 실패일 때만 실린다(false)
+	Queued int    `json:"queued"` // net: 다운로더 슬롯 대기(ms)
+	Px     int    `json:"px"`     // decode: 출력 픽셀 수
+	OK     *bool  `json:"ok"`     // 실패일 때만 실린다(false)
 }
 
 type mediaPayloadJSON struct {
@@ -621,6 +623,10 @@ type mediaAgg struct {
 	LinkMs    map[string][]int // 링크별 net 소요
 	LinkBytes map[string]int64
 	HostMs    map[string][]int // 호스트별 net 소요
+	QueuedMs  []int            // net 슬롯 대기 — 디코드가 슬롯을 붙잡는지 보는 축
+	DecodeMs  []int
+	DecodePx  []int
+	DecodeBy  map[string]int // 코더별 디코드 건수
 }
 
 func (a *mediaAgg) add(e mediaEventJSON) {
@@ -645,6 +651,20 @@ func (a *mediaAgg) add(e mediaEventJSON) {
 		}
 		if e.Host != "" {
 			a.HostMs[e.Host] = append(a.HostMs[e.Host], e.Ms)
+		}
+		if e.Queued > 0 {
+			a.QueuedMs = append(a.QueuedMs, e.Queued)
+		}
+	case "decode":
+		a.DecodeMs = append(a.DecodeMs, e.Ms)
+		if e.Px > 0 {
+			a.DecodePx = append(a.DecodePx, e.Px)
+		}
+		if a.DecodeBy == nil {
+			a.DecodeBy = map[string]int{}
+		}
+		if e.Kind != "" {
+			a.DecodeBy[e.Kind]++
 		}
 	case "show":
 		a.ShowMs = append(a.ShowMs, e.Ms)
@@ -704,10 +724,30 @@ func (a *mediaAgg) view() mediaView {
 		return v
 	}
 	if len(a.NetMs) > 0 {
+		note := bytesLabel(a.Bytes)
+		// 슬롯 대기 — 다운로드 자체는 짧은데 화면엔 늦게 뜨는 경우, 대기가 여기
+		// 잡히면 원인은 다운로더 큐(디코드가 슬롯을 붙잡는 구조)다.
+		if len(a.QueuedMs) > 0 {
+			note += " · 대기 p50 " + msLabel(percentile(a.QueuedMs, 50)) +
+				"/p90 " + msLabel(percentile(a.QueuedMs, 90))
+		}
 		v.Layers = append(v.Layers, mediaLayerRow{
 			Layer: "net (다운로드)", Count: len(a.NetMs),
 			P50: msLabel(percentile(a.NetMs, 50)), P90: msLabel(percentile(a.NetMs, 90)),
-			Note: bytesLabel(a.Bytes),
+			Note: note,
+		})
+	}
+	if len(a.DecodeMs) > 0 {
+		note := countPairs(a.DecodeBy)
+		// 픽셀 규모를 같이 봐야 "무거운 이미지라 오래 걸린 것"과 "가벼운데 밀린 것"이 갈린다.
+		if len(a.DecodePx) > 0 {
+			note += " · 중앙 " + megapixelLabel(percentile(a.DecodePx, 50)) +
+				" / p90 " + megapixelLabel(percentile(a.DecodePx, 90))
+		}
+		v.Layers = append(v.Layers, mediaLayerRow{
+			Layer: "decode (디코드)", Count: len(a.DecodeMs),
+			P50: msLabel(percentile(a.DecodeMs, 50)), P90: msLabel(percentile(a.DecodeMs, 90)),
+			Note: note,
 		})
 	}
 	if len(a.ShowMs) > 0 {
@@ -795,6 +835,11 @@ func percentile(values []int, p float64) int {
 		idx = len(sorted) - 1
 	}
 	return sorted[idx]
+}
+
+// megapixelLabel 픽셀 수 → "3.1MP".
+func megapixelLabel(px int) string {
+	return strconv.FormatFloat(float64(px)/1_000_000, 'f', 1, 64) + "MP"
 }
 
 func msLabel(ms int) string {

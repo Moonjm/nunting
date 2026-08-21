@@ -32,6 +32,8 @@ nonisolated struct MediaLoadEventDTO: Encodable, Sendable {
     var proto: String? // net: h2 / http/1.1 …
     var reused: Bool?  // net: 커넥션 재사용 여부
     var status: Int?   // net: HTTP 상태
+    var queued: Int?   // net: 요청 생성 → 실제 전송 시작(다운로더 슬롯 대기)
+    var px: Int?       // decode: 출력 픽셀 수 — 디코드 비용은 픽셀에 비례한다
     var ok: Bool?      // 실패일 때만 false 로 실린다
 }
 
@@ -58,8 +60,12 @@ nonisolated extension MediaLoadEventDTO {
 
     /// 다운로드 계층 이벤트. 총 시간을 못 재면(취소·실패로 `responseEnd` 부재) `nil` —
     /// 0ms 로 실으면 분포의 p50 을 끌어내려 "빠르다"는 착시를 만든다.
+    /// - Parameter enqueuedAt: 이 요청이 만들어진 시각(다운로더 큐에 들어간 순간).
+    ///   주면 `queued` = 슬롯 대기 시간이 실린다. 모르면 필드를 비운다 — 0 을 넣으면
+    ///   "대기 없음" 과 구분이 안 된다.
     static func network(host: String,
                         phases: MediaLoadNetworkPhases,
+                        enqueuedAt: Date? = nil,
                         ts: Int = Int(Date().timeIntervalSince1970)) -> MediaLoadEventDTO? {
         guard let total = elapsedMs(phases.fetchStart, phases.responseEnd) else { return nil }
         return MediaLoadEventDTO(
@@ -74,7 +80,17 @@ nonisolated extension MediaLoadEventDTO {
             ttfb: elapsedMs(phases.requestStart ?? phases.fetchStart, phases.responseStart),
             proto: phases.networkProtocol,
             reused: phases.reusedConnection,
-            status: phases.statusCode)
+            status: phases.statusCode,
+            queued: elapsedMs(enqueuedAt, phases.fetchStart))
+    }
+
+    /// 디코드 구간 이벤트. `pixels` 를 같이 실어야 "무거운 이미지였다"와
+    /// "큐가 막혀 밀렸다"를 사후에 구분할 수 있다(디코드 비용 ∝ 픽셀).
+    static func decode(kind: String, ms: Int, pixels: Int, bytes: Int,
+                       ts: Int = Int(Date().timeIntervalSince1970)) -> MediaLoadEventDTO {
+        MediaLoadEventDTO(t: "decode", ts: ts, ms: ms, kind: kind,
+                          bytes: bytes > 0 ? bytes : nil,
+                          px: pixels > 0 ? pixels : nil)
     }
 
     /// 표시 계층 이벤트.

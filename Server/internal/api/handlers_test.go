@@ -841,3 +841,43 @@ func TestPercentile(t *testing.T) {
 		t.Errorf("한 건이면 그 값: got %d", got)
 	}
 }
+
+// 파이프라인 분해: 다운로드 슬롯 대기(queued)와 디코드(decode)가 표에 보여야
+// "느린 게 큐냐 디코드냐"를 대시보드에서 바로 가른다.
+func TestAdminMetricsSplitsMediaPipeline(t *testing.T) {
+	t.Setenv("NUNTING_ADMIN_KEY", "s3cret")
+	store := dbtest.New(t)
+	defer store.Close()
+	srv := httptest.NewServer(NewRouter(store))
+	defer srv.Close()
+
+	if err := store.UpsertUser(t.Context(), "nnt_x"); err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+	media := `{"events":[` +
+		`{"t":"net","ts":1753000000,"ms":60,"host":"upload3.inven.co.kr","link":"wifi","bytes":150000,"queued":2500},` +
+		`{"t":"net","ts":1753000001,"ms":70,"host":"upload3.inven.co.kr","link":"wifi","bytes":160000,"queued":4800},` +
+		`{"t":"decode","ts":1753000002,"ms":180,"kind":"webpStatic","px":3110400,"bytes":214003},` +
+		`{"t":"decode","ts":1753000003,"ms":950,"kind":"webpStatic","px":8294400,"bytes":512000}` +
+		`]}`
+	if err := store.InsertMetricPayload(t.Context(), "nnt_x", "media", media); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	code, body := do(t, "GET", srv.URL+"/admin/metrics?key=s3cret", "", "")
+	if code != 200 {
+		t.Fatalf("admin: want 200, got %d", code)
+	}
+	for _, want := range []string{
+		"decode (디코드)", // 계층 행 라벨 — raw JSON 에도 "decode" 가 있어 라벨로 검사
+		"webpStatic 2", // 코더별 건수
+		"대기",           // net 행의 슬롯 대기
+		"4.8s",         // 대기 p90
+		"950ms",        // 디코드 p90
+		"MP",           // 픽셀 규모 — 무거운 이미지인지 큐 적체인지 가르는 축
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("pipeline split missing %q", want)
+		}
+	}
+}

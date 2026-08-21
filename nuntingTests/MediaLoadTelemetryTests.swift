@@ -202,3 +202,58 @@ final class MediaLoadTelemetryTests: XCTestCase {
         XCTAssertTrue(batches.isEmpty)
     }
 }
+
+/// 파이프라인 구간 분해 이벤트 — 지연이 큐 대기냐 디코드냐를 가른다.
+final class MediaPipelineEventTests: XCTestCase {
+
+    /// 디코드 이벤트는 소요 시간과 함께 **출력 픽셀 수**를 실어야 한다.
+    /// 디코드 비용은 픽셀에 비례하므로, ms 만으로는 "무거운 이미지였다"와
+    /// "큐가 막혔다"를 구분할 수 없다.
+    func testDecodeEventCarriesPixelsAndBytes() throws {
+        let e = MediaLoadEventDTO.decode(kind: "webpStatic", ms: 180,
+                                         pixels: 3_110_400, bytes: 214_003, ts: 1)
+        let json = String(data: try JSONEncoder().encode(e), encoding: .utf8) ?? ""
+
+        XCTAssertEqual(e.t, "decode")
+        XCTAssertEqual(e.ms, 180)
+        XCTAssertEqual(e.kind, "webpStatic")
+        XCTAssertTrue(json.contains("\"px\":3110400"), json)
+        XCTAssertTrue(json.contains("\"bytes\":214003"), json)
+    }
+
+    /// net 이벤트는 **슬롯 대기 시간**을 함께 싣는다. 다운로드 자체가 60ms 인데
+    /// 화면엔 5초 뒤 뜨는 상황에서, 대기가 다운로더 큐에서 생겼는지를 이 값이 가른다.
+    func testNetworkEventCarriesQueueWait() {
+        let t0 = Date(timeIntervalSince1970: 1_753_000_000)
+        let phases = MediaLoadNetworkPhases(
+            fetchStart: t0.addingTimeInterval(2.5),
+            domainLookupStart: nil, domainLookupEnd: nil,
+            connectStart: nil, connectEnd: nil,
+            secureConnectionStart: nil, secureConnectionEnd: nil,
+            requestStart: t0.addingTimeInterval(2.5),
+            responseStart: t0.addingTimeInterval(2.56),
+            responseEnd: t0.addingTimeInterval(2.62),
+            reusedConnection: true, networkProtocol: "h2", statusCode: 200, bytes: 100)
+
+        let e = MediaLoadEventDTO.network(host: "h", phases: phases,
+                                          enqueuedAt: t0, ts: 1)
+
+        XCTAssertEqual(e?.ms, 120, "다운로드 자체는 120ms")
+        XCTAssertEqual(e?.queued, 2500, "요청 생성 → 실제 전송 시작까지 2.5s 대기")
+    }
+
+    /// 대기 기산점을 모르면(레거시 호출) 필드를 비운다 — 0 을 넣으면
+    /// "대기 없음" 과 구분이 안 된다.
+    func testQueueWaitOmittedWhenEnqueueTimeUnknown() {
+        let t0 = Date(timeIntervalSince1970: 1_753_000_000)
+        let phases = MediaLoadNetworkPhases(
+            fetchStart: t0, domainLookupStart: nil, domainLookupEnd: nil,
+            connectStart: nil, connectEnd: nil,
+            secureConnectionStart: nil, secureConnectionEnd: nil,
+            requestStart: t0, responseStart: t0.addingTimeInterval(0.05),
+            responseEnd: t0.addingTimeInterval(0.1),
+            reusedConnection: true, networkProtocol: "h2", statusCode: 200, bytes: 100)
+
+        XCTAssertNil(MediaLoadEventDTO.network(host: "h", phases: phases, ts: 1)?.queued)
+    }
+}

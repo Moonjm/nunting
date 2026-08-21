@@ -25,6 +25,13 @@ import SDWebImage
 // "different actor isolation" 에러가 된다. 이 오퍼레이션은 자체 NSOperationQueue
 // 에서 돌므로 main actor 소속이어서도 안 된다.
 nonisolated class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOperation, @unchecked Sendable {
+    /// 이 오퍼레이션이 만들어진 시각 = 다운로더 큐에 들어간 순간. `fetchStart` 와의
+    /// 차이가 **슬롯 대기 시간**이다 — 디코드가 오퍼레이션 안에서 돌고(`done` 은 그
+    /// 뒤 barrier) 슬롯을 붙잡으므로(SDWebImageDownloaderOperation.m:363-425),
+    /// 이미지가 몰린 글에서 대기가 생긴다면 이 값에 그대로 나타난다.
+    /// 불변이라 `@unchecked Sendable` 약속을 깨지 않는다.
+    private let enqueuedAt = Date()
+
     // Combination required for the ObjC runtime to actually install this
     // selector into the dispatch table when overriding an optional
     // protocol method (NSURLSessionTaskDelegate, declared on
@@ -94,7 +101,8 @@ nonisolated class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOpera
             networkProtocol: tx.networkProtocolName,
             statusCode: (tx.response as? HTTPURLResponse)?.statusCode,
             bytes: Int(tx.countOfResponseBodyBytesReceived))
-        guard let event = MediaLoadEventDTO.network(host: host, phases: phases) else { return }
+        guard let event = MediaLoadEventDTO.network(host: host, phases: phases,
+                                                    enqueuedAt: enqueuedAt) else { return }
         // 이 콜백은 다운로더 세션 큐. 버퍼는 MainActor 소속이라 Sendable 인 DTO 만 넘긴다.
         Task { @MainActor in MediaLoadTelemetry.shared.record(event) }
     }
