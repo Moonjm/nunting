@@ -632,6 +632,7 @@ type mediaAgg struct {
 	QueuedPF   []int            // 그중 프리페치 요청의 대기
 	QueuedShow []int            // 그중 표시 요청의 대기
 	SlotMs     []int            // 슬롯을 잡고도 전송을 못 시작한 시간
+	OpMs       []int            // 오퍼레이션 수명 = 슬롯 점유 시간
 	DecodeMs   []int
 	DecodePx   []int
 	DecodeBy   map[string]int // 코더별 디코드 건수
@@ -673,6 +674,8 @@ func (a *mediaAgg) add(e mediaEventJSON) {
 		} else {
 			a.QueuedShow = append(a.QueuedShow, e.Queued)
 		}
+	case "op":
+		a.OpMs = append(a.OpMs, e.Ms)
 	case "decode":
 		a.DecodeMs = append(a.DecodeMs, e.Ms)
 		if e.Px > 0 {
@@ -764,6 +767,15 @@ func (a *mediaAgg) view() mediaView {
 			Layer: "net (다운로드)", Count: len(a.NetMs),
 			P50: msLabel(percentile(a.NetMs, 50)), P90: msLabel(percentile(a.NetMs, 90)),
 			Note: note,
+		})
+	}
+	if len(a.OpMs) > 0 {
+		// 슬롯 점유. 다운로드+디코드 합보다 크게 길면 전송이 끝난 뒤에도 슬롯이
+		// 붙잡혀 있다는 뜻이고, 그게 대기의 정체다.
+		v.Layers = append(v.Layers, mediaLayerRow{
+			Layer: "op (슬롯 점유)", Count: len(a.OpMs),
+			P50: msLabel(percentile(a.OpMs, 50)), P90: msLabel(percentile(a.OpMs, 90)),
+			Note: "다운로드+디코드 합과 비교",
 		})
 	}
 	if len(a.DecodeMs) > 0 {

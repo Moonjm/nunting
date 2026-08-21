@@ -206,6 +206,19 @@ final class MediaLoadTelemetryTests: XCTestCase {
 /// 파이프라인 구간 분해 이벤트 — 지연이 큐 대기냐 디코드냐를 가른다.
 final class MediaPipelineEventTests: XCTestCase {
 
+    /// 오퍼레이션 수명 = 슬롯 점유 시간. 슬롯을 잡은 뒤 전송 시작까지는 6ms 인데
+    /// 대기가 p90 4.1초라면, 앞선 오퍼레이션들이 **측정된 작업(다운로드 78ms +
+    /// 디코드 12ms)을 끝낸 뒤에도** 슬롯을 붙잡고 있다는 뜻이다. 그 총량을 잰다.
+    func testOperationEventCarriesLifetime() throws {
+        let e = MediaLoadEventDTO.operation(host: "img.inven.co.kr", ms: 640, prefetch: false, ts: 1)
+        let json = String(data: try JSONEncoder().encode(e), encoding: .utf8) ?? ""
+
+        XCTAssertEqual(e.t, "op")
+        XCTAssertEqual(e.ms, 640)
+        XCTAssertEqual(e.host, "img.inven.co.kr")
+        XCTAssertFalse(json.contains("\"pf\""), "표시 요청은 기본값이라 생략: \(json)")
+    }
+
     /// 디코드 이벤트는 소요 시간과 함께 **출력 픽셀 수**를 실어야 한다.
     /// 디코드 비용은 픽셀에 비례하므로, ms 만으로는 "무거운 이미지였다"와
     /// "큐가 막혔다"를 구분할 수 없다.

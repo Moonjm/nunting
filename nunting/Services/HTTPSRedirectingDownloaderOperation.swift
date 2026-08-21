@@ -46,7 +46,24 @@ nonisolated class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOpera
     private var slotAcquiredAt: Date?
 
     override func start() {
-        slotAcquiredAt = Date()
+        let startedAt = Date()
+        slotAcquiredAt = startedAt
+
+        // 오퍼레이션이 **끝나는** 시점을 잡는다. NSOperation 은 `isFinished` 가 된 뒤
+        // `completionBlock` 을 부른다. SDWebImageDownloader 가 이미 자기 블록을 걸어
+        // URLOperations 에서 제거하므로(SDWebImageDownloader.m:241 부근) 덮어쓰지 않고
+        // **감싼다** — 기존 블록을 반드시 그대로 호출한다.
+        let existing = completionBlock
+        let host = request?.url?.host ?? "?"
+        let isPrefetch = options.contains(.lowPriority)
+        completionBlock = {
+            let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
+            let event = MediaLoadEventDTO.operation(host: host, ms: max(0, ms),
+                                                    prefetch: isPrefetch)
+            Task { @MainActor in MediaLoadTelemetry.shared.record(event) }
+            existing?()
+        }
+
         super.start()
     }
 

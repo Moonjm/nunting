@@ -91,6 +91,17 @@ nonisolated extension MediaLoadEventDTO {
             slot: elapsedMs(startedAt, phases.fetchStart))
     }
 
+    /// 오퍼레이션 수명 이벤트 — 슬롯을 잡고 있던 총 시간.
+    ///
+    /// 대기의 마지막 사각지대다. `slot`(획득→전송)이 6ms 로 확인됐으니 지연은 전부
+    /// "슬롯을 못 잡아서" 인데, 앞선 오퍼레이션의 측정된 작업량(다운로드+디코드
+    /// ≈90ms)으로는 실측 대기(p90 4.1초)가 설명되지 않는다. 전송이 끝난 **뒤에도**
+    /// 슬롯이 붙잡혀 있는 시간을 여기서 잡는다.
+    static func operation(host: String, ms: Int, prefetch: Bool,
+                          ts: Int = Int(Date().timeIntervalSince1970)) -> MediaLoadEventDTO {
+        MediaLoadEventDTO(t: "op", ts: ts, ms: ms, host: host, pf: prefetch ? true : nil)
+    }
+
     /// 디코드 구간 이벤트. `pixels` 를 같이 실어야 "무거운 이미지였다"와
     /// "큐가 막혀 밀렸다"를 사후에 구분할 수 있다(디코드 비용 ∝ 픽셀).
     static func decode(kind: String, ms: Int, pixels: Int, bytes: Int,
