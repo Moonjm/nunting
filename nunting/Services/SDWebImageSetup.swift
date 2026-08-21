@@ -24,24 +24,24 @@ enum SDWebImageSetup {
         // SDWebImage docs recommend.
         // 시그포스트 래퍼를 등록 — 디코드 로직은 super 그대로, 앞뒤로 mxSignpost
         // 만 끼워 WebP 디코드 CPU 를 이름으로 측정한다(SignpostWebPCoder 참조).
-        // `SDImageCache.ioQueue` 를 **동시 큐**로. 기본은 직렬이라
-        // (`SDImageCacheConfig.m:40-42`) 캐시 조회가 한 줄로 서는데, 그 큐 안에서
-        // **디코드까지** 한다(`SDImageCache.m:524-528` diskImageForKey →
-        // SDImageCacheDecodeImageData, 호출은 692-694). 즉 디스크에서 나오는 이미지는
-        // 하나씩 순차 디코드된다 — 웜 캐시(네트워크 0건) 세션에서 본문 show p90 이
-        // 1,672ms 였고 49장 디코드 합계가 3,888ms 였던 실측이 이 그림이다. 다운로드
-        // 슬롯을 넓혀도 효과가 없던 것도 여기서 다시 만나기 때문이다.
+        // `SDImageCache.ioQueue` 는 **기본(직렬)을 유지한다.**
         //
-        // 라이브러리가 공식 지원하는 설정이다(`SDImageCacheConfig.h:130-137`).
-        // 필수 조건인 `diskCacheWritingOptions == NSDataWritingAtomic` 은 기본값이고
-        // (`SDImageCacheConfig.m:34`) 우리는 그 값을 건드리지 않는다 — `SDDiskCache` 에
-        // 락이 하나도 없어서 안전성이 전적으로 이 원자적 쓰기에서 나온다.
+        // 이 큐가 캐시 조회와 **디코드까지** 직렬로 처리하는 건 사실이다
+        // (`SDImageCacheConfig.m:40-42` + `SDImageCache.m:524-528`, 호출 692-694).
+        // 그래서 동시 큐로 바꿔봤고(라이브러리가 공식 지원하는 설정), **더 나빠졌다**
+        // — 같은 글·콜드·슬롯 4 로 맞춘 비교(2026-08-21):
         //
-        // **순서가 중요하다**: 이 속성은 캐시가 만들어질 때 한 번 읽히고, 그 뒤 바꾸면
-        // 조용히 무효다(같은 헤더의 "does not support dynamic changes"). 그래서
-        // `SDImageCache.shared` 를 처음 건드리기 전에 세우고, 아래에서 실제로 먹었는지
-        // 확인한다 — 조용한 무효화가 이 변경의 유일한 실패 모드다.
-        SDImageCacheConfig.default.ioQueueAttributes = concurrentQueueAttribute()
+        //                직렬(기본)      동시 큐
+        //   대기 p50      343ms          2,173ms   ← 6배 악화
+        //   대기 p90      4,590ms        5,437ms
+        //   본문 show p50 1,618ms        2,792ms
+        //   본문 show p90 5,500ms        5,785ms
+        //   (다운로드 자체는 p90 176ms → 108ms 로 오히려 빨라졌다)
+        //
+        // 슬롯 폭 실험(4→8)과 **같은 결론이다**: 병렬도를 올리면 각자가 느려질 뿐
+        // 총량이 줄지 않는다. 이 파이프라인은 디코드 CPU 에 묶여 있다 — 세션 실측이
+        // 그대로 보여준다(34장 디코드 합계 5,948ms vs 본문 show p90 5,785ms).
+        // 남은 축은 병렬화가 아니라 **디코드 일 자체를 줄이는 것**이다.
 
         // 등록 순서가 곧 우선순위다 — `SDImageCodersManager` 는 나중에 등록된 코더를
         // 먼저 본다. ImageIO 코더를 **먼저**, libwebp 코더를 **나중에** 등록해야
@@ -62,12 +62,6 @@ enum SDWebImageSetup {
         SDWebImageDownloader.shared.config.operationClass = HTTPSRedirectingDownloaderOperation.self
 
         let cache = SDImageCache.shared
-        #if DEBUG
-        // 위 순서가 깨지면(누가 먼저 `SDImageCache.shared` 를 건드리면) 설정이 조용히
-        // 무시된다. 조용히 넘어가면 "켰는데 효과 없네" 로 오판하므로 여기서 깨뜨린다.
-        assert(cache.config.ioQueueAttributes === concurrentQueueAttribute(),
-               "ioQueueAttributes 가 안 먹었다 — SDImageCache.shared 가 configure() 보다 먼저 만들어졌다")
-        #endif
         // 400MB. 종전 200MB 는 "이전 `ImageCache` 예산에 맞춘" 값이었고 근거가
         // 측정이 아니었다(이 주석의 원문도 "측정하면 튜닝하겠다" 였다). 기기
         // 계측으로 부족이 확인돼 올린다.
@@ -147,28 +141,5 @@ enum SDWebImageSetup {
         // HTML legs of a single post visit identify identically and
         // CDNs treat the second leg as a continuation of the first.
         downloader.setValue(Networking.userAgent, forHTTPHeaderField: "User-Agent")
-    }
-
-    /// `DISPATCH_QUEUE_CONCURRENT` 의 Swift 대체.
-    ///
-    /// Swift 에는 이 매크로가 안 열려 있다 — 매크로는 `(dispatch_queue_attr_t)&_dispatch_queue_attr_concurrent`
-    /// 인데 그 심볼이 불완전 타입이라 Swift 가 "cannot reference invalid declaration" 로
-    /// 막는다. 그래서 심볼 **주소**를 직접 얻는다. C 에서 매크로 값과 `dlsym` 결과가
-    /// 같은 주소임을 확인했다(둘 다 `0x1fb0e0f80`).
-    ///
-    /// 대안은 브리징 헤더를 추가하는 것인데, 상수 하나 때문에 빌드 설정을 바꾸는 것보다
-    /// 이쪽이 국소적이다. 엉뚱한 값을 잡으면 캐시가 조용히 직렬로 돌아가므로,
-    /// `SDWebImageSetupTests` 가 "이 attr 로 만든 큐가 실제로 동시 실행되는지" 를 잰다.
-    static func concurrentQueueAttribute() -> dispatch_queue_attr_t? {
-        // RTLD_DEFAULT — libdispatch 는 이미 프로세스에 올라와 있다.
-        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2),
-                                 "_dispatch_queue_attr_concurrent") else { return nil }
-        return unsafeBitCast(symbol, to: dispatch_queue_attr_t.self)
-    }
-
-    /// 테스트가 위 attr 의 실제 동시성을 확인할 수 있게 열어둔 생성 통로.
-    /// (프로덕션 경로는 SDWebImage 가 같은 attr 로 자기 큐를 만든다.)
-    static func makeQueue(label: String, attr: dispatch_queue_attr_t?) -> DispatchQueue {
-        DispatchQueue(__label: label, attr: attr)
     }
 }
