@@ -24,13 +24,20 @@ nonisolated final class MainQueueLatencyProbe: Sendable {
     private let interval: TimeInterval
     private let thresholdMs: Int
     private let onLag: @Sendable (Int) -> Void
+    private let heartbeat: TimeInterval
     private let running = OSAllocatedUnfairLock(initialState: false)
+    /// 하트비트 창 안에서 관측한 최대 지연. 창이 끝나면 **0 이어도** 한 건 남긴다 —
+    /// 이벤트가 0건이면 "정체가 없었다" 와 "프로브가 안 돌았다" 를 구분할 수 없고,
+    /// 실제로 그 모호함 때문에 한 세션을 날렸다.
+    private let windowMax = OSAllocatedUnfairLock(initialState: 0)
 
     init(interval: TimeInterval = 0.25,
          thresholdMs: Int = 100,
+         heartbeat: TimeInterval = 5,
          onLag: @escaping @Sendable (Int) -> Void) {
         self.interval = interval
         self.thresholdMs = thresholdMs
+        self.heartbeat = heartbeat
         self.onLag = onLag
     }
 
@@ -45,16 +52,32 @@ nonisolated final class MainQueueLatencyProbe: Sendable {
     func stop() { running.withLock { $0 = false } }
 
     private func loop() {
+        var lastHeartbeat = Date()
         while running.withLock({ $0 }) {
             let sentAt = Date()
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.running.withLock({ $0 }) else { return }
                 let delayMs = Int(Date().timeIntervalSince(sentAt) * 1000)
-                // 임계 미만은 버린다 — 평상시에도 남기면 배치가 프로브로 뒤덮인다.
+                self.windowMax.withLock { $0 = max($0, delayMs) }
+                // 임계 초과는 즉시 남긴다(정체 순간의 크기).
                 guard delayMs >= self.thresholdMs else { return }
                 self.onLag(delayMs)
             }
+            if Date().timeIntervalSince(lastHeartbeat) >= heartbeat {
+                lastHeartbeat = Date()
+                let peak = windowMax.withLock { value -> Int in
+                    defer { value = 0 }
+                    return value
+                }
+                onHeartbeat(peak)
+            }
             Thread.sleep(forTimeInterval: interval)
         }
+    }
+
+    /// 창당 한 건. 값이 0 이어도 남기는 게 요점이다.
+    private func onHeartbeat(_ peakMs: Int) {
+        let event = MediaLoadEventDTO.mainQueue(kind: "lagpeak", ms: peakMs)
+        Task { @MainActor in MediaLoadTelemetry.shared.record(event) }
     }
 }

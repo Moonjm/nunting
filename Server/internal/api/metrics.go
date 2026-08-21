@@ -604,6 +604,7 @@ type mediaEventJSON struct {
 	PF     bool   `json:"pf"`     // net: 프리페치 요청(표시 요청이면 없음)
 	Slot   int    `json:"slot"`   // net: 슬롯 획득 → 전송 시작
 	Post   int    `json:"post"`   // op: 전송 완료 → 오퍼레이션 종료
+	US     int    `json:"us"`     // main: 마이크로초(1ms 미만 구간용)
 	OK     *bool  `json:"ok"`     // 실패일 때만 실린다(false)
 }
 
@@ -636,7 +637,8 @@ type mediaAgg struct {
 	OpMs        []int            // 오퍼레이션 수명 = 슬롯 점유 시간
 	OpPostMs    []int            // 그중 전송 완료 이후 구간
 	MainLagMs   []int            // 메인 큐 정체(프로브)
-	MainApplyMs []int            // 도착 이미지를 뷰에 반영하는 핸들러 실행 시간
+	MainApplyUs []int            // 도착 이미지를 뷰에 반영하는 핸들러 실행 시간(µs)
+	MainPeakMs  []int            // 하트비트: 창당 최대 지연(0 이어도 기록)
 	DecodeMs    []int
 	DecodePx    []int
 	DecodeBy    map[string]int // 코더별 디코드 건수
@@ -679,10 +681,13 @@ func (a *mediaAgg) add(e mediaEventJSON) {
 			a.QueuedShow = append(a.QueuedShow, e.Queued)
 		}
 	case "main":
-		if e.Kind == "lag" {
+		switch e.Kind {
+		case "lag":
 			a.MainLagMs = append(a.MainLagMs, e.Ms)
-		} else {
-			a.MainApplyMs = append(a.MainApplyMs, e.Ms)
+		case "lagpeak":
+			a.MainPeakMs = append(a.MainPeakMs, e.Ms)
+		default:
+			a.MainApplyUs = append(a.MainApplyUs, e.US)
 		}
 	case "op":
 		a.OpMs = append(a.OpMs, e.Ms)
@@ -800,10 +805,19 @@ func (a *mediaAgg) view() mediaView {
 			Note: "임계 100ms 초과분만",
 		})
 	}
-	if len(a.MainApplyMs) > 0 {
+	if len(a.MainPeakMs) > 0 {
+		// 하트비트 — 0 이어도 남는다. 이 행이 아예 없으면 프로브가 안 돈 것이고,
+		// 있는데 값이 작으면 메인은 한산했던 것이다. 그 둘을 구분하려고 만든 행이다.
 		v.Layers = append(v.Layers, mediaLayerRow{
-			Layer: "main apply (뷰 반영)", Count: len(a.MainApplyMs),
-			P50: msLabel(percentile(a.MainApplyMs, 50)), P90: msLabel(percentile(a.MainApplyMs, 90)),
+			Layer: "main peak (5초창 최대)", Count: len(a.MainPeakMs),
+			P50: msLabel(percentile(a.MainPeakMs, 50)), P90: msLabel(percentile(a.MainPeakMs, 90)),
+			Note: "행이 없으면 프로브 미가동",
+		})
+	}
+	if len(a.MainApplyUs) > 0 {
+		v.Layers = append(v.Layers, mediaLayerRow{
+			Layer: "main apply (뷰 반영)", Count: len(a.MainApplyUs),
+			P50: usLabel(percentile(a.MainApplyUs, 50)), P90: usLabel(percentile(a.MainApplyUs, 90)),
 			Note: "한 장 도착 시 우리 핸들러 실행",
 		})
 	}
@@ -923,6 +937,14 @@ func percentile(values []int, p float64) int {
 // megapixelLabel 픽셀 수 → "3.1MP".
 func megapixelLabel(px int) string {
 	return strconv.FormatFloat(float64(px)/1_000_000, 'f', 1, 64) + "MP"
+}
+
+// usLabel 마이크로초 → "820µs" / "1.4ms".
+func usLabel(us int) string {
+	if us < 1000 {
+		return strconv.Itoa(us) + "µs"
+	}
+	return strconv.FormatFloat(float64(us)/1000, 'f', 1, 64) + "ms"
 }
 
 func msLabel(ms int) string {

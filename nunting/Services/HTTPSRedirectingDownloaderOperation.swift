@@ -50,26 +50,31 @@ nonisolated class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOpera
     /// (다운로드 37ms + 디코드 11ms)이 3% 뿐이라, 나머지가 이 구간 어디인지 갈라야 한다.
     private var transferEndedAt: Date?
 
+    /// 오퍼레이션이 실제로 끝나는 순간(`isFinished` 플립)을 관찰한다.
+    ///
+    /// **처음엔 `completionBlock` 에서 쟀는데 그게 틀렸다.** 슬롯은 `done` 이
+    /// `isFinished = YES` 로 뒤집는 순간 풀리고(`SDWebImageDownloaderOperation.m:301`),
+    /// `completionBlock` 은 그보다 **뒤에** 큐가 스케줄해 부른다. 그 사이 지연은
+    /// 슬롯을 붙잡지 않으므로, 그걸 수명에 넣으면 "슬롯을 오래 쥐고 있다" 는 잘못된
+    /// 결론이 나온다(실제로 그렇게 읽었다).
+    private var finishObservation: NSKeyValueObservation?
+
     override func start() {
         let startedAt = Date()
         slotAcquiredAt = startedAt
 
-        // 오퍼레이션이 **끝나는** 시점을 잡는다. NSOperation 은 `isFinished` 가 된 뒤
-        // `completionBlock` 을 부른다. SDWebImageDownloader 가 이미 자기 블록을 걸어
-        // URLOperations 에서 제거하므로(SDWebImageDownloader.m:241 부근) 덮어쓰지 않고
-        // **감싼다** — 기존 블록을 반드시 그대로 호출한다.
-        let existing = completionBlock
         let host = request?.url?.host ?? "?"
         let isPrefetch = options.contains(.lowPriority)
-        completionBlock = { [weak self] in
+        finishObservation = observe(\.isFinished, options: [.new]) { [weak self] op, _ in
+            guard op.isFinished, let self else { return }
             let now = Date()
             let ms = Int(now.timeIntervalSince(startedAt) * 1000)
-            let post = self?.transferEndedAt.map { Int(now.timeIntervalSince($0) * 1000) }
+            let post = self.transferEndedAt.map { Int(now.timeIntervalSince($0) * 1000) }
             let event = MediaLoadEventDTO.operation(host: host, ms: max(0, ms),
                                                     postTransferMs: post.map { max(0, $0) },
                                                     prefetch: isPrefetch)
             Task { @MainActor in MediaLoadTelemetry.shared.record(event) }
-            existing?()
+            self.finishObservation = nil
         }
 
         super.start()

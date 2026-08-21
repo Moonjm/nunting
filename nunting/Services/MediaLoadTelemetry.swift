@@ -38,6 +38,7 @@ nonisolated struct MediaLoadEventDTO: Encodable, Sendable {
     var pf: Bool?      // net: 프리페치 요청일 때만 true(표시 요청이 기본)
     var slot: Int?     // net: 슬롯 획득(오퍼레이션 start) → 전송 시작. 큐 대기와 분리
     var post: Int?     // op: 전송 완료 → 오퍼레이션 종료(디코드 + 완료 처리)
+    var us: Int?       // main: 마이크로초 — 1ms 미만 구간은 ms 로 재면 전부 0 이다
     var ok: Bool?      // 실패일 때만 false 로 실린다
 }
 
@@ -107,9 +108,9 @@ nonisolated extension MediaLoadEventDTO {
     /// 메인 큐 관련 이벤트. `kind` 는 "lag"(큐 정체) | "apply"(도착한 이미지를 뷰에
     /// 반영하는 우리 핸들러의 실행 시간). 둘이 갈려야 "메인이 밀려서" 와 "우리 핸들러가
     /// 무거워서" 를 구분할 수 있다.
-    static func mainQueue(kind: String, ms: Int,
+    static func mainQueue(kind: String, ms: Int, us: Int? = nil,
                           ts: Int = Int(Date().timeIntervalSince1970)) -> MediaLoadEventDTO {
-        MediaLoadEventDTO(t: "main", ts: ts, ms: ms, kind: kind)
+        MediaLoadEventDTO(t: "main", ts: ts, ms: ms, kind: kind, us: us)
     }
 
     /// 디코드 구간 이벤트. `pixels` 를 같이 실어야 "무거운 이미지였다"와

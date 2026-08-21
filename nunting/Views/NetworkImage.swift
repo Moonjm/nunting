@@ -418,10 +418,13 @@ struct NetworkImage: View {
         // (b)가 이 값이다.
         let handlerStartedAt = Date()
         defer {
-            let ms = Int(Date().timeIntervalSince(handlerStartedAt) * 1000)
-            if ms > 0 {
-                MediaLoadTelemetry.shared.record(.mainQueue(kind: "apply", ms: ms))
-            }
+            // 마이크로초로 잰다 — 이 핸들러는 1ms 미만일 수 있고, 그러면 ms 로는
+            // 전부 0 이라 "빠르다" 와 "기록이 안 된다" 가 구분되지 않는다(실제로 그
+            // 모호함 때문에 한 세션을 날렸다). 항상 남긴다.
+            let elapsed = Date().timeIntervalSince(handlerStartedAt)
+            MediaLoadTelemetry.shared.record(
+                .mainQueue(kind: "apply", ms: Int(elapsed * 1000),
+                           us: Int(elapsed * 1_000_000)))
         }
         recordShowTelemetry(cacheType: cacheType, ok: true)
         promoteToMemoryCache(image, cacheType: cacheType)
