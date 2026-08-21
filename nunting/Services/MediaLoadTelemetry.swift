@@ -170,10 +170,9 @@ nonisolated struct MediaLoadBatch: Encodable, Sendable {
 /// 슬롯 폭 4→8 실험을 판정할 때 **어느 세션이 어느 빌드였는지 알 방법이 없어** 귀속이
 /// 막혔다(계측은 정상이었는데 결론을 못 냈다). 설정을 배치에 실어 그 구멍을 닫는다.
 nonisolated enum MediaRunConfig {
-    static func label(slots: Int, build: String, features: String) -> String {
+    static func label(slots: Int, build: String) -> String {
         var parts = ["slots=\(slots)"]
         if !build.isEmpty { parts.append("build=\(build)") }
-        if !features.isEmpty { parts.append(features) }
         return parts.joined(separator: " ")
     }
 
@@ -186,10 +185,6 @@ nonisolated enum MediaRunConfig {
         // 초 단위 epoch 의 하위 6자리 — 표에서 눈으로 구분하기 좋은 길이.
         return String(Int(executableModified.timeIntervalSince1970) % 1_000_000)
     }
-
-    /// 현재 켜져 있는 완화책의 설정. 값이 바뀌면 라벨도 바뀌므로, 상한을 조정한
-    /// 세션과 원래 세션이 표에서 섞이지 않는다.
-    static var features: String { DecodedImageRetainer.shared.configLabel }
 }
 
 /// 미디어 로드 이벤트를 모아 서버로 배치 전송한다.
@@ -228,8 +223,7 @@ final class MediaLoadTelemetry {
         } ?? nil
         return MediaRunConfig.label(
             slots: SDWebImageDownloader.shared.config.maxConcurrentDownloads,
-            build: MediaRunConfig.buildStamp(executableModified: modified),
-            features: MediaRunConfig.features)
+            build: MediaRunConfig.buildStamp(executableModified: modified))
     }
 
     /// 이벤트 한 건 적재. 링크 종류는 여기서 찍는다 — 호출부(다운로더 스레드/메인)마다

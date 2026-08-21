@@ -41,10 +41,6 @@ nonisolated final class SignpostWebPCoder: SDImageWebPCoder {
         let image = super.decodedImage(with: data, options: options)
         let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
         let pixels = Self.pixelCount(of: image)
-        // 형제 토큰(프리페치 ↔ 표시)이 SD 의 weak `imageMap` 에서 이 결과를 찾을 수
-        // 있게 잠깐 붙잡는다 — 안 그러면 같은 바이트를 통째로 다시 디코드한다
-        // (`DecodedImageRetainer` 주석에 계측 근거).
-        if let image { DecodedImageRetainer.shared.hold(image, bytes: pixels * 4) }
         let event = MediaLoadEventDTO.decode(kind: "webpStatic", ms: ms,
                                              pixels: pixels,
                                              bytes: data?.count ?? 0)
@@ -101,9 +97,6 @@ nonisolated final class SignpostIOCoder: SDImageIOCoder {
         let image = super.decodedImage(with: data, options: options)
         let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
         let pixels = SignpostWebPCoder.pixelCount(of: image)
-        // WebP 경로와 같은 이유(SD 의 weak imageMap). JPEG 은 장당 비용이 작지만
-        // 중복 자체는 같은 구조에서 나오므로 같이 막는다.
-        if let image { DecodedImageRetainer.shared.hold(image, bytes: pixels * 4) }
         let event = MediaLoadEventDTO.decode(kind: "ioStatic", ms: ms,
                                              pixels: pixels,
                                              bytes: data?.count ?? 0)
