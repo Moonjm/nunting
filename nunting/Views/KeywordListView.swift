@@ -28,6 +28,11 @@ struct KeywordListView: View {
     /// 삭제 confirm 대기 중인 키워드들. 비어있지 않으면 확인 alert 표시.
     /// 확정 전까지 실제 삭제는 하지 않는다(취소 시 복원 로직 불필요).
     @State private var pendingDeletion: [KeywordSub] = []
+    #if DEBUG
+    /// 측정 도구 섹션의 결과 문구("12.3MB 비움"). 눌렀는데 아무 반응이 없으면
+    /// 정말 비워졌는지 알 수 없어서 결과를 화면에 남긴다.
+    @State private var cacheResetMessage: String?
+    #endif
 
     /// 키워드별 토글 요청 직렬화 + "최신 요청만 복원" 판정. 동작 근거는
     /// `KeywordToggleSequencer` 문서 참조.
@@ -192,10 +197,43 @@ struct KeywordListView: View {
             } header: {
                 Text(keywords.isEmpty ? "등록된 키워드" : "등록된 키워드 \(keywords.count)")
             }
+
+            #if DEBUG
+            measurementToolsSection
+            #endif
         }
         .listStyle(.insetGrouped)
         .scrollDismissesKeyboard(.interactively)
     }
+
+    #if DEBUG
+    /// 이미지 파이프라인 A/B 측정용. 같은 글을 **콜드** 로 다시 열 수 있어야 조건 비교가
+    /// 성립한다 — 슬롯 4↔8 비교가 두 번 무효였던 이유가 각각 "증상 없는 워크로드" 와
+    /// "디스크 캐시가 따뜻해 다운로드 0건" 이었다(`ImageCacheReset` 주석 참조).
+    /// DEBUG 전용: 일반 사용 동선에 노출할 성격이 아니다.
+    private var measurementToolsSection: some View {
+        Section {
+            Button {
+                Task {
+                    let freed = await ImageCacheReset.shared.run()
+                    cacheResetMessage = ByteCountFormatter.string(
+                        fromByteCount: Int64(freed), countStyle: .file) + " 비움"
+                }
+            } label: {
+                Label("이미지 캐시 비우기", systemImage: "trash")
+            }
+            if let cacheResetMessage {
+                Text(cacheResetMessage)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("측정 도구")
+        } footer: {
+            Text("메모리+디스크 이미지 캐시를 비웁니다. 같은 글을 콜드 상태로 다시 열어 로딩 계측을 비교할 때 사용.")
+        }
+    }
+    #endif
 
     // MARK: - 파생값
 
