@@ -242,6 +242,26 @@ final class MediaPipelineEventTests: XCTestCase {
         XCTAssertEqual(e?.queued, 2500, "요청 생성 → 실제 전송 시작까지 2.5s 대기")
     }
 
+    /// 5초를 기다린 요청이 **프리페치인지 표시용인지** 갈라야 한다. 다운로드 자체가
+    /// 52ms, 디코드가 10ms 인데 대기가 p90 5초라면, 큐에 줄 서 있는 게 무엇인지가
+    /// 유일하게 남은 미지수다. 프리페치는 `.lowPriority` 로 나가므로 그걸로 가른다.
+    func testNetworkEventMarksPrefetchRequests() {
+        let t0 = Date(timeIntervalSince1970: 1_753_000_000)
+        let phases = MediaLoadNetworkPhases(
+            fetchStart: t0, domainLookupStart: nil, domainLookupEnd: nil,
+            connectStart: nil, connectEnd: nil,
+            secureConnectionStart: nil, secureConnectionEnd: nil,
+            requestStart: t0, responseStart: t0.addingTimeInterval(0.02),
+            responseEnd: t0.addingTimeInterval(0.05),
+            reusedConnection: true, networkProtocol: "h2", statusCode: 200, bytes: 100)
+
+        let prefetch = MediaLoadEventDTO.network(host: "h", phases: phases, prefetch: true, ts: 1)
+        let display = MediaLoadEventDTO.network(host: "h", phases: phases, prefetch: false, ts: 1)
+
+        XCTAssertEqual(prefetch?.pf, true)
+        XCTAssertNil(display?.pf, "표시 요청이 기본값이라 생략된다(배치 크기)")
+    }
+
     /// 대기 기산점을 모르면(레거시 호출) 필드를 비운다 — 0 을 넣으면
     /// "대기 없음" 과 구분이 안 된다.
     func testQueueWaitOmittedWhenEnqueueTimeUnknown() {

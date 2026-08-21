@@ -915,3 +915,36 @@ func TestAdminMetricsShowsMediaRunConfig(t *testing.T) {
 		t.Errorf("행 요약에 cfg 가 없음: %v", sum)
 	}
 }
+
+// 대기의 정체를 가르는 축: 프리페치 vs 표시. 다운로드 52ms·디코드 10ms 인데 대기가
+// p90 5초라면 큐에 무엇이 줄 서 있는지가 유일한 미지수라, 이 분해가 표에 보여야 한다.
+func TestAdminMetricsSplitsPrefetchAndDisplayWait(t *testing.T) {
+	t.Setenv("NUNTING_ADMIN_KEY", "s3cret")
+	store := dbtest.New(t)
+	defer store.Close()
+	srv := httptest.NewServer(NewRouter(store))
+	defer srv.Close()
+
+	if err := store.UpsertUser(t.Context(), "nnt_x"); err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+	media := `{"cfg":"slots=4","events":[` +
+		`{"t":"net","ts":1753000000,"ms":52,"host":"h","link":"wifi","bytes":1000,"queued":4900,"pf":true},` +
+		`{"t":"net","ts":1753000001,"ms":52,"host":"h","link":"wifi","bytes":1000,"queued":4800,"pf":true},` +
+		`{"t":"net","ts":1753000002,"ms":52,"host":"h","link":"wifi","bytes":1000,"queued":120}` +
+		`]}`
+	if err := store.InsertMetricPayload(t.Context(), "nnt_x", "media", media); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	_, body := do(t, "GET", srv.URL+"/admin/metrics?key=s3cret", "", "")
+	for _, want := range []string{
+		"프리페치 2건", // 큐를 채운 쪽의 건수
+		"4.9s",    // 프리페치 대기 p90
+		"120ms",   // 표시 대기 p90 — 둘이 갈려야 의미가 있다
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("대기 분해 누락: %q", want)
+		}
+	}
+}

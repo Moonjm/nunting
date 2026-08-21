@@ -601,6 +601,7 @@ type mediaEventJSON struct {
 	Status int    `json:"status"`
 	Queued int    `json:"queued"` // net: 다운로더 슬롯 대기(ms)
 	Px     int    `json:"px"`     // decode: 출력 픽셀 수
+	PF     bool   `json:"pf"`     // net: 프리페치 요청(표시 요청이면 없음)
 	OK     *bool  `json:"ok"`     // 실패일 때만 실린다(false)
 }
 
@@ -615,21 +616,23 @@ type mediaPayloadJSON struct {
 // 퍼센타일을 내려면 원본 값이 필요해서 슬라이스로 들고 있는다 — 1인용 앱의
 // 하루치(수천 건) 기준으로 메모리는 문제가 되지 않는다.
 type mediaAgg struct {
-	Events    int
-	Fails     int
-	NetMs     []int
-	ShowMs    []int
-	VideoMs   []int
-	Bytes     int64
-	Src       map[string]int   // show 캐시 출처 분포
-	VideoKind map[string]int   // mp4/webm 건수
-	LinkMs    map[string][]int // 링크별 net 소요
-	LinkBytes map[string]int64
-	HostMs    map[string][]int // 호스트별 net 소요
-	QueuedMs  []int            // net 슬롯 대기 — 디코드가 슬롯을 붙잡는지 보는 축
-	DecodeMs  []int
-	DecodePx  []int
-	DecodeBy  map[string]int // 코더별 디코드 건수
+	Events     int
+	Fails      int
+	NetMs      []int
+	ShowMs     []int
+	VideoMs    []int
+	Bytes      int64
+	Src        map[string]int   // show 캐시 출처 분포
+	VideoKind  map[string]int   // mp4/webm 건수
+	LinkMs     map[string][]int // 링크별 net 소요
+	LinkBytes  map[string]int64
+	HostMs     map[string][]int // 호스트별 net 소요
+	QueuedMs   []int            // net 슬롯 대기 — 디코드가 슬롯을 붙잡는지 보는 축
+	QueuedPF   []int            // 그중 프리페치 요청의 대기
+	QueuedShow []int            // 그중 표시 요청의 대기
+	DecodeMs   []int
+	DecodePx   []int
+	DecodeBy   map[string]int // 코더별 디코드 건수
 }
 
 func (a *mediaAgg) add(e mediaEventJSON) {
@@ -657,6 +660,13 @@ func (a *mediaAgg) add(e mediaEventJSON) {
 		}
 		if e.Queued > 0 {
 			a.QueuedMs = append(a.QueuedMs, e.Queued)
+		}
+		// 대기의 정체를 가르는 축. 프리페치가 큐를 채우고 있으면 표시 요청이 그 뒤에
+		// 줄 서는 구조이고, 그건 슬롯 수가 아니라 순서/양의 문제다.
+		if e.PF {
+			a.QueuedPF = append(a.QueuedPF, e.Queued)
+		} else {
+			a.QueuedShow = append(a.QueuedShow, e.Queued)
 		}
 	case "decode":
 		a.DecodeMs = append(a.DecodeMs, e.Ms)
@@ -733,6 +743,14 @@ func (a *mediaAgg) view() mediaView {
 		if len(a.QueuedMs) > 0 {
 			note += " · 대기 p50 " + msLabel(percentile(a.QueuedMs, 50)) +
 				"/p90 " + msLabel(percentile(a.QueuedMs, 90))
+		}
+		if len(a.QueuedPF) > 0 {
+			note += " · 프리페치 " + strconv.Itoa(len(a.QueuedPF)) + "건 대기 p90 " +
+				msLabel(percentile(a.QueuedPF, 90))
+		}
+		if len(a.QueuedShow) > 0 {
+			note += " · 표시 " + strconv.Itoa(len(a.QueuedShow)) + "건 대기 p90 " +
+				msLabel(percentile(a.QueuedShow, 90))
 		}
 		v.Layers = append(v.Layers, mediaLayerRow{
 			Layer: "net (다운로드)", Count: len(a.NetMs),

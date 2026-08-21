@@ -101,8 +101,13 @@ nonisolated class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOpera
             networkProtocol: tx.networkProtocolName,
             statusCode: (tx.response as? HTTPURLResponse)?.statusCode,
             bytes: Int(tx.countOfResponseBodyBytesReceived))
+        // 프리페치는 `.lowPriority` 로 나간다(`BodyImagePrefetcher` — 표시 로드가
+        // 슬롯을 이기게 하려는 기존 의도). 대기의 정체를 가르는 축이 이것뿐이라
+        // 이벤트에 실어 보낸다: 5초 기다린 요청이 프리페치인지 표시용인지.
+        let isPrefetch = options.contains(.lowPriority)
         guard let event = MediaLoadEventDTO.network(host: host, phases: phases,
-                                                    enqueuedAt: enqueuedAt) else { return }
+                                                    enqueuedAt: enqueuedAt,
+                                                    prefetch: isPrefetch) else { return }
         // 이 콜백은 다운로더 세션 큐. 버퍼는 MainActor 소속이라 Sendable 인 DTO 만 넘긴다.
         Task { @MainActor in MediaLoadTelemetry.shared.record(event) }
     }
