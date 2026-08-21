@@ -170,10 +170,26 @@ nonisolated struct MediaLoadBatch: Encodable, Sendable {
 /// 슬롯 폭 4→8 실험을 판정할 때 **어느 세션이 어느 빌드였는지 알 방법이 없어** 귀속이
 /// 막혔다(계측은 정상이었는데 결론을 못 냈다). 설정을 배치에 실어 그 구멍을 닫는다.
 nonisolated enum MediaRunConfig {
-    static func label(slots: Int, build: String) -> String {
-        let s = "slots=\(slots)"
-        return build.isEmpty ? s : s + " build=\(build)"
+    static func label(slots: Int, build: String, features: String) -> String {
+        var parts = ["slots=\(slots)"]
+        if !build.isEmpty { parts.append("build=\(build)") }
+        if !features.isEmpty { parts.append(features) }
+        return parts.joined(separator: " ")
     }
+
+    /// 빌드 식별자. **`CFBundleVersion` 은 쓰지 않는다** — 이 프로젝트에선 항상 "1"
+    /// 이라 재빌드해도 그대로여서, 정작 A/B 판정에서 두 빌드를 구분하지 못했다
+    /// (중복 디코드 수정을 판정하려다 여기서 막혔다). 실행 파일의 수정 시각은
+    /// 빌드할 때마다 바뀌므로 사이드로드 개발 빌드에서도 세션을 갈라준다.
+    static func buildStamp(executableModified: Date?) -> String {
+        guard let executableModified else { return "" }
+        // 초 단위 epoch 의 하위 6자리 — 표에서 눈으로 구분하기 좋은 길이.
+        return String(Int(executableModified.timeIntervalSince1970) % 1_000_000)
+    }
+
+    /// 현재 켜져 있는 완화책의 설정. 값이 바뀌면 라벨도 바뀌므로, 상한을 조정한
+    /// 세션과 원래 세션이 표에서 섞이지 않는다.
+    static var features: String { DecodedImageRetainer.shared.configLabel }
 }
 
 /// 미디어 로드 이벤트를 모아 서버로 배치 전송한다.
@@ -207,9 +223,13 @@ final class MediaLoadTelemetry {
 
     /// 지금 돌고 있는 설정 — 실험의 주 변수인 슬롯 폭과 빌드 번호.
     nonisolated private static func currentConfigLabel() -> String {
-        MediaRunConfig.label(
+        let modified = Bundle.main.executableURL.flatMap {
+            try? FileManager.default.attributesOfItem(atPath: $0.path)[.modificationDate] as? Date
+        } ?? nil
+        return MediaRunConfig.label(
             slots: SDWebImageDownloader.shared.config.maxConcurrentDownloads,
-            build: Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "")
+            build: MediaRunConfig.buildStamp(executableModified: modified),
+            features: MediaRunConfig.features)
     }
 
     /// 이벤트 한 건 적재. 링크 종류는 여기서 찍는다 — 호출부(다운로더 스레드/메인)마다

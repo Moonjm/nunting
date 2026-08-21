@@ -75,4 +75,10 @@ nonisolated final class DecodedImageRetainer: Sendable {
 
     /// 테스트용 — 지금 붙잡고 있는 장수.
     var heldCount: Int { state.withLock { $0.count } }
+
+    /// 계측 배치에 실리는 설정 라벨. 상한을 조정한 세션과 원래 세션이 표에서
+    /// 섞이지 않게 값 자체를 라벨에 넣는다("retain=장수/MB/초").
+    var configLabel: String {
+        "retain=\(maxCount)/\(maxBytes / (1024 * 1024))/\(Int(window))"
+    }
 }

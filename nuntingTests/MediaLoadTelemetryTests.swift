@@ -263,12 +263,30 @@ final class MediaRunConfigTests: XCTestCase {
 
     /// 슬롯 폭 실험(4→8)의 결과를 판정할 때, 어느 세션이 어느 빌드였는지 알 방법이
     /// 없어 귀속이 막혔다. 배치마다 설정을 같이 실어 그 구멍을 닫는다.
-    func testLabelCarriesSlotsAndBuild() {
-        XCTAssertEqual(MediaRunConfig.label(slots: 4, build: "137"), "slots=4 build=137")
+    func testLabelCarriesSlotsBuildAndFeatures() {
+        XCTAssertEqual(
+            MediaRunConfig.label(slots: 4, build: "137", features: "retain=4/80/1"),
+            "slots=4 build=137 retain=4/80/1")
     }
 
-    /// 빌드 번호를 못 읽어도 슬롯은 남아야 한다 — 설정 축이 실험의 주 변수다.
+    /// 빌드 스탬프를 못 읽어도 나머지는 남아야 한다.
     func testLabelSurvivesMissingBuild() {
-        XCTAssertEqual(MediaRunConfig.label(slots: 8, build: ""), "slots=8")
+        XCTAssertEqual(MediaRunConfig.label(slots: 8, build: "", features: ""), "slots=8")
+    }
+
+    /// **CFBundleVersion 은 못 쓴다** — 이 프로젝트에선 항상 "1" 이라 재빌드해도
+    /// 그대로다(실제로 중복 디코드 수정을 판정하려다 여기서 막혔다). 실행 파일의
+    /// 수정 시각을 쓰면 빌드마다 값이 바뀐다.
+    func testBuildStampChangesWithExecutableTimestamp() {
+        let a = MediaRunConfig.buildStamp(executableModified: Date(timeIntervalSince1970: 1_753_000_000))
+        let b = MediaRunConfig.buildStamp(executableModified: Date(timeIntervalSince1970: 1_753_000_060))
+
+        XCTAssertNotEqual(a, b, "빌드 시각이 다르면 스탬프도 달라야 한다")
+        XCTAssertFalse(a.isEmpty)
+    }
+
+    /// 읽을 수 없으면 빈 문자열 — 라벨에서 통째로 빠진다.
+    func testBuildStampEmptyWhenUnknown() {
+        XCTAssertEqual(MediaRunConfig.buildStamp(executableModified: nil), "")
     }
 }
