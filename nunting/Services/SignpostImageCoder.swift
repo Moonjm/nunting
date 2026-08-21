@@ -54,8 +54,20 @@ nonisolated final class SignpostWebPCoder: SDImageWebPCoder {
         // `ioStatic` 으로 기록돼 JPEG/PNG 와 섞이는데, 정작 재려는 건 "WebP 를 ImageIO 로
         // 돌렸을 때" 의 비용이라 표에서 갈려야 한다 — 여기서 `webpViaIO` 로 따로 남긴다.
         if let data, !WebPFormat.isAnimated(data) {
+            // **지연 디코드를 끈다.** 정적 코더의 기본값은 lazy(YES)이고
+            // (`SDImageCoder.h:73`), 그러면 비용이 사라지는 게 아니라 픽셀을 처음
+            // 만지는 시점 — 즉 CoreAnimation 이 레이어를 그리는 **메인 스레드** — 으로
+            // 옮겨간다. 헤더가 그 대가를 명시한다("consumer may access bitmap buffer
+            // when running on main queue, like CoreAnimation layer render image").
+            //
+            // 실제로 이 경로를 켠 첫 세션에서 디코드 합계가 5,948ms → 19ms 로 찍혔는데
+            // 본문 show p90 은 5,785 → 5,208ms(10%)에 그쳤다. 비용이 우리 계측 밖으로
+            // 나간 것이지 없어진 게 아니라는 뜻이다. 끄면 진짜 비용이 여기 잡히고,
+            // 메인 스레드로 새는 것도 막는다.
+            var eager = options ?? [:]
+            eager[.decodeUseLazyDecoding] = false
             let startedAt = Date()
-            if let image = SDImageIOCoder.shared.decodedImage(with: data, options: options) {
+            if let image = SDImageIOCoder.shared.decodedImage(with: data, options: eager) {
                 let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
                 let event = MediaLoadEventDTO.decode(kind: "webpViaIO", ms: ms,
                                                      pixels: Self.pixelCount(of: image),
@@ -63,6 +75,17 @@ nonisolated final class SignpostWebPCoder: SDImageWebPCoder {
                 Task { @MainActor in MediaLoadTelemetry.shared.record(event) }
                 return image
             }
+        }
+
+        // 애니메로 판정된 WebP 는 여기(libwebp)로 온다. 판정 결과를 데이터에 남긴다 —
+        // 파서 라벨은 확장자로만 세서 애니메 WebP 가 정적 WebP 와 `webp=` 안에 섞여
+        // 있고, 그래서 "움짤 글을 찾아 열어본다" 는 확인 방법이 통하지 않는다.
+        // 평소처럼 쓰다 애니메를 만나면 이 이벤트가 찍히고, 그게 libwebp 로 갔다는
+        // 사실까지 같이 확인된다.
+        if let data, WebPFormat.isAnimated(data) {
+            let marker = MediaLoadEventDTO.decode(kind: "webpAnimated", ms: 0,
+                                                  pixels: 0, bytes: data.count)
+            Task { @MainActor in MediaLoadTelemetry.shared.record(marker) }
         }
 
         let startedAt = Date()
