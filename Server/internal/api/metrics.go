@@ -606,6 +606,9 @@ type mediaEventJSON struct {
 
 type mediaPayloadJSON struct {
 	Events []mediaEventJSON `json:"events"`
+	// Cfg 이 배치가 나온 실행 설정("slots=4 build=137"). A/B 판정의 귀속 축이라
+	// 행 요약 맨 앞에 세운다 — 없으면 어느 빌드의 숫자인지 사후에 못 가른다.
+	Cfg string `json:"cfg"`
 }
 
 // mediaAgg 는 여러 배치에 걸친 이벤트를 계층·링크·호스트별로 누적한다.
@@ -805,6 +808,9 @@ func summarizeMedia(payload string, agg *mediaAgg) string {
 	}
 	batchNet := agg.NetMs[len(before.NetMs):]
 	s := "media " + strconv.Itoa(len(p.Events)) + "건"
+	if p.Cfg != "" {
+		s = "[" + p.Cfg + "] " + s
+	}
 	if len(batchNet) > 0 {
 		s += " · net " + strconv.Itoa(len(batchNet)) + "건 p50 " + msLabel(percentile(batchNet, 50))
 	}

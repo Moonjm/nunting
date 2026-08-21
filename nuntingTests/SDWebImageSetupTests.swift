@@ -19,15 +19,28 @@ final class SDWebImageSetupTests: XCTestCase {
         XCTAssertTrue(manager.coders?.last is SignpostWebPCoder)
     }
 
-    /// 다운로드 슬롯 폭. SDWebImage 는 디코드를 **다운로드 오퍼레이션 안에서** 돌리고
-    /// `done` 은 그 뒤 barrier 라(SDWebImageDownloaderOperation.m:363-425) 슬롯은
-    /// 다운로드가 아니라 다운로드+디코드 동안 잡혀 있다. 기기 계측(2026-08-21)에서
-    /// 다운로드가 19~37ms 로 끝난 etoland 배치에서도 슬롯 대기가 1.2~1.5s 쌓였다 —
-    /// 슬롯을 붙잡은 건 앞 이미지의 디코드(webpStatic p50 82ms/max 426ms)다.
-    /// 값이 조용히 되돌아가면 그 대기가 그대로 돌아오므로 테스트로 못 박는다.
-    func testConfigureWidensDownloadPipelineForDecodeBoundSlots() {
+    /// 다운로드 슬롯 폭 4. 8 로 넓히는 실험을 했고 **반증됐다** — 기기 계측에서
+    /// 대기 분포가 그대로였고(>100ms 14% 동일, >500ms 8% 동일) 메모리 피크만
+    /// 433MB → 577MB 로 올랐다. 폭이 병목이면 2배에서 대기가 내려갔어야 한다.
+    /// 근거는 `SDWebImageSetup` 주석에 숫자로 남아 있다. 값이 조용히 다시
+    /// 올라가지 않게 못 박는다.
+    func testConfigureKeepsDownloadSlotsAtMeasuredWidth() {
         SDWebImageSetup.configure()
 
-        XCTAssertEqual(SDWebImageDownloader.shared.config.maxConcurrentDownloads, 8)
+        XCTAssertEqual(SDWebImageDownloader.shared.config.maxConcurrentDownloads, 4)
+    }
+
+    /// JPEG/PNG 디코드도 계측돼야 한다. WebP 만 재던 동안 디코드 이벤트가 net 이벤트의
+    /// 1/5 밖에 안 잡혀(94 vs 495) "디코드 비용은 작다" 는 판단의 근거가 반쪽이었다.
+    func testConfigureRegistersSingleSignpostIOCoderAtHighPriority() {
+        let manager = SDImageCodersManager.shared
+        let originalCoders = manager.coders ?? []
+        manager.coders = originalCoders.filter { !($0 is SignpostIOCoder) }
+        defer { manager.coders = originalCoders }
+
+        SDWebImageSetup.configure()
+        SDWebImageSetup.configure()
+
+        XCTAssertEqual((manager.coders ?? []).filter { $0 is SignpostIOCoder }.count, 1)
     }
 }

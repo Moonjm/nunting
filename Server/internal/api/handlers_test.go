@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -879,5 +880,38 @@ func TestAdminMetricsSplitsMediaPipeline(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("pipeline split missing %q", want)
 		}
+	}
+}
+
+// 배치의 실행 설정(cfg)이 행 요약에 보여야 한다 — 어느 빌드/설정에서 나온 숫자인지
+// 못 가르면 A/B 판정 자체가 불가능하다(슬롯 4→8 실험에서 실제로 막혔던 지점).
+func TestAdminMetricsShowsMediaRunConfig(t *testing.T) {
+	t.Setenv("NUNTING_ADMIN_KEY", "s3cret")
+	store := dbtest.New(t)
+	defer store.Close()
+	srv := httptest.NewServer(NewRouter(store))
+	defer srv.Close()
+
+	if err := store.UpsertUser(t.Context(), "nnt_x"); err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+	media := `{"cfg":"slots=8 build=137","events":[` +
+		`{"t":"net","ts":1753000000,"ms":60,"host":"h","link":"wifi","bytes":1000,"queued":10}` +
+		`]}`
+	if err := store.InsertMetricPayload(t.Context(), "nnt_x", "media", media); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	_, body := do(t, "GET", srv.URL+"/admin/metrics?key=s3cret", "", "")
+	// 요약 칸(td class="sum")에 설정이 실려야 한다 — raw JSON 에만 있으면 표에서 안 보인다.
+	sum := regexp.MustCompile(`<td class="sum">([^<]*)</td>`).FindAllStringSubmatch(body, -1)
+	found := false
+	for _, m := range sum {
+		if strings.Contains(m[1], "slots=8 build=137") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("행 요약에 cfg 가 없음: %v", sum)
 	}
 }

@@ -230,6 +230,25 @@ final class AlertSubscriptionServiceTests: XCTestCase {
         XCTAssertTrue(body.contains(#""t":"video""#), "body: \(body)")
         XCTAssertTrue(body.contains(#""kind":"webm""#), "body: \(body)")
     }
+
+    /// 배치에는 실행 설정이 같이 실린다 — 이게 없으면 "이 숫자가 어느 빌드/설정에서
+    /// 나왔나" 를 사후에 못 가른다(슬롯 4→8 실험에서 실제로 막혔던 지점).
+    func testReportMediaLoadsCarriesRunConfig() async throws {
+        let stub = StubHTTPRequester()
+        await stub.setNext(status: 204, body: "")
+        let service = AlertSubscriptionService(
+            baseURL: URL(string: "http://example.com")!,
+            requester: stub,
+            uuidStore: InMemoryUUIDStore(value: "nnt_test")
+        )
+
+        try await service.reportMediaLoads(
+            [MediaLoadEventDTO.show(host: "h", ms: 1, src: "mem", ctx: "body", ok: true, ts: 1)],
+            cfg: "slots=4 build=137")
+
+        let body = String(data: await stub.lastRequest()?.httpBody ?? Data(), encoding: .utf8) ?? ""
+        XCTAssertTrue(body.contains(#""cfg":"slots=4 build=137""#), "body: \(body)")
+    }
 }
 
 // MARK: - Test stubs

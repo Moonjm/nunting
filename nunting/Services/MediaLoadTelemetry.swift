@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import SDWebImage
 import os
 
 /// 서버 `/me/metrics?kind=media` 로 보내는 미디어 로드 이벤트 한 건.
@@ -158,6 +159,23 @@ nonisolated final class MediaLinkMonitor: Sendable {
     }
 }
 
+/// 서버로 나가는 배치 한 건. `cfg` 는 이 배치가 나온 실행 설정.
+nonisolated struct MediaLoadBatch: Encodable, Sendable {
+    let events: [MediaLoadEventDTO]
+    let cfg: String?
+}
+
+/// 배치에 같이 싣는 실행 설정 라벨.
+///
+/// 슬롯 폭 4→8 실험을 판정할 때 **어느 세션이 어느 빌드였는지 알 방법이 없어** 귀속이
+/// 막혔다(계측은 정상이었는데 결론을 못 냈다). 설정을 배치에 실어 그 구멍을 닫는다.
+nonisolated enum MediaRunConfig {
+    static func label(slots: Int, build: String) -> String {
+        let s = "slots=\(slots)"
+        return build.isEmpty ? s : s + " build=\(build)"
+    }
+}
+
 /// 미디어 로드 이벤트를 모아 서버로 배치 전송한다.
 ///
 /// `FootprintLogger` 와 같은 모양(버퍼 → 임계에서 flush → 백그라운드 진입 시 잔량 flush,
@@ -173,15 +191,25 @@ final class MediaLoadTelemetry {
     private var buffer: [MediaLoadEventDTO] = []
     private let flushThreshold: Int
     private let linkProvider: () -> String
+    private let configProvider: () -> String
     private let injectedFlush: (([MediaLoadEventDTO]) -> Void)?
     private let flushWindow = BackgroundFlushWindow()
 
     init(flushThreshold: Int = 60,
          linkProvider: @escaping () -> String = { MediaLinkMonitor.shared.link },
+         configProvider: @escaping () -> String = MediaLoadTelemetry.currentConfigLabel,
          onFlush: (([MediaLoadEventDTO]) -> Void)? = nil) {
         self.flushThreshold = flushThreshold
         self.linkProvider = linkProvider
+        self.configProvider = configProvider
         self.injectedFlush = onFlush
+    }
+
+    /// 지금 돌고 있는 설정 — 실험의 주 변수인 슬롯 폭과 빌드 번호.
+    nonisolated private static func currentConfigLabel() -> String {
+        MediaRunConfig.label(
+            slots: SDWebImageDownloader.shared.config.maxConcurrentDownloads,
+            build: Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "")
     }
 
     /// 이벤트 한 건 적재. 링크 종류는 여기서 찍는다 — 호출부(다운로더 스레드/메인)마다
@@ -213,11 +241,12 @@ final class MediaLoadTelemetry {
     /// 이유는 `FootprintLogger` 와 동일 — 백그라운드 진입 직후의 flush 는 감싸지 않으면
     /// 출발도 못 하고 증발한다.
     private func upload(_ batch: [MediaLoadEventDTO]) {
+        let cfg = configProvider()
         let ticket = flushWindow.enter()
         Task { @MainActor in
             defer { flushWindow.leave(ticket) }
             do {
-                try await AlertSubscriptionService.shared.reportMediaLoads(batch)
+                try await AlertSubscriptionService.shared.reportMediaLoads(batch, cfg: cfg)
             } catch {
                 NSLog("[MediaLoadTelemetry] flush failed: \(error.localizedDescription)")
             }

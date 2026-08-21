@@ -257,3 +257,18 @@ final class MediaPipelineEventTests: XCTestCase {
         XCTAssertNil(MediaLoadEventDTO.network(host: "h", phases: phases, ts: 1)?.queued)
     }
 }
+
+/// 배치에 실리는 실행 설정 라벨 — 어느 빌드/설정에서 나온 숫자인지 못 박는다.
+final class MediaRunConfigTests: XCTestCase {
+
+    /// 슬롯 폭 실험(4→8)의 결과를 판정할 때, 어느 세션이 어느 빌드였는지 알 방법이
+    /// 없어 귀속이 막혔다. 배치마다 설정을 같이 실어 그 구멍을 닫는다.
+    func testLabelCarriesSlotsAndBuild() {
+        XCTAssertEqual(MediaRunConfig.label(slots: 4, build: "137"), "slots=4 build=137")
+    }
+
+    /// 빌드 번호를 못 읽어도 슬롯은 남아야 한다 — 설정 축이 실험의 주 변수다.
+    func testLabelSurvivesMissingBuild() {
+        XCTAssertEqual(MediaRunConfig.label(slots: 8, build: ""), "slots=8")
+    }
+}

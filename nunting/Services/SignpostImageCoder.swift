@@ -75,3 +75,30 @@ nonisolated final class SignpostWebPCoder: SDImageWebPCoder {
         return frame
     }
 }
+
+/// `SDImageIOCoder`(JPEG/PNG/HEIC — ImageIO 경로)를 상속해 디코드 구간만 계측한다.
+///
+/// WebP 만 재던 동안 디코드 이벤트가 net 이벤트의 1/5 밖에 안 잡혔다(94 vs 495).
+/// 보드 이미지가 전부 WebP 인 건 aagag/inven 같은 일부이고 나머지는 JPEG 이라,
+/// "디코드는 싸다" 는 판단의 근거가 반쪽이었다 — 슬롯 폭 실험이 반증된 뒤 남은
+/// 후보(디코드가 CPU 로 포화)를 재려면 이쪽 숫자가 있어야 한다.
+///
+/// 등록 순서 주의: `SDImageCodersManager` 는 **나중에 등록된 코더를 먼저** 본다.
+/// iOS 14+ 의 ImageIO 는 WebP 도 디코드할 수 있어서, 이 코더를 WebP 코더보다
+/// 뒤에 등록하면 libwebp 경로를 가로챈다. `SDWebImageSetup` 은 이걸 먼저, WebP 를
+/// 나중에 등록한다(그 순서를 `SDWebImageSetupTests` 가 지킨다).
+nonisolated final class SignpostIOCoder: SDImageIOCoder {
+    override func decodedImage(with data: Data?, options: [SDImageCoderOption: Any]?) -> UIImage? {
+        let id = OSSignpostID(log: AppSignpost.image)
+        mxSignpost(.begin, log: AppSignpost.image, name: "ioStatic", signpostID: id)
+        defer { mxSignpost(.end, log: AppSignpost.image, name: "ioStatic", signpostID: id) }
+        let startedAt = Date()
+        let image = super.decodedImage(with: data, options: options)
+        let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
+        let event = MediaLoadEventDTO.decode(kind: "ioStatic", ms: ms,
+                                             pixels: SignpostWebPCoder.pixelCount(of: image),
+                                             bytes: data?.count ?? 0)
+        Task { @MainActor in MediaLoadTelemetry.shared.record(event) }
+        return image
+    }
+}

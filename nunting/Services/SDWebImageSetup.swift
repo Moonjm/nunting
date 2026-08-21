@@ -24,8 +24,15 @@ enum SDWebImageSetup {
         // SDWebImage docs recommend.
         // 시그포스트 래퍼를 등록 — 디코드 로직은 super 그대로, 앞뒤로 mxSignpost
         // 만 끼워 WebP 디코드 CPU 를 이름으로 측정한다(SignpostWebPCoder 참조).
+        // 등록 순서가 곧 우선순위다 — `SDImageCodersManager` 는 나중에 등록된 코더를
+        // 먼저 본다. ImageIO 코더를 **먼저**, libwebp 코더를 **나중에** 등록해야
+        // WebP 가 libwebp 로 간다(iOS 14+ ImageIO 도 WebP 를 읽을 수 있어서, 순서가
+        // 뒤집히면 libwebp 경로가 조용히 가로채인다).
         let coderManager = SDImageCodersManager.shared
-        coderManager.coders = (coderManager.coders ?? []).filter { !($0 is SignpostWebPCoder) }
+        coderManager.coders = (coderManager.coders ?? []).filter {
+            !($0 is SignpostWebPCoder) && !($0 is SignpostIOCoder)
+        }
+        coderManager.addCoder(SignpostIOCoder())
         coderManager.addCoder(SignpostWebPCoder())
 
         // Redirect http→https on the URLSession redirect callback. ATS
@@ -77,24 +84,18 @@ enum SDWebImageSetup {
         cache.config.maxDiskAge = 7 * 24 * 60 * 60
 
         let downloader = SDWebImageDownloader.shared
-        // 8 슬롯. 종전 4 였고 주석은 "핸드셰이크 경쟁 vs 큐 굶주림" 의 절충이라고
-        // 적혀 있었으나, 그 프레임 자체가 틀렸다 — **이 슬롯은 다운로드가 아니라
-        // 다운로드+디코드 동안 잡혀 있다**. SDWebImage 는 디코드를 다운로드
-        // 오퍼레이션 안(`coderQueue`)에서 돌리고 오퍼레이션을 끝내는 `done` 은 그
-        // 뒤 barrier 로 부른다(`SDWebImageDownloaderOperation.m:363-425`).
+        // 4 슬롯. 이 값은 다운로드가 아니라 **다운로드+디코드** 동안 잡혀 있다 —
+        // SDWebImage 는 디코드를 오퍼레이션 안(`coderQueue`)에서 돌리고 오퍼레이션을
+        // 끝내는 `done` 은 그 뒤 barrier 로 부른다(`SDWebImageDownloaderOperation.m:363-425`).
         //
-        // 기기 계측(2026-08-21, kind=media 신계측 433건)이 그 대가를 보여준다:
-        //   · 다운로드 자체는 빠르다 — p50 43ms / p90 263ms, 커넥션 재사용 82%.
-        //   · 그런데 **슬롯 대기 p90 325ms / 최악 1,552ms**. etoland 배치에서는
-        //     다운로드가 19~37ms 로 끝났는데도 대기가 1.2~1.5s 씩 쌓였다.
-        //   · 슬롯을 붙잡은 건 앞 이미지의 디코드다(webpStatic p50 82ms / max 426ms).
-        // 즉 대기의 원인은 회선도 서버도 아니고 폭이 4 인 파이프라인이다.
-        //
-        // 8 로 올리면 동시 디코드도 8 까지 늘어 메모리 피크가 커진다 — OOM 이력이
-        // 있는 앱이라 공짜가 아니다. 그래서 이 값은 footprint 타임라인(peak/avail)과
-        // media 의 `queued` 를 같이 보고 판정한다: 대기가 줄고 peak 이 한도(≈3.35GB)
-        // 대비 여유를 유지하면 유지, 피크가 튀면 6 으로 되돌린다.
-        downloader.config.maxConcurrentDownloads = 8
+        // **8 로 넓혀 봤고, 안 됐다**(2026-08-21 기기 계측, 사전에 정한 기준으로 판정):
+        //   슬롯 4: 대기 0ms 64% · >100ms 14% · >500ms 8% · 평균 136ms · peak 433MB
+        //   슬롯 8: 대기 0ms 58% · >100ms 14% · >500ms 8% · 평균 209ms · peak 577MB
+        // 대기 분포가 그대로고 메모리 피크만 +144MB 올랐다. 폭이 병목이었다면 2배로
+        // 늘렸을 때 대기 비율이 내려갔어야 한다 — 안 내려갔으므로 병목은 슬롯 수가
+        // 아니다(파이프라인이 그 아래 어딘가에서 이미 포화). 다시 넓히려는 사람은
+        // 이 숫자부터 반박할 것.
+        downloader.config.maxConcurrentDownloads = 4
         // 8s timeout per attempt to fast-fail stale keep-alive
         // connections (the iOS pool's -1005 / -1001 case after
         // backgrounding). SDWebImage's internal retry re-issues with
