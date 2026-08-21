@@ -603,6 +603,7 @@ type mediaEventJSON struct {
 	Px     int    `json:"px"`     // decode: 출력 픽셀 수
 	PF     bool   `json:"pf"`     // net: 프리페치 요청(표시 요청이면 없음)
 	Slot   int    `json:"slot"`   // net: 슬롯 획득 → 전송 시작
+	Post   int    `json:"post"`   // op: 전송 완료 → 오퍼레이션 종료
 	OK     *bool  `json:"ok"`     // 실패일 때만 실린다(false)
 }
 
@@ -633,6 +634,7 @@ type mediaAgg struct {
 	QueuedShow []int            // 그중 표시 요청의 대기
 	SlotMs     []int            // 슬롯을 잡고도 전송을 못 시작한 시간
 	OpMs       []int            // 오퍼레이션 수명 = 슬롯 점유 시간
+	OpPostMs   []int            // 그중 전송 완료 이후 구간
 	DecodeMs   []int
 	DecodePx   []int
 	DecodeBy   map[string]int // 코더별 디코드 건수
@@ -676,6 +678,9 @@ func (a *mediaAgg) add(e mediaEventJSON) {
 		}
 	case "op":
 		a.OpMs = append(a.OpMs, e.Ms)
+		if e.Post > 0 {
+			a.OpPostMs = append(a.OpPostMs, e.Post)
+		}
 	case "decode":
 		a.DecodeMs = append(a.DecodeMs, e.Ms)
 		if e.Px > 0 {
@@ -775,7 +780,7 @@ func (a *mediaAgg) view() mediaView {
 		v.Layers = append(v.Layers, mediaLayerRow{
 			Layer: "op (슬롯 점유)", Count: len(a.OpMs),
 			P50: msLabel(percentile(a.OpMs, 50)), P90: msLabel(percentile(a.OpMs, 90)),
-			Note: "다운로드+디코드 합과 비교",
+			Note: opNote(a),
 		})
 	}
 	if len(a.DecodeMs) > 0 {
@@ -831,6 +836,16 @@ func (a *mediaAgg) view() mediaView {
 		v.Hosts = v.Hosts[:5]
 	}
 	return v
+}
+
+// opNote 슬롯 점유의 내역. 전송 후 구간이 수명의 대부분이면 병목은 다운로드가 아니라
+// 그 뒤(디코드 + 완료 처리)에 있다.
+func opNote(a *mediaAgg) string {
+	if len(a.OpPostMs) == 0 {
+		return "다운로드+디코드 합과 비교"
+	}
+	return "전송후 p50 " + msLabel(percentile(a.OpPostMs, 50)) +
+		"/p90 " + msLabel(percentile(a.OpPostMs, 90))
 }
 
 // summarizeMedia 배치 한 건의 행 요약 + 누적. 행 요약은 "이 배치가 무슨 상황이었나"를

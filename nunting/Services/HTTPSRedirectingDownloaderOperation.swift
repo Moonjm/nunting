@@ -45,6 +45,11 @@ nonisolated class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOpera
     /// 그 뒤(전송 완료 후)의 메트릭 콜백뿐이라 순서가 보장된다.
     private var slotAcquiredAt: Date?
 
+    /// 전송이 끝난 시각(태스크 메트릭 수집 시점). 오퍼레이션 종료 시각과의 차이가
+    /// **전송 후 구간** — 디코드 + 완료 처리다. 실측에서 수명 1,763ms 중 실제 작업
+    /// (다운로드 37ms + 디코드 11ms)이 3% 뿐이라, 나머지가 이 구간 어디인지 갈라야 한다.
+    private var transferEndedAt: Date?
+
     override func start() {
         let startedAt = Date()
         slotAcquiredAt = startedAt
@@ -56,9 +61,12 @@ nonisolated class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOpera
         let existing = completionBlock
         let host = request?.url?.host ?? "?"
         let isPrefetch = options.contains(.lowPriority)
-        completionBlock = {
-            let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
+        completionBlock = { [weak self] in
+            let now = Date()
+            let ms = Int(now.timeIntervalSince(startedAt) * 1000)
+            let post = self?.transferEndedAt.map { Int(now.timeIntervalSince($0) * 1000) }
             let event = MediaLoadEventDTO.operation(host: host, ms: max(0, ms),
+                                                    postTransferMs: post.map { max(0, $0) },
                                                     prefetch: isPrefetch)
             Task { @MainActor in MediaLoadTelemetry.shared.record(event) }
             existing?()
@@ -118,6 +126,7 @@ nonisolated class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOpera
         didFinishCollecting metrics: URLSessionTaskMetrics
     ) {
         super.urlSession(session, task: task, didFinishCollecting: metrics)
+        transferEndedAt = Date()
 
         guard let tx = metrics.transactionMetrics.last,
               let host = tx.request.url?.host else { return }

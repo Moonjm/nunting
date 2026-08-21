@@ -219,6 +219,17 @@ final class MediaPipelineEventTests: XCTestCase {
         XCTAssertFalse(json.contains("\"pf\""), "표시 요청은 기본값이라 생략: \(json)")
     }
 
+    /// 수명을 **전송 후** 구간과 함께 싣는다. 실측에서 오퍼레이션이 슬롯을 1,763ms
+    /// 붙잡는데 실제 작업은 다운로드 37ms + 디코드 11ms 였다 — 수명의 97% 가 어디로
+    /// 가는지 모른다. 전송이 끝난 뒤 얼마나 더 붙잡혀 있는지가 그 구간이다.
+    func testOperationEventCarriesPostTransferTime() {
+        let e = MediaLoadEventDTO.operation(host: "h", ms: 1763, postTransferMs: 1700,
+                                            prefetch: false, ts: 1)
+
+        XCTAssertEqual(e.ms, 1763)
+        XCTAssertEqual(e.post, 1700)
+    }
+
     /// 디코드 이벤트는 소요 시간과 함께 **출력 픽셀 수**를 실어야 한다.
     /// 디코드 비용은 픽셀에 비례하므로, ms 만으로는 "무거운 이미지였다"와
     /// "큐가 막혔다"를 구분할 수 없다.

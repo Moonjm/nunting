@@ -37,6 +37,7 @@ nonisolated struct MediaLoadEventDTO: Encodable, Sendable {
     var px: Int?       // decode: 출력 픽셀 수 — 디코드 비용은 픽셀에 비례한다
     var pf: Bool?      // net: 프리페치 요청일 때만 true(표시 요청이 기본)
     var slot: Int?     // net: 슬롯 획득(오퍼레이션 start) → 전송 시작. 큐 대기와 분리
+    var post: Int?     // op: 전송 완료 → 오퍼레이션 종료(디코드 + 완료 처리)
     var ok: Bool?      // 실패일 때만 false 로 실린다
 }
 
@@ -97,9 +98,10 @@ nonisolated extension MediaLoadEventDTO {
     /// "슬롯을 못 잡아서" 인데, 앞선 오퍼레이션의 측정된 작업량(다운로드+디코드
     /// ≈90ms)으로는 실측 대기(p90 4.1초)가 설명되지 않는다. 전송이 끝난 **뒤에도**
     /// 슬롯이 붙잡혀 있는 시간을 여기서 잡는다.
-    static func operation(host: String, ms: Int, prefetch: Bool,
+    static func operation(host: String, ms: Int, postTransferMs: Int? = nil, prefetch: Bool,
                           ts: Int = Int(Date().timeIntervalSince1970)) -> MediaLoadEventDTO {
-        MediaLoadEventDTO(t: "op", ts: ts, ms: ms, host: host, pf: prefetch ? true : nil)
+        MediaLoadEventDTO(t: "op", ts: ts, ms: ms, host: host,
+                          pf: prefetch ? true : nil, post: postTransferMs)
     }
 
     /// 디코드 구간 이벤트. `pixels` 를 같이 실어야 "무거운 이미지였다"와
