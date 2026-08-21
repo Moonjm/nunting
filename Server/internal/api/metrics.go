@@ -602,6 +602,7 @@ type mediaEventJSON struct {
 	Queued int    `json:"queued"` // net: 다운로더 슬롯 대기(ms)
 	Px     int    `json:"px"`     // decode: 출력 픽셀 수
 	PF     bool   `json:"pf"`     // net: 프리페치 요청(표시 요청이면 없음)
+	Slot   int    `json:"slot"`   // net: 슬롯 획득 → 전송 시작
 	OK     *bool  `json:"ok"`     // 실패일 때만 실린다(false)
 }
 
@@ -630,6 +631,7 @@ type mediaAgg struct {
 	QueuedMs   []int            // net 슬롯 대기 — 디코드가 슬롯을 붙잡는지 보는 축
 	QueuedPF   []int            // 그중 프리페치 요청의 대기
 	QueuedShow []int            // 그중 표시 요청의 대기
+	SlotMs     []int            // 슬롯을 잡고도 전송을 못 시작한 시간
 	DecodeMs   []int
 	DecodePx   []int
 	DecodeBy   map[string]int // 코더별 디코드 건수
@@ -663,6 +665,9 @@ func (a *mediaAgg) add(e mediaEventJSON) {
 		}
 		// 대기의 정체를 가르는 축. 프리페치가 큐를 채우고 있으면 표시 요청이 그 뒤에
 		// 줄 서는 구조이고, 그건 슬롯 수가 아니라 순서/양의 문제다.
+		if e.Slot > 0 {
+			a.SlotMs = append(a.SlotMs, e.Slot)
+		}
 		if e.PF {
 			a.QueuedPF = append(a.QueuedPF, e.Queued)
 		} else {
@@ -747,6 +752,9 @@ func (a *mediaAgg) view() mediaView {
 		if len(a.QueuedPF) > 0 {
 			note += " · 프리페치 " + strconv.Itoa(len(a.QueuedPF)) + "건 대기 p90 " +
 				msLabel(percentile(a.QueuedPF, 90))
+		}
+		if len(a.SlotMs) > 0 {
+			note += " · 슬롯후 p90 " + msLabel(percentile(a.SlotMs, 90))
 		}
 		if len(a.QueuedShow) > 0 {
 			note += " · 표시 " + strconv.Itoa(len(a.QueuedShow)) + "건 대기 p90 " +

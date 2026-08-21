@@ -36,6 +36,7 @@ nonisolated struct MediaLoadEventDTO: Encodable, Sendable {
     var queued: Int?   // net: 요청 생성 → 실제 전송 시작(다운로더 슬롯 대기)
     var px: Int?       // decode: 출력 픽셀 수 — 디코드 비용은 픽셀에 비례한다
     var pf: Bool?      // net: 프리페치 요청일 때만 true(표시 요청이 기본)
+    var slot: Int?     // net: 슬롯 획득(오퍼레이션 start) → 전송 시작. 큐 대기와 분리
     var ok: Bool?      // 실패일 때만 false 로 실린다
 }
 
@@ -68,6 +69,7 @@ nonisolated extension MediaLoadEventDTO {
     static func network(host: String,
                         phases: MediaLoadNetworkPhases,
                         enqueuedAt: Date? = nil,
+                        startedAt: Date? = nil,
                         prefetch: Bool = false,
                         ts: Int = Int(Date().timeIntervalSince1970)) -> MediaLoadEventDTO? {
         guard let total = elapsedMs(phases.fetchStart, phases.responseEnd) else { return nil }
@@ -85,7 +87,8 @@ nonisolated extension MediaLoadEventDTO {
             reused: phases.reusedConnection,
             status: phases.statusCode,
             queued: elapsedMs(enqueuedAt, phases.fetchStart),
-            pf: prefetch ? true : nil)
+            pf: prefetch ? true : nil,
+            slot: elapsedMs(startedAt, phases.fetchStart))
     }
 
     /// 디코드 구간 이벤트. `pixels` 를 같이 실어야 "무거운 이미지였다"와

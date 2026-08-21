@@ -32,6 +32,24 @@ nonisolated class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOpera
     /// 불변이라 `@unchecked Sendable` 약속을 깨지 않는다.
     private let enqueuedAt = Date()
 
+    /// 슬롯을 실제로 잡은 시각(NSOperation 이 `start()` 된 순간). `enqueuedAt` 과의
+    /// 차이가 **큐에서 기다린 시간**, 이 시각과 `fetchStart` 의 차이가 **슬롯을 잡고도
+    /// 전송을 못 시작한 시간**이다.
+    ///
+    /// 왜 갈라야 하나: 표시 요청 32건이 슬롯 4개를 두고 도는데 한 장의 실제 작업은
+    /// 다운로드 50ms + 디코드 12ms 다. 그러면 0.5초면 끝나야 할 것이 실측 대기 p50
+    /// 2.2초 · p90 5.3초다. 오퍼레이션 하나가 슬롯을 600ms 넘게 붙잡고 있다는 뜻인데
+    /// 그 구간이 어디인지 지금 계측으로는 안 보인다.
+    ///
+    /// 락 없이 쓴다: `start()` 는 다운로더 큐가 오퍼레이션당 한 번만 부르고, 읽기는
+    /// 그 뒤(전송 완료 후)의 메트릭 콜백뿐이라 순서가 보장된다.
+    private var slotAcquiredAt: Date?
+
+    override func start() {
+        slotAcquiredAt = Date()
+        super.start()
+    }
+
     // Combination required for the ObjC runtime to actually install this
     // selector into the dispatch table when overriding an optional
     // protocol method (NSURLSessionTaskDelegate, declared on
@@ -107,6 +125,7 @@ nonisolated class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOpera
         let isPrefetch = options.contains(.lowPriority)
         guard let event = MediaLoadEventDTO.network(host: host, phases: phases,
                                                     enqueuedAt: enqueuedAt,
+                                                    startedAt: slotAcquiredAt,
                                                     prefetch: isPrefetch) else { return }
         // 이 콜백은 다운로더 세션 큐. 버퍼는 MainActor 소속이라 Sendable 인 DTO 만 넘긴다.
         Task { @MainActor in MediaLoadTelemetry.shared.record(event) }
