@@ -61,6 +61,21 @@ enum SDWebImageSetup {
         // 404 to the retry placeholder.
         SDWebImageDownloader.shared.config.operationClass = HTTPSRedirectingDownloaderOperation.self
 
+        // **디스크 캐시 쓰기 실험**(2026-08-22). 슬롯 2 에서도 bg 큐 지연이 p50 1초로
+        // 남았다 — 동시 요청이 2개뿐인데 빈 블록이 1초를 기다린다면, 스레드를 붙잡는
+        // 주체는 우리 다운로드 오퍼레이션이 **아니다**. 유력한 후보가
+        // `SDImageCache.ioQueue` 의 직렬 디스크 쓰기다(34장을 순차로 파일에 쓰는 동안
+        // 스레드 하나가 I/O 에 묶인다).
+        //
+        // 저장 위치를 메모리로만 돌려 디스크 쓰기를 없앤 채 같은 글을 재본다. 이 세션에서
+        // bg 지연과 본문 show p90 이 무너지면 범인 확정이다. 확인 뒤에는 되돌린다 —
+        // 디스크 캐시는 콜드 스타트 재방문을 살리는 기능이라 끄고 살 수는 없다.
+        SDWebImageManager.shared.optionsProcessor = SDWebImageOptionsProcessor { _, options, context in
+            var mutable = context ?? [:]
+            mutable[.storeCacheType] = Int(SDImageCacheType.memory.rawValue)
+            return SDWebImageOptionsResult(options: options, context: mutable)
+        }
+
         let cache = SDImageCache.shared
         // 400MB. 종전 200MB 는 "이전 `ImageCache` 예산에 맞춘" 값이었고 근거가
         // 측정이 아니었다(이 주석의 원문도 "측정하면 튜닝하겠다" 였다). 기기
@@ -103,23 +118,20 @@ enum SDWebImageSetup {
         cache.config.maxDiskAge = 7 * 24 * 60 * 60
 
         let downloader = SDWebImageDownloader.shared
-        // 2 슬롯 — **스레드 풀 압력을 낮추는 실험 조건이다.**
+        // 4 슬롯 — 세 지점을 다 재봤고 **폭으로는 총량이 안 준다.**
         //
-        // 계측이 병목을 백그라운드 스레드 풀 고갈로 특정했다(2026-08-22):
-        //   메인 큐        최대 80ms (임계 초과 0건) — 멀쩡하다
-        //   백그라운드 큐  35건 임계 초과, p50 1,503ms / **최대 4,520ms**
-        //   전송 25ms → [풀 대기 최대 4.5초] → 디코드 11ms → done
-        // 빈 블록 하나가 실행되는 데 4.5초 걸린다. 디코드 블록도 같은 풀을 쓰므로
-        // 오퍼레이션의 전송 후 구간(p90 2.4초)이 정확히 이 대기다.
+        //                슬롯 2      슬롯 4      슬롯 8
+        //   본문 show p90 5,049ms    5,096ms     5,120ms   ← 셋이 붙어 있다
+        //   대기 p50     2,447ms       821ms       ...
+        //   op 수명 p50      83ms      238ms       ...
+        //   bg 큐 최대    2,100ms    4,520ms       ...
         //
-        // CPU 포화는 아니다 — 동시 디코드는 최대 4개고 6코어 기기다. 스레드가 무언가에
-        // 막혀 풀이 고갈된 형태다(libdispatch 는 블록된 스레드를 보고 새 스레드를 만들지만
-        // 한도가 있다). 그래서 **동시 요청을 줄여 압력을 낮추는** 방향을 시험한다.
+        // 슬롯을 줄이면 풀 압력은 실제로 내려간다(bg 최대 4.5s→2.1s, op 238→83ms).
+        // 그런데 슬롯이 적어 대기가 3배로 늘어 정확히 상쇄된다 — 체감은 1%도 안 움직인다.
+        // 세 지점에서 같은 값이면 이건 우연이 아니라 **처리량 한계**다.
         //
-        // 4→8 은 이미 반증됐다(대기 그대로, 체감 악화). 반대 방향은 안 해봤다.
-        // 판정: 같은 글·콜드에서 bg 큐 지연과 전송 후 구간이 줄면 유지, 아니면 스레드를
-        // 붙잡는 게 다운로드 오퍼레이션 **바깥**에 있다는 뜻이라 그쪽을 본다.
-        downloader.config.maxConcurrentDownloads = 2
+        // 4 를 쓰는 이유는 그 셋 중 대기가 가장 낮아서다(821ms). 폭 실험은 여기서 닫는다.
+        downloader.config.maxConcurrentDownloads = 4
         // 8s timeout per attempt to fast-fail stale keep-alive
         // connections (the iOS pool's -1005 / -1001 case after
         // backgrounding). SDWebImage's internal retry re-issues with
