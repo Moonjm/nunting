@@ -102,13 +102,13 @@ nonisolated final class SignpostWebPCoder: SDImageWebPCoder {
         // **표시 경로의 진짜 디코드가 여기다.** SDWebImageSwiftUI 의 `AnimatedImage` 는
         // 컨텍스트에 `animatedImageClass = SDAnimatedImage` 를 심으므로
         // (AnimatedImage.swift:255) 본문/아이콘 이미지는 `decodedImage(with:)` 가 아니라
-        // 애니메 코더 경로로 열린다. 정적 WebP 도 마찬가지라 frame 0 디코드가 곧 그 이미지의
-        // 전체 디코드 비용이다. 프레임 0 만 재는 이유: 움짤은 100~300 프레임이라 전 프레임을
-        // 기록하면 배치가 프레임 이벤트로 뒤덮인다(그 비용은 signpost 쪽이 이미 본다).
-        guard index == 0 else { return super.animatedImageFrame(at: index) }
-        let startedAt = Date()
-        let frame = super.animatedImageFrame(at: index)
-        let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
+        // 애니메 코더 경로로 열린다. 정적 WebP 도 마찬가지라 frame 0 디코드가 곧 그
+        // 이미지의 전체 디코드 비용이다.
+        //
+        // 여기서 재던 프레임 0 벽시계 계측은 계측 정리 때 걷어냈다(움짤 100~300 프레임
+        // 이라 배치가 프레임 이벤트로 뒤덮인다). 남는 건 signpost 뿐이므로 **super 를
+        // 정확히 한 번만** 부른다 — 한때 결과를 버리고 두 번 불러 첫 프레임 디코드
+        // 비용을 두 배로 내고 있었다(Codex 리뷰 2026-08-22).
         return super.animatedImageFrame(at: index)
     }
 }
