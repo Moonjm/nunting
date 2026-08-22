@@ -203,102 +203,61 @@ final class MediaLoadTelemetryTests: XCTestCase {
     }
 }
 
-/// 파이프라인 구간 분해 이벤트 — 지연이 큐 대기냐 디코드냐를 가른다.
+/// 남은 진단 축 — 슬롯 대기(`queued`), 프리페치 여부(`pf`), 디코드 비용.
+/// 스레드 풀 고갈을 잡은 뒤 남은 병목이 슬롯 회전이라 이 셋은 계속 쓰인다.
 final class MediaPipelineEventTests: XCTestCase {
 
-    /// 오퍼레이션 수명 = 슬롯 점유 시간. 슬롯을 잡은 뒤 전송 시작까지는 6ms 인데
-    /// 대기가 p90 4.1초라면, 앞선 오퍼레이션들이 **측정된 작업(다운로드 78ms +
-    /// 디코드 12ms)을 끝낸 뒤에도** 슬롯을 붙잡고 있다는 뜻이다. 그 총량을 잰다.
-    func testOperationEventCarriesLifetime() throws {
-        let e = MediaLoadEventDTO.operation(host: "img.inven.co.kr", ms: 640, prefetch: false, ts: 1)
-        let json = String(data: try JSONEncoder().encode(e), encoding: .utf8) ?? ""
+    private let t0 = Date(timeIntervalSince1970: 1_753_000_000)
 
-        XCTAssertEqual(e.t, "op")
-        XCTAssertEqual(e.ms, 640)
-        XCTAssertEqual(e.host, "img.inven.co.kr")
-        XCTAssertFalse(json.contains("\"pf\""), "표시 요청은 기본값이라 생략: \(json)")
-    }
-
-    /// 수명을 **전송 후** 구간과 함께 싣는다. 실측에서 오퍼레이션이 슬롯을 1,763ms
-    /// 붙잡는데 실제 작업은 다운로드 37ms + 디코드 11ms 였다 — 수명의 97% 가 어디로
-    /// 가는지 모른다. 전송이 끝난 뒤 얼마나 더 붙잡혀 있는지가 그 구간이다.
-    func testOperationEventCarriesPostTransferTime() {
-        let e = MediaLoadEventDTO.operation(host: "h", ms: 1763, postTransferMs: 1700,
-                                            prefetch: false, ts: 1)
-
-        XCTAssertEqual(e.ms, 1763)
-        XCTAssertEqual(e.post, 1700)
-    }
-
-    /// 디코드 이벤트는 소요 시간과 함께 **출력 픽셀 수**를 실어야 한다.
-    /// 디코드 비용은 픽셀에 비례하므로, ms 만으로는 "무거운 이미지였다"와
-    /// "큐가 막혔다"를 구분할 수 없다.
-    func testDecodeEventCarriesPixelsAndBytes() throws {
-        let e = MediaLoadEventDTO.decode(kind: "webpStatic", ms: 180,
-                                         pixels: 3_110_400, bytes: 214_003, ts: 1)
-        let json = String(data: try JSONEncoder().encode(e), encoding: .utf8) ?? ""
-
-        XCTAssertEqual(e.t, "decode")
-        XCTAssertEqual(e.ms, 180)
-        XCTAssertEqual(e.kind, "webpStatic")
-        XCTAssertTrue(json.contains("\"px\":3110400"), json)
-        XCTAssertTrue(json.contains("\"bytes\":214003"), json)
-    }
-
-    /// net 이벤트는 **슬롯 대기 시간**을 함께 싣는다. 다운로드 자체가 60ms 인데
-    /// 화면엔 5초 뒤 뜨는 상황에서, 대기가 다운로더 큐에서 생겼는지를 이 값이 가른다.
-    func testNetworkEventCarriesQueueWait() {
-        let t0 = Date(timeIntervalSince1970: 1_753_000_000)
-        let phases = MediaLoadNetworkPhases(
-            fetchStart: t0.addingTimeInterval(2.5),
+    private func phases(fetchOffset: TimeInterval) -> MediaLoadNetworkPhases {
+        MediaLoadNetworkPhases(
+            fetchStart: t0.addingTimeInterval(fetchOffset),
             domainLookupStart: nil, domainLookupEnd: nil,
             connectStart: nil, connectEnd: nil,
             secureConnectionStart: nil, secureConnectionEnd: nil,
-            requestStart: t0.addingTimeInterval(2.5),
-            responseStart: t0.addingTimeInterval(2.56),
-            responseEnd: t0.addingTimeInterval(2.62),
+            requestStart: t0.addingTimeInterval(fetchOffset),
+            responseStart: t0.addingTimeInterval(fetchOffset + 0.06),
+            responseEnd: t0.addingTimeInterval(fetchOffset + 0.12),
             reusedConnection: true, networkProtocol: "h2", statusCode: 200, bytes: 100)
+    }
 
-        let e = MediaLoadEventDTO.network(host: "h", phases: phases,
+    /// 슬롯 대기 — 요청이 만들어진 뒤 실제 전송이 시작되기까지. 다운로드가 60ms 인데
+    /// 화면엔 몇 초 뒤 뜨는 상황을 이 값이 설명한다.
+    func testNetworkEventCarriesQueueWait() {
+        let e = MediaLoadEventDTO.network(host: "h", phases: phases(fetchOffset: 2.5),
                                           enqueuedAt: t0, ts: 1)
 
-        XCTAssertEqual(e?.ms, 120, "다운로드 자체는 120ms")
-        XCTAssertEqual(e?.queued, 2500, "요청 생성 → 실제 전송 시작까지 2.5s 대기")
+        XCTAssertEqual(e?.ms, 120, "다운로드 자체")
+        XCTAssertEqual(e?.queued, 2500, "요청 생성 → 전송 시작")
     }
 
-    /// 5초를 기다린 요청이 **프리페치인지 표시용인지** 갈라야 한다. 다운로드 자체가
-    /// 52ms, 디코드가 10ms 인데 대기가 p90 5초라면, 큐에 줄 서 있는 게 무엇인지가
-    /// 유일하게 남은 미지수다. 프리페치는 `.lowPriority` 로 나가므로 그걸로 가른다.
-    func testNetworkEventMarksPrefetchRequests() {
-        let t0 = Date(timeIntervalSince1970: 1_753_000_000)
-        let phases = MediaLoadNetworkPhases(
-            fetchStart: t0, domainLookupStart: nil, domainLookupEnd: nil,
-            connectStart: nil, connectEnd: nil,
-            secureConnectionStart: nil, secureConnectionEnd: nil,
-            requestStart: t0, responseStart: t0.addingTimeInterval(0.02),
-            responseEnd: t0.addingTimeInterval(0.05),
-            reusedConnection: true, networkProtocol: "h2", statusCode: 200, bytes: 100)
-
-        let prefetch = MediaLoadEventDTO.network(host: "h", phases: phases, prefetch: true, ts: 1)
-        let display = MediaLoadEventDTO.network(host: "h", phases: phases, prefetch: false, ts: 1)
-
-        XCTAssertEqual(prefetch?.pf, true)
-        XCTAssertNil(display?.pf, "표시 요청이 기본값이라 생략된다(배치 크기)")
-    }
-
-    /// 대기 기산점을 모르면(레거시 호출) 필드를 비운다 — 0 을 넣으면
-    /// "대기 없음" 과 구분이 안 된다.
+    /// 기산점을 모르면 비운다 — 0 을 넣으면 "대기 없음" 과 구분이 안 된다.
     func testQueueWaitOmittedWhenEnqueueTimeUnknown() {
-        let t0 = Date(timeIntervalSince1970: 1_753_000_000)
-        let phases = MediaLoadNetworkPhases(
-            fetchStart: t0, domainLookupStart: nil, domainLookupEnd: nil,
-            connectStart: nil, connectEnd: nil,
-            secureConnectionStart: nil, secureConnectionEnd: nil,
-            requestStart: t0, responseStart: t0.addingTimeInterval(0.05),
-            responseEnd: t0.addingTimeInterval(0.1),
-            reusedConnection: true, networkProtocol: "h2", statusCode: 200, bytes: 100)
+        XCTAssertNil(MediaLoadEventDTO.network(host: "h", phases: phases(fetchOffset: 0), ts: 1)?.queued)
+    }
 
-        XCTAssertNil(MediaLoadEventDTO.network(host: "h", phases: phases, ts: 1)?.queued)
+    /// 기다린 요청이 프리페치인지 표시용인지 갈라야 처방이 갈린다.
+    func testNetworkEventMarksPrefetchRequests() {
+        let pf = MediaLoadEventDTO.network(host: "h", phases: phases(fetchOffset: 0),
+                                           prefetch: true, ts: 1)
+        let show = MediaLoadEventDTO.network(host: "h", phases: phases(fetchOffset: 0),
+                                             prefetch: false, ts: 1)
+
+        XCTAssertEqual(pf?.pf, true)
+        XCTAssertNil(show?.pf, "표시 요청이 기본값이라 생략된다")
+    }
+
+    /// 디코드 비용은 픽셀에 비례한다 — ms 만으로는 "무거운 이미지" 와 "밀린 것" 을
+    /// 구분할 수 없다. libwebp(127ms/MP) vs ImageIO(8ms/MP) 비교의 근거가 이 필드다.
+    func testDecodeEventCarriesPixelsAndBytes() throws {
+        let e = MediaLoadEventDTO.decode(kind: "webpViaIO", ms: 10,
+                                         pixels: 1_244_208, bytes: 77_882, ts: 1)
+        let json = String(data: try JSONEncoder().encode(e), encoding: .utf8) ?? ""
+
+        XCTAssertEqual(e.t, "decode")
+        XCTAssertEqual(e.kind, "webpViaIO")
+        XCTAssertTrue(json.contains("\"px\":1244208"), json)
+        XCTAssertTrue(json.contains("\"bytes\":77882"), json)
     }
 }
 

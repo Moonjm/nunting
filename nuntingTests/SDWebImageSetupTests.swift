@@ -55,17 +55,4 @@ final class SDWebImageSetupTests: XCTestCase {
 
 
 
-    /// JPEG/PNG 디코드도 계측돼야 한다. WebP 만 재던 동안 디코드 이벤트가 net 이벤트의
-    /// 1/5 밖에 안 잡혀(94 vs 495) "디코드 비용은 작다" 는 판단의 근거가 반쪽이었다.
-    func testConfigureRegistersSingleSignpostIOCoderAtHighPriority() {
-        let manager = SDImageCodersManager.shared
-        let originalCoders = manager.coders ?? []
-        manager.coders = originalCoders.filter { !($0 is SignpostIOCoder) }
-        defer { manager.coders = originalCoders }
-
-        SDWebImageSetup.configure()
-        SDWebImageSetup.configure()
-
-        XCTAssertEqual((manager.coders ?? []).filter { $0 is SignpostIOCoder }.count, 1)
-    }
 }

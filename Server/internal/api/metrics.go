@@ -602,11 +602,6 @@ type mediaEventJSON struct {
 	Queued int    `json:"queued"` // net: 다운로더 슬롯 대기(ms)
 	Px     int    `json:"px"`     // decode: 출력 픽셀 수
 	PF     bool   `json:"pf"`     // net: 프리페치 요청(표시 요청이면 없음)
-	Slot   int    `json:"slot"`   // net: 슬롯 획득 → 전송 시작
-	Post   int    `json:"post"`   // op: 전송 완료 → 오퍼레이션 종료
-	US     int    `json:"us"`     // main: 마이크로초(1ms 미만 구간용)
-	Cmpl   int    `json:"cmpl"`   // op: 전송 완료 콜백 진입 → 종료
-	Xfer   int    `json:"xfer"`   // op: 슬롯 획득 → 전송 완료 콜백
 	OK     *bool  `json:"ok"`     // 실패일 때만 실린다(false)
 }
 
@@ -621,36 +616,23 @@ type mediaPayloadJSON struct {
 // 퍼센타일을 내려면 원본 값이 필요해서 슬라이스로 들고 있는다 — 1인용 앱의
 // 하루치(수천 건) 기준으로 메모리는 문제가 되지 않는다.
 type mediaAgg struct {
-	Events      int
-	Fails       int
-	NetMs       []int
-	ShowMs      []int
-	VideoMs     []int
-	Bytes       int64
-	Src         map[string]int   // show 캐시 출처 분포
-	VideoKind   map[string]int   // mp4/webm 건수
-	LinkMs      map[string][]int // 링크별 net 소요
-	LinkBytes   map[string]int64
-	HostMs      map[string][]int // 호스트별 net 소요
-	QueuedMs    []int            // net 슬롯 대기 — 디코드가 슬롯을 붙잡는지 보는 축
-	QueuedPF    []int            // 그중 프리페치 요청의 대기
-	QueuedShow  []int            // 그중 표시 요청의 대기
-	SlotMs      []int            // 슬롯을 잡고도 전송을 못 시작한 시간
-	OpMs        []int            // 오퍼레이션 수명 = 슬롯 점유 시간
-	OpPostMs    []int            // 그중 전송 완료 이후 구간
-	OpCmplMs    []int            // 그중 완료 콜백 진입 이후(디코드 스케줄+디코드+done)
-	OpXferMs    []int            // 그중 전송 구간(슬롯 획득 → 완료 콜백)
-	MainLagMs   []int            // 메인 큐 정체(프로브)
-	MainApplyUs []int            // 도착 이미지를 뷰에 반영하는 핸들러 실행 시간(µs)
-	MainPeakMs  []int            // 하트비트: 창당 최대 지연(0 이어도 기록)
-	BgLagMs     []int            // 백그라운드 전역 큐 정체(디코드 블록 스케줄 대기)
-	BgPeakMs    []int            // 그 하트비트(0 이어도 기록)
-	IoLagMs     []int            // 이미지 캐시 직렬 ioQueue 대기
-	IoPeakMs    []int            // 그 하트비트(0 이어도 기록)
-	FgPeakMs    []int            // 같은 풀의 userInitiated 대역(대역 경합 판별)
-	DecodeMs    []int
-	DecodePx    []int
-	DecodeBy    map[string]int // 코더별 디코드 건수
+	Events     int
+	Fails      int
+	NetMs      []int
+	ShowMs     []int
+	VideoMs    []int
+	Bytes      int64
+	Src        map[string]int   // show 캐시 출처 분포
+	VideoKind  map[string]int   // mp4/webm 건수
+	LinkMs     map[string][]int // 링크별 net 소요
+	LinkBytes  map[string]int64
+	HostMs     map[string][]int // 호스트별 net 소요
+	QueuedMs   []int            // net 슬롯 대기 — 디코드가 슬롯을 붙잡는지 보는 축
+	QueuedPF   []int            // 그중 프리페치 요청의 대기
+	QueuedShow []int            // 그중 표시 요청의 대기
+	DecodeMs   []int
+	DecodePx   []int
+	DecodeBy   map[string]int // 코더별 디코드 건수
 }
 
 func (a *mediaAgg) add(e mediaEventJSON) {
@@ -681,50 +663,10 @@ func (a *mediaAgg) add(e mediaEventJSON) {
 		}
 		// 대기의 정체를 가르는 축. 프리페치가 큐를 채우고 있으면 표시 요청이 그 뒤에
 		// 줄 서는 구조이고, 그건 슬롯 수가 아니라 순서/양의 문제다.
-		if e.Slot > 0 {
-			a.SlotMs = append(a.SlotMs, e.Slot)
-		}
 		if e.PF {
 			a.QueuedPF = append(a.QueuedPF, e.Queued)
 		} else {
 			a.QueuedShow = append(a.QueuedShow, e.Queued)
-		}
-	case "main":
-		switch e.Kind {
-		case "lag":
-			a.MainLagMs = append(a.MainLagMs, e.Ms)
-		case "lagpeak":
-			a.MainPeakMs = append(a.MainPeakMs, e.Ms)
-		default:
-			a.MainApplyUs = append(a.MainApplyUs, e.US)
-		}
-	case "queue":
-		switch e.Kind {
-		case "main.lag":
-			a.MainLagMs = append(a.MainLagMs, e.Ms)
-		case "main.peak":
-			a.MainPeakMs = append(a.MainPeakMs, e.Ms)
-		case "bg.lag":
-			a.BgLagMs = append(a.BgLagMs, e.Ms)
-		case "bg.peak":
-			a.BgPeakMs = append(a.BgPeakMs, e.Ms)
-		case "io.lag":
-			a.IoLagMs = append(a.IoLagMs, e.Ms)
-		case "io.peak":
-			a.IoPeakMs = append(a.IoPeakMs, e.Ms)
-		case "fg.peak":
-			a.FgPeakMs = append(a.FgPeakMs, e.Ms)
-		}
-	case "op":
-		a.OpMs = append(a.OpMs, e.Ms)
-		if e.Post > 0 {
-			a.OpPostMs = append(a.OpPostMs, e.Post)
-		}
-		if e.Cmpl > 0 {
-			a.OpCmplMs = append(a.OpCmplMs, e.Cmpl)
-		}
-		if e.Xfer > 0 {
-			a.OpXferMs = append(a.OpXferMs, e.Xfer)
 		}
 	case "decode":
 		a.DecodeMs = append(a.DecodeMs, e.Ms)
@@ -796,18 +738,16 @@ func (a *mediaAgg) view() mediaView {
 	}
 	if len(a.NetMs) > 0 {
 		note := bytesLabel(a.Bytes)
-		// 슬롯 대기 — 다운로드 자체는 짧은데 화면엔 늦게 뜨는 경우, 대기가 여기
-		// 잡히면 원인은 다운로더 큐(디코드가 슬롯을 붙잡는 구조)다.
+		// 슬롯 대기 — 다운로드 자체는 짧은데 화면엔 늦게 뜨는 경우, 여기 잡히면
+		// 원인은 다운로더 큐다.
 		if len(a.QueuedMs) > 0 {
 			note += " · 대기 p50 " + msLabel(percentile(a.QueuedMs, 50)) +
 				"/p90 " + msLabel(percentile(a.QueuedMs, 90))
 		}
+		// 기다린 게 프리페치인지 표시 요청인지 — 처방이 갈린다.
 		if len(a.QueuedPF) > 0 {
 			note += " · 프리페치 " + strconv.Itoa(len(a.QueuedPF)) + "건 대기 p90 " +
 				msLabel(percentile(a.QueuedPF, 90))
-		}
-		if len(a.SlotMs) > 0 {
-			note += " · 슬롯후 p90 " + msLabel(percentile(a.SlotMs, 90))
 		}
 		if len(a.QueuedShow) > 0 {
 			note += " · 표시 " + strconv.Itoa(len(a.QueuedShow)) + "건 대기 p90 " +
@@ -817,66 +757,6 @@ func (a *mediaAgg) view() mediaView {
 			Layer: "net (다운로드)", Count: len(a.NetMs),
 			P50: msLabel(percentile(a.NetMs, 50)), P90: msLabel(percentile(a.NetMs, 90)),
 			Note: note,
-		})
-	}
-	if len(a.OpMs) > 0 {
-		// 슬롯 점유. 다운로드+디코드 합보다 크게 길면 전송이 끝난 뒤에도 슬롯이
-		// 붙잡혀 있다는 뜻이고, 그게 대기의 정체다.
-		v.Layers = append(v.Layers, mediaLayerRow{
-			Layer: "op (슬롯 점유)", Count: len(a.OpMs),
-			P50: msLabel(percentile(a.OpMs, 50)), P90: msLabel(percentile(a.OpMs, 90)),
-			Note: opNote(a),
-		})
-	}
-	if len(a.MainLagMs) > 0 {
-		// 메인 큐가 밀린 정도. 이게 크면 완료 처리가 큐에서 차례를 기다리느라
-		// 오퍼레이션이 슬롯을 못 놓는다는 뜻이다.
-		v.Layers = append(v.Layers, mediaLayerRow{
-			Layer: "main lag (큐 정체)", Count: len(a.MainLagMs),
-			P50: msLabel(percentile(a.MainLagMs, 50)), P90: msLabel(percentile(a.MainLagMs, 90)),
-			Note: "임계 100ms 초과분만",
-		})
-	}
-	if len(a.MainPeakMs) > 0 {
-		// 하트비트 — 0 이어도 남는다. 이 행이 아예 없으면 프로브가 안 돈 것이고,
-		// 있는데 값이 작으면 메인은 한산했던 것이다. 그 둘을 구분하려고 만든 행이다.
-		v.Layers = append(v.Layers, mediaLayerRow{
-			Layer: "main peak (5초창 최대)", Count: len(a.MainPeakMs),
-			P50: msLabel(percentile(a.MainPeakMs, 50)), P90: msLabel(percentile(a.MainPeakMs, 90)),
-			Note: "행이 없으면 프로브 미가동",
-		})
-	}
-	if len(a.BgPeakMs) > 0 {
-		// 백그라운드 큐 정체 — 디코드 블록이 실행 순서를 기다리는지. 이 값이 초 단위로
-		// 치솟으면 전송 후 구간(p90 2초, 그중 디코드는 11ms)의 정체가 스케줄 대기다.
-		v.Layers = append(v.Layers, mediaLayerRow{
-			Layer: "bg peak (5초창 최대)", Count: len(a.BgPeakMs),
-			P50: msLabel(percentile(a.BgPeakMs, 50)), P90: msLabel(percentile(a.BgPeakMs, 90)),
-			Note: "행이 없으면 프로브 미가동",
-		})
-	}
-	if len(a.IoPeakMs) > 0 {
-		// 이미지 캐시의 직렬 큐가 얼마나 밀리는지. 조회/저장이 한 줄로 선다는 해석이
-		// 맞다면 이미지가 몰릴 때 이 값이 초 단위로 치솟는다.
-		v.Layers = append(v.Layers, mediaLayerRow{
-			Layer: "io peak (캐시 직렬큐)", Count: len(a.IoPeakMs),
-			P50: msLabel(percentile(a.IoPeakMs, 50)), P90: msLabel(percentile(a.IoPeakMs, 90)),
-			Note: "행이 없으면 프로브 미가동",
-		})
-	}
-	if len(a.FgPeakMs) > 0 {
-		// utility 대역은 밀리는데 이쪽이 안 밀리면 풀 고갈이 아니라 대역 경합이다.
-		v.Layers = append(v.Layers, mediaLayerRow{
-			Layer: "fg peak (userInitiated)", Count: len(a.FgPeakMs),
-			P50: msLabel(percentile(a.FgPeakMs, 50)), P90: msLabel(percentile(a.FgPeakMs, 90)),
-			Note: "bg peak 와 비교",
-		})
-	}
-	if len(a.MainApplyUs) > 0 {
-		v.Layers = append(v.Layers, mediaLayerRow{
-			Layer: "main apply (뷰 반영)", Count: len(a.MainApplyUs),
-			P50: usLabel(percentile(a.MainApplyUs, 50)), P90: usLabel(percentile(a.MainApplyUs, 90)),
-			Note: "한 장 도착 시 우리 핸들러 실행",
 		})
 	}
 	if len(a.DecodeMs) > 0 {
@@ -934,27 +814,6 @@ func (a *mediaAgg) view() mediaView {
 	return v
 }
 
-// opNote 슬롯 점유의 내역. 전송 후 구간이 수명의 대부분이면 병목은 다운로드가 아니라
-// 그 뒤(디코드 + 완료 처리)에 있다.
-func opNote(a *mediaAgg) string {
-	if len(a.OpPostMs) == 0 {
-		return "다운로드+디코드 합과 비교"
-	}
-	note := "전송후 p50 " + msLabel(percentile(a.OpPostMs, 50)) +
-		"/p90 " + msLabel(percentile(a.OpPostMs, 90))
-	if len(a.OpXferMs) > 0 {
-		note += " · 전송구간 p50 " + msLabel(percentile(a.OpXferMs, 50)) +
-			"/p90 " + msLabel(percentile(a.OpXferMs, 90))
-	}
-	if len(a.OpCmplMs) > 0 {
-		// 완료 콜백 진입 이후 = 디코드 스케줄 + 디코드 + barrier + done.
-		// 전송후와의 차이는 URLSession 내부 구간이다.
-		note += " · 완료콜백후 p50 " + msLabel(percentile(a.OpCmplMs, 50)) +
-			"/p90 " + msLabel(percentile(a.OpCmplMs, 90))
-	}
-	return note
-}
-
 // summarizeMedia 배치 한 건의 행 요약 + 누적. 행 요약은 "이 배치가 무슨 상황이었나"를
 // 한 줄로 보여주는 용도라 계층별 건수와 net p50 만 싣는다(분포는 아래 미디어 섹션).
 func summarizeMedia(payload string, agg *mediaAgg) string {
@@ -1006,14 +865,6 @@ func percentile(values []int, p float64) int {
 // megapixelLabel 픽셀 수 → "3.1MP".
 func megapixelLabel(px int) string {
 	return strconv.FormatFloat(float64(px)/1_000_000, 'f', 1, 64) + "MP"
-}
-
-// usLabel 마이크로초 → "820µs" / "1.4ms".
-func usLabel(us int) string {
-	if us < 1000 {
-		return strconv.Itoa(us) + "µs"
-	}
-	return strconv.FormatFloat(float64(us)/1000, 'f', 1, 64) + "ms"
 }
 
 func msLabel(ms int) string {

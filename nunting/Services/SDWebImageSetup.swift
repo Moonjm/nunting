@@ -43,15 +43,8 @@ enum SDWebImageSetup {
         // 그대로 보여준다(34장 디코드 합계 5,948ms vs 본문 show p90 5,785ms).
         // 남은 축은 병렬화가 아니라 **디코드 일 자체를 줄이는 것**이다.
 
-        // 등록 순서가 곧 우선순위다 — `SDImageCodersManager` 는 나중에 등록된 코더를
-        // 먼저 본다. ImageIO 코더를 **먼저**, libwebp 코더를 **나중에** 등록해야
-        // WebP 가 libwebp 로 간다(iOS 14+ ImageIO 도 WebP 를 읽을 수 있어서, 순서가
-        // 뒤집히면 libwebp 경로가 조용히 가로채인다).
         let coderManager = SDImageCodersManager.shared
-        coderManager.coders = (coderManager.coders ?? []).filter {
-            !($0 is SignpostWebPCoder) && !($0 is SignpostIOCoder)
-        }
-        coderManager.addCoder(SignpostIOCoder())
+        coderManager.coders = (coderManager.coders ?? []).filter { !($0 is SignpostWebPCoder) }
         coderManager.addCoder(SignpostWebPCoder())
 
         // Redirect http→https on the URLSession redirect callback. ATS

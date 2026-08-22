@@ -50,9 +50,8 @@ nonisolated final class SignpostWebPCoder: SDImageWebPCoder {
         // ImageIO 가 nil 을 주면 libwebp 로 폴백한다. 코더 선택(`canDecode`)을
         // 건드리지 않고 여기서 갈라야 하는 이유가 이 폴백이다 — `canDecode` 에서
         // 거절하면 ImageIO 가 실패했을 때 되돌아올 곳이 없어 이미지가 통째로 깨진다.
-        // 라이브러리의 공용 ImageIO 코더를 직접 쓴다. 우리 `SignpostIOCoder` 로 보내면
-        // `ioStatic` 으로 기록돼 JPEG/PNG 와 섞이는데, 정작 재려는 건 "WebP 를 ImageIO 로
-        // 돌렸을 때" 의 비용이라 표에서 갈려야 한다 — 여기서 `webpViaIO` 로 따로 남긴다.
+        // 라이브러리의 공용 ImageIO 코더를 직접 쓰고, 결과는 `webpViaIO` 로 따로
+        // 남긴다 — libwebp 경로(`webpStatic`)와 표에서 나란히 비교되게.
         if let data, !WebPFormat.isAnimated(data) {
             // **지연 디코드를 끈다.** 정적 코더의 기본값은 lazy(YES)이고
             // (`SDImageCoder.h:73`), 그러면 비용이 사라지는 게 아니라 픽셀을 처음
@@ -110,44 +109,6 @@ nonisolated final class SignpostWebPCoder: SDImageWebPCoder {
         let startedAt = Date()
         let frame = super.animatedImageFrame(at: index)
         let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
-        // **애니메 판별의 직접 증거는 여기서 나온다.** 처음엔 `decodedImage` 쪽에
-        // 마커를 뒀는데, 애니메 WebP 는 그 경로를 아예 안 타서(애니메 코더로 간다)
-        // 영영 0건이었다. 프레임 수를 같이 남기면 "애니메가 실제로 이 경로로 왔는지"
-        // 와 "정적이 여기서 nil 로 빠져 ImageIO 로 폴백했는지" 가 한 값으로 갈린다.
-        let frames = Int(animatedImageFrameCount)
-        let event = MediaLoadEventDTO.decode(kind: frames > 1 ? "webpAnimated" : "webpFrame0",
-                                             ms: ms,
-                                             pixels: Self.pixelCount(of: frame), bytes: 0,
-                                             frames: frames)
-        Task { @MainActor in MediaLoadTelemetry.shared.record(event) }
-        return frame
-    }
-}
-
-/// `SDImageIOCoder`(JPEG/PNG/HEIC — ImageIO 경로)를 상속해 디코드 구간만 계측한다.
-///
-/// WebP 만 재던 동안 디코드 이벤트가 net 이벤트의 1/5 밖에 안 잡혔다(94 vs 495).
-/// 보드 이미지가 전부 WebP 인 건 aagag/inven 같은 일부이고 나머지는 JPEG 이라,
-/// "디코드는 싸다" 는 판단의 근거가 반쪽이었다 — 슬롯 폭 실험이 반증된 뒤 남은
-/// 후보(디코드가 CPU 로 포화)를 재려면 이쪽 숫자가 있어야 한다.
-///
-/// 등록 순서 주의: `SDImageCodersManager` 는 **나중에 등록된 코더를 먼저** 본다.
-/// iOS 14+ 의 ImageIO 는 WebP 도 디코드할 수 있어서, 이 코더를 WebP 코더보다
-/// 뒤에 등록하면 libwebp 경로를 가로챈다. `SDWebImageSetup` 은 이걸 먼저, WebP 를
-/// 나중에 등록한다(그 순서를 `SDWebImageSetupTests` 가 지킨다).
-nonisolated final class SignpostIOCoder: SDImageIOCoder {
-    override func decodedImage(with data: Data?, options: [SDImageCoderOption: Any]?) -> UIImage? {
-        let id = OSSignpostID(log: AppSignpost.image)
-        mxSignpost(.begin, log: AppSignpost.image, name: "ioStatic", signpostID: id)
-        defer { mxSignpost(.end, log: AppSignpost.image, name: "ioStatic", signpostID: id) }
-        let startedAt = Date()
-        let image = super.decodedImage(with: data, options: options)
-        let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
-        let pixels = SignpostWebPCoder.pixelCount(of: image)
-        let event = MediaLoadEventDTO.decode(kind: "ioStatic", ms: ms,
-                                             pixels: pixels,
-                                             bytes: data?.count ?? 0)
-        Task { @MainActor in MediaLoadTelemetry.shared.record(event) }
-        return image
+        return super.animatedImageFrame(at: index)
     }
 }

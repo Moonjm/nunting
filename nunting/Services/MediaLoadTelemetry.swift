@@ -35,13 +35,7 @@ nonisolated struct MediaLoadEventDTO: Encodable, Sendable {
     var status: Int?   // net: HTTP 상태
     var queued: Int?   // net: 요청 생성 → 실제 전송 시작(다운로더 슬롯 대기)
     var px: Int?       // decode: 출력 픽셀 수 — 디코드 비용은 픽셀에 비례한다
-    var n: Int?        // decode: 프레임 수 — 애니메 판별의 직접 증거
     var pf: Bool?      // net: 프리페치 요청일 때만 true(표시 요청이 기본)
-    var slot: Int?     // net: 슬롯 획득(오퍼레이션 start) → 전송 시작. 큐 대기와 분리
-    var post: Int?     // op: 전송 완료 → 오퍼레이션 종료(디코드 + 완료 처리)
-    var cmpl: Int?     // op: 전송 완료 콜백 진입 → 오퍼레이션 종료
-    var xfer: Int?     // op: 슬롯 획득 → 전송 완료 콜백 진입(전송 구간 실측)
-    var us: Int?       // main: 마이크로초 — 1ms 미만 구간은 ms 로 재면 전부 0 이다
     var ok: Bool?      // 실패일 때만 false 로 실린다
 }
 
@@ -74,7 +68,6 @@ nonisolated extension MediaLoadEventDTO {
     static func network(host: String,
                         phases: MediaLoadNetworkPhases,
                         enqueuedAt: Date? = nil,
-                        startedAt: Date? = nil,
                         prefetch: Bool = false,
                         ts: Int = Int(Date().timeIntervalSince1970)) -> MediaLoadEventDTO? {
         guard let total = elapsedMs(phases.fetchStart, phases.responseEnd) else { return nil }
@@ -92,47 +85,19 @@ nonisolated extension MediaLoadEventDTO {
             reused: phases.reusedConnection,
             status: phases.statusCode,
             queued: elapsedMs(enqueuedAt, phases.fetchStart),
-            pf: prefetch ? true : nil,
-            slot: elapsedMs(startedAt, phases.fetchStart))
+            pf: prefetch ? true : nil)
     }
 
-    /// 오퍼레이션 수명 이벤트 — 슬롯을 잡고 있던 총 시간.
-    ///
-    /// 대기의 마지막 사각지대다. `slot`(획득→전송)이 6ms 로 확인됐으니 지연은 전부
-    /// "슬롯을 못 잡아서" 인데, 앞선 오퍼레이션의 측정된 작업량(다운로드+디코드
-    /// ≈90ms)으로는 실측 대기(p90 4.1초)가 설명되지 않는다. 전송이 끝난 **뒤에도**
-    /// 슬롯이 붙잡혀 있는 시간을 여기서 잡는다.
-    static func operation(host: String, ms: Int, postTransferMs: Int? = nil,
-                          completionMs: Int? = nil, transferMs: Int? = nil, prefetch: Bool,
-                          ts: Int = Int(Date().timeIntervalSince1970)) -> MediaLoadEventDTO {
-        MediaLoadEventDTO(t: "op", ts: ts, ms: ms, host: host,
-                          pf: prefetch ? true : nil, post: postTransferMs,
-                          cmpl: completionMs, xfer: transferMs)
-    }
 
-    /// 메인 큐 관련 이벤트. `kind` 는 "lag"(큐 정체) | "apply"(도착한 이미지를 뷰에
-    /// 반영하는 우리 핸들러의 실행 시간). 둘이 갈려야 "메인이 밀려서" 와 "우리 핸들러가
-    /// 무거워서" 를 구분할 수 있다.
-    /// 큐 지연 이벤트. `queue` 는 "main" | "bg", `kind` 는 "lag"(임계 초과 순간) |
-    /// "peak"(하트비트 — 0 이어도 창당 한 건).
-    static func queueLatency(queue: String, kind: String, ms: Int,
-                             ts: Int = Int(Date().timeIntervalSince1970)) -> MediaLoadEventDTO {
-        MediaLoadEventDTO(t: "queue", ts: ts, ms: ms, kind: queue + "." + kind)
-    }
 
-    static func mainQueue(kind: String, ms: Int, us: Int? = nil,
-                          ts: Int = Int(Date().timeIntervalSince1970)) -> MediaLoadEventDTO {
-        MediaLoadEventDTO(t: "main", ts: ts, ms: ms, kind: kind, us: us)
-    }
 
     /// 디코드 구간 이벤트. `pixels` 를 같이 실어야 "무거운 이미지였다"와
     /// "큐가 막혀 밀렸다"를 사후에 구분할 수 있다(디코드 비용 ∝ 픽셀).
-    static func decode(kind: String, ms: Int, pixels: Int, bytes: Int, frames: Int? = nil,
+    static func decode(kind: String, ms: Int, pixels: Int, bytes: Int,
                        ts: Int = Int(Date().timeIntervalSince1970)) -> MediaLoadEventDTO {
         MediaLoadEventDTO(t: "decode", ts: ts, ms: ms, kind: kind,
                           bytes: bytes > 0 ? bytes : nil,
-                          px: pixels > 0 ? pixels : nil,
-                          n: frames)
+                          px: pixels > 0 ? pixels : nil)
     }
 
     /// 표시 계층 이벤트.

@@ -32,67 +32,10 @@ nonisolated class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOpera
     /// 불변이라 `@unchecked Sendable` 약속을 깨지 않는다.
     private let enqueuedAt = Date()
 
-    /// 슬롯을 실제로 잡은 시각(NSOperation 이 `start()` 된 순간). `enqueuedAt` 과의
-    /// 차이가 **큐에서 기다린 시간**, 이 시각과 `fetchStart` 의 차이가 **슬롯을 잡고도
-    /// 전송을 못 시작한 시간**이다.
-    ///
-    /// 왜 갈라야 하나: 표시 요청 32건이 슬롯 4개를 두고 도는데 한 장의 실제 작업은
-    /// 다운로드 50ms + 디코드 12ms 다. 그러면 0.5초면 끝나야 할 것이 실측 대기 p50
-    /// 2.2초 · p90 5.3초다. 오퍼레이션 하나가 슬롯을 600ms 넘게 붙잡고 있다는 뜻인데
-    /// 그 구간이 어디인지 지금 계측으로는 안 보인다.
-    ///
-    /// 락 없이 쓴다: `start()` 는 다운로더 큐가 오퍼레이션당 한 번만 부르고, 읽기는
-    /// 그 뒤(전송 완료 후)의 메트릭 콜백뿐이라 순서가 보장된다.
-    private var slotAcquiredAt: Date?
 
-    /// 전송이 끝난 시각(태스크 메트릭 수집 시점). 오퍼레이션 종료 시각과의 차이가
-    /// **전송 후 구간** — 디코드 + 완료 처리다. 실측에서 수명 1,763ms 중 실제 작업
-    /// (다운로드 37ms + 디코드 11ms)이 3% 뿐이라, 나머지가 이 구간 어디인지 갈라야 한다.
-    private var transferEndedAt: Date?
 
-    /// 전송 완료 콜백에 **진입한** 시각. `transferEndedAt`(태스크 메트릭 수집 시점)과
-    /// 이 시각의 차이는 URLSession 내부 구간이고, 이 시각부터 종료까지가 디코드 스케줄
-    /// + 디코드 + barrier + done 이다. 전송 후 111ms 중 디코드가 11ms 뿐이라 남은
-    /// 100ms 가 둘 중 어디인지 갈라야 한다.
-    private var completeCallbackAt: Date?
 
-    /// 오퍼레이션이 실제로 끝나는 순간(`isFinished` 플립)을 관찰한다.
-    ///
-    /// **처음엔 `completionBlock` 에서 쟀는데 그게 틀렸다.** 슬롯은 `done` 이
-    /// `isFinished = YES` 로 뒤집는 순간 풀리고(`SDWebImageDownloaderOperation.m:301`),
-    /// `completionBlock` 은 그보다 **뒤에** 큐가 스케줄해 부른다. 그 사이 지연은
-    /// 슬롯을 붙잡지 않으므로, 그걸 수명에 넣으면 "슬롯을 오래 쥐고 있다" 는 잘못된
-    /// 결론이 나온다(실제로 그렇게 읽었다).
-    private var finishObservation: NSKeyValueObservation?
 
-    override func start() {
-        let startedAt = Date()
-        slotAcquiredAt = startedAt
-
-        let host = request?.url?.host ?? "?"
-        let isPrefetch = options.contains(.lowPriority)
-        finishObservation = observe(\.isFinished, options: [.new]) { [weak self] op, _ in
-            guard op.isFinished, let self else { return }
-            let now = Date()
-            let ms = Int(now.timeIntervalSince(startedAt) * 1000)
-            let post = self.transferEndedAt.map { Int(now.timeIntervalSince($0) * 1000) }
-            let cmpl = self.completeCallbackAt.map { Int(now.timeIntervalSince($0) * 1000) }
-            // 슬롯을 잡고 전송 완료 콜백이 올 때까지 — 조각을 빼서 추정하지 않고 직접 잰다.
-            // URLSessionTaskMetrics 가 보고하는 다운로드 시간(p50 78ms)과 이 값이 크게
-            // 다르면, 태스크가 시작된 뒤 바이트를 받는 동안 메트릭에 안 잡히는 지연이
-            // 있다는 뜻이다.
-            let xfer = self.completeCallbackAt.map { Int($0.timeIntervalSince(startedAt) * 1000) }
-            let event = MediaLoadEventDTO.operation(host: host, ms: max(0, ms),
-                                                    postTransferMs: post.map { max(0, $0) },
-                                                    completionMs: cmpl.map { max(0, $0) },
-                                                    transferMs: xfer.map { max(0, $0) },
-                                                    prefetch: isPrefetch)
-            Task { @MainActor in MediaLoadTelemetry.shared.record(event) }
-            self.finishObservation = nil
-        }
-
-        super.start()
-    }
 
     // Combination required for the ObjC runtime to actually install this
     // selector into the dispatch table when overriding an optional
@@ -145,7 +88,6 @@ nonisolated class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOpera
         didFinishCollecting metrics: URLSessionTaskMetrics
     ) {
         super.urlSession(session, task: task, didFinishCollecting: metrics)
-        transferEndedAt = Date()
 
         guard let tx = metrics.transactionMetrics.last,
               let host = tx.request.url?.host else { return }
@@ -170,25 +112,11 @@ nonisolated class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOpera
         let isPrefetch = options.contains(.lowPriority)
         guard let event = MediaLoadEventDTO.network(host: host, phases: phases,
                                                     enqueuedAt: enqueuedAt,
-                                                    startedAt: slotAcquiredAt,
                                                     prefetch: isPrefetch) else { return }
         // 이 콜백은 다운로더 세션 큐. 버퍼는 MainActor 소속이라 Sendable 인 DTO 만 넘긴다.
         Task { @MainActor in MediaLoadTelemetry.shared.record(event) }
     }
 
-    /// 전송 완료 콜백 진입 시각 스탬프. 부모가 이 셀렉터를 **구현하므로**(같은 파일의
-    /// `didCompleteWithError` — 토큰 수집·디코드 시작·`done` 이 전부 여기서 일어난다)
-    /// `super` 를 반드시 부른다. 안 부르면 오퍼레이션이 영영 안 끝난다.
-    /// 대문자 셀렉터 함정은 리다이렉트·메트릭 훅과 동일(테스트가 등록을 지킨다).
-    @objc(URLSession:task:didCompleteWithError:)
-    dynamic override func urlSession(
-        _ session: URLSession,
-        task: URLSessionTask,
-        didCompleteWithError error: (any Error)?
-    ) {
-        completeCallbackAt = Date()
-        super.urlSession(session, task: task, didCompleteWithError: error)
-    }
 
     /// Returns the request with `http://` upgraded to `https://`; any other
     /// scheme passes through unchanged. Headers/body/method are preserved.
