@@ -35,6 +35,7 @@ nonisolated struct MediaLoadEventDTO: Encodable, Sendable {
     var status: Int?   // net: HTTP 상태
     var queued: Int?   // net: 요청 생성 → 실제 전송 시작(다운로더 슬롯 대기)
     var px: Int?       // decode: 출력 픽셀 수 — 디코드 비용은 픽셀에 비례한다
+    var n: Int?        // decode: 프레임 수 — 애니메 판별의 직접 증거
     var pf: Bool?      // net: 프리페치 요청일 때만 true(표시 요청이 기본)
     var slot: Int?     // net: 슬롯 획득(오퍼레이션 start) → 전송 시작. 큐 대기와 분리
     var post: Int?     // op: 전송 완료 → 오퍼레이션 종료(디코드 + 완료 처리)
@@ -117,11 +118,12 @@ nonisolated extension MediaLoadEventDTO {
 
     /// 디코드 구간 이벤트. `pixels` 를 같이 실어야 "무거운 이미지였다"와
     /// "큐가 막혀 밀렸다"를 사후에 구분할 수 있다(디코드 비용 ∝ 픽셀).
-    static func decode(kind: String, ms: Int, pixels: Int, bytes: Int,
+    static func decode(kind: String, ms: Int, pixels: Int, bytes: Int, frames: Int? = nil,
                        ts: Int = Int(Date().timeIntervalSince1970)) -> MediaLoadEventDTO {
         MediaLoadEventDTO(t: "decode", ts: ts, ms: ms, kind: kind,
                           bytes: bytes > 0 ? bytes : nil,
-                          px: pixels > 0 ? pixels : nil)
+                          px: pixels > 0 ? pixels : nil,
+                          n: frames)
     }
 
     /// 표시 계층 이벤트.

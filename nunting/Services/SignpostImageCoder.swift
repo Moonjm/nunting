@@ -77,17 +77,6 @@ nonisolated final class SignpostWebPCoder: SDImageWebPCoder {
             }
         }
 
-        // 애니메로 판정된 WebP 는 여기(libwebp)로 온다. 판정 결과를 데이터에 남긴다 —
-        // 파서 라벨은 확장자로만 세서 애니메 WebP 가 정적 WebP 와 `webp=` 안에 섞여
-        // 있고, 그래서 "움짤 글을 찾아 열어본다" 는 확인 방법이 통하지 않는다.
-        // 평소처럼 쓰다 애니메를 만나면 이 이벤트가 찍히고, 그게 libwebp 로 갔다는
-        // 사실까지 같이 확인된다.
-        if let data, WebPFormat.isAnimated(data) {
-            let marker = MediaLoadEventDTO.decode(kind: "webpAnimated", ms: 0,
-                                                  pixels: 0, bytes: data.count)
-            Task { @MainActor in MediaLoadTelemetry.shared.record(marker) }
-        }
-
         let startedAt = Date()
         let image = super.decodedImage(with: data, options: options)
         let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
@@ -121,8 +110,15 @@ nonisolated final class SignpostWebPCoder: SDImageWebPCoder {
         let startedAt = Date()
         let frame = super.animatedImageFrame(at: index)
         let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
-        let event = MediaLoadEventDTO.decode(kind: "webpFrame0", ms: ms,
-                                             pixels: Self.pixelCount(of: frame), bytes: 0)
+        // **애니메 판별의 직접 증거는 여기서 나온다.** 처음엔 `decodedImage` 쪽에
+        // 마커를 뒀는데, 애니메 WebP 는 그 경로를 아예 안 타서(애니메 코더로 간다)
+        // 영영 0건이었다. 프레임 수를 같이 남기면 "애니메가 실제로 이 경로로 왔는지"
+        // 와 "정적이 여기서 nil 로 빠져 ImageIO 로 폴백했는지" 가 한 값으로 갈린다.
+        let frames = Int(animatedImageFrameCount)
+        let event = MediaLoadEventDTO.decode(kind: frames > 1 ? "webpAnimated" : "webpFrame0",
+                                             ms: ms,
+                                             pixels: Self.pixelCount(of: frame), bytes: 0,
+                                             frames: frames)
         Task { @MainActor in MediaLoadTelemetry.shared.record(event) }
         return frame
     }
