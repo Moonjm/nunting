@@ -145,6 +145,10 @@ struct WebmInlineWebView: UIViewRepresentable {
         /// return null. Gating on this flag means the first state
         /// transition after load applies cleanly.
         private var hasLoaded = false
+        /// 영상 준비 계측(`kind=media`, t=video)의 기산점 — WKWebView 에 문서를 물린 순간.
+        /// webm 은 AVPlayer 를 못 쓰고 WebKit 이 소프트 디코드하므로 준비까지가 더 길다.
+        /// 그 길이를 mp4 와 같은 채널에 실어야 "영상이 느리다"가 컨테이너별로 갈린다.
+        /// 한 로드당 한 번만 싣기 위한 래치(`loadedmetadata` 는 재부착마다 다시 온다).
 
         init(url: URL, onAspectKnown: @escaping (CGFloat) -> Void) {
             self.url = url

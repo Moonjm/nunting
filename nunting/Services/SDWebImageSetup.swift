@@ -24,6 +24,25 @@ enum SDWebImageSetup {
         // SDWebImage docs recommend.
         // 시그포스트 래퍼를 등록 — 디코드 로직은 super 그대로, 앞뒤로 mxSignpost
         // 만 끼워 WebP 디코드 CPU 를 이름으로 측정한다(SignpostWebPCoder 참조).
+        // `SDImageCache.ioQueue` 는 **기본(직렬)을 유지한다.**
+        //
+        // 이 큐가 캐시 조회와 **디코드까지** 직렬로 처리하는 건 사실이다
+        // (`SDImageCacheConfig.m:40-42` + `SDImageCache.m:524-528`, 호출 692-694).
+        // 그래서 동시 큐로 바꿔봤고(라이브러리가 공식 지원하는 설정), **더 나빠졌다**
+        // — 같은 글·콜드·슬롯 4 로 맞춘 비교(2026-08-21):
+        //
+        //                직렬(기본)      동시 큐
+        //   대기 p50      343ms          2,173ms   ← 6배 악화
+        //   대기 p90      4,590ms        5,437ms
+        //   본문 show p50 1,618ms        2,792ms
+        //   본문 show p90 5,500ms        5,785ms
+        //   (다운로드 자체는 p90 176ms → 108ms 로 오히려 빨라졌다)
+        //
+        // 슬롯 폭 실험(4→8)과 **같은 결론이다**: 병렬도를 올리면 각자가 느려질 뿐
+        // 총량이 줄지 않는다. 이 파이프라인은 디코드 CPU 에 묶여 있다 — 세션 실측이
+        // 그대로 보여준다(34장 디코드 합계 5,948ms vs 본문 show p90 5,785ms).
+        // 남은 축은 병렬화가 아니라 **디코드 일 자체를 줄이는 것**이다.
+
         let coderManager = SDImageCodersManager.shared
         coderManager.coders = (coderManager.coders ?? []).filter { !($0 is SignpostWebPCoder) }
         coderManager.addCoder(SignpostWebPCoder())
@@ -35,7 +54,44 @@ enum SDWebImageSetup {
         // 404 to the retry placeholder.
         SDWebImageDownloader.shared.config.operationClass = HTTPSRedirectingDownloaderOperation.self
 
-        let cache = SDImageCache.shared
+        // 앱 전역 이미지 캐시를 우리 구현으로 바꾼다 — 디스크 I/O 를 libdispatch 풀
+        // 밖의 전용 스레드에서 처리한다(`ThreadedImageCache` 주석에 계측 근거).
+        // 경로는 `SDImageCache.shared` 와 동일해 기존에 받아둔 파일이 그대로 살아 있다.
+        SDWebImageManager.defaultImageCache = AppImageCaches.disk
+
+        // 정책값은 **설치한 캐시의 config 에** 건다.
+        //
+        // 한동안 `SDImageCache.shared.config` 에 걸고 있었고 그건 아무 데도 안
+        // 닿았다 — `SDImageCache` 는 생성 시점에 `.default` 를 **복사**하므로
+        // (`SDImageCache.m:127` `_config = [config copy]`) 거기 쓴 값은 원본
+        // `.default` 를 참조하는 `ThreadedImageCache` 에 오지 않는다. 그래서 atomic
+        // 해제도 400MB 캡도 안 쓰는 캐시만 고치고 있었다(Codex 리뷰 2026-08-22).
+        // 캡이 안 걸린 쪽이 더 위험했다: `maxMemoryCost` 기본값 0 = 무제한이다.
+        let cache = AppImageCaches.disk
+        // **디스크 쓰기가 병목이라는 게 실측으로 확정됐다**(2026-08-22). 저장 위치를
+        // 메모리로만 돌려 디스크 쓰기를 없앤 세션과 비교:
+        //
+        //                  쓰기 켬      쓰기 끔
+        //   본문 show p50   2,468ms      127ms   ← 19배
+        //   본문 show p90   5,049ms      383ms   ← 13배
+        //   대기 p50        2,447ms       80ms
+        //   cmpl p90        1,666ms       12ms
+        //   bg 큐 지연    35건/2,100ms   0건/0ms  ← 완전히 사라짐
+        //
+        // 구조: 34장을 `ioQueue`(직렬)에서 순차로 파일에 쓰는 동안 그 스레드가 I/O 에
+        // 묶이고 → 백그라운드 풀이 고갈되고 → 디코드 블록이 순서를 기다리고 →
+        // 오퍼레이션이 안 끝나 슬롯이 안 풀리고 → 뒤 이미지가 다운로드조차 못 한다.
+        // 슬롯 폭(2·4·8)도 ioQueue 동시화도 이 아래쪽 얘기라 전부 무효였다.
+        //
+        // 디스크 캐시를 끄고 살 수는 없으므로(콜드 스타트 재방문) **쓰기 비용 자체를**
+        // 줄인다. 기본값 `.atomic` 은 임시 파일에 쓰고 rename 하는 2단계라 I/O 가 두 배다.
+        // 라이브러리가 atomic 을 요구하는 건 **동시 큐**를 쓸 때이고
+        // (`SDImageCacheConfig.h:135` 경고), 우리는 직렬 기본값을 그대로 두므로 해제해도
+        // 그 조건에 걸리지 않는다.
+        //
+        // 대가: 쓰는 도중 죽으면 부분 파일이 남을 수 있다. 그 엔트리는 디코드에 실패하고
+        // 다시 받으므로 화면상으로는 느린 한 번으로 끝난다.
+        cache.config.diskCacheWritingOptions = []
         // 400MB. 종전 200MB 는 "이전 `ImageCache` 예산에 맞춘" 값이었고 근거가
         // 측정이 아니었다(이 주석의 원문도 "측정하면 튜닝하겠다" 였다). 기기
         // 계측으로 부족이 확인돼 올린다.
@@ -77,11 +133,21 @@ enum SDWebImageSetup {
         cache.config.maxDiskAge = 7 * 24 * 60 * 60
 
         let downloader = SDWebImageDownloader.shared
-        // 4 concurrent fetches. Higher values let more images race
-        // for handshakes after scene-phase resume but spike the
-        // gestures-unresponsive window; lower starves the queue on
-        // long detail pages.
-        downloader.config.maxConcurrentDownloads = 4
+        // 8 슬롯 — **조건이 처음으로 깨끗해진 뒤의 재실험**이다.
+        //
+        // 종전 세 번의 폭 실험(2·4·8)은 전부 무효였다. show p90 이 5,049 / 5,096 /
+        // 5,120ms 로 붙어 있었는데, 그건 폭이 무의미해서가 아니라 **그 아래에 더 큰
+        // 병목이 깔려 있었기 때문**이다: 디스크 I/O 가 libdispatch 풀을 고갈시켜
+        // (bg 큐 지연 최대 5,417ms) 슬롯을 몇 개로 두든 총량이 안 변했다.
+        //
+        // `ThreadedImageCache` 로 그 고갈이 사라졌다(bg 지연 최대 1ms). 그 뒤 측정:
+        //   본문 show p50 49ms / p90 1,568ms · 대기 p90 1,567ms
+        // 이제 p90 이 거의 전부 **슬롯 회전 대기**다 — 슬롯 4개로 34장을 도는 구조적
+        // 제약이고, 이 지점에서야 폭이 처리량을 실제로 좌우한다.
+        //
+        // 판정: 대기 p90 과 show p90 이 내려가고 footprint peak 이 한도 대비 여유를
+        // 유지하면 8 유지. 대기가 안 줄거나 peak 이 튀면 4 로 되돌린다.
+        downloader.config.maxConcurrentDownloads = 8
         // 8s timeout per attempt to fast-fail stale keep-alive
         // connections (the iOS pool's -1005 / -1001 case after
         // backgrounding). SDWebImage's internal retry re-issues with

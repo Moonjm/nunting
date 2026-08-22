@@ -215,6 +215,17 @@ final class AlertSubscriptionService {
         _ = try await post("/me/metrics?kind=hang", jsonBody: body)
     }
 
+    /// 미디어(이미지·영상) 로드 이벤트 배치를 기존 metrics 채널(kind=media)로 전송.
+    /// `MediaLoadTelemetry` 가 버퍼가 차거나 백그라운드 진입 시 호출한다. 건별 POST 는
+    /// 불가능한 빈도라(글 하나에 수십 건) 항상 배치로 싣는다.
+    /// `cfg` 는 이 배치가 나온 실행 설정(슬롯 폭·빌드) — 없으면 "이 숫자가 어느
+    /// 빌드에서 나왔나" 를 사후에 못 가른다(슬롯 실험에서 실제로 막혔던 지점).
+    func reportMediaLoads(_ events: [MediaLoadEventDTO], cfg: String = "") async throws {
+        let body = try JSONEncoder().encode(
+            MediaLoadBatch(events: events, cfg: cfg.isEmpty ? nil : cfg))
+        _ = try await post("/me/metrics?kind=media", jsonBody: body)
+    }
+
     /// 메모리 footprint 샘플 배치를 서버로 전송. FootprintLogger 가 버퍼가 차거나
     /// 백그라운드/메모리경고 시 호출. 서버는 저장하고 admin 뷰가 타임라인으로 렌더.
     func reportFootprint(_ samples: [FootprintSampleDTO]) async throws {

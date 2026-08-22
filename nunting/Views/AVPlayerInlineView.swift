@@ -102,6 +102,10 @@ final class InlineAutoplayUIView: UIView, VideoPlayerPool.Leaseholder {
     /// cancel the previous task before its callback fires against
     /// the new asset and reports the wrong aspect.
     private var aspectTask: Task<Void, Never>?
+    /// 영상 준비 계측(`kind=media`, t=video)의 기산점 — 플레이어를 만든 순간.
+    /// `.readyToPlay`(첫 프레임을 낼 수 있는 시점)까지가 "탭했는데 안 뜬다"의 실제 길이다.
+    /// 준비/실패를 한 로드당 한 번만 싣기 위한 래치. KVO 는 같은 상태로 여러 번
+    /// 불릴 수 있고, 재생 중 stall→ready 왕복까지 세면 분포가 부풀어 오른다.
 
     override init(frame: CGRect) {
         super.init(frame: frame)

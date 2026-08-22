@@ -6,7 +6,9 @@ import (
 	"html/template"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -19,11 +21,15 @@ import (
 // 작은 JSON) — 사이트 마크업 개편을 기기 밖에서 관측하기 위한 채널.
 // hang = iOS HangWatchdog 의 메인스레드 hang 리포트({ts, durationMs, label, samples[]})
 // — MetricKit diagnostic 이 Xcode 설치 빌드에 전달되지 않아 만든 직접 수집 채널.
+// media = iOS MediaLoadTelemetry 의 미디어 로드 배치({events:[{t,ts,ms,host,link,…}]})
+// — 이미지 다운로드(net)/표시(show)/디코드(decode) 세 계층의 소요 시간. "사진이
+// 느리다"의 원인이 회선인지 캐시 미스인지 특정 호스트인지 기기 밖에서 가르기 위한 채널.
 // hitch = iOS FrameHitchRecorder 의 인터랙션 구간 프레임 히치({label, context,
 // frameCount, droppedFrames, worstFrameMs, ...}) — hang 임계(1s) 아래로 새는
 // "몇 프레임 빠짐" 을 보기 위한 채널. 히치가 있는 구간만 올라온다.
 var validMetricKinds = map[string]bool{
 	"metric": true, "diagnostic": true, "parser": true, "hang": true, "hitch": true,
+	"media": true,
 }
 
 // POST /me/metrics?kind=metric|diagnostic|parser
@@ -63,10 +69,18 @@ func (h *handlers) postMetrics(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// adminMetricsLimit admin 뷰가 한 번에 읽어 렌더하는 payload 개수 상한. 저장은
-// 무제한 누적이지만, 한 페이지가 과도하게 커지지 않게 최신 N 건만 보여준다.
-// MetricKit 은 하루 1건가량이라 2000 이면 수년치.
-const adminMetricsLimit = 2000
+// adminMetricsPerKindLimit admin 뷰가 **kind 마다** 읽어 렌더하는 payload 개수 상한.
+//
+// 전체 최신 N 건으로 자르면 말 많은 kind 가 조용한 kind 를 밀어낸다. media 는 글
+// 하나 열 때마다 배치가 나오고(하루 수백 건) hang/diagnostic 은 며칠에 한 번이라,
+// 창을 공유하면 정작 드물고 중요한 쪽이 먼저 사라진다 — OOM/행 추적이 그때 막힌다.
+//
+// 400 인 이유: 종전 전체 상한 2000 과 페이지 크기가 비슷하게 유지되는 선이다
+// (kind 6종 × 400 = 2400, 현재 payload 하나가 HTML 로 ~8KB). media 진단도 400
+// 배치면 이틀치가 넘어 A/B 판정에 모자라지 않는다.
+//
+// 저장은 여전히 무제한 — 자르는 건 렌더 대상뿐이다.
+const adminMetricsPerKindLimit = 400
 
 // GET /admin/metrics?key=<secret>
 //
@@ -81,7 +95,7 @@ func (h *handlers) adminMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := h.store.ListMetricPayloads(r.Context(), adminMetricsLimit)
+	rows, err := h.store.ListMetricPayloadsPerKind(r.Context(), adminMetricsPerKindLimit)
 	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
@@ -221,6 +235,42 @@ type metricsPage struct {
 	Footprint      []footprintRow
 	FootprintPeak  int
 	FootprintCount int
+
+	Media     mediaSectionView
+	mediaAggs mediaAggSet
+}
+
+// mediaAggSet 은 **설정(cfg)별로** 집계를 나눠 담는다.
+//
+// 전부 한 집계에 부으면 실험군과 대조군의 백분위가 합쳐져, `cfg` 를 넣은 이유
+// (A/B 귀속) 자체가 무의미해진다. 등장 순서를 따로 들고 있는 건 payload 를
+// 최신순으로 훑기 때문이다 — 최근에 돌린 설정이 위에 온다.
+type mediaAggSet struct {
+	order []string
+	byCfg map[string]*mediaAgg
+}
+
+// mediaUnknownCfg cfg 를 안 싣던 시절의 배치. 섞지 않고 따로 모은다.
+const mediaUnknownCfg = "(설정 미상)"
+
+// mediaConfigLimit 렌더할 설정 블록 수 상한. A/B 는 최근 몇 개만 보면 되고,
+// 전부 늘어놓으면 페이지가 설정 수만큼 길어진다(잘라낸 사실은 제목에 적는다).
+const mediaConfigLimit = 6
+
+func (s *mediaAggSet) for_(cfg string) *mediaAgg {
+	if cfg == "" {
+		cfg = mediaUnknownCfg
+	}
+	if s.byCfg == nil {
+		s.byCfg = map[string]*mediaAgg{}
+	}
+	if agg, ok := s.byCfg[cfg]; ok {
+		return agg
+	}
+	agg := &mediaAgg{}
+	s.byCfg[cfg] = agg
+	s.order = append(s.order, cfg)
+	return agg
 }
 
 // addFootprint footprint 샘플을 시간순(오래된→최신)으로 정리해 페이지에 붙인다.
@@ -287,12 +337,15 @@ func buildMetricsPage(rows []db.MetricPayloadRow) metricsPage {
 			vr.Summary = summarizeHang(row.Payload, &page.Summary)
 		case "hitch":
 			vr.Summary = summarizeHitch(row.Payload, &page.Summary)
+		case "media":
+			vr.Summary = summarizeMedia(row.Payload, &page.mediaAggs)
 		}
 		if vr.Summary == "" {
 			vr.Summary = "—"
 		}
 		page.Rows = append(page.Rows, vr)
 	}
+	page.Media = page.mediaAggs.view()
 	return page
 }
 
@@ -539,4 +592,407 @@ var metricsTemplate = template.Must(template.New("metrics").Parse(`<!doctype htm
 {{else}}
 <p class="empty">아직 footprint 샘플이 없어. 앱을 좀 쓰다 백그라운드로 보내면 배치 전송돼.</p>
 {{end}}
+<h2>미디어 로딩 <span style="color:#999;font-weight:400">({{.Media.Events}} events{{if .Media.Fails}} · 실패 {{.Media.Fails}}{{end}}{{if .Media.Hidden}} · 설정 {{.Media.Hidden}}개 생략{{end}})</span></h2>
+{{if .Media.Events}}
+<p style="color:#777;font-size:12px">net=이미지 다운로드(URLSession 실측), show=슬롯이 뜬 뒤 그림이 채워지기까지(캐시 히트 포함 — 체감 시간), decode=디코드. show 가 빠른데 net 이 느리면 프리페치가 가려주고 있는 것이고, show 의 net 비중이 높으면 캐시를 못 타는 것. <b>분포는 실행 설정(cfg)별로 나눠 낸다</b> — 섞으면 A/B 비교가 안 된다.</p>
+{{range .Media.Configs}}
+<h3 style="font-size:13px;margin-top:22px;border-top:1px solid #e2e2e2;padding-top:12px">{{.Cfg}} <span style="color:#999;font-weight:400">({{.Events}} events{{if .Fails}} · 실패 {{.Fails}}{{end}})</span></h3>
+<table>
+ <tr><th>계층</th><th>건수</th><th>p50</th><th>p90</th><th>비고</th></tr>
+ {{range .Layers}}
+ <tr><td class="mono">{{.Layer}}</td><td class="mono">{{.Count}}</td><td class="mono">{{.P50}}</td><td class="mono">{{.P90}}</td><td class="mono">{{.Note}}</td></tr>
+ {{end}}
+</table>
+{{if .Links}}
+<table style="margin-top:8px">
+ <tr><th>link</th><th>건수</th><th>p50</th><th>p90</th><th>bytes</th></tr>
+ {{range .Links}}
+ <tr><td class="mono">{{.Link}}</td><td class="mono">{{.Count}}</td><td class="mono">{{.P50}}</td><td class="mono">{{.P90}}</td><td class="mono">{{.Bytes}}</td></tr>
+ {{end}}
+</table>
+{{end}}
+{{if .Hosts}}
+<table style="margin-top:8px">
+ <tr><th>느린 호스트 (p90 상위 5)</th><th>건수</th><th>p50</th><th>p90</th></tr>
+ {{range .Hosts}}
+ <tr><td class="mono">{{.Host}}</td><td class="mono">{{.Count}}</td><td class="mono">{{.P50}}</td><td class="mono">{{.P90}}</td></tr>
+ {{end}}
+</table>
+{{end}}
+{{end}}
+{{else}}
+<p class="empty">아직 미디어 로드 이벤트가 없어. 앱에서 글을 좀 열고 백그라운드로 보내면 배치 전송돼.</p>
+{{end}}
 </body></html>`))
+
+// ---- 미디어 로딩(kind=media) ----
+
+// mediaEventJSON 은 iOS MediaLoadEventDTO 한 건. 키는 Swift 쪽과 합의.
+// 세 계층을 `t` 로 가른다: net(다운로드) / show(표시) / decode(디코드).
+type mediaEventJSON struct {
+	T      string `json:"t"`
+	Ms     int    `json:"ms"`
+	Host   string `json:"host"`
+	Ctx    string `json:"ctx"`
+	Src    string `json:"src"`  // show: mem|disk|net
+	Kind   string `json:"kind"` // decode: 디코드 경로 이름
+	Link   string `json:"link"` // wifi|cell|wired|none
+	Bytes  int    `json:"bytes"`
+	TTFB   int    `json:"ttfb"`
+	Proto  string `json:"proto"`
+	Status int    `json:"status"`
+	// Queued net 다운로더 슬롯 대기(ms). 포인터인 이유는 **측정된 0 과 측정 안 됨을
+	// 갈라야** 하기 때문이다. 같은 밀리초에 시작하면 클라이언트가 정당하게 0 을
+	// 싣는데, 그걸 버리면 기다린 요청만으로 백분위가 나와 대기 압력이 과장된다.
+	Queued *int  `json:"queued"`
+	Px     int   `json:"px"` // decode: 출력 픽셀 수
+	PF     bool  `json:"pf"` // net: 프리페치 요청(표시 요청이면 없음)
+	OK     *bool `json:"ok"` // 실패일 때만 실린다(false)
+}
+
+type mediaPayloadJSON struct {
+	Events []mediaEventJSON `json:"events"`
+	// Cfg 이 배치가 나온 실행 설정("slots=4 build=137"). A/B 판정의 귀속 축이라
+	// 행 요약 맨 앞에 세운다 — 없으면 어느 빌드의 숫자인지 사후에 못 가른다.
+	Cfg string `json:"cfg"`
+}
+
+// mediaAgg 는 여러 배치에 걸친 이벤트를 계층·링크·호스트별로 누적한다.
+// 퍼센타일을 내려면 원본 값이 필요해서 슬라이스로 들고 있는다 — 1인용 앱의
+// 하루치(수천 건) 기준으로 메모리는 문제가 되지 않는다.
+type mediaAgg struct {
+	Events     int
+	Fails      int
+	NetMs      []int
+	ShowMs     []int
+	Bytes      int64
+	Src        map[string]int   // show 캐시 출처 분포
+	LinkMs     map[string][]int // 링크별 net 소요
+	LinkBytes  map[string]int64
+	HostMs     map[string][]int // 호스트별 net 소요
+	QueuedMs   []int            // net 슬롯 대기 — 디코드가 슬롯을 붙잡는지 보는 축
+	QueuedPF   []int            // 그중 프리페치 요청의 대기
+	QueuedShow []int            // 그중 표시 요청의 대기
+	DecodeMs   []int
+	DecodePx   []int
+	DecodeBy   map[string]int // 코더별 디코드 건수
+}
+
+func (a *mediaAgg) add(e mediaEventJSON) {
+	a.Events++
+	if e.OK != nil && !*e.OK {
+		a.Fails++
+	}
+	switch e.T {
+	case "net":
+		a.NetMs = append(a.NetMs, e.Ms)
+		a.Bytes += int64(e.Bytes)
+		if a.LinkMs == nil {
+			a.LinkMs = map[string][]int{}
+			a.LinkBytes = map[string]int64{}
+		}
+		if e.Link != "" {
+			a.LinkMs[e.Link] = append(a.LinkMs[e.Link], e.Ms)
+			a.LinkBytes[e.Link] += int64(e.Bytes)
+		}
+		if a.HostMs == nil {
+			a.HostMs = map[string][]int{}
+		}
+		if e.Host != "" {
+			a.HostMs[e.Host] = append(a.HostMs[e.Host], e.Ms)
+		}
+		if e.Queued != nil {
+			a.QueuedMs = append(a.QueuedMs, *e.Queued)
+			// 대기의 정체를 가르는 축. 프리페치가 큐를 채우고 있으면 표시 요청이 그
+			// 뒤에 줄 서는 구조이고, 그건 슬롯 수가 아니라 순서/양의 문제다.
+			if e.PF {
+				a.QueuedPF = append(a.QueuedPF, *e.Queued)
+			} else {
+				a.QueuedShow = append(a.QueuedShow, *e.Queued)
+			}
+		}
+	case "decode":
+		a.DecodeMs = append(a.DecodeMs, e.Ms)
+		if e.Px > 0 {
+			a.DecodePx = append(a.DecodePx, e.Px)
+		}
+		if a.DecodeBy == nil {
+			a.DecodeBy = map[string]int{}
+		}
+		if e.Kind != "" {
+			a.DecodeBy[e.Kind]++
+		}
+	case "show":
+		a.ShowMs = append(a.ShowMs, e.Ms)
+		if a.Src == nil {
+			a.Src = map[string]int{}
+		}
+		if e.Src != "" {
+			a.Src[e.Src]++
+		}
+	}
+}
+
+type mediaLayerRow struct {
+	Layer string
+	Count int
+	P50   string
+	P90   string
+	Note  string
+}
+
+type mediaLinkRow struct {
+	Link  string
+	Count int
+	P50   string
+	P90   string
+	Bytes string
+}
+
+type mediaHostRow struct {
+	Host  string
+	Count int
+	P50   string
+	P90   string
+}
+
+type mediaView struct {
+	Events int
+	Fails  int
+	Layers []mediaLayerRow
+	Links  []mediaLinkRow
+	Hosts  []mediaHostRow
+}
+
+// mediaSectionView 미디어 섹션 전체. 합계는 헤더용이고, 분포는 설정별로 나뉜다.
+type mediaSectionView struct {
+	Events  int
+	Fails   int
+	Configs []mediaConfigView
+	Hidden  int // 상한에 걸려 안 그린 설정 수
+}
+
+// mediaConfigView 설정 하나의 분포. `mediaView` 를 묻어 템플릿에서 그대로 쓴다.
+type mediaConfigView struct {
+	Cfg string
+	mediaView
+}
+
+// view 설정별 블록을 최신 설정부터 만든다. 합계(Events/Fails)는 전 설정 합이다 —
+// 헤더의 "얼마나 쌓였나" 는 나눌 이유가 없다.
+func (s *mediaAggSet) view() mediaSectionView {
+	out := mediaSectionView{}
+	for _, cfg := range s.order {
+		agg := s.byCfg[cfg]
+		out.Events += agg.Events
+		out.Fails += agg.Fails
+		if len(out.Configs) >= mediaConfigLimit {
+			out.Hidden++
+			continue
+		}
+		out.Configs = append(out.Configs, mediaConfigView{Cfg: cfg, mediaView: agg.view()})
+	}
+	return out
+}
+
+// view 누적치를 표로 만든다. 호스트는 p90 상위 5개만 — 전부 늘어놓으면
+// "어디가 느린가"가 오히려 안 보인다(잘라낸 사실은 제목에 적는다).
+func (a *mediaAgg) view() mediaView {
+	v := mediaView{Events: a.Events, Fails: a.Fails}
+	if a.Events == 0 {
+		return v
+	}
+	if len(a.NetMs) > 0 {
+		note := bytesLabel(a.Bytes)
+		// 슬롯 대기 — 다운로드 자체는 짧은데 화면엔 늦게 뜨는 경우, 여기 잡히면
+		// 원인은 다운로더 큐다.
+		if len(a.QueuedMs) > 0 {
+			note += " · 대기 p50 " + msLabel(percentile(a.QueuedMs, 50)) +
+				"/p90 " + msLabel(percentile(a.QueuedMs, 90))
+		}
+		// 기다린 게 프리페치인지 표시 요청인지 — 처방이 갈린다.
+		if len(a.QueuedPF) > 0 {
+			note += " · 프리페치 " + strconv.Itoa(len(a.QueuedPF)) + "건 대기 p90 " +
+				msLabel(percentile(a.QueuedPF, 90))
+		}
+		if len(a.QueuedShow) > 0 {
+			note += " · 표시 " + strconv.Itoa(len(a.QueuedShow)) + "건 대기 p90 " +
+				msLabel(percentile(a.QueuedShow, 90))
+		}
+		v.Layers = append(v.Layers, mediaLayerRow{
+			Layer: "net (다운로드)", Count: len(a.NetMs),
+			P50: msLabel(percentile(a.NetMs, 50)), P90: msLabel(percentile(a.NetMs, 90)),
+			Note: note,
+		})
+	}
+	if len(a.DecodeMs) > 0 {
+		note := countPairs(a.DecodeBy)
+		// 픽셀 규모를 같이 봐야 "무거운 이미지라 오래 걸린 것"과 "가벼운데 밀린 것"이 갈린다.
+		if len(a.DecodePx) > 0 {
+			note += " · 중앙 " + megapixelLabel(percentile(a.DecodePx, 50)) +
+				" / p90 " + megapixelLabel(percentile(a.DecodePx, 90))
+		}
+		v.Layers = append(v.Layers, mediaLayerRow{
+			Layer: "decode (디코드)", Count: len(a.DecodeMs),
+			P50: msLabel(percentile(a.DecodeMs, 50)), P90: msLabel(percentile(a.DecodeMs, 90)),
+			Note: note,
+		})
+	}
+	if len(a.ShowMs) > 0 {
+		v.Layers = append(v.Layers, mediaLayerRow{
+			Layer: "show (표시)", Count: len(a.ShowMs),
+			P50: msLabel(percentile(a.ShowMs, 50)), P90: msLabel(percentile(a.ShowMs, 90)),
+			Note: sharePairs(a.Src, len(a.ShowMs)),
+		})
+	}
+	for link, ms := range a.LinkMs {
+		v.Links = append(v.Links, mediaLinkRow{
+			Link: link, Count: len(ms),
+			P50: msLabel(percentile(ms, 50)), P90: msLabel(percentile(ms, 90)),
+			Bytes: bytesLabel(a.LinkBytes[link]),
+		})
+	}
+	sort.Slice(v.Links, func(i, j int) bool { return v.Links[i].Link < v.Links[j].Link })
+
+	for host, ms := range a.HostMs {
+		v.Hosts = append(v.Hosts, mediaHostRow{
+			Host: host, Count: len(ms),
+			P50: msLabel(percentile(ms, 50)), P90: msLabel(percentile(ms, 90)),
+		})
+	}
+	sort.Slice(v.Hosts, func(i, j int) bool {
+		pi, pj := percentile(a.HostMs[v.Hosts[i].Host], 90), percentile(a.HostMs[v.Hosts[j].Host], 90)
+		if pi != pj {
+			return pi > pj
+		}
+		return v.Hosts[i].Host < v.Hosts[j].Host
+	})
+	if len(v.Hosts) > 5 {
+		v.Hosts = v.Hosts[:5]
+	}
+	return v
+}
+
+// summarizeMedia 배치 한 건의 행 요약 + 누적. 행 요약은 "이 배치가 무슨 상황이었나"를
+// 한 줄로 보여주는 용도라 계층별 건수와 net p50 만 싣는다(분포는 아래 미디어 섹션).
+func summarizeMedia(payload string, set *mediaAggSet) string {
+	var p mediaPayloadJSON
+	if err := json.Unmarshal([]byte(payload), &p); err != nil || len(p.Events) == 0 {
+		return ""
+	}
+	agg := set.for_(p.Cfg)
+	before := *agg
+	for _, e := range p.Events {
+		agg.add(e)
+	}
+	batchNet := agg.NetMs[len(before.NetMs):]
+	s := "media " + strconv.Itoa(len(p.Events)) + "건"
+	if p.Cfg != "" {
+		s = "[" + p.Cfg + "] " + s
+	}
+	if len(batchNet) > 0 {
+		s += " · net " + strconv.Itoa(len(batchNet)) + "건 p50 " + msLabel(percentile(batchNet, 50))
+	}
+	if show := len(agg.ShowMs) - len(before.ShowMs); show > 0 {
+		s += " · show " + strconv.Itoa(show) + "건"
+	}
+	if fails := agg.Fails - before.Fails; fails > 0 {
+		s += " · 실패 " + strconv.Itoa(fails)
+	}
+	return s
+}
+
+// percentile nearest-rank. 입력 순서는 상관없고(복사해 정렬), 빈 입력은 0.
+func percentile(values []int, p float64) int {
+	if len(values) == 0 {
+		return 0
+	}
+	sorted := append([]int(nil), values...)
+	sort.Ints(sorted)
+	idx := int(math.Ceil(p/100*float64(len(sorted)))) - 1
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(sorted) {
+		idx = len(sorted) - 1
+	}
+	return sorted[idx]
+}
+
+// megapixelLabel 픽셀 수 → "3.1MP".
+func megapixelLabel(px int) string {
+	return strconv.FormatFloat(float64(px)/1_000_000, 'f', 1, 64) + "MP"
+}
+
+func msLabel(ms int) string {
+	if ms < 1000 {
+		return strconv.Itoa(ms) + "ms"
+	}
+	return strconv.FormatFloat(float64(ms)/1000, 'f', 1, 64) + "s"
+}
+
+func bytesLabel(n int64) string {
+	if n <= 0 {
+		return ""
+	}
+	mb := float64(n) / (1024 * 1024)
+	if mb < 1 {
+		return strconv.FormatFloat(float64(n)/1024, 'f', 0, 64) + "KB"
+	}
+	return strconv.FormatFloat(mb, 'f', 1, 64) + "MB"
+}
+
+// sharePairs {mem:5, net:5} → "mem 50% · net 50%" (건수 많은 순).
+func sharePairs(m map[string]int, total int) string {
+	if total == 0 {
+		return ""
+	}
+	type kvs struct {
+		k string
+		v int
+	}
+	pairs := make([]kvs, 0, len(m))
+	for k, v := range m {
+		pairs = append(pairs, kvs{k, v})
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].v != pairs[j].v {
+			return pairs[i].v > pairs[j].v
+		}
+		return pairs[i].k < pairs[j].k
+	})
+	out := ""
+	for _, p := range pairs {
+		if out != "" {
+			out += " · "
+		}
+		out += p.k + " " + strconv.Itoa(p.v*100/total) + "%"
+	}
+	return out
+}
+
+// countPairs {webm:3, mp4:1} → "webm 3 · mp4 1".
+func countPairs(m map[string]int) string {
+	type kvs struct {
+		k string
+		v int
+	}
+	pairs := make([]kvs, 0, len(m))
+	for k, v := range m {
+		pairs = append(pairs, kvs{k, v})
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		if pairs[i].v != pairs[j].v {
+			return pairs[i].v > pairs[j].v
+		}
+		return pairs[i].k < pairs[j].k
+	})
+	out := ""
+	for _, p := range pairs {
+		if out != "" {
+			out += " · "
+		}
+		out += p.k + " " + strconv.Itoa(p.v)
+	}
+	return out
+}

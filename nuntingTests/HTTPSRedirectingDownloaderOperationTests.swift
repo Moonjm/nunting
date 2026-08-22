@@ -36,6 +36,32 @@ final class HTTPSRedirectingDownloaderOperationTests: XCTestCase {
         )
     }
 
+    /// 같은 종류의 런타임 함정 — `SDWebImageDownloader` 는 수집된 태스크 메트릭도
+    /// 대문자 셀렉터 `URLSession:task:didFinishCollectingMetrics:` 로만 넘긴다
+    /// (`SDWebImageDownloader.m:541`). Swift 자동 브리징이 소문자로 등록하면
+    /// `respondsToSelector` 가 false 가 돼 이미지 네트워크 계측이 **조용히** 0건이 된다.
+    func testRegistersMetricsSelectorOnOwnClass() {
+        let cls: AnyClass = HTTPSRedirectingDownloaderOperation.self
+        var count: UInt32 = 0
+        guard let methodList = class_copyMethodList(cls, &count) else {
+            XCTFail("class_copyMethodList returned nil — no methods on subclass")
+            return
+        }
+        defer { free(methodList) }
+
+        let target = "URLSession:task:didFinishCollectingMetrics:"
+        var registeredSelectors: [String] = []
+        for i in 0..<Int(count) {
+            registeredSelectors.append(NSStringFromSelector(method_getName(methodList[i])))
+        }
+        XCTAssertTrue(
+            registeredSelectors.contains(target),
+            "Subclass must register `\(target)` under exact uppercase selector. " +
+                "Currently registered: \(registeredSelectors)"
+        )
+    }
+
+
     func testUpgradesHTTPToHTTPS() {
         let url = URL(string: "http://ext.fmkorea.com/getfile.php?code=abc&file=x%2Fy")!
         let out = HTTPSRedirectingDownloaderOperation.upgradeHTTPToHTTPS(URLRequest(url: url))

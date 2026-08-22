@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -760,5 +761,267 @@ func TestAdminMetricsSummarizesHitch(t *testing.T) {
 	// dropped frames 카드에 누적된다.
 	if !strings.Contains(body, "dropped frames") {
 		t.Errorf("dropped frames card missing, body=%q", body)
+	}
+}
+
+func TestPostMetricsAcceptsMediaKind(t *testing.T) {
+	srv, store := newTestServer(t)
+	defer srv.Close()
+	defer store.Close()
+
+	media := `{"events":[{"t":"net","ts":1753000000,"ms":950,"host":"img.fmkorea.com",` +
+		`"link":"cell","bytes":812345,"dns":30,"conn":120,"tls":90,"ttfb":240,` +
+		`"proto":"h2","reused":false,"status":200}]}`
+	if code, _ := do(t, "POST", srv.URL+"/me/metrics?kind=media", "nnt_x", media); code != 200 {
+		t.Fatalf("post media: want 200, got %d", code)
+	}
+
+	rows, err := store.ListMetricPayloads(t.Context(), 10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Kind != "media" {
+		t.Fatalf("unexpected rows: %+v", rows)
+	}
+}
+
+// 미디어 섹션은 "느린 게 회선이냐 캐시냐 서버냐"를 한 화면에서 갈라야 한다 —
+// 계층별 분포, 캐시 출처, 링크별 비교, 느린 호스트가 모두 렌더돼야 한다.
+func TestAdminMetricsRendersMediaSection(t *testing.T) {
+	t.Setenv("NUNTING_ADMIN_KEY", "s3cret")
+	store := dbtest.New(t)
+	defer store.Close()
+	srv := httptest.NewServer(NewRouter(store))
+	defer srv.Close()
+
+	if err := store.UpsertUser(t.Context(), "nnt_x"); err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+	media := `{"events":[` +
+		`{"t":"net","ts":1753000000,"ms":950,"host":"img.fmkorea.com","link":"cell","bytes":800000,"ttfb":240,"proto":"h2","reused":false,"status":200},` +
+		`{"t":"net","ts":1753000001,"ms":150,"host":"i.namu.wiki","link":"wifi","bytes":20000,"ttfb":80,"proto":"h2","reused":true,"status":200},` +
+		`{"t":"show","ts":1753000002,"ms":12,"host":"img.fmkorea.com","link":"wifi","src":"mem","ctx":"body"},` +
+		`{"t":"show","ts":1753000003,"ms":980,"host":"img.fmkorea.com","link":"cell","src":"net","ctx":"body","ok":false},` +
+		`{"t":"decode","ts":1753000004,"ms":17,"kind":"webpViaIO","px":1200000,"bytes":94908}` +
+		`]}`
+	if err := store.InsertMetricPayload(t.Context(), "nnt_x", "media", media); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	code, body := do(t, "GET", srv.URL+"/admin/metrics?key=s3cret", "", "")
+	if code != 200 {
+		t.Fatalf("admin: want 200, got %d", code)
+	}
+	for _, want := range []string{
+		"미디어 로딩",          // 섹션
+		"img.fmkorea.com", // 느린 호스트
+		"wifi", "cell",    // 링크별 비교
+		"mem", // 캐시 출처 분포
+		// 집계 행에서만 나오는 모양으로 검사한다 — raw JSON 이 같은 페이지에 렌더되므로
+		// 이름만 찾으면 집계가 통째로 빠져도 통과한다(직전까지 "webm" 이 그랬다).
+		"webpViaIO 1", // 코더별 디코드 건수
+		"950ms",       // net p50(2건 중 느린 쪽이 p90, 여기선 값 노출 확인)
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("media section missing %q", want)
+		}
+	}
+}
+
+func TestPercentile(t *testing.T) {
+	vals := []int{50, 10, 40, 20, 30} // 정렬 안 된 입력도 받는다
+
+	if got := percentile(vals, 50); got != 30 {
+		t.Errorf("p50: want 30, got %d", got)
+	}
+	if got := percentile(vals, 90); got != 50 {
+		t.Errorf("p90: want 50, got %d", got)
+	}
+	if got := percentile(nil, 50); got != 0 {
+		t.Errorf("빈 입력은 0: got %d", got)
+	}
+	if got := percentile([]int{7}, 90); got != 7 {
+		t.Errorf("한 건이면 그 값: got %d", got)
+	}
+}
+
+// 파이프라인 분해: 다운로드 슬롯 대기(queued)와 디코드(decode)가 표에 보여야
+// "느린 게 큐냐 디코드냐"를 대시보드에서 바로 가른다.
+func TestAdminMetricsSplitsMediaPipeline(t *testing.T) {
+	t.Setenv("NUNTING_ADMIN_KEY", "s3cret")
+	store := dbtest.New(t)
+	defer store.Close()
+	srv := httptest.NewServer(NewRouter(store))
+	defer srv.Close()
+
+	if err := store.UpsertUser(t.Context(), "nnt_x"); err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+	media := `{"events":[` +
+		`{"t":"net","ts":1753000000,"ms":60,"host":"upload3.inven.co.kr","link":"wifi","bytes":150000,"queued":2500},` +
+		`{"t":"net","ts":1753000001,"ms":70,"host":"upload3.inven.co.kr","link":"wifi","bytes":160000,"queued":4800},` +
+		`{"t":"decode","ts":1753000002,"ms":180,"kind":"webpStatic","px":3110400,"bytes":214003},` +
+		`{"t":"decode","ts":1753000003,"ms":950,"kind":"webpStatic","px":8294400,"bytes":512000}` +
+		`]}`
+	if err := store.InsertMetricPayload(t.Context(), "nnt_x", "media", media); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	code, body := do(t, "GET", srv.URL+"/admin/metrics?key=s3cret", "", "")
+	if code != 200 {
+		t.Fatalf("admin: want 200, got %d", code)
+	}
+	for _, want := range []string{
+		"decode (디코드)", // 계층 행 라벨 — raw JSON 에도 "decode" 가 있어 라벨로 검사
+		"webpStatic 2", // 코더별 건수
+		"대기",           // net 행의 슬롯 대기
+		"4.8s",         // 대기 p90
+		"950ms",        // 디코드 p90
+		"MP",           // 픽셀 규모 — 무거운 이미지인지 큐 적체인지 가르는 축
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("pipeline split missing %q", want)
+		}
+	}
+}
+
+// 설정(cfg)이 다른 배치의 분포를 **섞으면 안 된다**.
+//
+// `cfg` 는 A/B 귀속을 위해 넣은 축이다. 그런데 전부 한 집계에 부어버리면 실험군과
+// 대조군의 백분위가 합쳐져, 정작 그 축으로 비교를 못 한다. 아래 두 배치는 섞으면
+// net p50 이 중간값(≈550ms)이 되고, 나누면 각각 100ms / 1,000ms 다.
+func TestAdminMetricsSeparatesMediaByRunConfig(t *testing.T) {
+	t.Setenv("NUNTING_ADMIN_KEY", "s3cret")
+	store := dbtest.New(t)
+	defer store.Close()
+	srv := httptest.NewServer(NewRouter(store))
+	defer srv.Close()
+
+	if err := store.UpsertUser(t.Context(), "nnt_x"); err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+	slow := `{"cfg":"slots=4 build=1","events":[` +
+		`{"t":"net","ts":1753000000,"ms":1000,"host":"h","link":"wifi","bytes":1000,"queued":0},` +
+		`{"t":"net","ts":1753000001,"ms":1000,"host":"h","link":"wifi","bytes":1000,"queued":0}` +
+		`]}`
+	fast := `{"cfg":"slots=8 build=2","events":[` +
+		`{"t":"net","ts":1753000002,"ms":100,"host":"h","link":"wifi","bytes":1000,"queued":0},` +
+		`{"t":"net","ts":1753000003,"ms":100,"host":"h","link":"wifi","bytes":1000,"queued":0}` +
+		`]}`
+	for _, payload := range []string{slow, fast} {
+		if err := store.InsertMetricPayload(t.Context(), "nnt_x", "media", payload); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	code, body := do(t, "GET", srv.URL+"/admin/metrics?key=s3cret", "", "")
+	if code != 200 {
+		t.Fatalf("admin: want 200, got %d", code)
+	}
+	// **집계 블록에서만 나오는 모양으로 검사한다.** 배치 행 요약에 이미 `[cfg]` 와
+	// 배치별 net p50 이 찍히므로, cfg 문자열이나 "100ms" 를 찾는 건 집계가 통째로
+	// 섞여 있어도 통과한다(직전에 실제로 그랬다).
+	if got := strings.Count(body, "net (다운로드)"); got != 2 {
+		t.Errorf("설정별 집계 블록이 %d개 — 2개여야 한다(설정 수만큼)", got)
+	}
+}
+
+// 측정된 0ms 대기도 백분위에 들어가야 한다.
+//
+// 같은 밀리초 안에 시작한 요청은 클라이언트가 `queued:0` 을 정당하게 싣는다. 그걸
+// 버리면 **기다린 요청만으로** 백분위를 내게 돼 대기 압력이 체계적으로 과장된다 —
+// 슬롯 폭을 그 숫자로 튜닝하므로 판정을 뒤집을 수 있다. 아래 표본은 0 을 포함하면
+// p50 이 0ms, 버리면 900ms 다.
+func TestAdminMetricsIncludesZeroQueueSamples(t *testing.T) {
+	t.Setenv("NUNTING_ADMIN_KEY", "s3cret")
+	store := dbtest.New(t)
+	defer store.Close()
+	srv := httptest.NewServer(NewRouter(store))
+	defer srv.Close()
+
+	if err := store.UpsertUser(t.Context(), "nnt_x"); err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+	media := `{"events":[` +
+		`{"t":"net","ts":1753000000,"ms":60,"host":"h","link":"wifi","bytes":1000,"queued":0},` +
+		`{"t":"net","ts":1753000001,"ms":60,"host":"h","link":"wifi","bytes":1000,"queued":0},` +
+		`{"t":"net","ts":1753000002,"ms":60,"host":"h","link":"wifi","bytes":1000,"queued":900}` +
+		`]}`
+	if err := store.InsertMetricPayload(t.Context(), "nnt_x", "media", media); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	code, body := do(t, "GET", srv.URL+"/admin/metrics?key=s3cret", "", "")
+	if code != 200 {
+		t.Fatalf("admin: want 200, got %d", code)
+	}
+	if !strings.Contains(body, "대기 p50 0ms") {
+		t.Errorf("측정된 0ms 대기가 백분위에서 빠졌다 — 대기 압력이 과장된다")
+	}
+}
+
+// 배치의 실행 설정(cfg)이 행 요약에 보여야 한다 — 어느 빌드/설정에서 나온 숫자인지
+// 못 가르면 A/B 판정 자체가 불가능하다(슬롯 4→8 실험에서 실제로 막혔던 지점).
+func TestAdminMetricsShowsMediaRunConfig(t *testing.T) {
+	t.Setenv("NUNTING_ADMIN_KEY", "s3cret")
+	store := dbtest.New(t)
+	defer store.Close()
+	srv := httptest.NewServer(NewRouter(store))
+	defer srv.Close()
+
+	if err := store.UpsertUser(t.Context(), "nnt_x"); err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+	media := `{"cfg":"slots=8 build=137","events":[` +
+		`{"t":"net","ts":1753000000,"ms":60,"host":"h","link":"wifi","bytes":1000,"queued":10}` +
+		`]}`
+	if err := store.InsertMetricPayload(t.Context(), "nnt_x", "media", media); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	_, body := do(t, "GET", srv.URL+"/admin/metrics?key=s3cret", "", "")
+	// 요약 칸(td class="sum")에 설정이 실려야 한다 — raw JSON 에만 있으면 표에서 안 보인다.
+	sum := regexp.MustCompile(`<td class="sum">([^<]*)</td>`).FindAllStringSubmatch(body, -1)
+	found := false
+	for _, m := range sum {
+		if strings.Contains(m[1], "slots=8 build=137") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("행 요약에 cfg 가 없음: %v", sum)
+	}
+}
+
+// 대기의 정체를 가르는 축: 프리페치 vs 표시. 다운로드 52ms·디코드 10ms 인데 대기가
+// p90 5초라면 큐에 무엇이 줄 서 있는지가 유일한 미지수라, 이 분해가 표에 보여야 한다.
+func TestAdminMetricsSplitsPrefetchAndDisplayWait(t *testing.T) {
+	t.Setenv("NUNTING_ADMIN_KEY", "s3cret")
+	store := dbtest.New(t)
+	defer store.Close()
+	srv := httptest.NewServer(NewRouter(store))
+	defer srv.Close()
+
+	if err := store.UpsertUser(t.Context(), "nnt_x"); err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+	media := `{"cfg":"slots=4","events":[` +
+		`{"t":"net","ts":1753000000,"ms":52,"host":"h","link":"wifi","bytes":1000,"queued":4900,"pf":true},` +
+		`{"t":"net","ts":1753000001,"ms":52,"host":"h","link":"wifi","bytes":1000,"queued":4800,"pf":true},` +
+		`{"t":"net","ts":1753000002,"ms":52,"host":"h","link":"wifi","bytes":1000,"queued":120}` +
+		`]}`
+	if err := store.InsertMetricPayload(t.Context(), "nnt_x", "media", media); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	_, body := do(t, "GET", srv.URL+"/admin/metrics?key=s3cret", "", "")
+	for _, want := range []string{
+		"프리페치 2건", // 큐를 채운 쪽의 건수
+		"4.9s",    // 프리페치 대기 p90
+		"120ms",   // 표시 대기 p90 — 둘이 갈려야 의미가 있다
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("대기 분해 누락: %q", want)
+		}
 	}
 }

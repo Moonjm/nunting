@@ -53,7 +53,9 @@ final class InlineAnimatedWebPPlaybackTests: XCTestCase {
         // NetworkImage 기본 호출(썸네일 파라미터 없음) → context nil → 플레인 키.
         let key = SDWebImageManager.shared.cacheKey(for: url)
         let seeded = expectation(description: "disk seed")
-        SDImageCache.shared.store(nil, imageData: data, forKey: key, cacheType: .disk) {
+        // 앱 전역 캐시가 `ThreadedImageCache` 로 바뀌었다 — `SDImageCache.shared` 에
+        // 시드하면 매니저가 안 보는 인스턴스에 넣는 셈이라 조회가 전부 미스가 된다.
+        AppImageCaches.disk.store(nil, imageData: data, forKey: key, cacheType: .disk) {
             seeded.fulfill()
         }
         wait(for: [seeded], timeout: 5)
@@ -108,7 +110,9 @@ final class InlineAnimatedWebPPlaybackTests: XCTestCase {
         let key = try XCTUnwrap(SDWebImageManager.shared.cacheKey(for: url))
 
         let seeded = expectation(description: "disk seed")
-        SDImageCache.shared.store(nil, imageData: data, forKey: key, cacheType: .disk) {
+        // 앱 전역 캐시가 `ThreadedImageCache` 로 바뀌었다 — `SDImageCache.shared` 에
+        // 시드하면 매니저가 안 보는 인스턴스에 넣는 셈이라 조회가 전부 미스가 된다.
+        AppImageCaches.disk.store(nil, imageData: data, forKey: key, cacheType: .disk) {
             seeded.fulfill()
         }
         wait(for: [seeded], timeout: 5)
@@ -128,7 +132,7 @@ final class InlineAnimatedWebPPlaybackTests: XCTestCase {
         }
         wait(for: [warmed], timeout: 10)
         XCTAssertTrue(
-            SDImageCache.shared.imageFromMemoryCache(forKey: key) is SDAnimatedImage,
+            AppImageCaches.disk.imageFromMemoryCache(forKey: key) is SDAnimatedImage,
             "워밍이 남긴 메모리 엔트리도 SDAnimatedImage"
         )
 
