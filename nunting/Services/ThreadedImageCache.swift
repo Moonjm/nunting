@@ -116,7 +116,7 @@ nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unc
     func purgeExpiredData(completion: (() -> Void)?) {
         maintenance.async { [disk] in
             disk.removeExpiredData()
-            completion?()
+            SDCallbackQueue.main.async { completion?() }
         }
     }
 
@@ -152,13 +152,14 @@ nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unc
         }
 
         let operation = CacheOperation()
+        let callback = Self.callbackQueue(context)
         worker.async { [weak self] in
             guard let self, !operation.isCancelled else {
-                completionBlock?(nil, nil, .none)
+                callback.async { completionBlock?(nil, nil, .none) }
                 return
             }
             guard let data = self.disk.data(forKey: key) else {
-                completionBlock?(nil, nil, .none)
+                callback.async { completionBlock?(nil, nil, .none) }
                 return
             }
             // 디코드 옵션(썸네일 크기·스케일 등)이 여기서 정해진다 — 컨텍스트를
@@ -167,7 +168,7 @@ nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unc
             if let image, self.shouldCacheToMemory(context: context) {
                 self.memory.setObject(image, forKey: key as NSString, cost: image.sd_memoryCost)
             }
-            completionBlock?(image, data, .disk)
+            callback.async { completionBlock?(image, data, .disk) }
         }
         return operation
     }
@@ -184,7 +185,7 @@ nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unc
         if let data = Self.diskData(image: image, imageData: imageData, key: key), !data.isEmpty {
             worker.async { [disk] in
                 disk.setData(data, forKey: key)
-                completionBlock?()
+                SDCallbackQueue.main.async { completionBlock?() }
             }
             return
         }
@@ -239,7 +240,7 @@ nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unc
         guard cacheType == .all || cacheType == .disk else { completionBlock?(); return }
         worker.async { [disk] in
             disk.removeData(forKey: key)
-            completionBlock?()
+            SDCallbackQueue.main.async { completionBlock?() }
         }
     }
 
@@ -252,7 +253,8 @@ nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unc
         }
         guard cacheType != .memory else { completionBlock?(.none); return }
         worker.async { [disk] in
-            completionBlock?(disk.containsData(forKey: key) ? .disk : .none)
+            let found: SDImageCacheType = disk.containsData(forKey: key) ? .disk : .none
+            SDCallbackQueue.main.async { completionBlock?(found) }
         }
     }
 
@@ -263,7 +265,7 @@ nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unc
         guard cacheType == .all || cacheType == .disk else { completionBlock?(); return }
         worker.async { [disk] in
             disk.removeAllData()
-            completionBlock?()
+            SDCallbackQueue.main.async { completionBlock?() }
         }
     }
 
@@ -282,10 +284,23 @@ nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unc
 
     /// 디스크 사용량. 파일 순회라 워커에서 돈다.
     func calculateDiskSize(_ completion: @escaping (UInt) -> Void) {
-        worker.async { [disk] in completion(disk.totalSize()) }
+        worker.async { [disk] in
+            let size = disk.totalSize()
+            SDCallbackQueue.main.async { completion(size) }
+        }
     }
 
     // MARK: - Private
+
+    /// 완료 블록을 보낼 큐. 컨텍스트 지정이 있으면 그걸 쓰고, 없으면 메인이다 —
+    /// 순정과 같은 규약이다(`SDImageCache.m:700` — `queue ?: SDCallbackQueue.mainQueue`).
+    ///
+    /// 워커 스레드에서 그대로 부르면 안 된다. 소비자가 UI 나 액터에 묶여 있으면 그
+    /// 자리에서 깨지고, 지정된 큐를 무시하는 것 자체가 규약 위반이다. 매니저 경로는
+    /// 자기 콜백을 따로 한 번 더 디스패치해서 이 결함이 가려져 있었을 뿐이다.
+    private static func callbackQueue(_ context: [SDWebImageContextOption: Any]?) -> SDCallbackQueue {
+        (context?[.callbackQueue] as? SDCallbackQueue) ?? .main
+    }
 
     /// `SDWebImageContextStoreCacheType` 이 디스크 전용이면 메모리에 되쓰지 않는다.
     private func shouldCacheToMemory(context: [SDWebImageContextOption: Any]?) -> Bool {

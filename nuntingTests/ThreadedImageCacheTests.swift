@@ -270,25 +270,87 @@ final class ThreadedImageCacheTests: XCTestCase {
         return found.withLock { $0 }
     }
 
-    /// **이 클래스의 존재 이유**: 디스크 작업이 libdispatch 풀 스레드에서 돌면 안 된다.
-    /// 풀 스레드를 쓰면 지금 겪는 고갈이 그대로 재현되므로, 전용 스레드에서 도는지를
-    /// 직접 확인한다.
-    func testDiskWorkRunsOffTheDispatchPool() throws {
-        let data = try pngData()
+    /// **이 클래스의 존재 이유**: 디스크 읽기와 디코드가 libdispatch 풀 스레드에서
+    /// 돌면 안 된다. 풀 스레드를 쓰면 지금 겪는 고갈이 그대로 재현된다.
+    ///
+    /// 완료 블록이 아니라 **디코드가 도는 스레드**를 본다. 완료는 콜백 큐(기본 메인)로
+    /// 넘어가므로 거기서 재면 이 불변식이 아니라 콜백 규약을 재게 된다.
+    func testDiskReadAndDecodeRunOffTheDispatchPool() throws {
+        let manager = SDImageCodersManager.shared
+        let original = manager.coders ?? []
+        let probe = ThreadRecordingCoder()
+        manager.addCoder(probe)
+        defer { manager.coders = original }
+
         let stored = expectation(description: "stored")
-        cache.store(sampleImage(), imageData: data, forKey: "thread",
+        cache.store(nil, imageData: try pngData(), forKey: "thread",
                     cacheType: .disk) { stored.fulfill() }
         wait(for: [stored], timeout: 5)
 
         let queried = expectation(description: "queried")
-        let threadName = OSAllocatedUnfairLock(initialState: "")
         _ = cache.queryImage(forKey: "thread", options: [], context: nil, cacheType: .disk) { _, _, _ in
-            threadName.withLock { $0 = Thread.current.name ?? "" }
             queried.fulfill()
         }
         wait(for: [queried], timeout: 5)
 
-        XCTAssertEqual(threadName.withLock { $0 }, ThreadedImageCache.workerThreadName,
-                       "디스크 조회가 전용 스레드가 아닌 곳에서 돌았다")
+        XCTAssertEqual(probe.decodeThreadName.withLock { $0 }, ThreadedImageCache.workerThreadName,
+                       "디스크 디코드가 전용 스레드가 아닌 곳에서 돌았다")
     }
+
+    /// 완료는 **콜백 큐 규약**을 따라야 한다. 순정은 `context[.callbackQueue]` 를 쓰고
+    /// 없으면 메인으로 보낸다(`SDImageCache.m:700`). 우리는 워커 스레드에서 그대로
+    /// 부르고 있었다 — 소비자가 UI/액터에 묶여 있으면 그 자리에서 깨진다.
+    func testDiskQueryCompletionLandsOnMainByDefault() throws {
+        let stored = expectation(description: "stored")
+        cache.store(nil, imageData: try pngData(), forKey: "cb", cacheType: .disk) { stored.fulfill() }
+        wait(for: [stored], timeout: 5)
+
+        let queried = expectation(description: "queried")
+        let onMain = OSAllocatedUnfairLock(initialState: false)
+        _ = cache.queryImage(forKey: "cb", options: [], context: nil, cacheType: .disk) { _, _, _ in
+            onMain.withLock { $0 = Thread.isMainThread }
+            queried.fulfill()
+        }
+        wait(for: [queried], timeout: 5)
+
+        XCTAssertTrue(onMain.withLock { $0 }, "완료가 메인에서 안 왔다")
+    }
+
+    /// 컨텍스트가 큐를 지정하면 그걸 따른다 — 지정을 무시하는 건 규약 위반이다.
+    func testDiskQueryCompletionHonorsContextCallbackQueue() throws {
+        let stored = expectation(description: "stored")
+        cache.store(nil, imageData: try pngData(), forKey: "cbq", cacheType: .disk) { stored.fulfill() }
+        wait(for: [stored], timeout: 5)
+
+        let label = "nunting.test.callbackQueue"
+        let queue = DispatchQueue(label: label)
+        let context: [SDWebImageContextOption: Any] = [
+            .callbackQueue: SDCallbackQueue(dispatchQueue: queue)
+        ]
+
+        let queried = expectation(description: "queried")
+        let seen = OSAllocatedUnfairLock(initialState: "")
+        _ = cache.queryImage(forKey: "cbq", options: [], context: context, cacheType: .disk) { _, _, _ in
+            seen.withLock { $0 = String(cString: __dispatch_queue_get_label(nil)) }
+            queried.fulfill()
+        }
+        wait(for: [queried], timeout: 5)
+
+        XCTAssertEqual(seen.withLock { $0 }, label, "지정한 콜백 큐가 무시됐다")
+    }
+}
+
+/// 디코드가 어느 스레드에서 도는지만 기록하는 코더. 디코드 자체는 하지 않고
+/// (nil 반환) 다음 코더로 넘긴다 — 기록이 목적이다.
+private final class ThreadRecordingCoder: NSObject, SDImageCoder, @unchecked Sendable {
+    let decodeThreadName = OSAllocatedUnfairLock(initialState: "")
+
+    func canDecode(from data: Data?) -> Bool {
+        decodeThreadName.withLock { $0 = Thread.current.name ?? "" }
+        return false
+    }
+    func decodedImage(with data: Data?, options: [SDImageCoderOption: Any]?) -> UIImage? { nil }
+    func canEncode(to format: SDImageFormat) -> Bool { false }
+    func encodedData(with image: UIImage?, format: SDImageFormat,
+                     options: [SDImageCoderOption: Any]?) -> Data? { nil }
 }
