@@ -647,6 +647,7 @@ type mediaAgg struct {
 	BgPeakMs    []int            // 그 하트비트(0 이어도 기록)
 	IoLagMs     []int            // 이미지 캐시 직렬 ioQueue 대기
 	IoPeakMs    []int            // 그 하트비트(0 이어도 기록)
+	FgPeakMs    []int            // 같은 풀의 userInitiated 대역(대역 경합 판별)
 	DecodeMs    []int
 	DecodePx    []int
 	DecodeBy    map[string]int // 코더별 디코드 건수
@@ -711,6 +712,8 @@ func (a *mediaAgg) add(e mediaEventJSON) {
 			a.IoLagMs = append(a.IoLagMs, e.Ms)
 		case "io.peak":
 			a.IoPeakMs = append(a.IoPeakMs, e.Ms)
+		case "fg.peak":
+			a.FgPeakMs = append(a.FgPeakMs, e.Ms)
 		}
 	case "op":
 		a.OpMs = append(a.OpMs, e.Ms)
@@ -859,6 +862,14 @@ func (a *mediaAgg) view() mediaView {
 			Layer: "io peak (캐시 직렬큐)", Count: len(a.IoPeakMs),
 			P50: msLabel(percentile(a.IoPeakMs, 50)), P90: msLabel(percentile(a.IoPeakMs, 90)),
 			Note: "행이 없으면 프로브 미가동",
+		})
+	}
+	if len(a.FgPeakMs) > 0 {
+		// utility 대역은 밀리는데 이쪽이 안 밀리면 풀 고갈이 아니라 대역 경합이다.
+		v.Layers = append(v.Layers, mediaLayerRow{
+			Layer: "fg peak (userInitiated)", Count: len(a.FgPeakMs),
+			P50: msLabel(percentile(a.FgPeakMs, 50)), P90: msLabel(percentile(a.FgPeakMs, 90)),
+			Note: "bg peak 와 비교",
 		})
 	}
 	if len(a.MainApplyUs) > 0 {

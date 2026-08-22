@@ -37,6 +37,16 @@ nonisolated final class QueueLatencyProbe: Sendable {
                                               cacheType: .disk) { _ in block() }
         })
 
+    /// 같은 전역 풀이지만 **QoS 대역만 다른** 짝. `.utility` 는 밀리는데 이쪽은
+    /// 안 밀리면, 문제는 "풀이 통째로 고갈" 이 아니라 **그 대역의 경합**이라는 뜻이다.
+    /// 그러면 해법이 크게 달라진다 — 캐시 I/O 를 전용 스레드로 옮기는 큰 작업(우리
+    /// 캐시 구현) 대신 I/O 의 QoS 를 내리는 값싼 수정으로 끝난다.
+    ///
+    /// 이 한 줄이 200줄짜리 작업을 할지 말지를 가른다.
+    static let foreground = QueueLatencyProbe(
+        name: "fg",
+        submit: { DispatchQueue.global(qos: .userInitiated).async(execute: $0) })
+
     /// 백그라운드 전역 큐 — **디코드 블록이 실행 순서를 기다리는지** 본다.
     /// 오퍼레이션의 전송 후 구간이 p50 252ms / p90 2,074ms 인데 그 안의 디코드는
     /// 11ms 뿐이다. 남은 시간이 스레드 풀 포화 때문이라면 여기서 같이 잡힌다.

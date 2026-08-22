@@ -50,6 +50,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         QueueLatencyProbe.background.start()
         // 이미지 캐시의 내부 직렬 큐 — 조회/저장이 한 줄로 서는지 직접 잰다.
         QueueLatencyProbe.imageCacheIO.start()
+        // 같은 풀의 다른 QoS 대역 — 고갈인지 대역 경합인지 가른다.
+        QueueLatencyProbe.foreground.start()
 
         // hang 워치독 — MetricKit diagnostic(hang 콜스택)은 Xcode 설치 빌드에 오지
         // 않으므로, 메인 스레드 1초+ 정지를 직접 감지해 스택 샘플을 서버로 올린다.
