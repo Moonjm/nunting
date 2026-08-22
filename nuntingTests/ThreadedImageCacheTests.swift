@@ -1,6 +1,7 @@
 import XCTest
 import os
 import SDWebImage
+import SDWebImageWebPCoder
 @testable import nunting
 
 /// `ThreadedImageCache` — 디스크 I/O 를 libdispatch 풀 **밖의 전용 스레드**에서 하는 캐시.
@@ -66,6 +67,107 @@ final class ThreadedImageCacheTests: XCTestCase {
         let (image, type) = result.withLock { $0 }
         XCTAssertNotNil(image, "디스크에 넣은 걸 못 읽으면 캐시가 무효다")
         XCTAssertEqual(type, .disk)
+    }
+
+    /// **데이터 없이 이미지만 들어오는 저장**도 디스크에 남아야 한다.
+    ///
+    /// 이 경로가 드문 게 아니라 본문 이미지의 **정상 경로**다. 우리는 거의 모든
+    /// 본문 이미지에 `imageThumbnailPixelSize` 를 걸고, SDWebImage 는 썸네일을
+    /// 저장할 때 원본 데이터를 일부러 버린다(`SDWebImageManager.m` —
+    /// `if (isThumbnail) { cacheData = nil; }`). 순정 `SDImageCache` 는 그때
+    /// 이미지를 인코딩해서 쓴다(`SDImageCache.m:272-306`).
+    ///
+    /// 우리가 그냥 버리면 썸네일 키 엔트리가 영영 안 생긴다. 증상은 안 보인다 —
+    /// 매니저가 원본 키로 폴백해 그림은 나오기 때문이다. 대신 재방문마다 원본
+    /// 전체를 다시 디코드한다. 정확히 "조용한 무효화" 의 모양이라 테스트로 못 박는다.
+    func testStoresImageWithoutDataToDisk() {
+        let stored = expectation(description: "stored")
+        cache.store(sampleImage(), imageData: nil, forKey: "encoded",
+                    cacheType: .disk) { stored.fulfill() }
+        wait(for: [stored], timeout: 5)
+
+        let queried = expectation(description: "queried")
+        let result = OSAllocatedUnfairLock<(UIImage?, SDImageCacheType)>(initialState: (nil, .none))
+        _ = cache.queryImage(forKey: "encoded", options: [], context: nil,
+                             cacheType: .disk) { image, _, type in
+            result.withLock { $0 = (image, type) }
+            queried.fulfill()
+        }
+        wait(for: [queried], timeout: 5)
+
+        let (image, type) = result.withLock { $0 }
+        XCTAssertNotNil(image, "이미지만 준 저장이 디스크에서 사라졌다")
+        XCTAssertEqual(type, .disk)
+    }
+
+    /// **실제 파이프라인 확인**: 썸네일 컨텍스트로 로드하면 썸네일 키 엔트리가
+    /// 디스크에 남는가.
+    ///
+    /// 본문 이미지는 거의 전부 `imageThumbnailPixelSize` 를 달고 로드된다. 그때
+    /// SDWebImage 는 썸네일 저장에 원본 데이터를 넘기지 않고
+    /// (`SDWebImageManager.m` — `if (isThumbnail) { cacheData = nil; }`) 캐시가
+    /// 알아서 인코딩해 쓰기를 기대한다(`SDImageCache.m:272-306`).
+    ///
+    /// 안 쓰면 증상이 안 보인다 — 매니저가 원본 키로 폴백해 그림은 나온다. 대신
+    /// 재방문마다 조회가 두 번 돌고(썸네일 미스 → 원본 히트) 원본 전체를 다시
+    /// 다운샘플한다. 네트워크 없이 원본만 시드해 이 경로 전체를 돌린다.
+    func testThumbnailLoadLeavesThumbnailEntryOnDisk() throws {
+        let source = UIGraphicsImageRenderer(size: CGSize(width: 64, height: 64)).image { ctx in
+            UIColor.systemTeal.setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 64, height: 64))
+        }
+        let data = try XCTUnwrap(SDImageWebPCoder.shared.encodedData(with: source,
+                                                                    format: .webP, options: nil))
+        let url = URL(string: "https://unit.test/\(UUID().uuidString)/thumb.webp")!
+        let context: [SDWebImageContextOption: Any] = [
+            .imageCache: cache as Any,
+            .imageThumbnailPixelSize: NSValue(cgSize: CGSize(width: 16, height: 16)),
+        ]
+        let originalKey = try XCTUnwrap(SDWebImageManager.shared.cacheKey(for: url))
+        let thumbnailKey = try XCTUnwrap(SDWebImageManager.shared.cacheKey(for: url, context: context))
+        XCTAssertNotEqual(originalKey, thumbnailKey, "썸네일 키가 따로 생겨야 이 시나리오가 성립한다")
+
+        let seeded = expectation(description: "seeded")
+        cache.store(nil, imageData: data, forKey: originalKey, cacheType: .disk) { seeded.fulfill() }
+        wait(for: [seeded], timeout: 5)
+
+        let loaded = expectation(description: "loaded")
+        SDWebImageManager.shared.loadImage(with: url, options: [], context: context,
+                                           progress: nil) { image, _, _, _, _, _ in
+            XCTAssertNotNil(image, "원본 시드가 있으니 네트워크 없이 떠야 한다")
+            loaded.fulfill()
+        }
+        wait(for: [loaded], timeout: 10)
+
+        // 저장은 표시 뒤 비동기로 끝난다 — 디스크에 도달할 때까지 짧게 폴링한다.
+        var found = SDImageCacheType.none
+        for _ in 0..<40 {
+            let probed = expectation(description: "probe")
+            cache.containsImage(forKey: thumbnailKey, cacheType: .disk) { type in
+                found = type
+                probed.fulfill()
+            }
+            wait(for: [probed], timeout: 5)
+            if found == .disk { break }
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        }
+        XCTAssertEqual(found, .disk, "썸네일 키 엔트리가 디스크에 안 남았다 — 재방문이 매번 원본 재디코드가 된다")
+    }
+
+    /// 이미지도 데이터도 없으면 쓸 게 없다 — 완료만 알리고 끝(순정과 같은 계약).
+    func testStoreWithNothingToWriteJustCompletes() {
+        let done = expectation(description: "done")
+        cache.store(nil, imageData: nil, forKey: "nothing", cacheType: .all) { done.fulfill() }
+        wait(for: [done], timeout: 5)
+
+        let queried = expectation(description: "queried")
+        let type = OSAllocatedUnfairLock(initialState: SDImageCacheType.memory)
+        _ = cache.queryImage(forKey: "nothing", options: [], context: nil, cacheType: .all) { _, _, t in
+            type.withLock { $0 = t }
+            queried.fulfill()
+        }
+        wait(for: [queried], timeout: 5)
+        XCTAssertEqual(type.withLock { $0 }, SDImageCacheType.none)
     }
 
     /// 메모리 히트는 디스크를 안 거치고 즉시 나와야 한다 — 그게 메모리 캐시의 전부다.

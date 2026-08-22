@@ -60,10 +60,20 @@ nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unc
     private let disk: SDDiskCache
     private let worker = SerialWorker(name: ThreadedImageCache.workerThreadName)
 
+    /// 캐시 **정책값**(메모리 캡·디스크 캡·만료·쓰기 옵션). 설정을 나중에 바꾸려면
+    /// **이걸** 고쳐야 한다 — `SDImageCache.shared.config` 는 남남이다. 그쪽은
+    /// 생성 시점에 `.default` 를 **복사**하므로(`SDImageCache.m:127`) 거기 쓴 값은
+    /// 우리 캐시에 안 온다. 실제로 그렇게 새고 있었다(Codex 리뷰 2026-08-22).
+    ///
+    /// 참조로 들고 있어도 되는 이유: `SDMemoryCache` 는 `maxMemoryCost` 를 KVO 로
+    /// 관찰하고 `SDDiskCache` 는 쓸 때마다 읽으므로, 나중 변경도 그대로 먹는다.
+    let config: SDImageCacheConfig
+
     /// - Parameter cacheDirectory: 디스크 캐시 디렉터리. 기본값은 `SDImageCache.shared`
     ///   와 **같은 경로** — 기존에 받아둔 파일이 그대로 살아 있다.
     init(cacheDirectory: String = SDImageCache.shared.diskCachePath,
          config: SDImageCacheConfig = .default) {
+        self.config = config
         self.memory = SDMemoryCache<NSString, UIImage>(config: config)
         // 생성 실패는 경로가 만들어질 수 없을 때뿐이다(캐시 디렉터리). 그 경우
         // 이미지 캐시 없이 도는 것보다 크래시가 낫다 — 조용히 전부 미스가 되면
@@ -131,19 +141,67 @@ nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unc
 
     func store(_ image: UIImage?, imageData: Data?, forKey key: String?,
                cacheType: SDImageCacheType, completion completionBlock: SDWebImageNoParamsBlock?) {
-        guard let key else { completionBlock?(); return }
+        guard let key, image != nil || imageData != nil else { completionBlock?(); return }
 
         if cacheType == .all || cacheType == .memory, let image {
             memory.setObject(image, forKey: key as NSString, cost: image.sd_memoryCost)
         }
-        guard cacheType == .all || cacheType == .disk, let imageData, !imageData.isEmpty else {
-            completionBlock?()
+        guard cacheType == .all || cacheType == .disk else { completionBlock?(); return }
+
+        if let data = Self.diskData(image: image, imageData: imageData, key: key), !data.isEmpty {
+            worker.async { [disk] in
+                disk.setData(data, forKey: key)
+                completionBlock?()
+            }
             return
         }
-        worker.async { [disk] in
-            disk.setData(imageData, forKey: key)
-            completionBlock?()
+        // 여기까지 왔으면 **쓸 바이트가 없다** — 이미지만 있다. 본문 이미지의 정상
+        // 경로다: 썸네일 저장에서 SD 가 원본 데이터를 일부러 버리고
+        // (`SDWebImageManager.m` — `if (isThumbnail) { cacheData = nil; }`) 캐시가
+        // 인코딩해 쓰기를 기대한다. 그냥 넘기면 썸네일 키 엔트리가 영영 안 생기고,
+        // 재방문마다 조회가 두 번(썸네일 미스 → 원본 히트) 돌며 원본 전체를 다시
+        // 다운샘플한다. 그림은 나오므로 증상은 "그냥 느림" 으로만 보인다.
+        guard let image else { completionBlock?(); return }
+        // 인코딩은 CPU 작업이다. 디스크 워커에서 돌리면 뒤에 선 **조회**가 인코딩을
+        // 기다린다 — 이 클래스가 없애려던 바로 그 모양이다. 순정도 같은 이유로
+        // 인코딩을 별도 큐에서 하고 결과 바이트만 IO 큐에 넘긴다.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self, let encoded = image.sd_imageData(as: Self.encodeFormat(for: image)),
+                  !encoded.isEmpty
+            else { completionBlock?(); return }
+            self.worker.async { [disk = self.disk] in
+                disk.setData(encoded, forKey: key)
+                completionBlock?()
+            }
         }
+    }
+
+    /// 그대로 디스크에 쓸 수 있는 바이트. 없으면 nil(=인코딩이 필요하다).
+    private static func diskData(image: UIImage?, imageData: Data?, key: String) -> Data? {
+        // 썸네일 키에 **원본 전체** 데이터를 쓰면 안 된다. 다음 조회가 그 키로 원본을
+        // 읽어 다운샘플 이득이 사라진다. 순정도 같은 판정을 한다
+        // (`SDImageCache.m:263-266`, 거기선 파일 내부 `SDIsThumbnailKey`).
+        if let image, image.sd_isThumbnail, Self.isThumbnailKey(key) { return nil }
+        if let imageData { return imageData }
+        // 커스텀 애니메 이미지는 원본 애니메 데이터를 그대로 갖고 있다 — 재인코딩
+        // (움짤 전 프레임!)을 피하는 유일한 길이다.
+        return (image as? any SDAnimatedImageProtocol)?.animatedImageData
+    }
+
+    /// SD 가 썸네일 키에 박는 표식. 라이브러리 쪽은 파일 스코프 static 이라 못 쓴다.
+    private static func isThumbnailKey(_ key: String) -> Bool {
+        key.contains("-Thumbnail(")
+    }
+
+    /// 인코딩 포맷. 원본 포맷을 유지한다 — 다시 열 때 같은 디코더를 타고, 보드
+    /// 이미지에 흔한 텍스트/스크린샷이 JPEG 재압축으로 뭉개지지 않는다. 포맷을
+    /// 모르면 순정과 같은 규칙으로 정한다(알파 있으면 PNG, 없으면 JPEG).
+    private static func encodeFormat(for image: UIImage) -> SDImageFormat {
+        let format = image.sd_imageFormat
+        guard format == .undefined else { return format }
+        if image.sd_imageFrameCount > 1 { return .PNG }
+        guard let cgImage = image.cgImage else { return .PNG }
+        return SDImageCoderHelper.cgImageContainsAlpha(cgImage) ? .PNG : .JPEG
     }
 
     func removeImage(forKey key: String?, cacheType: SDImageCacheType,
