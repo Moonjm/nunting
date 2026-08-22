@@ -19,13 +19,13 @@ final class SDWebImageSetupTests: XCTestCase {
         XCTAssertTrue(manager.coders?.last is SignpostWebPCoder)
     }
 
-    /// 다운로드 슬롯 폭 4. 2·4·8 세 지점을 다 재봤고 본문 show p90 이 5,049 / 5,096 /
-    /// 5,120ms 로 붙어 있다 — 폭으로는 총량이 안 준다(처리량 한계). 4 는 그중 대기가
-    /// 가장 낮은 지점이다. 근거 표는 `SDWebImageSetup` 주석.
+    /// 다운로드 슬롯 폭 8 — 스레드 풀 고갈을 없앤 뒤의 재실험 조건. 종전 세 번의 폭
+    /// 실험이 무효였던 건 그 아래 고갈이 총량을 묶고 있었기 때문이고, 지금은 p90 이
+    /// 거의 전부 슬롯 회전 대기다. 근거와 판정 기준은 `SDWebImageSetup` 주석.
     func testConfigureKeepsMeasuredDownloadSlotWidth() {
         SDWebImageSetup.configure()
 
-        XCTAssertEqual(SDWebImageDownloader.shared.config.maxConcurrentDownloads, 4)
+        XCTAssertEqual(SDWebImageDownloader.shared.config.maxConcurrentDownloads, 8)
     }
 
 

@@ -128,20 +128,21 @@ enum SDWebImageSetup {
         cache.config.maxDiskAge = 7 * 24 * 60 * 60
 
         let downloader = SDWebImageDownloader.shared
-        // 4 슬롯 — 세 지점을 다 재봤고 **폭으로는 총량이 안 준다.**
+        // 8 슬롯 — **조건이 처음으로 깨끗해진 뒤의 재실험**이다.
         //
-        //                슬롯 2      슬롯 4      슬롯 8
-        //   본문 show p90 5,049ms    5,096ms     5,120ms   ← 셋이 붙어 있다
-        //   대기 p50     2,447ms       821ms       ...
-        //   op 수명 p50      83ms      238ms       ...
-        //   bg 큐 최대    2,100ms    4,520ms       ...
+        // 종전 세 번의 폭 실험(2·4·8)은 전부 무효였다. show p90 이 5,049 / 5,096 /
+        // 5,120ms 로 붙어 있었는데, 그건 폭이 무의미해서가 아니라 **그 아래에 더 큰
+        // 병목이 깔려 있었기 때문**이다: 디스크 I/O 가 libdispatch 풀을 고갈시켜
+        // (bg 큐 지연 최대 5,417ms) 슬롯을 몇 개로 두든 총량이 안 변했다.
         //
-        // 슬롯을 줄이면 풀 압력은 실제로 내려간다(bg 최대 4.5s→2.1s, op 238→83ms).
-        // 그런데 슬롯이 적어 대기가 3배로 늘어 정확히 상쇄된다 — 체감은 1%도 안 움직인다.
-        // 세 지점에서 같은 값이면 이건 우연이 아니라 **처리량 한계**다.
+        // `ThreadedImageCache` 로 그 고갈이 사라졌다(bg 지연 최대 1ms). 그 뒤 측정:
+        //   본문 show p50 49ms / p90 1,568ms · 대기 p90 1,567ms
+        // 이제 p90 이 거의 전부 **슬롯 회전 대기**다 — 슬롯 4개로 34장을 도는 구조적
+        // 제약이고, 이 지점에서야 폭이 처리량을 실제로 좌우한다.
         //
-        // 4 를 쓰는 이유는 그 셋 중 대기가 가장 낮아서다(821ms). 폭 실험은 여기서 닫는다.
-        downloader.config.maxConcurrentDownloads = 4
+        // 판정: 대기 p90 과 show p90 이 내려가고 footprint peak 이 한도 대비 여유를
+        // 유지하면 8 유지. 대기가 안 줄거나 peak 이 튀면 4 로 되돌린다.
+        downloader.config.maxConcurrentDownloads = 8
         // 8s timeout per attempt to fast-fail stale keep-alive
         // connections (the iOS pool's -1005 / -1001 case after
         // backgrounding). SDWebImage's internal retry re-issues with
