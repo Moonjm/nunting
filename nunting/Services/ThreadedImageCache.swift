@@ -109,6 +109,9 @@ nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unc
     deinit {
         let center = NotificationCenter.default
         for observer in lifecycleObservers { center.removeObserver(observer) }
+        // 워커 스레드는 스스로 안 끝난다 — 안 세우면 캐시를 만들 때마다 스레드가 쌓인다.
+        worker.stop()
+        maintenance.stop()
     }
 
     /// 만료·용량 초과 엔트리 정리. 디렉터리 전체 순회 + 대량 삭제라 **비싸다** —
@@ -322,7 +325,10 @@ nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unc
 /// `DispatchQueue` 나 `OperationQueue` 를 쓰면 결국 libdispatch 풀 스레드를 쓰게 되고,
 /// 그 스레드가 파일 I/O 로 묶이는 게 지금 고치려는 문제다. 그래서 스레드를 직접 하나
 /// 만들어 그 위에서만 돈다 — 풀의 한도와 무관해진다.
-private nonisolated final class SerialWorker: @unchecked Sendable {
+///
+/// `internal` 인 이유는 종료 동작을 직접 테스트하기 위해서다 — 스레드가 실제로
+/// 빠져나오는지는 캐시 바깥에서 관찰할 방법이 없다.
+nonisolated final class SerialWorker: @unchecked Sendable {
     /// 넘겨받은 클로저를 워커 스레드로 나르는 상자.
     ///
     /// `@unchecked Sendable` 인 이유: SDWebImage 의 완료 블록과 `SDDiskCache` 는
@@ -334,9 +340,19 @@ private nonisolated final class SerialWorker: @unchecked Sendable {
 
     private let condition = NSCondition()
     private var pending: [Job] = []
+    private var stopping = false
+    // 클로저가 `self` 를 잡으려면 저장 프로퍼티가 다 초기화된 뒤여야 해서 `!` 다.
+    // init 에서 한 번 쓰고 그 뒤로는 읽기만 한다.
+    private var thread: Thread!
+
+    /// 스레드가 빠져나왔는지. 종료 경로 검증용.
+    var isFinished: Bool { thread.isFinished }
 
     init(name: String, qos: QualityOfService = .utility) {
-        let thread = Thread { [weak self] in self?.run() }
+        // `run()` 이 도는 동안 워커를 강하게 붙잡는다. 그래서 **종료 경로가 없으면
+        // 워커도 스레드도 영원히 산다** — 앱 싱글턴이야 하나뿐이라 안 보이지만,
+        // 캐시를 여러 번 만드는 쪽(테스트가 그렇다)에선 스레드가 그대로 쌓인다.
+        thread = Thread { [weak self] in self?.run() }
         thread.name = name
         // 파일 I/O 는 급하지 않다 — 표시 경로와 CPU 를 다투지 않게 낮춘다.
         thread.qualityOfService = qos
@@ -345,7 +361,25 @@ private nonisolated final class SerialWorker: @unchecked Sendable {
 
     func async(_ block: @escaping () -> Void) {
         condition.lock()
+        // 종료 중이면 큐에 넣어봤자 아무도 안 꺼낸다. 완료 블록이 영영 안 불리는
+        // 것보다는 그 자리에서 실행하는 편이 호출부 계약에 가깝다.
+        guard !stopping else {
+            condition.unlock()
+            block()
+            return
+        }
         pending.append(Job(run: block))
+        condition.signal()
+        condition.unlock()
+    }
+
+    /// 큐에 남은 일을 마저 처리하고 스레드를 끝낸다.
+    ///
+    /// 남은 일을 버리지 않는 이유: 그 안에 완료 블록이 들어 있어서, 버리면 기다리던
+    /// 쪽이 영영 안 깨어난다.
+    func stop() {
+        condition.lock()
+        stopping = true
         condition.signal()
         condition.unlock()
     }
@@ -353,7 +387,11 @@ private nonisolated final class SerialWorker: @unchecked Sendable {
     private func run() {
         while true {
             condition.lock()
-            while pending.isEmpty { condition.wait() }
+            while pending.isEmpty && !stopping { condition.wait() }
+            if pending.isEmpty {
+                condition.unlock()
+                return
+            }
             let job = pending.removeFirst()
             condition.unlock()
             job.run()

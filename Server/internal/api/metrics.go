@@ -22,7 +22,7 @@ import (
 // hang = iOS HangWatchdog 의 메인스레드 hang 리포트({ts, durationMs, label, samples[]})
 // — MetricKit diagnostic 이 Xcode 설치 빌드에 전달되지 않아 만든 직접 수집 채널.
 // media = iOS MediaLoadTelemetry 의 미디어 로드 배치({events:[{t,ts,ms,host,link,…}]})
-// — 이미지 다운로드(net)/표시(show)/영상 준비(video) 세 계층의 소요 시간. "사진·영상이
+// — 이미지 다운로드(net)/표시(show)/디코드(decode) 세 계층의 소요 시간. "사진이
 // 느리다"의 원인이 회선인지 캐시 미스인지 특정 호스트인지 기기 밖에서 가르기 위한 채널.
 // hitch = iOS FrameHitchRecorder 의 인터랙션 구간 프레임 히치({label, context,
 // frameCount, droppedFrames, worstFrameMs, ...}) — hang 임계(1s) 아래로 새는
@@ -561,7 +561,7 @@ var metricsTemplate = template.Must(template.New("metrics").Parse(`<!doctype htm
 {{end}}
 <h2>미디어 로딩 <span style="color:#999;font-weight:400">({{.Media.Events}} events{{if .Media.Fails}} · 실패 {{.Media.Fails}}{{end}})</span></h2>
 {{if .Media.Events}}
-<p style="color:#777;font-size:12px">net=이미지 다운로드(URLSession 실측), show=슬롯이 뜬 뒤 그림이 채워지기까지(캐시 히트 포함 — 체감 시간), video=재생 준비까지. show 가 빠른데 net 이 느리면 프리페치가 가려주고 있는 것이고, show 의 net 비중이 높으면 캐시를 못 타는 것.</p>
+<p style="color:#777;font-size:12px">net=이미지 다운로드(URLSession 실측), show=슬롯이 뜬 뒤 그림이 채워지기까지(캐시 히트 포함 — 체감 시간), decode=디코드. show 가 빠른데 net 이 느리면 프리페치가 가려주고 있는 것이고, show 의 net 비중이 높으면 캐시를 못 타는 것.</p>
 <table>
  <tr><th>계층</th><th>건수</th><th>p50</th><th>p90</th><th>비고</th></tr>
  {{range .Media.Layers}}
@@ -594,7 +594,7 @@ var metricsTemplate = template.Must(template.New("metrics").Parse(`<!doctype htm
 // ---- 미디어 로딩(kind=media) ----
 
 // mediaEventJSON 은 iOS MediaLoadEventDTO 한 건. 키는 Swift 쪽과 합의.
-// 세 계층을 `t` 로 가른다: net(다운로드) / show(표시) / video(재생 준비).
+// 세 계층을 `t` 로 가른다: net(다운로드) / show(표시) / decode(디코드).
 type mediaEventJSON struct {
 	T      string `json:"t"`
 	Ms     int    `json:"ms"`

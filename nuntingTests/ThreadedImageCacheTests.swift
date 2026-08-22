@@ -354,3 +354,48 @@ private final class ThreadRecordingCoder: NSObject, SDImageCoder, @unchecked Sen
     func encodedData(with image: UIImage?, format: SDImageFormat,
                      options: [SDImageCoderOption: Any]?) -> Data? { nil }
 }
+
+/// `SerialWorker` 의 **종료 경로**.
+///
+/// `run()` 은 도는 동안 워커를 강하게 붙잡는다. 종료 신호가 없으면 워커도 스레드도
+/// 영원히 산다 — 앱 싱글턴은 하나뿐이라 안 보이지만, 캐시를 여러 번 만드는 쪽
+/// (이 테스트 파일이 그렇다)에선 스레드가 그대로 쌓인다.
+final class SerialWorkerLifecycleTests: XCTestCase {
+
+    private func waitUntil(_ condition: () -> Bool, timeout: TimeInterval = 3) -> Bool {
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01))
+        }
+        return condition()
+    }
+
+    func testStopEndsTheWorkerThread() {
+        let worker = SerialWorker(name: "nunting.test.worker")
+        let ran = expectation(description: "ran")
+        worker.async { ran.fulfill() }
+        wait(for: [ran], timeout: 3)
+        XCTAssertFalse(worker.isFinished, "일하는 중엔 살아 있어야 한다")
+
+        worker.stop()
+
+        XCTAssertTrue(waitUntil { worker.isFinished }, "stop 뒤에도 스레드가 안 끝났다")
+    }
+
+    /// 큐에 남은 일은 버리지 않는다 — 그 안에 완료 블록이 있어서, 버리면 기다리던
+    /// 쪽이 영영 안 깨어난다.
+    func testStopDrainsPendingWork() {
+        let worker = SerialWorker(name: "nunting.test.worker.drain")
+        let gate = DispatchSemaphore(value: 0)
+        let done = expectation(description: "queued work ran")
+
+        worker.async { gate.wait() }   // 워커를 붙잡아 뒤 작업이 큐에 남게 한다
+        worker.async { done.fulfill() }
+        worker.stop()
+        gate.signal()
+
+        wait(for: [done], timeout: 3)
+        XCTAssertTrue(waitUntil { worker.isFinished })
+    }
+}
