@@ -593,16 +593,19 @@ type mediaEventJSON struct {
 	Host   string `json:"host"`
 	Ctx    string `json:"ctx"`
 	Src    string `json:"src"`  // show: mem|disk|net
-	Kind   string `json:"kind"` // video: mp4|webm
+	Kind   string `json:"kind"` // decode: 디코드 경로 이름
 	Link   string `json:"link"` // wifi|cell|wired|none
 	Bytes  int    `json:"bytes"`
 	TTFB   int    `json:"ttfb"`
 	Proto  string `json:"proto"`
 	Status int    `json:"status"`
-	Queued int    `json:"queued"` // net: 다운로더 슬롯 대기(ms)
-	Px     int    `json:"px"`     // decode: 출력 픽셀 수
-	PF     bool   `json:"pf"`     // net: 프리페치 요청(표시 요청이면 없음)
-	OK     *bool  `json:"ok"`     // 실패일 때만 실린다(false)
+	// Queued net 다운로더 슬롯 대기(ms). 포인터인 이유는 **측정된 0 과 측정 안 됨을
+	// 갈라야** 하기 때문이다. 같은 밀리초에 시작하면 클라이언트가 정당하게 0 을
+	// 싣는데, 그걸 버리면 기다린 요청만으로 백분위가 나와 대기 압력이 과장된다.
+	Queued *int  `json:"queued"`
+	Px     int   `json:"px"` // decode: 출력 픽셀 수
+	PF     bool  `json:"pf"` // net: 프리페치 요청(표시 요청이면 없음)
+	OK     *bool `json:"ok"` // 실패일 때만 실린다(false)
 }
 
 type mediaPayloadJSON struct {
@@ -620,10 +623,8 @@ type mediaAgg struct {
 	Fails      int
 	NetMs      []int
 	ShowMs     []int
-	VideoMs    []int
 	Bytes      int64
 	Src        map[string]int   // show 캐시 출처 분포
-	VideoKind  map[string]int   // mp4/webm 건수
 	LinkMs     map[string][]int // 링크별 net 소요
 	LinkBytes  map[string]int64
 	HostMs     map[string][]int // 호스트별 net 소요
@@ -658,15 +659,15 @@ func (a *mediaAgg) add(e mediaEventJSON) {
 		if e.Host != "" {
 			a.HostMs[e.Host] = append(a.HostMs[e.Host], e.Ms)
 		}
-		if e.Queued > 0 {
-			a.QueuedMs = append(a.QueuedMs, e.Queued)
-		}
-		// 대기의 정체를 가르는 축. 프리페치가 큐를 채우고 있으면 표시 요청이 그 뒤에
-		// 줄 서는 구조이고, 그건 슬롯 수가 아니라 순서/양의 문제다.
-		if e.PF {
-			a.QueuedPF = append(a.QueuedPF, e.Queued)
-		} else {
-			a.QueuedShow = append(a.QueuedShow, e.Queued)
+		if e.Queued != nil {
+			a.QueuedMs = append(a.QueuedMs, *e.Queued)
+			// 대기의 정체를 가르는 축. 프리페치가 큐를 채우고 있으면 표시 요청이 그
+			// 뒤에 줄 서는 구조이고, 그건 슬롯 수가 아니라 순서/양의 문제다.
+			if e.PF {
+				a.QueuedPF = append(a.QueuedPF, *e.Queued)
+			} else {
+				a.QueuedShow = append(a.QueuedShow, *e.Queued)
+			}
 		}
 	case "decode":
 		a.DecodeMs = append(a.DecodeMs, e.Ms)
@@ -686,14 +687,6 @@ func (a *mediaAgg) add(e mediaEventJSON) {
 		}
 		if e.Src != "" {
 			a.Src[e.Src]++
-		}
-	case "video":
-		a.VideoMs = append(a.VideoMs, e.Ms)
-		if a.VideoKind == nil {
-			a.VideoKind = map[string]int{}
-		}
-		if e.Kind != "" {
-			a.VideoKind[e.Kind]++
 		}
 	}
 }
@@ -779,13 +772,6 @@ func (a *mediaAgg) view() mediaView {
 			Note: sharePairs(a.Src, len(a.ShowMs)),
 		})
 	}
-	if len(a.VideoMs) > 0 {
-		v.Layers = append(v.Layers, mediaLayerRow{
-			Layer: "video (재생 준비)", Count: len(a.VideoMs),
-			P50: msLabel(percentile(a.VideoMs, 50)), P90: msLabel(percentile(a.VideoMs, 90)),
-			Note: countPairs(a.VideoKind),
-		})
-	}
 	for link, ms := range a.LinkMs {
 		v.Links = append(v.Links, mediaLinkRow{
 			Link: link, Count: len(ms),
@@ -835,9 +821,6 @@ func summarizeMedia(payload string, agg *mediaAgg) string {
 	}
 	if show := len(agg.ShowMs) - len(before.ShowMs); show > 0 {
 		s += " · show " + strconv.Itoa(show) + "건"
-	}
-	if vid := len(agg.VideoMs) - len(before.VideoMs); vid > 0 {
-		s += " · video " + strconv.Itoa(vid) + "건"
 	}
 	if fails := agg.Fails - before.Fails; fails > 0 {
 		s += " · 실패 " + strconv.Itoa(fails)

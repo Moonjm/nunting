@@ -883,6 +883,40 @@ func TestAdminMetricsSplitsMediaPipeline(t *testing.T) {
 	}
 }
 
+// 측정된 0ms 대기도 백분위에 들어가야 한다.
+//
+// 같은 밀리초 안에 시작한 요청은 클라이언트가 `queued:0` 을 정당하게 싣는다. 그걸
+// 버리면 **기다린 요청만으로** 백분위를 내게 돼 대기 압력이 체계적으로 과장된다 —
+// 슬롯 폭을 그 숫자로 튜닝하므로 판정을 뒤집을 수 있다. 아래 표본은 0 을 포함하면
+// p50 이 0ms, 버리면 900ms 다.
+func TestAdminMetricsIncludesZeroQueueSamples(t *testing.T) {
+	t.Setenv("NUNTING_ADMIN_KEY", "s3cret")
+	store := dbtest.New(t)
+	defer store.Close()
+	srv := httptest.NewServer(NewRouter(store))
+	defer srv.Close()
+
+	if err := store.UpsertUser(t.Context(), "nnt_x"); err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+	media := `{"events":[` +
+		`{"t":"net","ts":1753000000,"ms":60,"host":"h","link":"wifi","bytes":1000,"queued":0},` +
+		`{"t":"net","ts":1753000001,"ms":60,"host":"h","link":"wifi","bytes":1000,"queued":0},` +
+		`{"t":"net","ts":1753000002,"ms":60,"host":"h","link":"wifi","bytes":1000,"queued":900}` +
+		`]}`
+	if err := store.InsertMetricPayload(t.Context(), "nnt_x", "media", media); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	code, body := do(t, "GET", srv.URL+"/admin/metrics?key=s3cret", "", "")
+	if code != 200 {
+		t.Fatalf("admin: want 200, got %d", code)
+	}
+	if !strings.Contains(body, "대기 p50 0ms") {
+		t.Errorf("측정된 0ms 대기가 백분위에서 빠졌다 — 대기 압력이 과장된다")
+	}
+}
+
 // 배치의 실행 설정(cfg)이 행 요약에 보여야 한다 — 어느 빌드/설정에서 나온 숫자인지
 // 못 가르면 A/B 판정 자체가 불가능하다(슬롯 4→8 실험에서 실제로 막혔던 지점).
 func TestAdminMetricsShowsMediaRunConfig(t *testing.T) {

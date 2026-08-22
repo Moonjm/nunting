@@ -79,8 +79,10 @@ nonisolated class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOpera
     /// 구현하고 있고(`SDWebImageDownloaderOperation.m:702` — `self.metrics = metrics`),
     /// 안 부르면 SD 가 노출하는 `metrics` 프로퍼티가 빈 채로 남는다.
     ///
-    /// 마지막 트랜잭션만 싣는다 — 리다이렉트 체인(fmkorea getfile → …)은 앞 홉이
-    /// 수 ms 짜리 302 라 실제 사진을 가져온 마지막 홉이 체감 시간을 대표한다.
+    /// 소요 시간은 **마지막** 트랜잭션이 대표한다 — 리다이렉트 체인(fmkorea getfile
+    /// → …)에서 실제 사진을 가져온 홉이 그것이다. 반면 슬롯 대기는 **첫** 트랜잭션의
+    /// fetch 시작에서 잰다. 마지막 홉에서 재면 앞선 302 왕복이 통째로 대기로 잡히고,
+    /// 우리는 그 백분위로 슬롯 폭을 정하므로 판정을 뒤집는다.
     @objc(URLSession:task:didFinishCollectingMetrics:)
     dynamic override func urlSession(
         _ session: URLSession,
@@ -93,6 +95,7 @@ nonisolated class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOpera
               let host = tx.request.url?.host else { return }
         let phases = MediaLoadNetworkPhases(
             fetchStart: tx.fetchStartDate,
+            firstFetchStart: metrics.transactionMetrics.first?.fetchStartDate,
             domainLookupStart: tx.domainLookupStartDate,
             domainLookupEnd: tx.domainLookupEndDate,
             connectStart: tx.connectStartDate,

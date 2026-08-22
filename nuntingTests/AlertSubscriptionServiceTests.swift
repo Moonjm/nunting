@@ -217,8 +217,8 @@ final class AlertSubscriptionServiceTests: XCTestCase {
         try await service.reportMediaLoads([
             MediaLoadEventDTO.show(host: "img.clien.net", ms: 340, src: "net",
                                    ctx: "body", ok: true, ts: 1_753_000_000),
-            MediaLoadEventDTO.video(kind: "webm", host: "v.aagag.com", ms: 1_800,
-                                    ctx: "body", ok: true, ts: 1_753_000_001),
+            MediaLoadEventDTO.decode(kind: "webpViaIO", ms: 17, pixels: 1_200_000,
+                                     bytes: 94_908, ts: 1_753_000_001),
         ])
 
         let recorded = await stub.lastRequest()
@@ -227,8 +227,8 @@ final class AlertSubscriptionServiceTests: XCTestCase {
         let body = String(data: recorded?.httpBody ?? Data(), encoding: .utf8) ?? ""
         XCTAssertTrue(body.contains(#""events":["#), "body: \(body)")
         XCTAssertTrue(body.contains(#""t":"show""#), "body: \(body)")
-        XCTAssertTrue(body.contains(#""t":"video""#), "body: \(body)")
-        XCTAssertTrue(body.contains(#""kind":"webm""#), "body: \(body)")
+        XCTAssertTrue(body.contains(#""t":"decode""#), "body: \(body)")
+        XCTAssertTrue(body.contains(#""kind":"webpViaIO""#), "body: \(body)")
     }
 
     /// 배치에는 실행 설정이 같이 실린다 — 이게 없으면 "이 숫자가 어느 빌드/설정에서

@@ -231,6 +231,23 @@ final class MediaPipelineEventTests: XCTestCase {
         XCTAssertEqual(e?.queued, 2500, "요청 생성 → 전송 시작")
     }
 
+    /// **리다이렉트 체인은 대기가 아니다.**
+    ///
+    /// `metrics.transactionMetrics` 는 홉마다 한 건이고 마지막이 실제 사진을 가져온
+    /// 홉이다. 소요 시간(`ms`)은 그 마지막 홉이 대표하는 게 맞지만, 대기를 거기서
+    /// 재면 앞선 302 요청·응답이 통째로 "슬롯 대기" 로 잡힌다. 이 앱은 리다이렉트
+    /// 체인을 타는 CDN(fmkorea getfile → ext.fmkorea → …)을 상시 다루므로 그
+    /// 오염이 상수로 깔린다 — 그리고 그 백분위로 슬롯 폭을 정한다.
+    func testQueueWaitExcludesRedirectHops() {
+        var p = phases(fetchOffset: 2.5)
+        p.firstFetchStart = t0.addingTimeInterval(0.3)   // 첫 홉은 300ms 만에 시작했다
+
+        let e = MediaLoadEventDTO.network(host: "h", phases: p, enqueuedAt: t0, ts: 1)
+
+        XCTAssertEqual(e?.queued, 300, "리다이렉트 왕복이 슬롯 대기로 잡혔다")
+        XCTAssertEqual(e?.ms, 120, "소요 시간은 그대로 마지막 홉이 대표한다")
+    }
+
     /// 기산점을 모르면 비운다 — 0 을 넣으면 "대기 없음" 과 구분이 안 된다.
     func testQueueWaitOmittedWhenEnqueueTimeUnknown() {
         XCTAssertNil(MediaLoadEventDTO.network(host: "h", phases: phases(fetchOffset: 0), ts: 1)?.queued)

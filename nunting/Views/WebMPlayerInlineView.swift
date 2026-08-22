@@ -148,9 +148,7 @@ struct WebmInlineWebView: UIViewRepresentable {
         /// 영상 준비 계측(`kind=media`, t=video)의 기산점 — WKWebView 에 문서를 물린 순간.
         /// webm 은 AVPlayer 를 못 쓰고 WebKit 이 소프트 디코드하므로 준비까지가 더 길다.
         /// 그 길이를 mp4 와 같은 채널에 실어야 "영상이 느리다"가 컨테이너별로 갈린다.
-        private var loadStartedAt: Date?
         /// 한 로드당 한 번만 싣기 위한 래치(`loadedmetadata` 는 재부착마다 다시 온다).
-        private var didRecordReadiness = false
 
         init(url: URL, onAspectKnown: @escaping (CGFloat) -> Void) {
             self.url = url
@@ -197,8 +195,6 @@ struct WebmInlineWebView: UIViewRepresentable {
             // Apply to both the `<video src>` and the document's `baseURL`
             // so any same-origin subresources resolve over https too.
             let safe = url.atsSafe
-            loadStartedAt = Date()
-            didRecordReadiness = false
             webView.loadHTMLString(WebmInlineWebView.htmlForInline(url: safe), baseURL: safe)
             container.attach(webView)
             // Reset `hasLoaded` — a recreated WebView starts fresh, and
@@ -273,15 +269,6 @@ struct WebmInlineWebView: UIViewRepresentable {
                   let h = (body["height"] as? NSNumber)?.doubleValue,
                   h > 0
             else { return }
-            // `aspectReady` 는 `loadedmetadata` 에서 발화한다 — 디코더가 첫 프레임을
-            // 낼 준비가 된 시점이라 AVPlayer 의 `.readyToPlay` 와 같은 의미의 지점.
-            if !didRecordReadiness, let startedAt = loadStartedAt {
-                didRecordReadiness = true
-                let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
-                MediaLoadTelemetry.shared.record(
-                    .video(kind: "webm", host: url.host ?? "?", ms: max(0, ms),
-                           ctx: "body", ok: true))
-            }
             onAspectKnown(CGFloat(w / h))
         }
 

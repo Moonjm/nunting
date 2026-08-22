@@ -9,7 +9,6 @@ import os
 /// 세 종류를 한 형태에 담고 `t` 로 가른다:
 /// - `net`   이미지 **다운로드 계층**(URLSessionTaskMetrics). 순수 네트워크 시간과 그 분해.
 /// - `show`  이미지 **표시 계층**. 슬롯이 뜬 뒤 그림이 채워지기까지 = 사용자가 체감하는 시간.
-/// - `video` 인라인 영상이 재생 준비되기까지(mp4=readyToPlay, webm=loadedmetadata).
 ///
 /// 두 계층을 나눠 싣는 이유: "느리다"의 원인이 네트워크인지 캐시 미스인지 갈라야
 /// 대응이 갈린다(전자면 프리페치/다운샘플, 후자면 캐시 정책). 한쪽만 봐서는 못 가른다.
@@ -17,13 +16,13 @@ import os
 /// nil 필드는 인코딩에서 빠진다 — 이벤트가 글 하나에 수십 건이라 키 하나가
 /// 배치 크기에 그대로 곱해진다. 특히 `ok` 는 실패일 때만 싣는다(성공이 기본값).
 nonisolated struct MediaLoadEventDTO: Encodable, Sendable {
-    let t: String      // "net" | "show" | "video"
+    let t: String      // "net" | "show" | "decode"
     let ts: Int        // epoch seconds
     let ms: Int        // 이 이벤트가 대표하는 소요 시간
     var host: String?
-    var ctx: String?   // show/video: body|icon|viewer
+    var ctx: String?   // show: body|icon|viewer
     var src: String?   // show: mem|disk|net (SDImageCacheType)
-    var kind: String?  // video: mp4|webm
+    var kind: String?  // decode: 디코드 경로 이름
     var link: String?  // wifi|cell|wired|none — record() 시점에 찍힌다
     var bytes: Int?
     var dns: Int?      // net: 도메인 조회
@@ -43,6 +42,12 @@ nonisolated struct MediaLoadEventDTO: Encodable, Sendable {
 /// 만들 수 없어(생성자 비공개) 순수 값으로 한 겹 떼어낸다 — 변환 규칙은 이쪽에서 검증한다.
 nonisolated struct MediaLoadNetworkPhases: Sendable {
     let fetchStart: Date?
+    /// **첫** 트랜잭션의 fetch 시작. 대기(`queued`)는 여기서 잰다.
+    ///
+    /// `fetchStart` 는 마지막 홉이라 소요 시간을 대표하지만, 대기를 거기서 재면
+    /// 리다이렉트 왕복이 통째로 "슬롯 대기" 로 잡힌다. 리다이렉트가 없으면 두
+    /// 값이 같으므로, 비어 있을 때는 `fetchStart` 로 떨어진다.
+    var firstFetchStart: Date?
     let domainLookupStart: Date?
     let domainLookupEnd: Date?
     let connectStart: Date?
@@ -84,7 +89,7 @@ nonisolated extension MediaLoadEventDTO {
             proto: phases.networkProtocol,
             reused: phases.reusedConnection,
             status: phases.statusCode,
-            queued: elapsedMs(enqueuedAt, phases.fetchStart),
+            queued: elapsedMs(enqueuedAt, phases.firstFetchStart ?? phases.fetchStart),
             pf: prefetch ? true : nil)
     }
 
@@ -104,13 +109,6 @@ nonisolated extension MediaLoadEventDTO {
     static func show(host: String, ms: Int, src: String, ctx: String, ok: Bool,
                      ts: Int = Int(Date().timeIntervalSince1970)) -> MediaLoadEventDTO {
         MediaLoadEventDTO(t: "show", ts: ts, ms: ms, host: host, ctx: ctx, src: src,
-                          ok: ok ? nil : false)
-    }
-
-    /// 영상 준비 이벤트.
-    static func video(kind: String, host: String, ms: Int, ctx: String, ok: Bool,
-                      ts: Int = Int(Date().timeIntervalSince1970)) -> MediaLoadEventDTO {
-        MediaLoadEventDTO(t: "video", ts: ts, ms: ms, host: host, ctx: ctx, kind: kind,
                           ok: ok ? nil : false)
     }
 

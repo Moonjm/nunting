@@ -104,10 +104,8 @@ final class InlineAutoplayUIView: UIView, VideoPlayerPool.Leaseholder {
     private var aspectTask: Task<Void, Never>?
     /// 영상 준비 계측(`kind=media`, t=video)의 기산점 — 플레이어를 만든 순간.
     /// `.readyToPlay`(첫 프레임을 낼 수 있는 시점)까지가 "탭했는데 안 뜬다"의 실제 길이다.
-    private var playerCreatedAt: Date?
     /// 준비/실패를 한 로드당 한 번만 싣기 위한 래치. KVO 는 같은 상태로 여러 번
     /// 불릴 수 있고, 재생 중 stall→ready 왕복까지 세면 분포가 부풀어 오른다.
-    private var didRecordReadiness = false
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -259,17 +257,6 @@ final class InlineAutoplayUIView: UIView, VideoPlayerPool.Leaseholder {
         tearDownPlayer()
     }
 
-    /// 영상 준비 계측 한 건. 준비까지 걸린 시간을 `MediaLoadTelemetry` 로 넘긴다 —
-    /// 이미지의 show 이벤트와 같은 채널이라 "사진은 빠른데 영상만 느린" 상황이
-    /// 한 표에서 갈린다.
-    private func recordReadinessTelemetry(host: String?, ok: Bool) {
-        guard !didRecordReadiness, let startedAt = playerCreatedAt else { return }
-        didRecordReadiness = true
-        let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
-        MediaLoadTelemetry.shared.record(
-            .video(kind: "mp4", host: host ?? "?", ms: max(0, ms), ctx: "body", ok: ok))
-    }
-
     /// Full SwiftUI dismantle path. Release pool lease too (deinit
     /// will catch it via weak compaction otherwise, but releasing
     /// eagerly frees the slot for the next acquire one frame sooner).
@@ -288,8 +275,6 @@ final class InlineAutoplayUIView: UIView, VideoPlayerPool.Leaseholder {
         guard let url, player == nil else { return }
 
         let safeURL = url.atsSafe
-        playerCreatedAt = Date()
-        didRecordReadiness = false
         let asset = AVURLAsset(url: safeURL)
         let item = AVPlayerItem(asset: asset)
         let p = AVPlayer(playerItem: item)
@@ -356,7 +341,6 @@ final class InlineAutoplayUIView: UIView, VideoPlayerPool.Leaseholder {
             guard status == .failed || status == .readyToPlay else { return }
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.recordReadinessTelemetry(host: safeURL.host, ok: status == .readyToPlay)
                 guard status == .failed else { return }
                 VideoPlayerPool.shared.release(self)
                 self.tearDownPlayer()
