@@ -59,6 +59,16 @@ nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unc
     private let memory: SDMemoryCache<NSString, UIImage>
     private let disk: SDDiskCache
     private let worker = SerialWorker(name: ThreadedImageCache.workerThreadName)
+    /// 조회와 **다른 스레드**에서 도는 유지보수(만료 정리·인코딩) 전용 워커.
+    ///
+    /// 조회 워커에 섞으면 그 뒤에 선 조회가 전부 기다린다. 실제로 그렇게 터졌다:
+    /// 만료 정리를 init 에서 조회 워커에 태워놨는데, 디스크 캡이 처음으로 실제
+    /// 적용된 빌드에서 정리가 수천 개 파일 삭제로 커지며 **첫 조회들이 통째로
+    /// 6~12초 밀렸다**(2026-08-22 실측: 본문 show p50 139ms → 6,063ms, 그동안
+    /// 다운로드 대기 p50 은 1ms — 즉 병목이 다운로드 앞이었다).
+    private let maintenance = SerialWorker(name: "nunting.imageCache.maintenance",
+                                           qos: .background)
+    private var lifecycleObservers: [any NSObjectProtocol] = []
 
     /// 캐시 **정책값**(메모리 캡·디스크 캡·만료·쓰기 옵션). 설정을 나중에 바꾸려면
     /// **이걸** 고쳐야 한다 — `SDImageCache.shared.config` 는 남남이다. 그쪽은
@@ -83,8 +93,31 @@ nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unc
         }
         self.disk = disk
         super.init()
-        // 만료 정리도 워커에서 — 이것도 파일 I/O 다.
-        worker.async { [disk] in disk.removeExpiredData() }
+        // 만료 정리는 **시작 시점에 하지 않는다.** 순정도 안 한다 — 백그라운드
+        // 전환과 종료에만 돈다(`SDImageCache.m:154-166`). 시작 시점에 돌리면 그
+        // 비용이 정확히 사용자가 첫 화면을 기다리는 순간에 얹힌다.
+        let center = NotificationCenter.default
+        for name in [UIApplication.didEnterBackgroundNotification,
+                     UIApplication.willTerminateNotification] {
+            lifecycleObservers.append(
+                center.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
+                    self?.purgeExpiredData(completion: nil)
+                })
+        }
+    }
+
+    deinit {
+        let center = NotificationCenter.default
+        for observer in lifecycleObservers { center.removeObserver(observer) }
+    }
+
+    /// 만료·용량 초과 엔트리 정리. 디렉터리 전체 순회 + 대량 삭제라 **비싸다** —
+    /// 조회 워커가 아니라 유지보수 워커에서 돈다.
+    func purgeExpiredData(completion: (() -> Void)?) {
+        maintenance.async { [disk] in
+            disk.removeExpiredData()
+            completion?()
+        }
     }
 
     // MARK: - SDImageCache
@@ -162,13 +195,24 @@ nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unc
         // 재방문마다 조회가 두 번(썸네일 미스 → 원본 히트) 돌며 원본 전체를 다시
         // 다운샘플한다. 그림은 나오므로 증상은 "그냥 느림" 으로만 보인다.
         guard let image else { completionBlock?(); return }
-        // 인코딩은 CPU 작업이다. 디스크 워커에서 돌리면 뒤에 선 **조회**가 인코딩을
-        // 기다린다 — 이 클래스가 없애려던 바로 그 모양이다. 순정도 같은 이유로
-        // 인코딩을 별도 큐에서 하고 결과 바이트만 IO 큐에 넘긴다.
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let self, let encoded = image.sd_imageData(as: Self.encodeFormat(for: image)),
+        // 인코딩은 CPU 작업이다. 두 군데 다 두면 안 된다:
+        //  - 조회 워커에 두면 뒤에 선 조회가 인코딩을 기다린다.
+        //  - libdispatch 전역 풀에 두면 디코드 블록과 코어를 다툰다(순정이 이렇게
+        //    한다. 우리가 풀에서 벗어난 이유가 그 다툼이다).
+        // 그래서 풀 밖 유지보수 워커에서, 표시 경로보다 낮은 우선순위로 돈다.
+        // 비용은 아직 모른다 — `encodeStore` 로 재서 다음 배치에서 확인한다.
+        maintenance.async { [weak self] in
+            guard let self else { completionBlock?(); return }
+            let startedAt = Date()
+            guard let encoded = image.sd_imageData(as: Self.encodeFormat(for: image)),
                   !encoded.isEmpty
             else { completionBlock?(); return }
+            let event = MediaLoadEventDTO.decode(
+                kind: "encodeStore",
+                ms: Int(Date().timeIntervalSince(startedAt) * 1000),
+                pixels: (image.cgImage?.width ?? 0) * (image.cgImage?.height ?? 0),
+                bytes: encoded.count)
+            Task { @MainActor in MediaLoadTelemetry.shared.record(event) }
             self.worker.async { [disk = self.disk] in
                 disk.setData(encoded, forKey: key)
                 completionBlock?()
@@ -294,11 +338,11 @@ private nonisolated final class SerialWorker: @unchecked Sendable {
     private let condition = NSCondition()
     private var pending: [Job] = []
 
-    init(name: String) {
+    init(name: String, qos: QualityOfService = .utility) {
         let thread = Thread { [weak self] in self?.run() }
         thread.name = name
         // 파일 I/O 는 급하지 않다 — 표시 경로와 CPU 를 다투지 않게 낮춘다.
-        thread.qualityOfService = .utility
+        thread.qualityOfService = qos
         thread.start()
     }
 

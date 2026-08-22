@@ -221,6 +221,56 @@ final class ThreadedImageCacheTests: XCTestCase {
         XCTAssertEqual(type.withLock { $0 }, SDImageCacheType.none)
     }
 
+    /// **시작 시점에 만료 정리를 하지 않는다.**
+    ///
+    /// 한동안 init 에서 조회 워커에 태워 돌렸다. 디스크 캡이 실제로 적용되기
+    /// 전까지는 싸서 안 보였는데, 캡이 걸린 첫 빌드에서 정리가 대량 삭제로 커지며
+    /// **첫 조회들이 통째로 밀렸다** — 본문 show p50 139ms → 6,063ms, 그동안
+    /// 다운로드 대기 p50 은 1ms 였다(병목이 다운로드 앞이라는 뜻). 순정도 시작
+    /// 시점엔 안 한다(`SDImageCache.m:154-166` — 백그라운드/종료에만).
+    ///
+    /// 만료된 엔트리가 init 뒤에도 살아 있는 것으로 "정리를 안 했다" 를 확인한다.
+    func testInitDoesNotPurgeExpiredEntries() throws {
+        let directory = NSTemporaryDirectory().appending("nunting-purge-\(UUID().uuidString)")
+        let config = SDImageCacheConfig()
+        let seeding = ThreadedImageCache(cacheDirectory: directory, config: config)
+        let stored = expectation(description: "stored")
+        seeding.store(sampleImage(), imageData: try pngData(), forKey: "old",
+                      cacheType: .disk) { stored.fulfill() }
+        wait(for: [stored], timeout: 5)
+
+        // 이제 "전부 만료" 로 열어도 init 이 지우면 안 된다.
+        config.maxDiskAge = 0
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        let reopened = ThreadedImageCache(cacheDirectory: directory, config: config)
+        defer {
+            let cleared = expectation(description: "cleared")
+            reopened.clear(with: .all) { cleared.fulfill() }
+            wait(for: [cleared], timeout: 5)
+        }
+
+        XCTAssertEqual(contains("old", in: reopened), .disk,
+                       "init 이 만료 정리를 돌렸다 — 그 비용이 첫 조회 앞에 얹힌다")
+
+        // 명시적으로 부르면 그때는 지운다.
+        let purged = expectation(description: "purged")
+        reopened.purgeExpiredData { purged.fulfill() }
+        wait(for: [purged], timeout: 5)
+        XCTAssertEqual(contains("old", in: reopened), SDImageCacheType.none,
+                       "명시적 정리는 만료 엔트리를 지워야 한다")
+    }
+
+    private func contains(_ key: String, in cache: ThreadedImageCache) -> SDImageCacheType {
+        let probed = expectation(description: "contains")
+        let found = OSAllocatedUnfairLock(initialState: SDImageCacheType.none)
+        cache.containsImage(forKey: key, cacheType: .disk) { type in
+            found.withLock { $0 = type }
+            probed.fulfill()
+        }
+        wait(for: [probed], timeout: 5)
+        return found.withLock { $0 }
+    }
+
     /// **이 클래스의 존재 이유**: 디스크 작업이 libdispatch 풀 스레드에서 돌면 안 된다.
     /// 풀 스레드를 쓰면 지금 겪는 고갈이 그대로 재현되므로, 전용 스레드에서 도는지를
     /// 직접 확인한다.
