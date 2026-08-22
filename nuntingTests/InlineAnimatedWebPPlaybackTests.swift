@@ -13,23 +13,6 @@ import SDWebImageWebPCoder
 @MainActor
 final class InlineAnimatedWebPPlaybackTests: XCTestCase {
 
-    /// 읽기/쓰기 가르기 실험(`SDWebImageSetup`)이 조회를 메모리로 제한하고 있으면
-    /// 이 클래스의 전제(디스크에 시드하고 그걸 읽어온다)가 통째로 무너진다. 여기서
-    /// 검증하는 건 애니메 WebP 재생 경로이지 그 실험이 아니므로 걷어내고 돌린다.
-    /// **실험이 끝나면 이 두 메서드도 같이 지운다** — 그때는 no-op 이다.
-    private var savedOptionsProcessor: (any SDWebImageOptionsProcessorProtocol)?
-
-    override func setUp() {
-        super.setUp()
-        savedOptionsProcessor = SDWebImageManager.shared.optionsProcessor
-        SDWebImageManager.shared.optionsProcessor = nil
-    }
-
-    override func tearDown() {
-        SDWebImageManager.shared.optionsProcessor = savedOptionsProcessor
-        super.tearDown()
-    }
-
     private func makeAnimatedWebPData(frames frameCount: Int = 4) throws -> Data {
         func solid(_ hue: CGFloat) -> UIImage {
             UIGraphicsImageRenderer(size: CGSize(width: 16, height: 16)).image { ctx in
