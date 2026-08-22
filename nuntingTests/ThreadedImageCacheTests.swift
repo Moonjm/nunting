@@ -399,3 +399,101 @@ final class SerialWorkerLifecycleTests: XCTestCase {
         XCTAssertTrue(waitUntil { worker.isFinished })
     }
 }
+
+/// 조회 **취소** 규약.
+///
+/// 순정 `SDImageCacheToken.cancel` 은 그 자리에서 `doneBlock(nil, nil, .none)` 을
+/// 콜백 큐로 보내고, 뒤늦게 끝난 작업의 콜백은 억제한다(`SDImageCache.m` 토큰 구현).
+/// 우리는 플래그만 세우고 있어서, 취소한 쪽이 **앞선 작업들이 다 끝날 때까지** 기다렸다.
+/// 뷰어를 닫거나 빠르게 스크롤할 때마다 그 대기가 쌓인다.
+final class ThreadedImageCacheCancellationTests: XCTestCase {
+
+    /// 디코드를 느리게 만들어 워커를 붙잡는 코더. 디코드는 안 하고(nil) 시간만 쓴다.
+    private final class SlowCoder: NSObject, SDImageCoder, @unchecked Sendable {
+        let delay: TimeInterval
+        init(delay: TimeInterval) { self.delay = delay }
+        func canDecode(from data: Data?) -> Bool {
+            Thread.sleep(forTimeInterval: delay)
+            return false
+        }
+        func decodedImage(with data: Data?, options: [SDImageCoderOption: Any]?) -> UIImage? { nil }
+        func canEncode(to format: SDImageFormat) -> Bool { false }
+        func encodedData(with image: UIImage?, format: SDImageFormat,
+                         options: [SDImageCoderOption: Any]?) -> Data? { nil }
+    }
+
+    private var cache: ThreadedImageCache!
+    private var originalCoders: [any SDImageCoder] = []
+
+    override func setUp() {
+        super.setUp()
+        cache = ThreadedImageCache(cacheDirectory: NSTemporaryDirectory()
+            .appending("nunting-cancel-\(UUID().uuidString)"))
+        originalCoders = SDImageCodersManager.shared.coders ?? []
+    }
+
+    override func tearDown() {
+        SDImageCodersManager.shared.coders = originalCoders
+        let done = expectation(description: "cleared")
+        cache.clear(with: .all) { done.fulfill() }
+        wait(for: [done], timeout: 5)
+        cache = nil
+        super.tearDown()
+    }
+
+    private func seed(_ key: String) throws {
+        let data = try XCTUnwrap(UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4))
+            .image { _ in }.pngData())
+        let stored = expectation(description: "stored \(key)")
+        cache.store(nil, imageData: data, forKey: key, cacheType: .disk) { stored.fulfill() }
+        wait(for: [stored], timeout: 5)
+    }
+
+    /// 취소는 **줄을 기다리지 않는다.** 앞 작업이 워커를 0.6초 붙잡고 있어도, 취소한
+    /// 조회는 그 전에 완료돼야 한다.
+    func testCancelCompletesWithoutWaitingForTheQueue() throws {
+        try seed("slow")
+        try seed("cancelled")
+        SDImageCodersManager.shared.addCoder(SlowCoder(delay: 0.6))
+
+        // 워커를 붙잡는다.
+        _ = cache.queryImage(forKey: "slow", options: [], context: nil, cacheType: .disk) { _, _, _ in }
+
+        let cancelled = expectation(description: "cancelled completion")
+        let calls = OSAllocatedUnfairLock(initialState: 0)
+        let type = OSAllocatedUnfairLock(initialState: SDImageCacheType.memory)
+        let op = cache.queryImage(forKey: "cancelled", options: [], context: nil,
+                                  cacheType: .disk) { _, _, t in
+            calls.withLock { $0 += 1 }
+            type.withLock { $0 = t }
+            cancelled.fulfill()
+        }
+        op?.cancel()
+
+        // 앞 작업(0.6s)이 끝나기 전에 와야 한다.
+        wait(for: [cancelled], timeout: 0.3)
+        XCTAssertEqual(type.withLock { $0 }, SDImageCacheType.none, "취소는 .none 으로 끝나야 한다")
+
+        // 뒤늦게 워커가 끝나도 두 번 부르면 안 된다.
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 1.0))
+        XCTAssertEqual(calls.withLock { $0 }, 1, "완료가 두 번 왔다 — 정확히 한 번이어야 한다")
+    }
+
+    /// 이미 완료된 조회를 취소해도 완료가 한 번 더 오면 안 된다.
+    func testCancelAfterCompletionDoesNotFireAgain() throws {
+        try seed("done")
+
+        let finished = expectation(description: "finished")
+        let calls = OSAllocatedUnfairLock(initialState: 0)
+        let op = cache.queryImage(forKey: "done", options: [], context: nil, cacheType: .disk) { _, _, _ in
+            calls.withLock { $0 += 1 }
+            finished.fulfill()
+        }
+        wait(for: [finished], timeout: 5)
+
+        op?.cancel()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.3))
+
+        XCTAssertEqual(calls.withLock { $0 }, 1)
+    }
+}

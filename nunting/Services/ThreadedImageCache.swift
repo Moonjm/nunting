@@ -154,15 +154,21 @@ nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unc
             return nil
         }
 
-        let operation = CacheOperation()
-        let callback = Self.callbackQueue(context)
+        let operation = CacheOperation(callback: Self.callbackQueue(context),
+                                       completion: completionBlock)
         worker.async { [weak self] in
             guard let self, !operation.isCancelled else {
-                callback.async { completionBlock?(nil, nil, .none) }
+                operation.finish(nil, nil, .none)
                 return
             }
             guard let data = self.disk.data(forKey: key) else {
-                callback.async { completionBlock?(nil, nil, .none) }
+                operation.finish(nil, nil, .none)
+                return
+            }
+            // 디코드 직전에 한 번 더 본다 — 여기가 비싼 구간이라, 이미 취소된 조회에
+            // 고해상도 디코드를 태우는 게 취소의 가장 큰 낭비다.
+            guard !operation.isCancelled else {
+                operation.finish(nil, nil, .none)
                 return
             }
             // 디코드 옵션(썸네일 크기·스케일 등)이 여기서 정해진다 — 컨텍스트를
@@ -171,7 +177,7 @@ nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unc
             if let image, self.shouldCacheToMemory(context: context) {
                 self.memory.setObject(image, forKey: key as NSString, cost: image.sd_memoryCost)
             }
-            callback.async { completionBlock?(image, data, .disk) }
+            operation.finish(image, data, .disk)
         }
         return operation
     }
@@ -312,11 +318,46 @@ nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unc
         return type == .all || type == .memory
     }
 
-    /// 취소 신호만 나르는 최소 오퍼레이션. SD 는 조회 반환값을 취소용으로만 쓴다.
+    /// 조회 한 건의 취소 + **정확히 한 번**의 완료를 책임진다.
+    ///
+    /// 순정과 같은 규약이다(`SDImageCache.m` 의 `SDImageCacheToken`): 취소하면 그
+    /// 자리에서 `(nil, nil, .none)` 을 콜백 큐로 보내고, 뒤늦게 끝난 작업의 콜백은
+    /// 버린다. 플래그만 세우면 취소한 쪽이 **앞선 작업이 다 끝날 때까지** 기다린다 —
+    /// 뷰어를 닫거나 빠르게 스크롤할 때마다 그 대기가 쌓인다.
+    ///
+    /// 완료를 아예 안 보내는 선택지는 없다. 매니저가 그 콜백으로 흐름을 이어가므로
+    /// 빠뜨리면 로드가 미해결로 남는다(그 모양이 "다시 시도" 고착이다).
     private final class CacheOperation: NSObject, SDWebImageOperation, @unchecked Sendable {
-        private let cancelled = OSAllocatedUnfairLock(initialState: false)
-        var isCancelled: Bool { cancelled.withLock { $0 } }
-        func cancel() { cancelled.withLock { $0 = true } }
+        private struct State {
+            var cancelled = false
+            var finished = false
+        }
+        private let state = OSAllocatedUnfairLock(initialState: State())
+        private let callback: SDCallbackQueue
+        private let completion: SDImageCacheQueryCompletionBlock?
+
+        init(callback: SDCallbackQueue, completion: SDImageCacheQueryCompletionBlock?) {
+            self.callback = callback
+            self.completion = completion
+        }
+
+        var isCancelled: Bool { state.withLock { $0.cancelled } }
+
+        func cancel() {
+            state.withLock { $0.cancelled = true }
+            finish(nil, nil, .none)
+        }
+
+        /// 첫 호출만 실제로 완료를 보낸다. 취소와 워커가 겹쳐도 콜백은 한 번뿐이다.
+        func finish(_ image: UIImage?, _ data: Data?, _ type: SDImageCacheType) {
+            let shouldSend = state.withLock { state -> Bool in
+                guard !state.finished else { return false }
+                state.finished = true
+                return true
+            }
+            guard shouldSend, let completion else { return }
+            callback.async { completion(image, data, type) }
+        }
     }
 }
 
@@ -394,7 +435,13 @@ nonisolated final class SerialWorker: @unchecked Sendable {
             }
             let job = pending.removeFirst()
             condition.unlock()
-            job.run()
+            // **풀이 없으면 오토릴리스 객체가 스레드 수명만큼 산다.** 이 스레드는
+            // 앱이 죽을 때까지 사는데, 여기서 도는 게 하필 디스크 읽기와 디코드다
+            // (ObjC 임시 객체 · NSData · UIImage). 그러면 NSCache 가 이미지를
+            // 걷어내도 뒤 메모리가 안 풀려 캡이 무의미해진다 — 이 앱은 그 방향으로
+            // 이미 한 번 OOM 을 겪었다. `Thread` 는 풀을 만들어주지 않으므로
+            // (`RunLoop` 를 안 돌리니 더더욱) 잡마다 직접 감싼다.
+            autoreleasepool { job.run() }
         }
     }
 }
