@@ -20,11 +20,12 @@ import SDWebImageWebPCoder
 final class ThreadedImageCacheTests: XCTestCase {
 
     private var cache: ThreadedImageCache!
+    private var cacheDirectory = ""
 
     override func setUp() {
         super.setUp()
-        cache = ThreadedImageCache(cacheDirectory: NSTemporaryDirectory()
-            .appending("nunting-test-\(UUID().uuidString)"))
+        cacheDirectory = NSTemporaryDirectory().appending("nunting-test-\(UUID().uuidString)")
+        cache = ThreadedImageCache(cacheDirectory: cacheDirectory)
     }
 
     override func tearDown() {
@@ -69,49 +70,58 @@ final class ThreadedImageCacheTests: XCTestCase {
         XCTAssertEqual(type, .disk)
     }
 
-    /// **데이터 없이 이미지만 들어오는 저장**도 디스크에 남아야 한다.
+    /// **데이터 없이 이미지만 들어오면 디스크에 쓰지 않는다** — 의도된 선택이다.
     ///
-    /// 이 경로가 드문 게 아니라 본문 이미지의 **정상 경로**다. 우리는 거의 모든
-    /// 본문 이미지에 `imageThumbnailPixelSize` 를 걸고, SDWebImage 는 썸네일을
-    /// 저장할 때 원본 데이터를 일부러 버린다(`SDWebImageManager.m` —
-    /// `if (isThumbnail) { cacheData = nil; }`). 순정 `SDImageCache` 는 그때
-    /// 이미지를 인코딩해서 쓴다(`SDImageCache.m:272-306`).
+    /// 순정은 그때 이미지를 인코딩해서 쓴다(`SDImageCache.m:272-306`). 우리는 안
+    /// 쓴다. 근거는 기기 실측이다(2026-08-22): 인코딩이 장당 p50 8,434ms 였고
+    /// (기본 품질 1.0 WebP 재인코딩) 33장 세션에서 4장밖에 못 끝냈다. 안 써도
+    /// 매니저가 원본 키로 폴백해 그림은 나오고, 그 재방문 비용이 `src=disk`
+    /// p50 148ms 다. 8초로 148ms 를 줄이는 건 교환이 아니라 손해다.
     ///
-    /// 우리가 그냥 버리면 썸네일 키 엔트리가 영영 안 생긴다. 증상은 안 보인다 —
-    /// 매니저가 원본 키로 폴백해 그림은 나오기 때문이다. 대신 재방문마다 원본
-    /// 전체를 다시 디코드한다. 정확히 "조용한 무효화" 의 모양이라 테스트로 못 박는다.
-    func testStoresImageWithoutDataToDisk() {
+    /// 되돌릴 거라면 인코딩을 싸게 만드는 쪽을 먼저 재고 이 숫자 위에서 판단할 것.
+    func testDoesNotEncodeImageWithoutDataToDisk() {
         let stored = expectation(description: "stored")
         cache.store(sampleImage(), imageData: nil, forKey: "encoded",
                     cacheType: .disk) { stored.fulfill() }
         wait(for: [stored], timeout: 5)
 
-        let queried = expectation(description: "queried")
-        let result = OSAllocatedUnfairLock<(UIImage?, SDImageCacheType)>(initialState: (nil, .none))
-        _ = cache.queryImage(forKey: "encoded", options: [], context: nil,
-                             cacheType: .disk) { image, _, type in
-            result.withLock { $0 = (image, type) }
-            queried.fulfill()
-        }
-        wait(for: [queried], timeout: 5)
-
-        let (image, type) = result.withLock { $0 }
-        XCTAssertNotNil(image, "이미지만 준 저장이 디스크에서 사라졌다")
-        XCTAssertEqual(type, .disk)
+        XCTAssertEqual(contains("encoded", in: cache), SDImageCacheType.none,
+                       "인코딩 저장이 되살아났다 — 장당 8초짜리 비용이다")
     }
 
-    /// **실제 파이프라인 확인**: 썸네일 컨텍스트로 로드하면 썸네일 키 엔트리가
-    /// 디스크에 남는가.
+    /// 반면 **애니메 이미지의 원본 데이터는 공짜로 손에 있다** — 그건 쓴다.
+    /// 인코딩(움짤이면 전 프레임 재압축!)이 필요 없는 유일한 경우다.
+    func testStoresAnimatedImageDataWithoutReencoding() throws {
+        let frames = (0..<3).map { index in
+            let image = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8)).image { ctx in
+                UIColor(white: CGFloat(index) / 3, alpha: 1).setFill()
+                ctx.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
+            }
+            return SDImageFrame(image: image, duration: 0.05)
+        }
+        let animated = try XCTUnwrap(SDImageCoderHelper.animatedImage(with: frames))
+        let data = try XCTUnwrap(SDImageWebPCoder.shared.encodedData(with: animated,
+                                                                    format: .webP, options: nil))
+        let image = try XCTUnwrap(SDAnimatedImage(data: data))
+
+        let stored = expectation(description: "stored")
+        cache.store(image, imageData: nil, forKey: "animated", cacheType: .disk) { stored.fulfill() }
+        wait(for: [stored], timeout: 5)
+
+        XCTAssertEqual(contains("animated", in: cache), .disk,
+                       "손에 있는 애니메 원본 데이터까지 버리면 재방문이 전부 미스가 된다")
+    }
+
+    /// **실제 파이프라인 확인**: 썸네일 키 엔트리 없이도 재방문이 성립하는가.
     ///
-    /// 본문 이미지는 거의 전부 `imageThumbnailPixelSize` 를 달고 로드된다. 그때
-    /// SDWebImage 는 썸네일 저장에 원본 데이터를 넘기지 않고
-    /// (`SDWebImageManager.m` — `if (isThumbnail) { cacheData = nil; }`) 캐시가
-    /// 알아서 인코딩해 쓰기를 기대한다(`SDImageCache.m:272-306`).
+    /// 본문 이미지는 거의 전부 `imageThumbnailPixelSize` 를 달고 로드되고, 우리는
+    /// 그 키에 아무것도 쓰지 않는다(위 `testDoesNotEncodeImageWithoutDataToDisk`
+    /// 의 근거). 그래서 이 선택이 서 있는 조건은 하나다 — **매니저가 원본 키로
+    /// 폴백해 그림을 만들어 준다**(`callOriginalCacheProcessForOperation`).
     ///
-    /// 안 쓰면 증상이 안 보인다 — 매니저가 원본 키로 폴백해 그림은 나온다. 대신
-    /// 재방문마다 조회가 두 번 돌고(썸네일 미스 → 원본 히트) 원본 전체를 다시
-    /// 다운샘플한다. 네트워크 없이 원본만 시드해 이 경로 전체를 돌린다.
-    func testThumbnailLoadLeavesThumbnailEntryOnDisk() throws {
+    /// 그 폴백이 사라지면 재방문이 전부 네트워크가 된다. 네트워크 없이 원본만
+    /// 시드해 이 경로 전체를 돌려 확인한다.
+    func testThumbnailLoadFallsBackToOriginalEntry() throws {
         let source = UIGraphicsImageRenderer(size: CGSize(width: 64, height: 64)).image { ctx in
             UIColor.systemTeal.setFill()
             ctx.fill(CGRect(x: 0, y: 0, width: 64, height: 64))
@@ -139,19 +149,8 @@ final class ThreadedImageCacheTests: XCTestCase {
         }
         wait(for: [loaded], timeout: 10)
 
-        // 저장은 표시 뒤 비동기로 끝난다 — 디스크에 도달할 때까지 짧게 폴링한다.
-        var found = SDImageCacheType.none
-        for _ in 0..<40 {
-            let probed = expectation(description: "probe")
-            cache.containsImage(forKey: thumbnailKey, cacheType: .disk) { type in
-                found = type
-                probed.fulfill()
-            }
-            wait(for: [probed], timeout: 5)
-            if found == .disk { break }
-            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
-        }
-        XCTAssertEqual(found, .disk, "썸네일 키 엔트리가 디스크에 안 남았다 — 재방문이 매번 원본 재디코드가 된다")
+        XCTAssertEqual(contains(thumbnailKey, in: cache), SDImageCacheType.none,
+                       "썸네일 키에 쓰기 시작했다 — 인코딩 비용이 되살아났는지 확인할 것")
     }
 
     /// 이미지도 데이터도 없으면 쓸 게 없다 — 완료만 알리고 끝(순정과 같은 계약).

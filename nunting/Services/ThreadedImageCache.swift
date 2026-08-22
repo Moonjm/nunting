@@ -59,7 +59,7 @@ nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unc
     private let memory: SDMemoryCache<NSString, UIImage>
     private let disk: SDDiskCache
     private let worker = SerialWorker(name: ThreadedImageCache.workerThreadName)
-    /// 조회와 **다른 스레드**에서 도는 유지보수(만료 정리·인코딩) 전용 워커.
+    /// 조회와 **다른 스레드**에서 도는 유지보수(만료 정리) 전용 워커.
     ///
     /// 조회 워커에 섞으면 그 뒤에 선 조회가 전부 기다린다. 실제로 그렇게 터졌다:
     /// 만료 정리를 init 에서 조회 워커에 태워놨는데, 디스크 캡이 처음으로 실제
@@ -188,36 +188,29 @@ nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unc
             }
             return
         }
-        // 여기까지 왔으면 **쓸 바이트가 없다** — 이미지만 있다. 본문 이미지의 정상
-        // 경로다: 썸네일 저장에서 SD 가 원본 데이터를 일부러 버리고
+        // 여기까지 왔으면 **쓸 바이트가 없다** — 이미지만 있다. 거의 전부 썸네일
+        // 저장이다: SD 는 썸네일에 원본 데이터를 일부러 넘기지 않고
         // (`SDWebImageManager.m` — `if (isThumbnail) { cacheData = nil; }`) 캐시가
-        // 인코딩해 쓰기를 기대한다. 그냥 넘기면 썸네일 키 엔트리가 영영 안 생기고,
-        // 재방문마다 조회가 두 번(썸네일 미스 → 원본 히트) 돌며 원본 전체를 다시
-        // 다운샘플한다. 그림은 나오므로 증상은 "그냥 느림" 으로만 보인다.
-        guard let image else { completionBlock?(); return }
-        // 인코딩은 CPU 작업이다. 두 군데 다 두면 안 된다:
-        //  - 조회 워커에 두면 뒤에 선 조회가 인코딩을 기다린다.
-        //  - libdispatch 전역 풀에 두면 디코드 블록과 코어를 다툰다(순정이 이렇게
-        //    한다. 우리가 풀에서 벗어난 이유가 그 다툼이다).
-        // 그래서 풀 밖 유지보수 워커에서, 표시 경로보다 낮은 우선순위로 돈다.
-        // 비용은 아직 모른다 — `encodeStore` 로 재서 다음 배치에서 확인한다.
-        maintenance.async { [weak self] in
-            guard let self else { completionBlock?(); return }
-            let startedAt = Date()
-            guard let encoded = image.sd_imageData(as: Self.encodeFormat(for: image)),
-                  !encoded.isEmpty
-            else { completionBlock?(); return }
-            let event = MediaLoadEventDTO.decode(
-                kind: "encodeStore",
-                ms: Int(Date().timeIntervalSince(startedAt) * 1000),
-                pixels: (image.cgImage?.width ?? 0) * (image.cgImage?.height ?? 0),
-                bytes: encoded.count)
-            Task { @MainActor in MediaLoadTelemetry.shared.record(event) }
-            self.worker.async { [disk = self.disk] in
-                disk.setData(encoded, forKey: key)
-                completionBlock?()
-            }
-        }
+        // 인코딩해 쓰기를 기대한다(`SDImageCache.m:272-306`).
+        //
+        // **우리는 일부러 안 쓴다.** 순정과 다른 선택이고, 근거는 실측이다
+        // (2026-08-22, 인벤 본문 이미지):
+        //
+        //   encodeStore  n=4  p50 8,434ms  max 9,224ms   ← 장당 인코딩 비용
+        //
+        // 장당 8초다(`sd_imageDataAsFormat:` 의 기본 품질이 1.0 이라 WebP 재인코딩이
+        // 극단적으로 비싸다). 33장 세션에서 4장밖에 못 끝냈다 — 비용은 전부 내면서
+        // 이득은 거의 못 만든다.
+        //
+        // 안 써도 그림은 나온다. 매니저가 원본 키로 폴백하기 때문이다
+        // (`SDWebImageManager.m` `callOriginalCacheProcessForOperation`). 대가는
+        // 재방문 때 조회가 두 번 돌고 원본을 다시 다운샘플하는 것인데, 같은 세션
+        // 실측이 `src=disk` p50 148ms / p90 313ms 다. 8초를 써서 그 148ms 를 조금
+        // 줄이는 건 교환이 아니라 손해다.
+        //
+        // 되돌릴 거라면 인코딩을 싸게 만드는 쪽(품질·포맷)을 먼저 재고, 이 숫자
+        // 위에서 판단할 것.
+        completionBlock?()
     }
 
     /// 그대로 디스크에 쓸 수 있는 바이트. 없으면 nil(=인코딩이 필요하다).
@@ -235,17 +228,6 @@ nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unc
     /// SD 가 썸네일 키에 박는 표식. 라이브러리 쪽은 파일 스코프 static 이라 못 쓴다.
     private static func isThumbnailKey(_ key: String) -> Bool {
         key.contains("-Thumbnail(")
-    }
-
-    /// 인코딩 포맷. 원본 포맷을 유지한다 — 다시 열 때 같은 디코더를 타고, 보드
-    /// 이미지에 흔한 텍스트/스크린샷이 JPEG 재압축으로 뭉개지지 않는다. 포맷을
-    /// 모르면 순정과 같은 규칙으로 정한다(알파 있으면 PNG, 없으면 JPEG).
-    private static func encodeFormat(for image: UIImage) -> SDImageFormat {
-        let format = image.sd_imageFormat
-        guard format == .undefined else { return format }
-        if image.sd_imageFrameCount > 1 { return .PNG }
-        guard let cgImage = image.cgImage else { return .PNG }
-        return SDImageCoderHelper.cgImageContainsAlpha(cgImage) ? .PNG : .JPEG
     }
 
     func removeImage(forKey key: String?, cacheType: SDImageCacheType,
