@@ -337,11 +337,9 @@ final class InlineAutoplayUIView: UIView, VideoPlayerPool.Leaseholder {
         // stays on screen — no special failure UI for now, matching
         // the inline-image fail-silent stance for decorative slots.
         statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
-            let status = item.status
-            guard status == .failed || status == .readyToPlay else { return }
+            guard item.status == .failed else { return }
             DispatchQueue.main.async {
                 guard let self else { return }
-                guard status == .failed else { return }
                 VideoPlayerPool.shared.release(self)
                 self.tearDownPlayer()
             }

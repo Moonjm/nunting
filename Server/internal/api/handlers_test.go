@@ -802,7 +802,7 @@ func TestAdminMetricsRendersMediaSection(t *testing.T) {
 		`{"t":"net","ts":1753000001,"ms":150,"host":"i.namu.wiki","link":"wifi","bytes":20000,"ttfb":80,"proto":"h2","reused":true,"status":200},` +
 		`{"t":"show","ts":1753000002,"ms":12,"host":"img.fmkorea.com","link":"wifi","src":"mem","ctx":"body"},` +
 		`{"t":"show","ts":1753000003,"ms":980,"host":"img.fmkorea.com","link":"cell","src":"net","ctx":"body","ok":false},` +
-		`{"t":"video","ts":1753000004,"ms":1800,"host":"v.aagag.com","link":"wifi","kind":"webm","ctx":"body"}` +
+		`{"t":"decode","ts":1753000004,"ms":17,"kind":"webpViaIO","px":1200000,"bytes":94908}` +
 		`]}`
 	if err := store.InsertMetricPayload(t.Context(), "nnt_x", "media", media); err != nil {
 		t.Fatalf("insert: %v", err)
@@ -816,9 +816,11 @@ func TestAdminMetricsRendersMediaSection(t *testing.T) {
 		"미디어 로딩",          // 섹션
 		"img.fmkorea.com", // 느린 호스트
 		"wifi", "cell",    // 링크별 비교
-		"mem",   // 캐시 출처 분포
-		"webm",  // 영상 컨테이너
-		"950ms", // net p50(2건 중 느린 쪽이 p90, 여기선 값 노출 확인)
+		"mem", // 캐시 출처 분포
+		// 집계 행에서만 나오는 모양으로 검사한다 — raw JSON 이 같은 페이지에 렌더되므로
+		// 이름만 찾으면 집계가 통째로 빠져도 통과한다(직전까지 "webm" 이 그랬다).
+		"webpViaIO 1", // 코더별 디코드 건수
+		"950ms",       // net p50(2건 중 느린 쪽이 p90, 여기선 값 노출 확인)
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("media section missing %q", want)
