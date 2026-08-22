@@ -59,10 +59,15 @@ enum SDWebImageSetup {
         // 경로는 `SDImageCache.shared` 와 동일해 기존에 받아둔 파일이 그대로 살아 있다.
         SDWebImageManager.defaultImageCache = AppImageCaches.disk
 
-        // 아래 `cache` 설정은 캐시 **정책값**(메모리 캡·디스크 캡·만료)을 담는
-        // `SDImageCacheConfig.default` 를 통해 우리 캐시에도 그대로 적용된다 —
-        // `ThreadedImageCache` 가 그 config 로 메모리/디스크를 만든다.
-        let cache = SDImageCache.shared
+        // 정책값은 **설치한 캐시의 config 에** 건다.
+        //
+        // 한동안 `SDImageCache.shared.config` 에 걸고 있었고 그건 아무 데도 안
+        // 닿았다 — `SDImageCache` 는 생성 시점에 `.default` 를 **복사**하므로
+        // (`SDImageCache.m:127` `_config = [config copy]`) 거기 쓴 값은 원본
+        // `.default` 를 참조하는 `ThreadedImageCache` 에 오지 않는다. 그래서 atomic
+        // 해제도 400MB 캡도 안 쓰는 캐시만 고치고 있었다(Codex 리뷰 2026-08-22).
+        // 캡이 안 걸린 쪽이 더 위험했다: `maxMemoryCost` 기본값 0 = 무제한이다.
+        let cache = AppImageCaches.disk
         // **디스크 쓰기가 병목이라는 게 실측으로 확정됐다**(2026-08-22). 저장 위치를
         // 메모리로만 돌려 디스크 쓰기를 없앤 세션과 비교:
         //
