@@ -61,20 +61,31 @@ enum SDWebImageSetup {
         // 404 to the retry placeholder.
         SDWebImageDownloader.shared.config.operationClass = HTTPSRedirectingDownloaderOperation.self
 
-        // 앱 전역 캐시를 우리 인스턴스로 지정한다. `SDImageCache.shared` 와 섞어 쓰면
-        // 메모리 캐시가 둘로 갈라져(디스크 디렉터리는 같다) 한쪽에 넣은 걸 다른 쪽이
-        // 못 찾는다 — 호출부를 전부 `AppImageCache.app` 으로 옮긴 이유다.
-        SDWebImageManager.defaultImageCache = AppImageCache.app
-
-        let cache = AppImageCache.app
-        // 디스크 쓰기가 병목이라는 게 실측으로 확정됐고(저장을 메모리로만 돌린 세션에서
-        // 본문 show p90 5,049ms → 383ms), 대응은 `AppImageCache` 가 한다 — 쓰기를
-        // 없애는 게 아니라 **보는 동안엔 미룬다**.
+        let cache = SDImageCache.shared
+        // **디스크 쓰기가 병목이라는 게 실측으로 확정됐다**(2026-08-22). 저장 위치를
+        // 메모리로만 돌려 디스크 쓰기를 없앤 세션과 비교:
         //
-        // 쓰기 **비용**을 줄이는 방향은 이미 반증됐다: `diskCacheWritingOptions` 에서
-        // atomic 을 빼 I/O 를 절반으로 줄여봤지만 show p90 5,054ms 로 그대로였다.
-        // 크기가 아니라 쓰기가 스레드를 붙잡는다는 사실 자체가 문제라, 기본값(atomic)을
-        // 유지한다 — 부분 파일 위험만 지고 이득은 없는 거래였다.
+        //                  쓰기 켬      쓰기 끔
+        //   본문 show p50   2,468ms      127ms   ← 19배
+        //   본문 show p90   5,049ms      383ms   ← 13배
+        //   대기 p50        2,447ms       80ms
+        //   cmpl p90        1,666ms       12ms
+        //   bg 큐 지연    35건/2,100ms   0건/0ms  ← 완전히 사라짐
+        //
+        // 구조: 34장을 `ioQueue`(직렬)에서 순차로 파일에 쓰는 동안 그 스레드가 I/O 에
+        // 묶이고 → 백그라운드 풀이 고갈되고 → 디코드 블록이 순서를 기다리고 →
+        // 오퍼레이션이 안 끝나 슬롯이 안 풀리고 → 뒤 이미지가 다운로드조차 못 한다.
+        // 슬롯 폭(2·4·8)도 ioQueue 동시화도 이 아래쪽 얘기라 전부 무효였다.
+        //
+        // 디스크 캐시를 끄고 살 수는 없으므로(콜드 스타트 재방문) **쓰기 비용 자체를**
+        // 줄인다. 기본값 `.atomic` 은 임시 파일에 쓰고 rename 하는 2단계라 I/O 가 두 배다.
+        // 라이브러리가 atomic 을 요구하는 건 **동시 큐**를 쓸 때이고
+        // (`SDImageCacheConfig.h:135` 경고), 우리는 직렬 기본값을 그대로 두므로 해제해도
+        // 그 조건에 걸리지 않는다.
+        //
+        // 대가: 쓰는 도중 죽으면 부분 파일이 남을 수 있다. 그 엔트리는 디코드에 실패하고
+        // 다시 받으므로 화면상으로는 느린 한 번으로 끝난다.
+        cache.config.diskCacheWritingOptions = []
         // 400MB. 종전 200MB 는 "이전 `ImageCache` 예산에 맞춘" 값이었고 근거가
         // 측정이 아니었다(이 주석의 원문도 "측정하면 튜닝하겠다" 였다). 기기
         // 계측으로 부족이 확인돼 올린다.

@@ -20,13 +20,13 @@ final class ImageCacheReset {
     /// Test seam — `MemoryPressureResponder` 와 같은 패턴. 기본값이 실제 SDK 를
     /// 부르고, 테스트는 스파이를 꽂아 SDK 싱글톤을 건드리지 않는다.
     var clearMemoryCache: @MainActor () -> Void = {
-        AppImageCache.app.clearMemory()
+        SDImageCache.shared.clearMemory()
     }
     var clearDiskCache: @MainActor (@escaping @MainActor () -> Void) -> Void = { done in
-        AppImageCache.app.clearDisk { done() }
+        SDImageCache.shared.clearDisk { done() }
     }
     var diskSizeBytes: @MainActor (@escaping @MainActor (UInt) -> Void) -> Void = { report in
-        AppImageCache.app.calculateSize { _, totalSize in report(totalSize) }
+        SDImageCache.shared.calculateSize { _, totalSize in report(totalSize) }
     }
 
     /// 비우고, **비우기 전** 디스크 사용량을 돌려준다(비운 뒤에 재면 항상 0 이라

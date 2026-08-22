@@ -398,7 +398,7 @@ struct NetworkImage: View {
               let key = SDWebImageManager.shared.cacheKey(for: url.atsSafe,
                                                           context: thumbnailContext)
         else { return }
-        AppImageCache.app.storeImage(toMemory: image, forKey: key)
+        SDImageCache.shared.storeImage(toMemory: image, forKey: key)
     }
 
     /// Shared `.onSuccess` handler for the body-image path.
