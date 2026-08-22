@@ -482,6 +482,38 @@ func (s *Store) ListMetricPayloads(ctx context.Context, limit int) ([]MetricPayl
 	return out, rows.Err()
 }
 
+// ListMetricPayloadsPerKind kind 마다 최근 perKind 건씩을 모아 전체 최신순으로
+// 반환한다(admin 뷰용).
+//
+// 전체에서 최신 N 건을 자르면 **말 많은 kind 가 조용한 kind 를 밀어낸다**. media 는
+// 글 하나 열 때마다 배치가 나오는 반면 hang/diagnostic 은 며칠에 한 번인데, 창을
+// 공유하면 정작 드물고 중요한 쪽이 먼저 사라진다. kind 마다 창을 따로 준다.
+//
+// 저장은 여전히 무제한이다 — 자르는 건 렌더 대상뿐이고, 지운 적은 없다.
+func (s *Store) ListMetricPayloadsPerKind(ctx context.Context, perKind int) ([]MetricPayloadRow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, uuid, kind, received_at, payload FROM (
+		     SELECT id, uuid, kind, received_at, payload,
+		            ROW_NUMBER() OVER (PARTITION BY kind ORDER BY id DESC) AS rn
+		       FROM metric_payloads
+		 ) ranked
+		 WHERE rn <= $1
+		 ORDER BY id DESC`, perKind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []MetricPayloadRow{}
+	for rows.Next() {
+		var r MetricPayloadRow
+		if err := rows.Scan(&r.ID, &r.UUID, &r.Kind, &r.ReceivedAt, &r.Payload); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // FootprintSample iOS 가 보낸 메모리 footprint 한 점. ClientTS 는 클라 epoch
 // seconds, MB 는 phys_footprint(jetsam 이 보는 값), AvailMB 는 한도까지 남은 여유.
 // Label 은 그 시점 이벤트("board:…", "post-open:…", "tick", "scenePhase:…" 등).

@@ -504,6 +504,53 @@ func TestMetricPayloadAccumulates(t *testing.T) {
 	}
 }
 
+// 말 많은 kind 가 조용한 kind 를 밀어내면 안 된다.
+//
+// admin 뷰가 전체에서 최신 N 건을 자르면 media 처럼 자주 오는 kind 가 창을 채우고,
+// 정작 드물지만 중요한 hang/diagnostic 이 먼저 사라진다. kind 마다 창을 따로 준다.
+func TestListMetricPayloadsPerKindKeepsQuietKinds(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	if err := store.UpsertUser(ctx, "nnt_x"); err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+	// 드문 kind 를 **먼저** 넣는다 — 전체 최신순으로 자르면 가장 먼저 밀려나는 자리.
+	if err := store.InsertMetricPayload(ctx, "nnt_x", "hang", `{"h":1}`); err != nil {
+		t.Fatalf("insert hang: %v", err)
+	}
+	for i := 0; i < 10; i++ {
+		if err := store.InsertMetricPayload(ctx, "nnt_x", "media", `{"m":`+strconv.Itoa(i)+`}`); err != nil {
+			t.Fatalf("insert media %d: %v", i, err)
+		}
+	}
+
+	rows, err := store.ListMetricPayloadsPerKind(ctx, 3)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+
+	byKind := map[string][]string{}
+	for _, r := range rows {
+		byKind[r.Kind] = append(byKind[r.Kind], r.Payload)
+	}
+	if len(byKind["hang"]) != 1 {
+		t.Errorf("드문 kind 가 밀려났다: hang %d건", len(byKind["hang"]))
+	}
+	if len(byKind["media"]) != 3 {
+		t.Errorf("kind 별 상한이 안 걸렸다: media %d건", len(byKind["media"]))
+	}
+	// kind 안에서는 최신순 — 오래된 media 가 아니라 최근 것이 남아야 한다.
+	if byKind["media"][0] != `{"m":9}` {
+		t.Errorf("media 최신이 아님: got %q", byKind["media"][0])
+	}
+	// 전체도 최신순으로 정렬돼 나와야 한다(대시보드가 시간순으로 렌더한다).
+	for i := 1; i < len(rows); i++ {
+		if rows[i-1].ID < rows[i].ID {
+			t.Fatalf("전체 최신순이 아니다: %d 뒤에 %d", rows[i-1].ID, rows[i].ID)
+		}
+	}
+}
+
 func TestMetricPayloadReceivedAtIsTimestamp(t *testing.T) {
 	store := newStore(t)
 	ctx := context.Background()

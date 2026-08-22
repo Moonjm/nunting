@@ -69,10 +69,18 @@ func (h *handlers) postMetrics(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// adminMetricsLimit admin 뷰가 한 번에 읽어 렌더하는 payload 개수 상한. 저장은
-// 무제한 누적이지만, 한 페이지가 과도하게 커지지 않게 최신 N 건만 보여준다.
-// MetricKit 은 하루 1건가량이라 2000 이면 수년치.
-const adminMetricsLimit = 2000
+// adminMetricsPerKindLimit admin 뷰가 **kind 마다** 읽어 렌더하는 payload 개수 상한.
+//
+// 전체 최신 N 건으로 자르면 말 많은 kind 가 조용한 kind 를 밀어낸다. media 는 글
+// 하나 열 때마다 배치가 나오고(하루 수백 건) hang/diagnostic 은 며칠에 한 번이라,
+// 창을 공유하면 정작 드물고 중요한 쪽이 먼저 사라진다 — OOM/행 추적이 그때 막힌다.
+//
+// 400 인 이유: 종전 전체 상한 2000 과 페이지 크기가 비슷하게 유지되는 선이다
+// (kind 6종 × 400 = 2400, 현재 payload 하나가 HTML 로 ~8KB). media 진단도 400
+// 배치면 이틀치가 넘어 A/B 판정에 모자라지 않는다.
+//
+// 저장은 여전히 무제한 — 자르는 건 렌더 대상뿐이다.
+const adminMetricsPerKindLimit = 400
 
 // GET /admin/metrics?key=<secret>
 //
@@ -87,7 +95,7 @@ func (h *handlers) adminMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := h.store.ListMetricPayloads(r.Context(), adminMetricsLimit)
+	rows, err := h.store.ListMetricPayloadsPerKind(r.Context(), adminMetricsPerKindLimit)
 	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
