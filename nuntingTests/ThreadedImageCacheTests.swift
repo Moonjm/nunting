@@ -609,3 +609,90 @@ final class ThreadedImageCacheSerializationTests: XCTestCase {
                        "정리와 조회가 다른 줄에 서 있다 — 같은 파일을 동시에 만질 수 있다")
     }
 }
+
+/// 생명주기 정리의 **실행 보장**.
+///
+/// 정리는 이 캐시의 유일한 만료·용량 집행 경로라, "언젠가 돌겠지" 로는 부족하다.
+/// 백그라운드에서 중간에 멈추면 다음 포그라운드의 첫 조회들이 그 뒤에 줄 서고
+/// (시작 시점 정리를 없애며 고쳤던 정체가 복귀 시점으로 옮겨온다), 종료에서 안
+/// 돌면 캡이 영영 집행되지 않는다.
+@MainActor
+final class ThreadedImageCacheLifecycleTests: XCTestCase {
+
+    private final class SlowCoder: NSObject, SDImageCoder, @unchecked Sendable {
+        func canDecode(from data: Data?) -> Bool {
+            Thread.sleep(forTimeInterval: 0.4)
+            return false
+        }
+        func decodedImage(with data: Data?, options: [SDImageCoderOption: Any]?) -> UIImage? { nil }
+        func canEncode(to format: SDImageFormat) -> Bool { false }
+        func encodedData(with image: UIImage?, format: SDImageFormat,
+                         options: [SDImageCoderOption: Any]?) -> Data? { nil }
+    }
+
+    private var cache: ThreadedImageCache!
+    private var originalCoders: [any SDImageCoder] = []
+
+    override func setUp() {
+        super.setUp()
+        cache = ThreadedImageCache(cacheDirectory: NSTemporaryDirectory()
+            .appending("nunting-life-\(UUID().uuidString)"))
+        originalCoders = SDImageCodersManager.shared.coders ?? []
+    }
+
+    override func tearDown() {
+        SDImageCodersManager.shared.coders = originalCoders
+        cache = nil
+        super.tearDown()
+    }
+
+    /// **종료 정리는 기다린다.** 비동기로 넣기만 하면 프로세스가 먼저 죽어 안 돈다.
+    /// 워커를 0.4초 붙잡아 두고, 정리 호출이 그만큼 실제로 기다리는지 본다.
+    func testTerminatePurgeWaitsForTheWorker() throws {
+        let data = try XCTUnwrap(UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4))
+            .image { _ in }.pngData())
+        let stored = expectation(description: "stored")
+        cache.store(nil, imageData: data, forKey: "k", cacheType: .disk) { stored.fulfill() }
+        wait(for: [stored], timeout: 5)
+
+        SDImageCodersManager.shared.addCoder(SlowCoder())
+        _ = cache.queryImage(forKey: "k", options: [], context: nil, cacheType: .disk) { _, _, _ in }
+
+        let startedAt = Date()
+        cache.purgeExpiredDataSynchronously()
+        let elapsed = Date().timeIntervalSince(startedAt)
+
+        XCTAssertGreaterThan(elapsed, 0.3,
+                             "정리가 워커를 안 기다렸다 — 종료 시엔 그대로 유실된다")
+    }
+
+    /// **백그라운드 정리는 배경 작업 창 안에서 돈다.** 창이 없으면 정리 도중
+    /// suspend 돼 다음 포그라운드의 첫 조회들이 밀린다.
+    func testBackgroundPurgeOpensABackgroundTaskWindow() {
+        let window = ImageCachePurgeWindow.shared
+        let originalBegin = window.beginTask
+        let originalEnd = window.endTask
+        defer {
+            window.beginTask = originalBegin
+            window.endTask = originalEnd
+        }
+        var opened = 0
+        var closed = 0
+        window.beginTask = { _ in
+            opened += 1
+            return UIBackgroundTaskIdentifier(rawValue: 7)
+        }
+        window.endTask = { _ in closed += 1 }
+
+        NotificationCenter.default.post(name: UIApplication.didEnterBackgroundNotification,
+                                        object: nil)
+        // 정리 완료는 메인 큐로 돌아온다 — 런루프를 돌려 받는다.
+        let deadline = Date(timeIntervalSinceNow: 3)
+        while closed == 0, Date() < deadline {
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+        }
+
+        XCTAssertGreaterThan(opened, 0, "배경 작업 창을 안 열었다")
+        XCTAssertGreaterThan(closed, 0, "배경 작업 창을 안 닫았다 — 안 닫으면 앱이 강제 종료된다")
+    }
+}

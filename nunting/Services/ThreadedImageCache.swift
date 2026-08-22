@@ -51,6 +51,13 @@ nonisolated enum AppImageCaches {
     static let disk = ThreadedImageCache()
 }
 
+/// 백그라운드 정리를 감싸는 창. 테스트가 `UIApplication` 없이 규칙을 확인할 수 있게
+/// 주입 seam 을 가진 타입을 그대로 쓴다.
+@MainActor
+enum ImageCachePurgeWindow {
+    static let shared = BackgroundFlushWindow()
+}
+
 nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unchecked Sendable {
 
     /// 워커 스레드 이름 — 테스트가 "정말 풀 밖에서 도는지" 를 이 이름으로 확인한다.
@@ -104,13 +111,52 @@ nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unc
         // 전환과 종료에만 돈다(`SDImageCache.m:154-166`). 시작 시점에 돌리면 그
         // 비용이 정확히 사용자가 첫 화면을 기다리는 순간에 얹힌다.
         let center = NotificationCenter.default
-        for name in [UIApplication.didEnterBackgroundNotification,
-                     UIApplication.willTerminateNotification] {
-            lifecycleObservers.append(
-                center.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
-                    self?.purgeExpiredData(completion: nil)
-                })
+        // 두 시점의 처리가 다르다 — 순정과 같은 이유다.
+        //
+        // 백그라운드: 정리는 디렉터리 전체 순회 + 대량 삭제라 짧지 않은데, 그동안
+        // iOS 가 프로세스를 suspend 하면 **정리가 중간에 멈춘다**. 그러면 다음
+        // 포그라운드에서 워커가 그 지점부터 재개하고, 첫 조회들이 그 뒤에 줄 선다 —
+        // 시작 시점 정리를 없애며 고쳤던 그 정체가 복귀 시점으로 옮겨올 뿐이다.
+        // 배경 작업 창으로 끝날 시간을 확보한다.
+        lifecycleObservers.append(
+            center.addObserver(forName: UIApplication.didEnterBackgroundNotification,
+                               object: nil, queue: nil) { [weak self] _ in
+                // UIApplication 알림은 메인에서 게시된다.
+                MainActor.assumeIsolated { self?.purgeInBackgroundWindow() }
+            })
+        // 종료: 비동기로 넣으면 프로세스가 먼저 죽어 **아예 안 돈다**. 동기로 기다린다.
+        lifecycleObservers.append(
+            center.addObserver(forName: UIApplication.willTerminateNotification,
+                               object: nil, queue: nil) { [weak self] _ in
+                self?.purgeExpiredDataSynchronously()
+            })
+    }
+
+    /// 백그라운드 정리를 배경 작업 창으로 감싼다.
+    ///
+    /// 창은 `FootprintLogger` 의 flush 와 같은 타입을 쓴다 — 열기/닫기 규칙(만료 시
+    /// 강제 종료 방지, 겹침 카운팅)을 이미 검증해 둔 곳이라 다시 만들 이유가 없다.
+    @MainActor
+    private func purgeInBackgroundWindow() {
+        let window = ImageCachePurgeWindow.shared
+        let ticket = window.enter()
+        purgeExpiredData {
+            // 완료는 메인 큐로 온다(`SDCallbackQueue.main`).
+            MainActor.assumeIsolated { window.leave(ticket) }
         }
+    }
+
+    /// 정리가 끝날 때까지 **기다린다.** 종료 경로 전용.
+    ///
+    /// 타임아웃을 두는 이유: 종료 창을 넘기면 어차피 워치독이 죽인다. 정리를 못
+    /// 끝내는 건 다음 실행에서 다시 하면 되는 일이라, 붙잡고 있다 죽는 것보다 낫다.
+    func purgeExpiredDataSynchronously(timeout: TimeInterval = 2) {
+        let done = DispatchSemaphore(value: 0)
+        worker.async { [disk] in
+            disk.removeExpiredData()
+            done.signal()
+        }
+        _ = done.wait(timeout: .now() + timeout)
     }
 
     deinit {
