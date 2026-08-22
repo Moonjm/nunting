@@ -33,7 +33,7 @@ nonisolated final class QueueLatencyProbe: Sendable {
     static let imageCacheIO = QueueLatencyProbe(
         name: "io",
         submit: { block in
-            SDImageCache.shared.containsImage(forKey: "__nunting.ioProbe__",
+            AppImageCaches.disk.containsImage(forKey: "__nunting.ioProbe__",
                                               cacheType: .disk) { _ in block() }
         })
 

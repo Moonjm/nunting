@@ -61,6 +61,14 @@ enum SDWebImageSetup {
         // 404 to the retry placeholder.
         SDWebImageDownloader.shared.config.operationClass = HTTPSRedirectingDownloaderOperation.self
 
+        // 앱 전역 이미지 캐시를 우리 구현으로 바꾼다 — 디스크 I/O 를 libdispatch 풀
+        // 밖의 전용 스레드에서 처리한다(`ThreadedImageCache` 주석에 계측 근거).
+        // 경로는 `SDImageCache.shared` 와 동일해 기존에 받아둔 파일이 그대로 살아 있다.
+        SDWebImageManager.defaultImageCache = AppImageCaches.disk
+
+        // 아래 `cache` 설정은 캐시 **정책값**(메모리 캡·디스크 캡·만료)을 담는
+        // `SDImageCacheConfig.default` 를 통해 우리 캐시에도 그대로 적용된다 —
+        // `ThreadedImageCache` 가 그 config 로 메모리/디스크를 만든다.
         let cache = SDImageCache.shared
         // **디스크 쓰기가 병목이라는 게 실측으로 확정됐다**(2026-08-22). 저장 위치를
         // 메모리로만 돌려 디스크 쓰기를 없앤 세션과 비교:
