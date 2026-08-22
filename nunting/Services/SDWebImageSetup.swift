@@ -103,23 +103,23 @@ enum SDWebImageSetup {
         cache.config.maxDiskAge = 7 * 24 * 60 * 60
 
         let downloader = SDWebImageDownloader.shared
-        // 4 슬롯 — **두 번 재봤고 폭은 병목이 아니다.**
+        // 2 슬롯 — **스레드 풀 압력을 낮추는 실험 조건이다.**
         //
-        // 이 값은 다운로드가 아니라 다운로드+디코드 동안 잡혀 있다(디코드가 오퍼레이션
-        // 안 `coderQueue` 에서 돌고 `done` 은 그 뒤 barrier — 
-        // `SDWebImageDownloaderOperation.m:363-425`). 그래서 폭을 넓히면 대기가 줄 거라
-        // 봤는데, 같은 글·같은 콜드 조건에서 잰 결과가 그걸 부정한다(2026-08-21):
+        // 계측이 병목을 백그라운드 스레드 풀 고갈로 특정했다(2026-08-22):
+        //   메인 큐        최대 80ms (임계 초과 0건) — 멀쩡하다
+        //   백그라운드 큐  35건 임계 초과, p50 1,503ms / **최대 4,520ms**
+        //   전송 25ms → [풀 대기 최대 4.5초] → 디코드 11ms → done
+        // 빈 블록 하나가 실행되는 데 4.5초 걸린다. 디코드 블록도 같은 풀을 쓰므로
+        // 오퍼레이션의 전송 후 구간(p90 2.4초)이 정확히 이 대기다.
         //
-        //            슬롯 4          슬롯 8
-        //   대기 p90  4,590ms        4,356ms     ← 2배로 늘려도 그대로(노이즈 범위)
-        //   1s초과    24/60(40%)     17/36(47%)
-        //   본문 show p50 1,618ms    2,318ms     ← 오히려 나빠짐
-        //   다운로드 p90 176ms       1,379ms     ← 동시 요청이 늘어 각자 느려짐
+        // CPU 포화는 아니다 — 동시 디코드는 최대 4개고 6코어 기기다. 스레드가 무언가에
+        // 막혀 풀이 고갈된 형태다(libdispatch 는 블록된 스레드를 보고 새 스레드를 만들지만
+        // 한도가 있다). 그래서 **동시 요청을 줄여 압력을 낮추는** 방향을 시험한다.
         //
-        // 1차 실험은 가벼운 워크로드에서 비교해 판정이 무효였고(대기 p90 325ms),
-        // 이번엔 캐시를 비우고 같은 글(webp 17장급 인벤 2건)로 양쪽 다 대기 4초대를
-        // 재현한 상태에서 비교했다. 병목은 이 아래 직렬 지점(`SDImageCache.ioQueue`)이다.
-        downloader.config.maxConcurrentDownloads = 4
+        // 4→8 은 이미 반증됐다(대기 그대로, 체감 악화). 반대 방향은 안 해봤다.
+        // 판정: 같은 글·콜드에서 bg 큐 지연과 전송 후 구간이 줄면 유지, 아니면 스레드를
+        // 붙잡는 게 다운로드 오퍼레이션 **바깥**에 있다는 뜻이라 그쪽을 본다.
+        downloader.config.maxConcurrentDownloads = 2
         // 8s timeout per attempt to fast-fail stale keep-alive
         // connections (the iOS pool's -1005 / -1001 case after
         // backgrounding). SDWebImage's internal retry re-issues with

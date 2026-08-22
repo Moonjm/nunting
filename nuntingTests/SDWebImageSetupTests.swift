@@ -19,14 +19,13 @@ final class SDWebImageSetupTests: XCTestCase {
         XCTAssertTrue(manager.coders?.last is SignpostWebPCoder)
     }
 
-    /// 다운로드 슬롯 폭 4. 8 로 넓히는 실험을 **두 번** 했고 둘 다 폭이 병목이
-    /// 아님을 보였다 — 같은 글·같은 콜드 조건에서 대기 p90 4,590ms vs 4,356ms
-    /// (2배로 늘려도 그대로), 본문 show 는 오히려 악화. 근거 숫자는
-    /// `SDWebImageSetup` 주석에 표로 남겼다.
+    /// 다운로드 슬롯 폭 2 — 스레드 풀 압력을 낮추는 실험 조건. 4→8 은 이미 반증됐고
+    /// (대기 그대로, 체감 악화) 병목은 백그라운드 풀 고갈로 특정됐다(bg 큐 지연 최대
+    /// 4,520ms). 근거와 판정 기준은 `SDWebImageSetup` 주석.
     func testConfigureKeepsMeasuredDownloadSlotWidth() {
         SDWebImageSetup.configure()
 
-        XCTAssertEqual(SDWebImageDownloader.shared.config.maxConcurrentDownloads, 4)
+        XCTAssertEqual(SDWebImageDownloader.shared.config.maxConcurrentDownloads, 2)
     }
 
 
