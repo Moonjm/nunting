@@ -48,6 +48,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // 백그라운드 전역 큐도 같이 잰다 — 디코드 블록이 실행 순서를 기다리는지가
         // 지금 남은 미지수다(전송 후 구간 p90 2초 중 디코드는 11ms).
         QueueLatencyProbe.background.start()
+        // 이미지 캐시의 내부 직렬 큐 — 조회/저장이 한 줄로 서는지 직접 잰다.
+        QueueLatencyProbe.imageCacheIO.start()
 
         // hang 워치독 — MetricKit diagnostic(hang 콜스택)은 Xcode 설치 빌드에 오지
         // 않으므로, 메인 스레드 1초+ 정지를 직접 감지해 스택 샘플을 서버로 올린다.

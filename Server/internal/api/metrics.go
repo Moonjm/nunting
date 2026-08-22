@@ -645,6 +645,8 @@ type mediaAgg struct {
 	MainPeakMs  []int            // 하트비트: 창당 최대 지연(0 이어도 기록)
 	BgLagMs     []int            // 백그라운드 전역 큐 정체(디코드 블록 스케줄 대기)
 	BgPeakMs    []int            // 그 하트비트(0 이어도 기록)
+	IoLagMs     []int            // 이미지 캐시 직렬 ioQueue 대기
+	IoPeakMs    []int            // 그 하트비트(0 이어도 기록)
 	DecodeMs    []int
 	DecodePx    []int
 	DecodeBy    map[string]int // 코더별 디코드 건수
@@ -705,6 +707,10 @@ func (a *mediaAgg) add(e mediaEventJSON) {
 			a.BgLagMs = append(a.BgLagMs, e.Ms)
 		case "bg.peak":
 			a.BgPeakMs = append(a.BgPeakMs, e.Ms)
+		case "io.lag":
+			a.IoLagMs = append(a.IoLagMs, e.Ms)
+		case "io.peak":
+			a.IoPeakMs = append(a.IoPeakMs, e.Ms)
 		}
 	case "op":
 		a.OpMs = append(a.OpMs, e.Ms)
@@ -843,6 +849,15 @@ func (a *mediaAgg) view() mediaView {
 		v.Layers = append(v.Layers, mediaLayerRow{
 			Layer: "bg peak (5초창 최대)", Count: len(a.BgPeakMs),
 			P50: msLabel(percentile(a.BgPeakMs, 50)), P90: msLabel(percentile(a.BgPeakMs, 90)),
+			Note: "행이 없으면 프로브 미가동",
+		})
+	}
+	if len(a.IoPeakMs) > 0 {
+		// 이미지 캐시의 직렬 큐가 얼마나 밀리는지. 조회/저장이 한 줄로 선다는 해석이
+		// 맞다면 이미지가 몰릴 때 이 값이 초 단위로 치솟는다.
+		v.Layers = append(v.Layers, mediaLayerRow{
+			Layer: "io peak (캐시 직렬큐)", Count: len(a.IoPeakMs),
+			P50: msLabel(percentile(a.IoPeakMs, 50)), P90: msLabel(percentile(a.IoPeakMs, 90)),
 			Note: "행이 없으면 프로브 미가동",
 		})
 	}

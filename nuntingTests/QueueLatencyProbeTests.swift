@@ -19,6 +19,8 @@ final class QueueLatencyProbeTests: XCTestCase {
         // 0.3초 블록이면 쌓인 핑이 여러 개 한꺼번에 풀린다 — 초과 이행이 정상이다.
         exp.assertForOverFulfill = false
         let probe = QueueLatencyProbe(
+            name: "test",
+            submit: { DispatchQueue.main.async(execute: $0) },
             interval: 0.02,
             thresholdMs: 30,
             onLag: { ms in
@@ -43,7 +45,9 @@ final class QueueLatencyProbeTests: XCTestCase {
     /// 배치가 프로브 이벤트로 뒤덮인다(이벤트 예산이 이미 이미지 쪽에 쓰이고 있다).
     func testStaysSilentWhenMainIsIdle() {
         let count = OSAllocatedUnfairLock(initialState: 0)
-        let probe = QueueLatencyProbe(interval: 0.02, thresholdMs: 200,
+        let probe = QueueLatencyProbe(name: "test",
+                                          submit: { DispatchQueue.main.async(execute: $0) },
+                                          interval: 0.02, thresholdMs: 200,
                                           onLag: { _ in count.withLock { $0 += 1 } })
         probe.start()
         defer { probe.stop() }
@@ -56,7 +60,9 @@ final class QueueLatencyProbeTests: XCTestCase {
     /// `stop()` 뒤에는 더 기록하지 않는다(세션 종료 후 유령 이벤트 방지).
     func testStopEndsProbing() {
         let count = OSAllocatedUnfairLock(initialState: 0)
-        let probe = QueueLatencyProbe(interval: 0.02, thresholdMs: 1,
+        let probe = QueueLatencyProbe(name: "test",
+                                          submit: { DispatchQueue.main.async(execute: $0) },
+                                          interval: 0.02, thresholdMs: 1,
                                           onLag: { _ in count.withLock { $0 += 1 } })
         probe.start()
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))

@@ -1,5 +1,6 @@
 import Foundation
 import os
+import SDWebImage
 
 /// 메인 큐가 얼마나 밀려 있는지 재는 프로브.
 ///
@@ -17,16 +18,36 @@ import os
 /// 격리: 전용 스레드에서 돌고 상태는 락 안에 둔다(`HangWatchdog` 과 같은 패턴).
 nonisolated final class QueueLatencyProbe: Sendable {
     /// 메인 큐 — 뷰 반영이 밀리는지 본다.
-    static let main = QueueLatencyProbe(queue: .main, name: "main")
+    static let main = QueueLatencyProbe(name: "main",
+                                        submit: { DispatchQueue.main.async(execute: $0) })
+
+    /// `SDImageCache` 의 내부 직렬 `ioQueue` — 조회/저장이 한 줄로 서는 그 큐다.
+    /// 큐 객체에 직접 접근할 수 없으므로, **그 큐를 타는 가장 싼 공개 API**(디스크
+    /// 존재 확인)를 핑으로 쓴다. 34장 분량의 조회·저장이 줄 서 있으면 이 왕복이
+    /// 그대로 초 단위로 늘어난다.
+    ///
+    /// 왜 필요한가: "읽기만 막기" 도 "쓰기만 미루기" 도 각각은 효과가 없었고
+    /// (show p90 5,021ms / 5,011ms), 둘을 동시에 없앴을 때만 383ms 로 무너졌다.
+    /// 개별 동작이 아니라 **직렬 큐가 한 줄로 처리하는 구조**가 병목이라는 해석인데,
+    /// 그 해석 자체가 맞는지 재본 적이 없다. 여섯 번 틀린 뒤라 이번엔 먼저 잰다.
+    static let imageCacheIO = QueueLatencyProbe(
+        name: "io",
+        submit: { block in
+            SDImageCache.shared.containsImage(forKey: "__nunting.ioProbe__",
+                                              cacheType: .disk) { _ in block() }
+        })
 
     /// 백그라운드 전역 큐 — **디코드 블록이 실행 순서를 기다리는지** 본다.
     /// 오퍼레이션의 전송 후 구간이 p50 252ms / p90 2,074ms 인데 그 안의 디코드는
     /// 11ms 뿐이다. 남은 시간이 스레드 풀 포화 때문이라면 여기서 같이 잡힌다.
     /// QoS 는 SDWebImage 디코드 블록이 도는 결과 비슷하게 `.utility`.
     static let background = QueueLatencyProbe(
-        queue: DispatchQueue.global(qos: .utility), name: "bg")
+        name: "bg",
+        submit: { DispatchQueue.global(qos: .utility).async(execute: $0) })
 
-    private let queue: DispatchQueue
+    /// 핑을 어떻게 던질지. 큐 객체를 직접 못 잡는 대상(`ioQueue`)도 재려고
+    /// 큐가 아니라 **제출 방식**을 받는다.
+    private let submit: @Sendable (@escaping @Sendable () -> Void) -> Void
     private let name: String
 
     private let interval: TimeInterval
@@ -40,13 +61,13 @@ nonisolated final class QueueLatencyProbe: Sendable {
 
     /// - Parameters:
     ///   - onLag: 테스트 주입점. 프로덕션은 기본값(계측 채널)을 쓴다.
-    init(queue: DispatchQueue = .main,
-         name: String = "main",
+    init(name: String,
+         submit: @escaping @Sendable (@escaping @Sendable () -> Void) -> Void,
          interval: TimeInterval = 0.25,
          thresholdMs: Int = 100,
          heartbeat: TimeInterval = 5,
          onLag: (@Sendable (Int) -> Void)? = nil) {
-        self.queue = queue
+        self.submit = submit
         self.name = name
         self.interval = interval
         self.thresholdMs = thresholdMs
@@ -76,7 +97,7 @@ nonisolated final class QueueLatencyProbe: Sendable {
         var lastHeartbeat = Date()
         while running.withLock({ $0 }) {
             let sentAt = Date()
-            queue.async { [weak self] in
+            submit { [weak self] in
                 guard let self, self.running.withLock({ $0 }) else { return }
                 let delayMs = Int(Date().timeIntervalSince(sentAt) * 1000)
                 self.windowMax.withLock { $0 = max($0, delayMs) }
