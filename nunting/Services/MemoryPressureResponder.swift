@@ -6,7 +6,7 @@ import UIKit
 ///
 /// Primary value: flushes `URLCache.shared` (50 MB mem cap) — that layer
 /// has no built-in memory-warning hook, so without this responder its
-/// contents persist through pressure events. `SDImageCache.shared` is
+/// contents persist through pressure events. `AppImageCache.app` is
 /// also flushed for belt-and-suspenders, but `SDMemoryCache` already
 /// self-registers for the same notification and calls `removeAllObjects`
 /// on receipt (SDMemoryCache.m:69) — so our explicit call is redundant
@@ -36,7 +36,7 @@ import UIKit
 final class MemoryPressureResponder {
     static let shared = MemoryPressureResponder()
 
-    /// Test seam — production wires this to the real `SDImageCache.shared`
+    /// Test seam — production wires this to the real `AppImageCache.app`
     /// + `URLCache.shared` via `installDefaultHandlers`. Tests can inject
     /// spies that record invocation without touching the SDK singletons.
     var clearImageMemoryCache: @MainActor () -> Void = {}
@@ -83,7 +83,7 @@ final class MemoryPressureResponder {
     /// injected spies without touching the real cache singletons.
     func installDefaultHandlers() {
         clearImageMemoryCache = {
-            SDImageCache.shared.clearMemory()
+            AppImageCache.app.clearMemory()
         }
         clearURLMemoryCache = {
             // 디스크는 건드리지 않는다 — 위 doccomment 참조.

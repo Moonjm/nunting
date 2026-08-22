@@ -53,9 +53,11 @@ final class InlineAnimatedWebPPlaybackTests: XCTestCase {
         // NetworkImage 기본 호출(썸네일 파라미터 없음) → context nil → 플레인 키.
         let key = SDWebImageManager.shared.cacheKey(for: url)
         let seeded = expectation(description: "disk seed")
-        SDImageCache.shared.store(nil, imageData: data, forKey: key, cacheType: .disk) {
-            seeded.fulfill()
-        }
+        // `AppImageCache` 는 디스크 쓰기를 미루므로(보는 동안 I/O 로 스레드를 붙잡지
+        // 않으려고) 시드는 flush 까지 해야 실제로 파일이 생긴다. store 의 completion 은
+        // "메모리 반영 완료" 이지 "디스크 기록 완료" 가 아니다.
+        AppImageCache.app.store(nil, imageData: data, forKey: key, cacheType: .disk, completion: nil)
+        AppImageCache.app.flushPendingDiskWrites { seeded.fulfill() }
         wait(for: [seeded], timeout: 5)
 
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
@@ -108,9 +110,11 @@ final class InlineAnimatedWebPPlaybackTests: XCTestCase {
         let key = try XCTUnwrap(SDWebImageManager.shared.cacheKey(for: url))
 
         let seeded = expectation(description: "disk seed")
-        SDImageCache.shared.store(nil, imageData: data, forKey: key, cacheType: .disk) {
-            seeded.fulfill()
-        }
+        // `AppImageCache` 는 디스크 쓰기를 미루므로(보는 동안 I/O 로 스레드를 붙잡지
+        // 않으려고) 시드는 flush 까지 해야 실제로 파일이 생긴다. store 의 completion 은
+        // "메모리 반영 완료" 이지 "디스크 기록 완료" 가 아니다.
+        AppImageCache.app.store(nil, imageData: data, forKey: key, cacheType: .disk, completion: nil)
+        AppImageCache.app.flushPendingDiskWrites { seeded.fulfill() }
         wait(for: [seeded], timeout: 5)
 
         // 프리페치 워밍 재현 — `BodyImagePrefetcher` 가 발행하는 것과 같은
@@ -128,7 +132,7 @@ final class InlineAnimatedWebPPlaybackTests: XCTestCase {
         }
         wait(for: [warmed], timeout: 10)
         XCTAssertTrue(
-            SDImageCache.shared.imageFromMemoryCache(forKey: key) is SDAnimatedImage,
+            AppImageCache.app.imageFromMemoryCache(forKey: key) is SDAnimatedImage,
             "워밍이 남긴 메모리 엔트리도 SDAnimatedImage"
         )
 

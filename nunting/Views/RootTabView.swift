@@ -423,6 +423,9 @@ struct RootTabView: View {
                 FootprintLogger.shared.onBackground()
                 // 같은 이유로 미디어 로드 이벤트 버퍼도 내보낸다(임계 미만 잔량 유실 방지).
                 MediaLoadTelemetry.shared.onBackground()
+                // 미뤄둔 디스크 쓰기를 여기서 반드시 내보낸다 — 안 그러면 이번 세션에
+                // 받은 이미지가 통째로 날아가 다음 실행이 전부 콜드가 된다.
+                AppImageCache.app.flushPendingDiskWrites()
                 // suspend 된 메인 큐를 hang 으로 오인하지 않게 워치독 정지.
                 HangWatchdog.shared.pause()
                 // .inactive 를 건너뛰는 경로가 있어도 드래그가 남지 않게(중복
