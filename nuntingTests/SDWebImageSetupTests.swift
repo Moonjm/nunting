@@ -40,6 +40,18 @@ final class SDWebImageSetupTests: XCTestCase {
         XCTAssertEqual(SDImageCache.shared.config.diskCacheWritingOptions, [])
     }
 
+    /// 읽기/쓰기 가르기 실험이 켜져 있는 동안은 조회가 메모리로만 간다.
+    /// **임시 조건이다** — 이대로 두면 디스크 캐시가 사실상 꺼진 것과 같다. 실험이
+    /// 끝나면 이 테스트도 같이 지워져야 한다(남아 있으면 조건이 아직 켜져 있다는 신호).
+    func testConfigureRestrictsQueryToMemoryDuringReadWriteExperiment() {
+        SDWebImageSetup.configure()
+
+        let result = SDWebImageManager.shared.optionsProcessor?
+            .processedResult(for: URL(string: "https://x/y.webp"), options: [], context: nil)
+        XCTAssertEqual(result?.context?[.queryCacheType] as? Int,
+                       Int(SDImageCacheType.memory.rawValue))
+    }
+
     /// 캐시 IO 큐는 **라이브러리 기본(직렬)** 을 유지한다. 동시 큐로 바꾸는 실험을
     /// 했고 대기 p50 이 343ms → 2,173ms 로 6배 악화됐다(근거 표는 `SDWebImageSetup`
     /// 주석). 병렬도를 올리는 방향이 이 파이프라인에서 안 통한다는 세 번째 확인이라,

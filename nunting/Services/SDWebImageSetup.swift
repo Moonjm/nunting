@@ -61,6 +61,29 @@ enum SDWebImageSetup {
         // 404 to the retry placeholder.
         SDWebImageDownloader.shared.config.operationClass = HTTPSRedirectingDownloaderOperation.self
 
+        // **읽기 vs 쓰기 가르기 실험**(임시, 2026-08-22).
+        //
+        // 저장을 메모리로만 돌린 세션에서 본문 show p90 이 5,049ms → 383ms 로 무너졌다.
+        // 나는 그걸 "디스크 **쓰기**가 스레드를 붙잡는다" 로 읽고 쓰기를 미뤘는데,
+        // **효과가 없었다**(show p90 5,011ms, bg 지연은 오히려 최대 7초). 즉 그 특정이
+        // 틀렸다.
+        //
+        // 다시 보면 그 실험은 두 가지를 동시에 바꿨다: 디스크에 쓰지 않았고, `storeCacheType`
+        // 이 조회 경로에도 영향을 줘 디스크를 **읽지도** 않았다. 지금은 후자만 남았으므로
+        // 이번엔 그쪽만 바꿔 가른다 — 쓰기는 켠 채 조회만 메모리로 제한한다.
+        //
+        // 콜드 캐시라 어차피 전부 미스인데도, 34번의 **미스 확인**이 직렬 `ioQueue` 에
+        // 줄 서는 것이 비용일 수 있다는 가설이다.
+        //
+        // 판정: show p90 이 383ms 쪽으로 무너지면 범인은 조회다. 그대로면 읽기·쓰기
+        // 각각이 아니라 둘이 공유하는 직렬 큐 구조 자체가 문제라는 뜻이다.
+        // **임시 조건이다** — 이대로 두면 디스크 캐시가 읽기 불가라 사실상 꺼진 것과 같다.
+        SDWebImageManager.shared.optionsProcessor = SDWebImageOptionsProcessor { _, options, context in
+            var mutable = context ?? [:]
+            mutable[.queryCacheType] = Int(SDImageCacheType.memory.rawValue)
+            return SDWebImageOptionsResult(options: options, context: mutable)
+        }
+
         let cache = SDImageCache.shared
         // **디스크 쓰기가 병목이라는 게 실측으로 확정됐다**(2026-08-22). 저장 위치를
         // 메모리로만 돌려 디스크 쓰기를 없앤 세션과 비교:
