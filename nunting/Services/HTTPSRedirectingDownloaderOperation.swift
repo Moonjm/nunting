@@ -77,9 +77,15 @@ nonisolated class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOpera
             let ms = Int(now.timeIntervalSince(startedAt) * 1000)
             let post = self.transferEndedAt.map { Int(now.timeIntervalSince($0) * 1000) }
             let cmpl = self.completeCallbackAt.map { Int(now.timeIntervalSince($0) * 1000) }
+            // 슬롯을 잡고 전송 완료 콜백이 올 때까지 — 조각을 빼서 추정하지 않고 직접 잰다.
+            // URLSessionTaskMetrics 가 보고하는 다운로드 시간(p50 78ms)과 이 값이 크게
+            // 다르면, 태스크가 시작된 뒤 바이트를 받는 동안 메트릭에 안 잡히는 지연이
+            // 있다는 뜻이다.
+            let xfer = self.completeCallbackAt.map { Int($0.timeIntervalSince(startedAt) * 1000) }
             let event = MediaLoadEventDTO.operation(host: host, ms: max(0, ms),
                                                     postTransferMs: post.map { max(0, $0) },
                                                     completionMs: cmpl.map { max(0, $0) },
+                                                    transferMs: xfer.map { max(0, $0) },
                                                     prefetch: isPrefetch)
             Task { @MainActor in MediaLoadTelemetry.shared.record(event) }
             self.finishObservation = nil

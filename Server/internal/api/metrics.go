@@ -606,6 +606,7 @@ type mediaEventJSON struct {
 	Post   int    `json:"post"`   // op: 전송 완료 → 오퍼레이션 종료
 	US     int    `json:"us"`     // main: 마이크로초(1ms 미만 구간용)
 	Cmpl   int    `json:"cmpl"`   // op: 전송 완료 콜백 진입 → 종료
+	Xfer   int    `json:"xfer"`   // op: 슬롯 획득 → 전송 완료 콜백
 	OK     *bool  `json:"ok"`     // 실패일 때만 실린다(false)
 }
 
@@ -638,6 +639,7 @@ type mediaAgg struct {
 	OpMs        []int            // 오퍼레이션 수명 = 슬롯 점유 시간
 	OpPostMs    []int            // 그중 전송 완료 이후 구간
 	OpCmplMs    []int            // 그중 완료 콜백 진입 이후(디코드 스케줄+디코드+done)
+	OpXferMs    []int            // 그중 전송 구간(슬롯 획득 → 완료 콜백)
 	MainLagMs   []int            // 메인 큐 정체(프로브)
 	MainApplyUs []int            // 도착 이미지를 뷰에 반영하는 핸들러 실행 시간(µs)
 	MainPeakMs  []int            // 하트비트: 창당 최대 지연(0 이어도 기록)
@@ -698,6 +700,9 @@ func (a *mediaAgg) add(e mediaEventJSON) {
 		}
 		if e.Cmpl > 0 {
 			a.OpCmplMs = append(a.OpCmplMs, e.Cmpl)
+		}
+		if e.Xfer > 0 {
+			a.OpXferMs = append(a.OpXferMs, e.Xfer)
 		}
 	case "decode":
 		a.DecodeMs = append(a.DecodeMs, e.Ms)
@@ -889,6 +894,10 @@ func opNote(a *mediaAgg) string {
 	}
 	note := "전송후 p50 " + msLabel(percentile(a.OpPostMs, 50)) +
 		"/p90 " + msLabel(percentile(a.OpPostMs, 90))
+	if len(a.OpXferMs) > 0 {
+		note += " · 전송구간 p50 " + msLabel(percentile(a.OpXferMs, 50)) +
+			"/p90 " + msLabel(percentile(a.OpXferMs, 90))
+	}
 	if len(a.OpCmplMs) > 0 {
 		// 완료 콜백 진입 이후 = 디코드 스케줄 + 디코드 + barrier + done.
 		// 전송후와의 차이는 URLSession 내부 구간이다.
