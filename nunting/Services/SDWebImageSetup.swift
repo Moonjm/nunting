@@ -61,22 +61,31 @@ enum SDWebImageSetup {
         // 404 to the retry placeholder.
         SDWebImageDownloader.shared.config.operationClass = HTTPSRedirectingDownloaderOperation.self
 
-        // **디스크 캐시 쓰기 실험**(2026-08-22). 슬롯 2 에서도 bg 큐 지연이 p50 1초로
-        // 남았다 — 동시 요청이 2개뿐인데 빈 블록이 1초를 기다린다면, 스레드를 붙잡는
-        // 주체는 우리 다운로드 오퍼레이션이 **아니다**. 유력한 후보가
-        // `SDImageCache.ioQueue` 의 직렬 디스크 쓰기다(34장을 순차로 파일에 쓰는 동안
-        // 스레드 하나가 I/O 에 묶인다).
-        //
-        // 저장 위치를 메모리로만 돌려 디스크 쓰기를 없앤 채 같은 글을 재본다. 이 세션에서
-        // bg 지연과 본문 show p90 이 무너지면 범인 확정이다. 확인 뒤에는 되돌린다 —
-        // 디스크 캐시는 콜드 스타트 재방문을 살리는 기능이라 끄고 살 수는 없다.
-        SDWebImageManager.shared.optionsProcessor = SDWebImageOptionsProcessor { _, options, context in
-            var mutable = context ?? [:]
-            mutable[.storeCacheType] = Int(SDImageCacheType.memory.rawValue)
-            return SDWebImageOptionsResult(options: options, context: mutable)
-        }
-
         let cache = SDImageCache.shared
+        // **디스크 쓰기가 병목이라는 게 실측으로 확정됐다**(2026-08-22). 저장 위치를
+        // 메모리로만 돌려 디스크 쓰기를 없앤 세션과 비교:
+        //
+        //                  쓰기 켬      쓰기 끔
+        //   본문 show p50   2,468ms      127ms   ← 19배
+        //   본문 show p90   5,049ms      383ms   ← 13배
+        //   대기 p50        2,447ms       80ms
+        //   cmpl p90        1,666ms       12ms
+        //   bg 큐 지연    35건/2,100ms   0건/0ms  ← 완전히 사라짐
+        //
+        // 구조: 34장을 `ioQueue`(직렬)에서 순차로 파일에 쓰는 동안 그 스레드가 I/O 에
+        // 묶이고 → 백그라운드 풀이 고갈되고 → 디코드 블록이 순서를 기다리고 →
+        // 오퍼레이션이 안 끝나 슬롯이 안 풀리고 → 뒤 이미지가 다운로드조차 못 한다.
+        // 슬롯 폭(2·4·8)도 ioQueue 동시화도 이 아래쪽 얘기라 전부 무효였다.
+        //
+        // 디스크 캐시를 끄고 살 수는 없으므로(콜드 스타트 재방문) **쓰기 비용 자체를**
+        // 줄인다. 기본값 `.atomic` 은 임시 파일에 쓰고 rename 하는 2단계라 I/O 가 두 배다.
+        // 라이브러리가 atomic 을 요구하는 건 **동시 큐**를 쓸 때이고
+        // (`SDImageCacheConfig.h:135` 경고), 우리는 직렬 기본값을 그대로 두므로 해제해도
+        // 그 조건에 걸리지 않는다.
+        //
+        // 대가: 쓰는 도중 죽으면 부분 파일이 남을 수 있다. 그 엔트리는 디코드에 실패하고
+        // 다시 받으므로 화면상으로는 느린 한 번으로 끝난다.
+        cache.config.diskCacheWritingOptions = []
         // 400MB. 종전 200MB 는 "이전 `ImageCache` 예산에 맞춘" 값이었고 근거가
         // 측정이 아니었다(이 주석의 원문도 "측정하면 튜닝하겠다" 였다). 기기
         // 계측으로 부족이 확인돼 올린다.

@@ -29,17 +29,15 @@ final class SDWebImageSetupTests: XCTestCase {
     }
 
 
-    /// 디스크 캐시 쓰기 실험이 켜져 있는 동안은 저장 위치가 메모리로만 간다.
-    /// **임시 조건이다** — 확인 뒤 반드시 되돌린다(디스크 캐시는 콜드 스타트 재방문을
-    /// 살리는 기능). 이 테스트는 그 상태를 명시적으로 기록해, 실험을 되돌릴 때 같이
-    /// 지워지도록 남긴다.
-    func testConfigureRoutesStoreToMemoryDuringDiskWriteExperiment() {
+    /// 디스크 쓰기의 원자성을 해제한 상태를 못 박는다. 기본값 `.atomic` 은 임시 파일 +
+    /// rename 2단계라 I/O 가 두 배이고, 그 쓰기가 백그라운드 풀을 고갈시켜 이미지
+    /// 로딩 전체를 막는다는 게 실측으로 확정됐다(근거 표는 `SDWebImageSetup` 주석).
+    /// 라이브러리가 atomic 을 요구하는 조건은 **동시 큐**인데 우리는 직렬 기본값이라
+    /// 해당하지 않는다 — 그 전제가 바뀌면(동시 큐로 바꾸면) 이 값도 되돌려야 한다.
+    func testConfigureDropsAtomicDiskWrite() {
         SDWebImageSetup.configure()
 
-        let result = SDWebImageManager.shared.optionsProcessor?
-            .processedResult(for: URL(string: "https://x/y.webp"), options: [], context: nil)
-        XCTAssertEqual(result?.context?[.storeCacheType] as? Int,
-                       Int(SDImageCacheType.memory.rawValue))
+        XCTAssertEqual(SDImageCache.shared.config.diskCacheWritingOptions, [])
     }
 
     /// 캐시 IO 큐는 **라이브러리 기본(직렬)** 을 유지한다. 동시 큐로 바꾸는 실험을
