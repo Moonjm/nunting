@@ -70,9 +70,25 @@ nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unc
     /// 관찰하고 `SDDiskCache` 는 쓸 때마다 읽으므로, 나중 변경도 그대로 먹는다.
     let config: SDImageCacheConfig
 
-    /// - Parameter cacheDirectory: 디스크 캐시 디렉터리. 기본값은 `SDImageCache.shared`
-    ///   와 **같은 경로** — 기존에 받아둔 파일이 그대로 살아 있다.
-    init(cacheDirectory: String = SDImageCache.shared.diskCachePath,
+    /// 순정이 쓰는 것과 **같은 디렉터리** — 기존에 받아둔 파일이 그대로 살아 있다.
+    ///
+    /// `SDImageCache.shared.diskCachePath` 를 읽지 않는 이유가 있다. **그 접근만으로
+    /// 순정 싱글턴이 만들어지고**, 그러면 그쪽도 백그라운드/종료에 자기 관찰자로
+    /// 같은 디렉터리를 정리한다(`SDImageCache.m:154-166`). 두 캐시가 한 디렉터리를
+    /// 각자의 큐에서 훑고 지우면, 원자적 쓰기를 꺼둔 전제 — 디스크 접근이 한 줄로
+    /// 선다 — 가 깨진다.
+    ///
+    /// 라이브러리 내부 경로를 문자열로 재현하는 셈이라, 그게 계속 맞는지는 테스트가
+    /// 지킨다(`testDefaultDirectoryMatchesLibraryPath`). 어긋나면 캐시가 조용히
+    /// 새 디렉터리에서 시작할 뿐 깨지지는 않는다.
+    static var defaultCacheDirectory: String {
+        let caches = NSSearchPathForDirectoriesInDomains(.cachesDirectory, .userDomainMask, true)[0]
+        let root = (caches as NSString).appendingPathComponent("com.hackemist.SDImageCache")
+        return (root as NSString).appendingPathComponent("default")
+    }
+
+    /// - Parameter cacheDirectory: 디스크 캐시 디렉터리.
+    init(cacheDirectory: String = ThreadedImageCache.defaultCacheDirectory,
          config: SDImageCacheConfig = .default) {
         self.config = config
         self.memory = SDMemoryCache<NSString, UIImage>(config: config)

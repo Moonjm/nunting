@@ -236,8 +236,41 @@ type metricsPage struct {
 	FootprintPeak  int
 	FootprintCount int
 
-	Media    mediaView
-	mediaAgg mediaAgg
+	Media     mediaSectionView
+	mediaAggs mediaAggSet
+}
+
+// mediaAggSet 은 **설정(cfg)별로** 집계를 나눠 담는다.
+//
+// 전부 한 집계에 부으면 실험군과 대조군의 백분위가 합쳐져, `cfg` 를 넣은 이유
+// (A/B 귀속) 자체가 무의미해진다. 등장 순서를 따로 들고 있는 건 payload 를
+// 최신순으로 훑기 때문이다 — 최근에 돌린 설정이 위에 온다.
+type mediaAggSet struct {
+	order []string
+	byCfg map[string]*mediaAgg
+}
+
+// mediaUnknownCfg cfg 를 안 싣던 시절의 배치. 섞지 않고 따로 모은다.
+const mediaUnknownCfg = "(설정 미상)"
+
+// mediaConfigLimit 렌더할 설정 블록 수 상한. A/B 는 최근 몇 개만 보면 되고,
+// 전부 늘어놓으면 페이지가 설정 수만큼 길어진다(잘라낸 사실은 제목에 적는다).
+const mediaConfigLimit = 6
+
+func (s *mediaAggSet) for_(cfg string) *mediaAgg {
+	if cfg == "" {
+		cfg = mediaUnknownCfg
+	}
+	if s.byCfg == nil {
+		s.byCfg = map[string]*mediaAgg{}
+	}
+	if agg, ok := s.byCfg[cfg]; ok {
+		return agg
+	}
+	agg := &mediaAgg{}
+	s.byCfg[cfg] = agg
+	s.order = append(s.order, cfg)
+	return agg
 }
 
 // addFootprint footprint 샘플을 시간순(오래된→최신)으로 정리해 페이지에 붙인다.
@@ -305,14 +338,14 @@ func buildMetricsPage(rows []db.MetricPayloadRow) metricsPage {
 		case "hitch":
 			vr.Summary = summarizeHitch(row.Payload, &page.Summary)
 		case "media":
-			vr.Summary = summarizeMedia(row.Payload, &page.mediaAgg)
+			vr.Summary = summarizeMedia(row.Payload, &page.mediaAggs)
 		}
 		if vr.Summary == "" {
 			vr.Summary = "—"
 		}
 		page.Rows = append(page.Rows, vr)
 	}
-	page.Media = page.mediaAgg.view()
+	page.Media = page.mediaAggs.view()
 	return page
 }
 
@@ -559,32 +592,33 @@ var metricsTemplate = template.Must(template.New("metrics").Parse(`<!doctype htm
 {{else}}
 <p class="empty">아직 footprint 샘플이 없어. 앱을 좀 쓰다 백그라운드로 보내면 배치 전송돼.</p>
 {{end}}
-<h2>미디어 로딩 <span style="color:#999;font-weight:400">({{.Media.Events}} events{{if .Media.Fails}} · 실패 {{.Media.Fails}}{{end}})</span></h2>
+<h2>미디어 로딩 <span style="color:#999;font-weight:400">({{.Media.Events}} events{{if .Media.Fails}} · 실패 {{.Media.Fails}}{{end}}{{if .Media.Hidden}} · 설정 {{.Media.Hidden}}개 생략{{end}})</span></h2>
 {{if .Media.Events}}
-<p style="color:#777;font-size:12px">net=이미지 다운로드(URLSession 실측), show=슬롯이 뜬 뒤 그림이 채워지기까지(캐시 히트 포함 — 체감 시간), decode=디코드. show 가 빠른데 net 이 느리면 프리페치가 가려주고 있는 것이고, show 의 net 비중이 높으면 캐시를 못 타는 것.</p>
+<p style="color:#777;font-size:12px">net=이미지 다운로드(URLSession 실측), show=슬롯이 뜬 뒤 그림이 채워지기까지(캐시 히트 포함 — 체감 시간), decode=디코드. show 가 빠른데 net 이 느리면 프리페치가 가려주고 있는 것이고, show 의 net 비중이 높으면 캐시를 못 타는 것. <b>분포는 실행 설정(cfg)별로 나눠 낸다</b> — 섞으면 A/B 비교가 안 된다.</p>
+{{range .Media.Configs}}
+<h3 style="font-size:13px;margin-top:22px;border-top:1px solid #e2e2e2;padding-top:12px">{{.Cfg}} <span style="color:#999;font-weight:400">({{.Events}} events{{if .Fails}} · 실패 {{.Fails}}{{end}})</span></h3>
 <table>
  <tr><th>계층</th><th>건수</th><th>p50</th><th>p90</th><th>비고</th></tr>
- {{range .Media.Layers}}
+ {{range .Layers}}
  <tr><td class="mono">{{.Layer}}</td><td class="mono">{{.Count}}</td><td class="mono">{{.P50}}</td><td class="mono">{{.P90}}</td><td class="mono">{{.Note}}</td></tr>
  {{end}}
 </table>
-{{if .Media.Links}}
-<h2 style="font-size:13px;margin-top:18px">링크별 다운로드 <span style="color:#999;font-weight:400">(회선이 느린 건지 앱이 느린 건지)</span></h2>
-<table>
+{{if .Links}}
+<table style="margin-top:8px">
  <tr><th>link</th><th>건수</th><th>p50</th><th>p90</th><th>bytes</th></tr>
- {{range .Media.Links}}
+ {{range .Links}}
  <tr><td class="mono">{{.Link}}</td><td class="mono">{{.Count}}</td><td class="mono">{{.P50}}</td><td class="mono">{{.P90}}</td><td class="mono">{{.Bytes}}</td></tr>
  {{end}}
 </table>
 {{end}}
-{{if .Media.Hosts}}
-<h2 style="font-size:13px;margin-top:18px">느린 호스트 <span style="color:#999;font-weight:400">(다운로드 p90 상위 5)</span></h2>
-<table>
- <tr><th>host</th><th>건수</th><th>p50</th><th>p90</th></tr>
- {{range .Media.Hosts}}
+{{if .Hosts}}
+<table style="margin-top:8px">
+ <tr><th>느린 호스트 (p90 상위 5)</th><th>건수</th><th>p50</th><th>p90</th></tr>
+ {{range .Hosts}}
  <tr><td class="mono">{{.Host}}</td><td class="mono">{{.Count}}</td><td class="mono">{{.P50}}</td><td class="mono">{{.P90}}</td></tr>
  {{end}}
 </table>
+{{end}}
 {{end}}
 {{else}}
 <p class="empty">아직 미디어 로드 이벤트가 없어. 앱에서 글을 좀 열고 백그라운드로 보내면 배치 전송돼.</p>
@@ -730,6 +764,37 @@ type mediaView struct {
 	Hosts  []mediaHostRow
 }
 
+// mediaSectionView 미디어 섹션 전체. 합계는 헤더용이고, 분포는 설정별로 나뉜다.
+type mediaSectionView struct {
+	Events  int
+	Fails   int
+	Configs []mediaConfigView
+	Hidden  int // 상한에 걸려 안 그린 설정 수
+}
+
+// mediaConfigView 설정 하나의 분포. `mediaView` 를 묻어 템플릿에서 그대로 쓴다.
+type mediaConfigView struct {
+	Cfg string
+	mediaView
+}
+
+// view 설정별 블록을 최신 설정부터 만든다. 합계(Events/Fails)는 전 설정 합이다 —
+// 헤더의 "얼마나 쌓였나" 는 나눌 이유가 없다.
+func (s *mediaAggSet) view() mediaSectionView {
+	out := mediaSectionView{}
+	for _, cfg := range s.order {
+		agg := s.byCfg[cfg]
+		out.Events += agg.Events
+		out.Fails += agg.Fails
+		if len(out.Configs) >= mediaConfigLimit {
+			out.Hidden++
+			continue
+		}
+		out.Configs = append(out.Configs, mediaConfigView{Cfg: cfg, mediaView: agg.view()})
+	}
+	return out
+}
+
 // view 누적치를 표로 만든다. 호스트는 p90 상위 5개만 — 전부 늘어놓으면
 // "어디가 느린가"가 오히려 안 보인다(잘라낸 사실은 제목에 적는다).
 func (a *mediaAgg) view() mediaView {
@@ -810,11 +875,12 @@ func (a *mediaAgg) view() mediaView {
 
 // summarizeMedia 배치 한 건의 행 요약 + 누적. 행 요약은 "이 배치가 무슨 상황이었나"를
 // 한 줄로 보여주는 용도라 계층별 건수와 net p50 만 싣는다(분포는 아래 미디어 섹션).
-func summarizeMedia(payload string, agg *mediaAgg) string {
+func summarizeMedia(payload string, set *mediaAggSet) string {
 	var p mediaPayloadJSON
 	if err := json.Unmarshal([]byte(payload), &p); err != nil || len(p.Events) == 0 {
 		return ""
 	}
+	agg := set.for_(p.Cfg)
 	before := *agg
 	for _, e := range p.Events {
 		agg.add(e)

@@ -46,6 +46,18 @@ final class ThreadedImageCacheTests: XCTestCase {
         try XCTUnwrap(sampleImage().pngData())
     }
 
+    /// 기본 디렉터리가 **라이브러리가 쓰는 경로와 같아야** 한다.
+    ///
+    /// 우리는 `SDImageCache.shared.diskCachePath` 를 안 읽는다 — 그 접근만으로 순정
+    /// 싱글턴이 생기고, 그러면 그쪽도 백그라운드/종료에 같은 디렉터리를 정리해서
+    /// 디스크 접근 직렬성이 깨진다. 대신 경로를 직접 만드는데, 그게 계속 맞는지는
+    /// 여기서 지킨다(이 테스트 안에서는 싱글턴을 만들어도 무해하다).
+    func testDefaultDirectoryMatchesLibraryPath() {
+        XCTAssertEqual(ThreadedImageCache.defaultCacheDirectory,
+                       SDImageCache.shared.diskCachePath,
+                       "라이브러리 경로 규칙이 바뀌었다 — 기존 캐시를 못 읽고 새로 시작하게 된다")
+    }
+
     /// 저장한 걸 다시 꺼낼 수 있어야 한다. 이게 깨지면 캐시가 조용히 무효가 되고,
     /// 증상은 "느리다" 로만 나타나 원인 추적이 지옥이 된다.
     func testStoresAndQueriesBackFromDisk() throws {

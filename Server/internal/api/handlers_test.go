@@ -885,6 +885,47 @@ func TestAdminMetricsSplitsMediaPipeline(t *testing.T) {
 	}
 }
 
+// 설정(cfg)이 다른 배치의 분포를 **섞으면 안 된다**.
+//
+// `cfg` 는 A/B 귀속을 위해 넣은 축이다. 그런데 전부 한 집계에 부어버리면 실험군과
+// 대조군의 백분위가 합쳐져, 정작 그 축으로 비교를 못 한다. 아래 두 배치는 섞으면
+// net p50 이 중간값(≈550ms)이 되고, 나누면 각각 100ms / 1,000ms 다.
+func TestAdminMetricsSeparatesMediaByRunConfig(t *testing.T) {
+	t.Setenv("NUNTING_ADMIN_KEY", "s3cret")
+	store := dbtest.New(t)
+	defer store.Close()
+	srv := httptest.NewServer(NewRouter(store))
+	defer srv.Close()
+
+	if err := store.UpsertUser(t.Context(), "nnt_x"); err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+	slow := `{"cfg":"slots=4 build=1","events":[` +
+		`{"t":"net","ts":1753000000,"ms":1000,"host":"h","link":"wifi","bytes":1000,"queued":0},` +
+		`{"t":"net","ts":1753000001,"ms":1000,"host":"h","link":"wifi","bytes":1000,"queued":0}` +
+		`]}`
+	fast := `{"cfg":"slots=8 build=2","events":[` +
+		`{"t":"net","ts":1753000002,"ms":100,"host":"h","link":"wifi","bytes":1000,"queued":0},` +
+		`{"t":"net","ts":1753000003,"ms":100,"host":"h","link":"wifi","bytes":1000,"queued":0}` +
+		`]}`
+	for _, payload := range []string{slow, fast} {
+		if err := store.InsertMetricPayload(t.Context(), "nnt_x", "media", payload); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	code, body := do(t, "GET", srv.URL+"/admin/metrics?key=s3cret", "", "")
+	if code != 200 {
+		t.Fatalf("admin: want 200, got %d", code)
+	}
+	// **집계 블록에서만 나오는 모양으로 검사한다.** 배치 행 요약에 이미 `[cfg]` 와
+	// 배치별 net p50 이 찍히므로, cfg 문자열이나 "100ms" 를 찾는 건 집계가 통째로
+	// 섞여 있어도 통과한다(직전에 실제로 그랬다).
+	if got := strings.Count(body, "net (다운로드)"); got != 2 {
+		t.Errorf("설정별 집계 블록이 %d개 — 2개여야 한다(설정 수만큼)", got)
+	}
+}
+
 // 측정된 0ms 대기도 백분위에 들어가야 한다.
 //
 // 같은 밀리초 안에 시작한 요청은 클라이언트가 `queued:0` 을 정당하게 싣는다. 그걸
