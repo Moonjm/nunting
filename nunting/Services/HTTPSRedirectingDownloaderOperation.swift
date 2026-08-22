@@ -50,6 +50,12 @@ nonisolated class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOpera
     /// (다운로드 37ms + 디코드 11ms)이 3% 뿐이라, 나머지가 이 구간 어디인지 갈라야 한다.
     private var transferEndedAt: Date?
 
+    /// 전송 완료 콜백에 **진입한** 시각. `transferEndedAt`(태스크 메트릭 수집 시점)과
+    /// 이 시각의 차이는 URLSession 내부 구간이고, 이 시각부터 종료까지가 디코드 스케줄
+    /// + 디코드 + barrier + done 이다. 전송 후 111ms 중 디코드가 11ms 뿐이라 남은
+    /// 100ms 가 둘 중 어디인지 갈라야 한다.
+    private var completeCallbackAt: Date?
+
     /// 오퍼레이션이 실제로 끝나는 순간(`isFinished` 플립)을 관찰한다.
     ///
     /// **처음엔 `completionBlock` 에서 쟀는데 그게 틀렸다.** 슬롯은 `done` 이
@@ -70,8 +76,10 @@ nonisolated class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOpera
             let now = Date()
             let ms = Int(now.timeIntervalSince(startedAt) * 1000)
             let post = self.transferEndedAt.map { Int(now.timeIntervalSince($0) * 1000) }
+            let cmpl = self.completeCallbackAt.map { Int(now.timeIntervalSince($0) * 1000) }
             let event = MediaLoadEventDTO.operation(host: host, ms: max(0, ms),
                                                     postTransferMs: post.map { max(0, $0) },
+                                                    completionMs: cmpl.map { max(0, $0) },
                                                     prefetch: isPrefetch)
             Task { @MainActor in MediaLoadTelemetry.shared.record(event) }
             self.finishObservation = nil
@@ -160,6 +168,20 @@ nonisolated class HTTPSRedirectingDownloaderOperation: SDWebImageDownloaderOpera
                                                     prefetch: isPrefetch) else { return }
         // 이 콜백은 다운로더 세션 큐. 버퍼는 MainActor 소속이라 Sendable 인 DTO 만 넘긴다.
         Task { @MainActor in MediaLoadTelemetry.shared.record(event) }
+    }
+
+    /// 전송 완료 콜백 진입 시각 스탬프. 부모가 이 셀렉터를 **구현하므로**(같은 파일의
+    /// `didCompleteWithError` — 토큰 수집·디코드 시작·`done` 이 전부 여기서 일어난다)
+    /// `super` 를 반드시 부른다. 안 부르면 오퍼레이션이 영영 안 끝난다.
+    /// 대문자 셀렉터 함정은 리다이렉트·메트릭 훅과 동일(테스트가 등록을 지킨다).
+    @objc(URLSession:task:didCompleteWithError:)
+    dynamic override func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: (any Error)?
+    ) {
+        completeCallbackAt = Date()
+        super.urlSession(session, task: task, didCompleteWithError: error)
     }
 
     /// Returns the request with `http://` upgraded to `https://`; any other

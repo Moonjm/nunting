@@ -61,6 +61,26 @@ final class HTTPSRedirectingDownloaderOperationTests: XCTestCase {
         )
     }
 
+    /// 전송 완료 콜백도 같은 대문자 셀렉터로만 전달된다
+    /// (`SDWebImageDownloader.m:506`). 소문자로 등록되면 계측이 조용히 0건이 되고,
+    /// 더 나쁘게는 부모 구현이 안 불려 오퍼레이션이 안 끝난다.
+    func testRegistersDidCompleteSelectorOnOwnClass() {
+        let cls: AnyClass = HTTPSRedirectingDownloaderOperation.self
+        var count: UInt32 = 0
+        guard let methodList = class_copyMethodList(cls, &count) else {
+            XCTFail("class_copyMethodList returned nil")
+            return
+        }
+        defer { free(methodList) }
+
+        let target = "URLSession:task:didCompleteWithError:"
+        let registered = (0..<Int(count)).map {
+            NSStringFromSelector(method_getName(methodList[$0]))
+        }
+        XCTAssertTrue(registered.contains(target),
+                      "`\(target)` 미등록. 현재: \(registered)")
+    }
+
     func testUpgradesHTTPToHTTPS() {
         let url = URL(string: "http://ext.fmkorea.com/getfile.php?code=abc&file=x%2Fy")!
         let out = HTTPSRedirectingDownloaderOperation.upgradeHTTPToHTTPS(URLRequest(url: url))

@@ -38,6 +38,7 @@ nonisolated struct MediaLoadEventDTO: Encodable, Sendable {
     var pf: Bool?      // net: 프리페치 요청일 때만 true(표시 요청이 기본)
     var slot: Int?     // net: 슬롯 획득(오퍼레이션 start) → 전송 시작. 큐 대기와 분리
     var post: Int?     // op: 전송 완료 → 오퍼레이션 종료(디코드 + 완료 처리)
+    var cmpl: Int?     // op: 전송 완료 콜백 진입 → 오퍼레이션 종료
     var us: Int?       // main: 마이크로초 — 1ms 미만 구간은 ms 로 재면 전부 0 이다
     var ok: Bool?      // 실패일 때만 false 로 실린다
 }
@@ -99,10 +100,11 @@ nonisolated extension MediaLoadEventDTO {
     /// "슬롯을 못 잡아서" 인데, 앞선 오퍼레이션의 측정된 작업량(다운로드+디코드
     /// ≈90ms)으로는 실측 대기(p90 4.1초)가 설명되지 않는다. 전송이 끝난 **뒤에도**
     /// 슬롯이 붙잡혀 있는 시간을 여기서 잡는다.
-    static func operation(host: String, ms: Int, postTransferMs: Int? = nil, prefetch: Bool,
+    static func operation(host: String, ms: Int, postTransferMs: Int? = nil,
+                          completionMs: Int? = nil, prefetch: Bool,
                           ts: Int = Int(Date().timeIntervalSince1970)) -> MediaLoadEventDTO {
         MediaLoadEventDTO(t: "op", ts: ts, ms: ms, host: host,
-                          pf: prefetch ? true : nil, post: postTransferMs)
+                          pf: prefetch ? true : nil, post: postTransferMs, cmpl: completionMs)
     }
 
     /// 메인 큐 관련 이벤트. `kind` 는 "lag"(큐 정체) | "apply"(도착한 이미지를 뷰에
