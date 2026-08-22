@@ -113,6 +113,13 @@ nonisolated extension MediaLoadEventDTO {
     /// 메인 큐 관련 이벤트. `kind` 는 "lag"(큐 정체) | "apply"(도착한 이미지를 뷰에
     /// 반영하는 우리 핸들러의 실행 시간). 둘이 갈려야 "메인이 밀려서" 와 "우리 핸들러가
     /// 무거워서" 를 구분할 수 있다.
+    /// 큐 지연 이벤트. `queue` 는 "main" | "bg", `kind` 는 "lag"(임계 초과 순간) |
+    /// "peak"(하트비트 — 0 이어도 창당 한 건).
+    static func queueLatency(queue: String, kind: String, ms: Int,
+                             ts: Int = Int(Date().timeIntervalSince1970)) -> MediaLoadEventDTO {
+        MediaLoadEventDTO(t: "queue", ts: ts, ms: ms, kind: queue + "." + kind)
+    }
+
     static func mainQueue(kind: String, ms: Int, us: Int? = nil,
                           ts: Int = Int(Date().timeIntervalSince1970)) -> MediaLoadEventDTO {
         MediaLoadEventDTO(t: "main", ts: ts, ms: ms, kind: kind, us: us)

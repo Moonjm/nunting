@@ -2,7 +2,7 @@ import XCTest
 import os
 @testable import nunting
 
-/// `MainQueueLatencyProbe` — 메인 큐가 얼마나 밀려 있는지 잰다.
+/// `QueueLatencyProbe` — 메인 큐가 얼마나 밀려 있는지 잰다.
 ///
 /// 왜: 오퍼레이션 수명의 94%가 "전송 후" 구간이고(p50 1,545ms) 그 안에서 하는 실제
 /// 일은 디코드 11ms 뿐이다. 남은 1.5초는 완료 처리가 메인 큐에서 차례를 기다린
@@ -10,7 +10,7 @@ import os
 ///
 /// `HangWatchdog` 과 같은 결이지만 잡는 게 다르다 — 워치독은 1초 이상 **한 번** 멈추는
 /// 것을 보고(오늘 0건), 이건 짧은 작업이 줄줄이 밀려 큐가 정체되는 것을 본다.
-final class MainQueueLatencyProbeTests: XCTestCase {
+final class QueueLatencyProbeTests: XCTestCase {
 
     /// 메인을 막으면 그만큼의 지연이 기록돼야 한다.
     func testRecordsLatencyWhileMainIsBusy() {
@@ -18,7 +18,7 @@ final class MainQueueLatencyProbeTests: XCTestCase {
         let exp = expectation(description: "lag recorded")
         // 0.3초 블록이면 쌓인 핑이 여러 개 한꺼번에 풀린다 — 초과 이행이 정상이다.
         exp.assertForOverFulfill = false
-        let probe = MainQueueLatencyProbe(
+        let probe = QueueLatencyProbe(
             interval: 0.02,
             thresholdMs: 30,
             onLag: { ms in
@@ -43,7 +43,7 @@ final class MainQueueLatencyProbeTests: XCTestCase {
     /// 배치가 프로브 이벤트로 뒤덮인다(이벤트 예산이 이미 이미지 쪽에 쓰이고 있다).
     func testStaysSilentWhenMainIsIdle() {
         let count = OSAllocatedUnfairLock(initialState: 0)
-        let probe = MainQueueLatencyProbe(interval: 0.02, thresholdMs: 200,
+        let probe = QueueLatencyProbe(interval: 0.02, thresholdMs: 200,
                                           onLag: { _ in count.withLock { $0 += 1 } })
         probe.start()
         defer { probe.stop() }
@@ -56,7 +56,7 @@ final class MainQueueLatencyProbeTests: XCTestCase {
     /// `stop()` 뒤에는 더 기록하지 않는다(세션 종료 후 유령 이벤트 방지).
     func testStopEndsProbing() {
         let count = OSAllocatedUnfairLock(initialState: 0)
-        let probe = MainQueueLatencyProbe(interval: 0.02, thresholdMs: 1,
+        let probe = QueueLatencyProbe(interval: 0.02, thresholdMs: 1,
                                           onLag: { _ in count.withLock { $0 += 1 } })
         probe.start()
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))

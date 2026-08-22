@@ -643,6 +643,8 @@ type mediaAgg struct {
 	MainLagMs   []int            // 메인 큐 정체(프로브)
 	MainApplyUs []int            // 도착 이미지를 뷰에 반영하는 핸들러 실행 시간(µs)
 	MainPeakMs  []int            // 하트비트: 창당 최대 지연(0 이어도 기록)
+	BgLagMs     []int            // 백그라운드 전역 큐 정체(디코드 블록 스케줄 대기)
+	BgPeakMs    []int            // 그 하트비트(0 이어도 기록)
 	DecodeMs    []int
 	DecodePx    []int
 	DecodeBy    map[string]int // 코더별 디코드 건수
@@ -692,6 +694,17 @@ func (a *mediaAgg) add(e mediaEventJSON) {
 			a.MainPeakMs = append(a.MainPeakMs, e.Ms)
 		default:
 			a.MainApplyUs = append(a.MainApplyUs, e.US)
+		}
+	case "queue":
+		switch e.Kind {
+		case "main.lag":
+			a.MainLagMs = append(a.MainLagMs, e.Ms)
+		case "main.peak":
+			a.MainPeakMs = append(a.MainPeakMs, e.Ms)
+		case "bg.lag":
+			a.BgLagMs = append(a.BgLagMs, e.Ms)
+		case "bg.peak":
+			a.BgPeakMs = append(a.BgPeakMs, e.Ms)
 		}
 	case "op":
 		a.OpMs = append(a.OpMs, e.Ms)
@@ -821,6 +834,15 @@ func (a *mediaAgg) view() mediaView {
 		v.Layers = append(v.Layers, mediaLayerRow{
 			Layer: "main peak (5초창 최대)", Count: len(a.MainPeakMs),
 			P50: msLabel(percentile(a.MainPeakMs, 50)), P90: msLabel(percentile(a.MainPeakMs, 90)),
+			Note: "행이 없으면 프로브 미가동",
+		})
+	}
+	if len(a.BgPeakMs) > 0 {
+		// 백그라운드 큐 정체 — 디코드 블록이 실행 순서를 기다리는지. 이 값이 초 단위로
+		// 치솟으면 전송 후 구간(p90 2초, 그중 디코드는 11ms)의 정체가 스케줄 대기다.
+		v.Layers = append(v.Layers, mediaLayerRow{
+			Layer: "bg peak (5초창 최대)", Count: len(a.BgPeakMs),
+			P50: msLabel(percentile(a.BgPeakMs, 50)), P90: msLabel(percentile(a.BgPeakMs, 90)),
 			Note: "행이 없으면 프로브 미가동",
 		})
 	}

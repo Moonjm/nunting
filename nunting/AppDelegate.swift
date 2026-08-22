@@ -44,7 +44,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // 메인 큐 정체 프로브 — 워치독(1초 이상 한 번 멈춤)이 못 잡는, 짧은 작업이
         // 줄줄이 밀리는 정체를 본다. 이미지 오퍼레이션이 슬롯을 1.6초씩 붙잡는
         // 원인 후보가 이것이다.
-        MainQueueLatencyProbe.shared.start()
+        QueueLatencyProbe.main.start()
+        // 백그라운드 전역 큐도 같이 잰다 — 디코드 블록이 실행 순서를 기다리는지가
+        // 지금 남은 미지수다(전송 후 구간 p90 2초 중 디코드는 11ms).
+        QueueLatencyProbe.background.start()
 
         // hang 워치독 — MetricKit diagnostic(hang 콜스택)은 Xcode 설치 빌드에 오지
         // 않으므로, 메인 스레드 1초+ 정지를 직접 감지해 스택 샘플을 서버로 올린다.
