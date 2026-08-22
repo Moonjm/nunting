@@ -59,15 +59,6 @@ nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unc
     private let memory: SDMemoryCache<NSString, UIImage>
     private let disk: SDDiskCache
     private let worker = SerialWorker(name: ThreadedImageCache.workerThreadName)
-    /// 조회와 **다른 스레드**에서 도는 유지보수(만료 정리) 전용 워커.
-    ///
-    /// 조회 워커에 섞으면 그 뒤에 선 조회가 전부 기다린다. 실제로 그렇게 터졌다:
-    /// 만료 정리를 init 에서 조회 워커에 태워놨는데, 디스크 캡이 처음으로 실제
-    /// 적용된 빌드에서 정리가 수천 개 파일 삭제로 커지며 **첫 조회들이 통째로
-    /// 6~12초 밀렸다**(2026-08-22 실측: 본문 show p50 139ms → 6,063ms, 그동안
-    /// 다운로드 대기 p50 은 1ms — 즉 병목이 다운로드 앞이었다).
-    private let maintenance = SerialWorker(name: "nunting.imageCache.maintenance",
-                                           qos: .background)
     private var lifecycleObservers: [any NSObjectProtocol] = []
 
     /// 캐시 **정책값**(메모리 캡·디스크 캡·만료·쓰기 옵션). 설정을 나중에 바꾸려면
@@ -111,13 +102,22 @@ nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unc
         for observer in lifecycleObservers { center.removeObserver(observer) }
         // 워커 스레드는 스스로 안 끝난다 — 안 세우면 캐시를 만들 때마다 스레드가 쌓인다.
         worker.stop()
-        maintenance.stop()
     }
 
-    /// 만료·용량 초과 엔트리 정리. 디렉터리 전체 순회 + 대량 삭제라 **비싸다** —
-    /// 조회 워커가 아니라 유지보수 워커에서 돈다.
+    /// 만료·용량 초과 엔트리 정리. 디렉터리 전체 순회 + 대량 삭제라 **비싸다**.
+    ///
+    /// 그래도 **조회와 같은 워커**에서 돈다. `SDDiskCache` 는 자체 `NSFileManager`
+    /// 인스턴스를 쓰는데 그건 스레드마다 하나가 원칙이라, 다른 스레드에서 돌리면
+    /// 읽기·쓰기와 같은 파일을 동시에 만지게 된다. 원자적 쓰기를 꺼둔 상태
+    /// (`diskCacheWritingOptions = []`)라 그 겹침이 더 나쁘다 — 그 설정이 안전한
+    /// 근거가 **디스크 접근이 한 줄로 선다**는 것이기 때문이다. 순정도 정리를
+    /// 조회와 같은 `ioQueue` 에서 돌린다.
+    ///
+    /// 비용이 문제였던 건 스레드가 아니라 **시점**이었다. 시작 시점에 돌리면 그
+    /// 비용이 첫 화면을 기다리는 순간에 얹힌다(2026-08-22 실측: 본문 show p50
+    /// 139ms → 6,063ms). 그래서 백그라운드 전환/종료로 옮겼다.
     func purgeExpiredData(completion: (() -> Void)?) {
-        maintenance.async { [disk] in
+        worker.async { [disk] in
             disk.removeExpiredData()
             SDCallbackQueue.main.async { completion?() }
         }
@@ -169,6 +169,17 @@ nonisolated final class ThreadedImageCache: NSObject, SDImageCacheProtocol, @unc
             // 고해상도 디코드를 태우는 게 취소의 가장 큰 낭비다.
             guard !operation.isCancelled else {
                 operation.finish(nil, nil, .none)
+                return
+            }
+            // **메모리도 다시 본다.** 프리페치와 표시가 같은 이미지를 겹쳐 요청하는 건
+            // 이 앱의 정상 동작이고, 둘 다 메모리 미스로 큐에 들어가면 앞 작업이
+            // 메모리를 채운 뒤에도 뒤 작업이 같은 데이터를 다시 디코드한다. 워커가
+            // 직렬이라 그 낭비가 뒤에 선 모든 조회를 밀기까지 한다. 순정도 같은
+            // 이유로 여기서 다시 본다(`SDImageCache.m` — "Special case: If user query
+            // image in list for the same URL").
+            if queryCacheType != .disk,
+               let cached = self.memory.object(forKey: key as NSString) as? UIImage {
+                operation.finish(cached, data, .disk)
                 return
             }
             // 디코드 옵션(썸네일 크기·스케일 등)이 여기서 정해진다 — 컨텍스트를

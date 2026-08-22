@@ -497,3 +497,103 @@ final class ThreadedImageCacheCancellationTests: XCTestCase {
         XCTAssertEqual(calls.withLock { $0 }, 1)
     }
 }
+
+/// 디스크 접근의 **직렬성**과 중복 디코드.
+///
+/// 두 문제가 같은 뿌리다: 디스크 작업이 한 줄로 서 있는가.
+final class ThreadedImageCacheSerializationTests: XCTestCase {
+
+    /// 실제 디코드는 ImageIO 에 위임하고 **호출 횟수만** 센다.
+    private final class CountingDecodeCoder: NSObject, SDImageCoder, @unchecked Sendable {
+        let calls = OSAllocatedUnfairLock(initialState: 0)
+        func canDecode(from data: Data?) -> Bool { true }
+        func decodedImage(with data: Data?, options: [SDImageCoderOption: Any]?) -> UIImage? {
+            calls.withLock { $0 += 1 }
+            return SDImageIOCoder.shared.decodedImage(with: data, options: options)
+        }
+        func canEncode(to format: SDImageFormat) -> Bool { false }
+        func encodedData(with image: UIImage?, format: SDImageFormat,
+                         options: [SDImageCoderOption: Any]?) -> Data? { nil }
+    }
+
+    private var cache: ThreadedImageCache!
+    private var config: SDImageCacheConfig!
+    private var originalCoders: [any SDImageCoder] = []
+
+    override func setUp() {
+        super.setUp()
+        config = SDImageCacheConfig()
+        cache = ThreadedImageCache(cacheDirectory: NSTemporaryDirectory()
+            .appending("nunting-serial-\(UUID().uuidString)"), config: config)
+        originalCoders = SDImageCodersManager.shared.coders ?? []
+    }
+
+    override func tearDown() {
+        SDImageCodersManager.shared.coders = originalCoders
+        let done = expectation(description: "cleared")
+        cache.clear(with: .all) { done.fulfill() }
+        wait(for: [done], timeout: 5)
+        cache = nil
+        super.tearDown()
+    }
+
+    private func seed(_ key: String) throws {
+        let data = try XCTUnwrap(UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8))
+            .image { ctx in
+                UIColor.systemPink.setFill()
+                ctx.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
+            }.pngData())
+        let stored = expectation(description: "stored")
+        cache.store(nil, imageData: data, forKey: key, cacheType: .disk) { stored.fulfill() }
+        wait(for: [stored], timeout: 5)
+    }
+
+    /// **같은 키를 두 번 조회하면 디코드는 한 번이어야 한다.**
+    ///
+    /// 프리페치와 표시가 같은 이미지를 겹쳐 요청하는 게 이 앱의 정상 동작이다. 둘 다
+    /// 메모리 미스로 큐에 들어가면, 앞 작업이 메모리를 채운 뒤에도 뒤 작업이 같은
+    /// 데이터를 다시 읽고 다시 디코드한다. 워커가 직렬이라 그 낭비가 **뒤에 선 모든
+    /// 조회를 밀기까지** 한다. 순정은 디코드 직전에 메모리를 다시 본다
+    /// (`SDImageCache.m` — "Special case: If user query image in list for the same URL").
+    func testDuplicateQueryDecodesOnce() throws {
+        try seed("dup")
+        let coder = CountingDecodeCoder()
+        SDImageCodersManager.shared.addCoder(coder)
+
+        let both = expectation(description: "both")
+        both.expectedFulfillmentCount = 2
+        for _ in 0..<2 {
+            _ = cache.queryImage(forKey: "dup", options: [], context: nil,
+                                 cacheType: .all) { _, _, _ in both.fulfill() }
+        }
+        wait(for: [both], timeout: 5)
+
+        XCTAssertEqual(coder.calls.withLock { $0 }, 1,
+                       "같은 키를 두 번 디코드했다 — 직렬 워커에선 뒤에 선 조회까지 밀린다")
+    }
+
+    /// **만료 정리와 디스크 I/O 는 같은 줄에 서야 한다.**
+    ///
+    /// `SDDiskCache` 는 자체 `NSFileManager` 인스턴스를 쓰고, 그건 스레드마다 하나가
+    /// 원칙이다. 정리를 다른 스레드에서 돌리면 쓰기·읽기와 겹치고, 원자적 쓰기를
+    /// 꺼둔 상태(`diskCacheWritingOptions = []`)라 그 겹침이 더 나쁘다.
+    ///
+    /// 직렬이면 정리 뒤에 넣은 조회가 정리 결과를 **반드시** 본다.
+    func testPurgeIsSerializedWithDiskAccess() throws {
+        try seed("expiring")
+        config.maxDiskAge = 0
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+
+        cache.purgeExpiredData(completion: nil)      // 완료를 기다리지 않는다
+        let probed = expectation(description: "probed")
+        let found = OSAllocatedUnfairLock(initialState: SDImageCacheType.memory)
+        cache.containsImage(forKey: "expiring", cacheType: .disk) { type in
+            found.withLock { $0 = type }
+            probed.fulfill()
+        }
+        wait(for: [probed], timeout: 5)
+
+        XCTAssertEqual(found.withLock { $0 }, SDImageCacheType.none,
+                       "정리와 조회가 다른 줄에 서 있다 — 같은 파일을 동시에 만질 수 있다")
+    }
+}
