@@ -828,6 +828,54 @@ func TestAdminMetricsRendersMediaSection(t *testing.T) {
 	}
 }
 
+// raw JSON 은 최신 몇 건만 — media 배치 하나가 HTML 로 ~15KB 라 400건을 다 펼치면
+// 페이지의 3/4 가 거의 안 펼치는 원본으로 찬다. 잘려도 집계(위쪽 "미디어 로딩")와
+// 행 요약은 전 건이 그대로 남아야 A/B 판정이 안 깨진다.
+func TestAdminMetricsTrimsOldMediaRawJSON(t *testing.T) {
+	t.Setenv("NUNTING_ADMIN_KEY", "s3cret")
+	store := dbtest.New(t)
+	defer store.Close()
+	srv := httptest.NewServer(NewRouter(store))
+	defer srv.Close()
+
+	if err := store.UpsertUser(t.Context(), "nnt_x"); err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+	// proto 는 집계에 안 쓰이고 raw 에만 나타난다 — 배치별 표식으로 쓴다.
+	// 오래된 것부터 넣으므로 batch5 가 최신이다.
+	for i := 1; i <= mediaRawLimit+2; i++ {
+		media := fmt.Sprintf(
+			`{"cfg":"slots=8 build=%d","events":[{"t":"net","ts":1753000000,"ms":%d,`+
+				`"host":"img.fmkorea.com","link":"wifi","bytes":1000,"proto":"batch%d","status":200}]}`,
+			i, 100+i, i)
+		if err := store.InsertMetricPayload(t.Context(), "nnt_x", "media", media); err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+	}
+
+	code, body := do(t, "GET", srv.URL+"/admin/metrics?key=s3cret", "", "")
+	if code != 200 {
+		t.Fatalf("admin: want 200, got %d", code)
+	}
+	for _, want := range []string{"batch5", "batch4", "batch3"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("최신 %d건은 raw 가 남아야 한다: %q 없음", mediaRawLimit, want)
+		}
+	}
+	for _, gone := range []string{"batch2", "batch1"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("오래된 배치의 raw 는 안 실려야 한다: %q 남음", gone)
+		}
+	}
+	// 잘린 건 raw 뿐 — 집계는 5건 전부 먹었고 행 요약도 다 남는다.
+	if !strings.Contains(body, "5 events") {
+		t.Error("집계가 전 배치를 먹어야 한다: '5 events' 없음")
+	}
+	if got := strings.Count(body, "<td>media</td>"); got != 5 {
+		t.Errorf("행 요약은 전 배치가 남아야 한다: want 5 rows, got %d", got)
+	}
+}
+
 func TestPercentile(t *testing.T) {
 	vals := []int{50, 10, 40, 20, 30} // 정렬 안 된 입력도 받는다
 

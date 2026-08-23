@@ -75,12 +75,24 @@ func (h *handlers) postMetrics(w http.ResponseWriter, r *http.Request) {
 // 하나 열 때마다 배치가 나오고(하루 수백 건) hang/diagnostic 은 며칠에 한 번이라,
 // 창을 공유하면 정작 드물고 중요한 쪽이 먼저 사라진다 — OOM/행 추적이 그때 막힌다.
 //
-// 400 인 이유: 종전 전체 상한 2000 과 페이지 크기가 비슷하게 유지되는 선이다
-// (kind 6종 × 400 = 2400, 현재 payload 하나가 HTML 로 ~8KB). media 진단도 400
-// 배치면 이틀치가 넘어 A/B 판정에 모자라지 않는다.
+// 400 인 이유: media 400 배치면 이틀치가 넘어 A/B 판정에 모자라지 않는다. 페이지
+// 크기는 이 상한이 아니라 `mediaRawLimit` 이 잡는다 — 말 많은 kind 의 무게는 건수가
+// 아니라 배치 하나에 실린 raw JSON 이었다.
 //
 // 저장은 여전히 무제한 — 자르는 건 렌더 대상뿐이다.
 const adminMetricsPerKindLimit = 400
+
+// mediaRawLimit 표에서 raw JSON 을 펼쳐 싣는 media 배치 수(최신순).
+//
+// media 배치 하나가 HTML 로 ~15KB 라 400건이면 5.9MB — 전체 8.1MB 페이지의 73% 가
+// 이 raw 였고, 그게 겨우 이틀치였다. 정작 판정에 쓰는 건 위쪽 "미디어 로딩" 집계
+// (설정별 net/show/decode p50·p90, 링크·호스트 분포)라 배치 원본은 거의 안 펼친다.
+//
+// 그래도 0 이 아닌 이유: 집계가 굴리지 않는 건별 필드(queued/ttfb/proto/reused)를
+// 눈으로 확인할 자리가 페이지에 하나는 있어야 DB 를 안 뒤진다. 최신 몇 건이면 된다.
+//
+// 잘리는 건 raw 뿐이다 — 400 배치 전부 한 줄 요약으로 남고 집계에도 그대로 들어간다.
+const mediaRawLimit = 3
 
 // GET /admin/metrics?key=<secret>
 //
@@ -321,13 +333,16 @@ func addFootprint(page *metricsPage, rows []db.FootprintRow) {
 
 func buildMetricsPage(rows []db.MetricPayloadRow) metricsPage {
 	page := metricsPage{Count: len(rows)}
+	mediaSeen := 0
 	for _, row := range rows {
 		vr := metricsRow{
 			Received: row.ReceivedAt.Local().Format("2006-01-02 15:04"),
 			Kind:     row.Kind,
 			UUID:     shortUUID(row.UUID),
-			Raw:      prettyJSON(row.Payload),
 		}
+		// raw 를 안 실을 행은 `prettyJSON` 도 부르지 않는다 — media 배치가 400건이라
+		// 버리려고 만드는 문자열이 곧 페이지 한 장 분량이다.
+		keepRaw := true
 		switch row.Kind {
 		case "metric":
 			vr.Summary = summarizeMetric(row.Payload, &page.Summary)
@@ -338,7 +353,13 @@ func buildMetricsPage(rows []db.MetricPayloadRow) metricsPage {
 		case "hitch":
 			vr.Summary = summarizeHitch(row.Payload, &page.Summary)
 		case "media":
+			// 집계는 전 건을 먹는다. 잘리는 건 아래 raw 뿐.
 			vr.Summary = summarizeMedia(row.Payload, &page.mediaAggs)
+			mediaSeen++
+			keepRaw = mediaSeen <= mediaRawLimit
+		}
+		if keepRaw {
+			vr.Raw = prettyJSON(row.Payload)
 		}
 		if vr.Summary == "" {
 			vr.Summary = "—"
@@ -564,7 +585,7 @@ var metricsTemplate = template.Must(template.New("metrics").Parse(`<!doctype htm
  <tr>
   <td>{{.Received}}</td><td>{{.Kind}}</td><td>{{.UUID}}</td>
   <td class="sum">{{.Summary}}</td>
-  <td><details><summary>json</summary><pre>{{.Raw}}</pre></details></td>
+  <td>{{if .Raw}}<details><summary>json</summary><pre>{{.Raw}}</pre></details>{{else}}—{{end}}</td>
  </tr>
  {{end}}
 </table>
