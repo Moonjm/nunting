@@ -17,8 +17,8 @@ func TestMatchTitle_CaseInsensitive(t *testing.T) {
 		// --- AND multi-token cases ---
 		{"삼다수 500ml 24개입", "500ml,삼다수", true},
 		{"삼다수 500ml 24개입", "삼다수,500ml", true}, // 순서 무관
-		{"삼다수 2L", "500ml,삼다수", false},          // 한 토큰만 — miss
-		{"500ml 콜라", "500ml,삼다수", false},        // 다른 한 토큰만 — miss
+		{"삼다수 2L", "500ml,삼다수", false},        // 한 토큰만 — miss
+		{"500ml 콜라", "500ml,삼다수", false},      // 다른 한 토큰만 — miss
 		{"삼다수 500ML 24개입", "500ml,삼다수", true}, // case-insensitive (title 쪽 대문자)
 		{"무관한 제목", "500ml,삼다수", false},
 	}
