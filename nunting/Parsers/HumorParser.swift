@@ -317,12 +317,19 @@ public struct HumorParser: BoardParser {
             // the vote/reply UI works for both shapes. Also drop the
             // comment-file block so its "원본" button label / thumbnail
             // don't leak into the content text.
+            //
+            // `.comment_more_btn` 는 긴 댓글을 펼치는 JS 버튼
+            // (`<span class="comment_more_btn">...<span class="btn_nemo">전체보기</span></span>`)
+            // 인데, 웃대는 **길이와 무관하게 모든 댓글에** 심어두고 CSS/JS 로만
+            // 노출을 제어한다(실측 pds#1422609: comment_li 96개 전부 보유).
+            // 안 지우면 flatten 이 라벨을 주워 댓글마다 "본문 ...전체보기" 로 끝난다.
             let content: String = try {
                 guard let bodyEl = try li.select(".comment_body").first(),
                       let copy = bodyEl.copy() as? Element
                 else { return "" }
                 try copy.select(
-                    ".recomm_btn, [id^=comm_ok_ment_], [id^=poncomm], .comment_file, img, script, style"
+                    ".recomm_btn, .comment_more_btn, [id^=comm_ok_ment_], [id^=poncomm], "
+                    + ".comment_file, img, script, style"
                 ).remove()
                 // Shared flatten pipeline: anchors → markdown links,
                 // `<br>`/block tags → preserved line breaks (bare `.text()`

@@ -1939,6 +1939,42 @@ final class ParserDetailTests: XCTestCase {
         XCTAssertEqual(tail.plainText.trimmingCharacters(in: .whitespacesAndNewlines), "끝 본문")
     }
 
+    /// 웃대 댓글은 `.comment_body` 안에 길이 초과 시 JS 로 펼치는
+    /// `<span class="comment_more_btn">...<span class="btn_nemo">전체보기</span></span>`
+    /// 를 **모든 댓글에** 심어둔다(실측 pds#1422609: comment_li 96개 전부).
+    /// CSS 로 숨겨져 브라우저엔 안 보이지만 flatten 은 텍스트로 주워
+    /// 댓글 전부가 "본문 ...전체보기" 로 끝나 보였다.
+    func testHumorCommentDropsExpandButtonLabel() throws {
+        let html = """
+        <html><body>
+        <div id="read_subject_div"><h2><a>제목</a></h2></div>
+        <div id="comment"><ul>
+          <li id="comment_li_516038251">
+            <span class="info">
+              <span class="nick"><span class="hu_nick_txt">닉네임</span></span>
+              <span class="etc">2026-08-25 19:34:50</span>
+            </span>
+            <span class="comment_body comm_pd_1">
+              <div class="comment_more">등짝... 등짝을 보자...</div>
+              <span class="comment_more_btn">...<span class="btn_nemo">전체보기</span></span>
+              <div class="recomm_btn"><a href="javascript:recomm_ok('comm','1');">추천</a></div>
+            </span>
+          </li>
+        </ul></div>
+        </body></html>
+        """
+        let parser = HumorParser()
+        let post = Post.fixture(
+            id: "humor-more",
+            site: .humor,
+            boardID: "pds",
+            url: URL(string: "https://m.humoruniv.com/board/read.html?table=pds&number=1422609")!
+        )
+        let detail = try parser.parseDetail(html: html, post: post)
+        XCTAssertEqual(detail.comments.count, 1)
+        XCTAssertEqual(detail.comments[0].content, "등짝... 등짝을 보자...")
+    }
+
     // MARK: - SLR
 
     func testSLRBodyExtractsTextImageVideoYouTubeAndAnchor() throws {
