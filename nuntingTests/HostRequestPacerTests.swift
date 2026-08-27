@@ -292,6 +292,36 @@ final class HostRequestPacerTests: XCTestCase {
         }
     }
 
+    func testAlreadyCancelledRequestDoesNotConsumeASlot() async throws {
+        // 버스트 안이면 대기가 0 이라 잠들지 않고 통과한다 — 그래서 "자다
+        // 취소" 반납 경로에 닿지 않는다. 그 사이 이미 취소된 요청이 슬롯만
+        // 먹고 아무것도 안 보내면, 보드를 넘긴 뒤의 첫 요청이 빈 자리를
+        // 기다린다.
+        let capacity = Int(try XCTUnwrap(HostRequestPacer.limit(for: .ppomppu)).capacity)
+        let clock = FakeClock()
+        let pacer = makePacer(clock)
+
+        // 취소가 확실히 관측된 뒤에 acquire 를 부른다(경합 없이 결정적).
+        let task = Task {
+            while !Task.isCancelled { await Task.yield() }
+            try await pacer.acquire(site: .ppomppu)
+        }
+        task.cancel()
+        do {
+            try await task.value
+            XCTFail("취소된 요청은 게이트를 그냥 통과하면 안 됨")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+
+        // 버스트가 온전히 남아 있어야 한다.
+        for _ in 0..<capacity { try await pacer.acquire(site: .ppomppu) }
+        XCTAssertTrue(
+            clock.recordedWaits.isEmpty,
+            "취소된 요청이 슬롯을 먹어 버스트가 줄었음")
+    }
+
     // MARK: - 취소
 
     func testCancellationPropagatesInsteadOfSleeping() async {

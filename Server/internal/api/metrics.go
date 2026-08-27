@@ -1030,13 +1030,23 @@ func (a *fetchAgg) view() fetchSectionView {
 	sort.SliceStable(hosts, func(i, j int) bool {
 		return a.byHost[hosts[i]].events > a.byHost[hosts[j]].events
 	})
+	// 섹션 합계는 **생략된 호스트까지** 센다. 자르고 나서 더하면 429 를
+	// 표시된 호스트에서만 모으면서 분모는 전체 시도 수라 비율이 낮게 나오고,
+	// 429 가 전부 생략된 호스트에 있으면 헤더에서 429 가 통째로 사라진다
+	// (템플릿이 `{{if .Fetch.Limited}}` 로 감싸므로). 판정 지표가 바로 그
+	// 비율이라 이 오차는 결론을 뒤집는다 — Codex 리뷰 P2.
+	for _, host := range hosts {
+		v.Limited += a.byHost[host].limited
+	}
+	v.LimitedPct = pctLabel(v.Limited, v.Events)
+
+	// 자르는 건 렌더 목록뿐이다.
 	if len(hosts) > fetchHostLimit {
 		v.Hidden = len(hosts) - fetchHostLimit
 		hosts = hosts[:fetchHostLimit]
 	}
 	for _, host := range hosts {
 		agg := a.byHost[host]
-		v.Limited += agg.limited
 		v.Hosts = append(v.Hosts, fetchHostView{
 			Host:       host,
 			Events:     agg.events,
@@ -1050,7 +1060,6 @@ func (a *fetchAgg) view() fetchSectionView {
 			P90:        msLabel(percentile(agg.ms, 90)),
 		})
 	}
-	v.LimitedPct = pctLabel(v.Limited, v.Events)
 	return v
 }
 

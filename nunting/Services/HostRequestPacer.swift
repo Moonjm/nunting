@@ -94,8 +94,21 @@ actor HostRequestPacer {
     /// 그 요청은 더 보낼 이유가 없다.
     func acquire(site: Site?) async throws {
         guard let site, let limit = Self.limit(for: site), limit.perSecond > 0 else { return }
+        // 이미 취소된 요청은 **예약조차 하지 않는다.** 잡아 놓고 아무것도 보내지
+        // 않으면 뒤 요청이 빈 자리를 기다린다 — 자다 취소된 경우와 같은 손해인데,
+        // 이쪽은 버스트 안이라 안 자고 통과해서 반납 경로에 닿지도 않았다
+        // (Codex 리뷰 P2).
+        try Task.checkCancellation()
         let reservation = reserveSlot(site: site, limit: limit)
-        guard reservation.wait > 0 else { return }
+        guard reservation.wait > 0 else {
+            // 예약과 반환 사이에 취소가 들어온 경우. 이 요청도 안 나가므로
+            // (URLSession 이 아무것도 보내지 않고 실패한다) 슬롯을 돌려준다.
+            if Task.isCancelled {
+                release(slot: reservation.slot, site: site, limit: limit)
+                throw CancellationError()
+            }
+            return
+        }
         do {
             try await sleeper(reservation.wait)
         } catch {
