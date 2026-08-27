@@ -104,7 +104,21 @@ final class FetchTelemetry {
     /// 이벤트가 증발한다 — `MediaLoadTelemetry` 와 동일).
     func onBackground() { flush() }
 
+    /// 테스트 실행에서는 업로드하지 않는다.
+    ///
+    /// 이 계측은 기본 인자로 실 텔레메트리에 물려 있어서, `Networking.fetchHTML`
+    /// 을 부르는 테스트가 그대로 프로덕션 대시보드에 배치를 올렸다 —
+    /// `xcodebuild test` 한 번에 `example.com` 21건(MockURLProtocol 의 404/500/
+    /// 타임아웃 zoo)이 실기기 데이터 사이에 섞여 들어갔고, 하마터면 그걸
+    /// 사용자 세션으로 읽을 뻔했다. 계측의 값어치는 신뢰성이라 소스에서 막는다.
+    nonisolated static func isTestRun(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        environment["XCTestConfigurationFilePath"] != nil
+    }
+
     private func upload(_ batch: [FetchEventDTO]) {
+        guard !Self.isTestRun() else { return }
         let ticket = flushWindow.enter()
         Task { @MainActor in
             defer { flushWindow.leave(ticket) }

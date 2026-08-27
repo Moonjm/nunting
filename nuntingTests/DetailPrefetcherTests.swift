@@ -56,6 +56,23 @@ final class DetailPrefetcherTests: XCTestCase {
         XCTAssertNotNil(prefetcher.consume(id: "a"))
     }
 
+    func testRateLimitedSiteIsExcluded() async {
+        // 뽐뿌처럼 요청률 제한이 걸린 사이트는 투기적 워밍이 손해다 — 사용자가
+        // 지금 기다리는 목록 페이지의 예산을 3건이나 먼저 써 버린다.
+        let calls = TestCounter()
+        let prefetcher = DetailPrefetcher(fetchHTML: { _, _ in
+            calls.increment()
+            return "html"
+        })
+
+        await prefetcher.prefetch(posts: [post("p", site: .ppomppu), post("c", site: .clien)])
+
+        XCTAssertEqual(calls.value, 1, "요청률 제한 사이트는 prefetch 제외")
+        XCTAssertNil(prefetcher.consume(id: "p"))
+        XCTAssertEqual(prefetcher.consume(id: "c"), "html")
+    }
+
+
     func testExpiredEntryIsNotServed() async {
         var fakeNow = Date(timeIntervalSince1970: 1_000_000)
         let prefetcher = DetailPrefetcher(

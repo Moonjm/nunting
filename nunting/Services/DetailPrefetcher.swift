@@ -61,6 +61,12 @@ final class DetailPrefetcher {
     func prefetch(posts: [Post], limit: Int = 3) async {
         let eligible = posts
             .filter { $0.site != .aagag }
+            // 요청률 제한이 있는 사이트는 제외 — 투기적 워밍 3건이 사용자가
+            // 지금 쓸 예산을 통째로 먹는다. 실측(2026-08-27) 뽐뿌의 지속
+            // 허용치는 초당 1건에도 못 미쳐서, 프리페치 3건이면 그 다음 목록
+            // 페이지가 몇 초를 기다린다 — RTT 를 아끼려던 최적화가 정확히
+            // 반대 효과를 낸다. aagag 제외와 같은 성격의 배제.
+            .filter { HostRequestPacer.limit(for: $0.site) == nil }
             .filter { entries[$0.id] == nil && !inFlight.contains($0.id) }
             .prefix(limit)
         guard !eligible.isEmpty else { return }

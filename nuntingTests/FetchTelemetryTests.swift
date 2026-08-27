@@ -102,6 +102,20 @@ final class FetchTelemetryTests: XCTestCase {
         XCTAssertEqual(batches.first?.count, 1)
     }
 
+    // MARK: - 테스트 격리
+
+    func testTestRunIsDetectedFromEnvironment() {
+        // 이 계측은 기본 인자로 실 텔레메트리에 물려 있어, 막지 않으면
+        // `xcodebuild test` 가 프로덕션 대시보드에 가짜 세션을 올린다
+        // (실제로 example.com 21건이 실기기 데이터에 섞였다).
+        XCTAssertTrue(
+            FetchTelemetry.isTestRun(),
+            "테스트 프로세스는 스스로를 테스트 실행으로 인식해야 함")
+        XCTAssertFalse(
+            FetchTelemetry.isTestRun(environment: [:]),
+            "실기기 환경은 업로드해야 함")
+    }
+
     private static let sample = FetchEventDTO(
         ts: 1, ms: 100, host: "m.ppomppu.co.kr", path: "/new/bbs_list.php?id=ppomppu",
         status: 200, err: nil, attempt: nil, pf: nil, link: nil)

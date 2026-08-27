@@ -47,16 +47,36 @@ final class HostRequestPacerTests: XCTestCase {
     // MARK: - 버스트와 정상 속도
 
     func testAllowsCapacityImmediatelyThenPacesAtSteadyRate() async throws {
-        // 뽐뿌 = capacity 6, 2/s. 유휴 상태에서 6건은 즉시, 7건째부터 0.5초 간격.
+        // 상수가 아니라 **동작**을 핀한다: capacity 만큼 즉시, 그 뒤로는 정확히
+        // 한 간격씩. 값 자체의 타당성은 아래 실측 테스트가 따로 지킨다.
+        let limit = try XCTUnwrap(HostRequestPacer.limit(for: .ppomppu))
+        let capacity = Int(limit.capacity)
+        let interval = 1 / limit.perSecond
         let clock = FakeClock()
         let pacer = makePacer(clock)
 
-        for _ in 0..<9 { try await pacer.acquire(site: .ppomppu) }
+        for _ in 0..<(capacity + 3) { try await pacer.acquire(site: .ppomppu) }
 
-        XCTAssertEqual(clock.recordedWaits.count, 3, "6건은 대기 없이 나가야 함")
+        XCTAssertEqual(
+            clock.recordedWaits.count, 3, "capacity(\(capacity))건은 대기 없이 나가야 함")
         for wait in clock.recordedWaits {
-            XCTAssertEqual(wait, 0.5, accuracy: 0.001, "정상 속도는 2/s = 0.5초 간격")
+            XCTAssertEqual(wait, interval, accuracy: 0.001)
         }
+    }
+
+    /// 실측(2026-08-27)에 대한 안전 마진을 지킨다. 이 숫자를 올리는 변경은
+    /// 곧 실기기 429 로 돌아온다 — 첫 판(2/s)이 정확히 그래서 실패했고,
+    /// 그때 로그가 "초당 1.4건만 보냈는데 거절"이었다.
+    func testPpomppuLimitStaysWithinMeasuredServerAllowance() throws {
+        let limit = try XCTUnwrap(HostRequestPacer.limit(for: .ppomppu))
+        let interval = 1 / limit.perSecond
+
+        // 실측 지속 허용치 = 3초에 1건. 그보다 촘촘하면 결국 버킷이 마른다.
+        XCTAssertGreaterThanOrEqual(
+            interval, 3.0, "지속 간격이 실측 허용치(3초)보다 촘촘함")
+        // 실측 버스트 ~19~20. 그보다 크면 첫 화면에서 바로 거절당한다.
+        XCTAssertLessThanOrEqual(
+            limit.capacity, 19, "버스트가 실측치를 넘음")
     }
 
     func testIdlePeriodRefillsBurstButDoesNotBankBeyondCapacity() async throws {
@@ -64,12 +84,13 @@ final class HostRequestPacerTests: XCTestCase {
         let clock = FakeClock()
         let pacer = makePacer(clock)
 
-        for _ in 0..<6 { try await pacer.acquire(site: .ppomppu) }
+        let capacity = Int(HostRequestPacer.limit(for: .ppomppu)?.capacity ?? 0)
+        for _ in 0..<capacity { try await pacer.acquire(site: .ppomppu) }
         XCTAssertTrue(clock.recordedWaits.isEmpty)
 
-        clock.advance(60)  // 1분 유휴 — 이론상 120 토큰
+        clock.advance(600)  // 10분 유휴 — 이론상 토큰이 넘치도록
 
-        for _ in 0..<6 { try await pacer.acquire(site: .ppomppu) }
+        for _ in 0..<capacity { try await pacer.acquire(site: .ppomppu) }
         XCTAssertTrue(
             clock.recordedWaits.isEmpty,
             "유휴 뒤엔 capacity 만큼 즉시 나가야 함")
@@ -89,23 +110,27 @@ final class HostRequestPacerTests: XCTestCase {
         let pacer = makePacer(clock)
         let start = clock.now
 
+        let limit = try XCTUnwrap(HostRequestPacer.limit(for: .ppomppu))
+        let capacity = Int(limit.capacity)
+        let interval = 1 / limit.perSecond
+        let excess = 4
         await withTaskGroup(of: Void.self) { group in
-            for _ in 0..<10 {
+            for _ in 0..<(capacity + excess) {
                 group.addTask { try? await pacer.acquire(site: .ppomppu) }
             }
         }
 
         let waits = clock.recordedWaits
-        XCTAssertEqual(waits.count, 4, "10건 중 6건만 즉시 — 나머지는 대기해야 함")
+        XCTAssertEqual(waits.count, excess, "capacity 만큼만 즉시 — 나머지는 대기해야 함")
         // 판정 지표는 대기값의 다양성이 아니라 **소비한 총 시간**이다. 가짜 시계가
         // sleep 마다 전진하므로, 슬롯이 안 겹쳤다면 각 대기는 정확히 한 간격
         // (0.5초)이고 총 전진은 (10 - capacity) / rate = 2초가 된다. 같은 슬롯을
         // 두 번 집으면 그 호출의 대기가 0 이 돼 총합이 줄어든다.
         for wait in waits {
-            XCTAssertEqual(wait, 0.5, accuracy: 0.001, "슬롯이 겹쳤음")
+            XCTAssertEqual(wait, interval, accuracy: 0.001, "슬롯이 겹쳤음")
         }
-        XCTAssertEqual(clock.now - start, 2.0, accuracy: 0.001,
-                       "10건이 최소 2초에 걸쳐 나가야 함")
+        XCTAssertEqual(clock.now - start, Double(excess) * interval, accuracy: 0.001,
+                       "초과분이 간격만큼 벌어져 나가야 함")
     }
 
     // MARK: - 제한 없는 사이트
@@ -143,7 +168,8 @@ final class HostRequestPacerTests: XCTestCase {
             sleeper: { _ in throw CancellationError() })
 
         do {
-            for _ in 0..<8 { try await pacer.acquire(site: .ppomppu) }
+            let capacity = Int(HostRequestPacer.limit(for: .ppomppu)?.capacity ?? 0)
+            for _ in 0...(capacity + 1) { try await pacer.acquire(site: .ppomppu) }
             XCTFail("expected cancellation")
         } catch is CancellationError {
             // 기대 경로

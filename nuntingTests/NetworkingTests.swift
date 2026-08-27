@@ -281,17 +281,19 @@ final class NetworkingTests: XCTestCase {
         // 그대로 난다.
         let gate = PacerSpy()
         let pacer = HostRequestPacer(clock: { gate.now }, sleeper: { gate.sleep($0) })
+        let capacity = Int(try XCTUnwrap(HostRequestPacer.limit(for: .ppomppu)).capacity)
+        let total = capacity + 2
         MockURLProtocol.handlers = Array(
-            repeating: .response(status: 200, body: "<html>ok</html>"), count: 8)
+            repeating: .response(status: 200, body: "<html>ok</html>"), count: total)
 
-        for _ in 0..<8 {
+        for _ in 0..<total {
             _ = try await Networking.fetchHTML(
                 url: URL(string: "https://m.ppomppu.co.kr/new/bbs_list.php?id=ppomppu")!,
                 session: session,
                 pacer: pacer)
         }
 
-        XCTAssertEqual(gate.waits.count, 2, "6건은 즉시, 나머지는 대기")
+        XCTAssertEqual(gate.waits.count, 2, "capacity 까지는 즉시, 나머지는 대기")
     }
 
     func testUnknownHostIsNotPaced() async throws {
@@ -299,9 +301,9 @@ final class NetworkingTests: XCTestCase {
         let gate = PacerSpy()
         let pacer = HostRequestPacer(clock: { gate.now }, sleeper: { gate.sleep($0) })
         MockURLProtocol.handlers = Array(
-            repeating: .response(status: 200, body: "<html>ok</html>"), count: 8)
+            repeating: .response(status: 200, body: "<html>ok</html>"), count: 20)
 
-        for _ in 0..<8 {
+        for _ in 0..<20 {
             _ = try await Networking.fetchHTML(
                 url: URL(string: "https://example.com/")!,
                 session: session,
@@ -316,18 +318,19 @@ final class NetworkingTests: XCTestCase {
         // 우회하면 증폭 고리가 그대로 남는다.
         let gate = PacerSpy()
         let pacer = HostRequestPacer(clock: { gate.now }, sleeper: { gate.sleep($0) })
-        // 1회 요청이 시도 7회(=capacity 6 초과)를 쓰도록 429 를 6번 준다.
+        // 1회 요청이 capacity + 1 회 시도하도록 429 를 capacity 번 준다.
+        let capacity = Int(try XCTUnwrap(HostRequestPacer.limit(for: .ppomppu)).capacity)
         MockURLProtocol.handlers = Array(
-            repeating: .response(status: 429, body: "<html>429</html>"), count: 6)
+            repeating: .response(status: 429, body: "<html>429</html>"), count: capacity)
             + [.response(status: 200, body: "<html>ok</html>")]
 
         _ = try await Networking.fetchHTML(
             url: URL(string: "https://m.ppomppu.co.kr/new/bbs_list.php?id=ppomppu")!,
             session: session,
-            rateLimitBackoff: Array(repeating: .milliseconds(1), count: 6),
+            rateLimitBackoff: Array(repeating: .milliseconds(1), count: capacity),
             pacer: pacer)
 
-        XCTAssertEqual(gate.waits.count, 1, "7번째 시도는 게이트에서 대기해야 함")
+        XCTAssertEqual(gate.waits.count, 1, "capacity 를 넘긴 시도는 게이트에서 대기해야 함")
     }
 
     /// 짧은 백오프 스케줄 — 프로덕션 값을 그대로 쓰면 테스트가 초 단위로 잔다.
