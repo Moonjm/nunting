@@ -36,7 +36,9 @@ final class DetailPrefetcher {
         capacity: Int = 10,
         ttl: TimeInterval = 180,
         fetchHTML: @escaping FetchHTML = { url, encoding in
-            try await Networking.fetchHTML(url: url, encoding: encoding)
+            // prefetch: true — 계측에서 본 요청과 갈라야 한다. 사용자가 기다리는
+            // 요청은 아니지만 사이트 rate limit 버킷은 똑같이 태운다.
+            try await Networking.fetchHTML(url: url, encoding: encoding, prefetch: true)
         },
         now: @escaping () -> Date = Date.init
     ) {

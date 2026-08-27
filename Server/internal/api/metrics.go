@@ -29,7 +29,11 @@ import (
 // "몇 프레임 빠짐" 을 보기 위한 채널. 히치가 있는 구간만 올라온다.
 var validMetricKinds = map[string]bool{
 	"metric": true, "diagnostic": true, "parser": true, "hang": true, "hitch": true,
-	"media": true,
+	// fetch = iOS FetchTelemetry 의 HTML fetch 시도 배치({events:[{ts,ms,host,path,
+	// status?,err?,attempt?,pf?,link?}]}) — 목록/상세/댓글이 실제로 받은 응답을
+	// 남긴다. 429(즉시 거절)와 타임아웃(8s 물림)은 화면엔 똑같이 "다시 시도" 로
+	// 보이지만 대응이 정반대라, 기기 밖에서 가를 채널이 필요했다.
+	"media": true, "fetch": true,
 }
 
 // POST /me/metrics?kind=metric|diagnostic|parser

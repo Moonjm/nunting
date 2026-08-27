@@ -163,11 +163,8 @@ final class NetworkingTests: XCTestCase {
     func testFetchHTMLRetries429TwiceBeforeGivingUp() async {
         // 백오프 스케줄 길이만큼만 재시도하고 마지막 429 를 그대로 던진다 —
         // 무한 재시도로 rate limit 을 더 태우지 않는다.
-        MockURLProtocol.handlers = [
-            .response(status: 429, body: "<html>429</html>"),
-            .response(status: 429, body: "<html>429</html>"),
-            .response(status: 429, body: "<html>429</html>"),
-        ]
+        MockURLProtocol.handlers = Array(
+            repeating: .response(status: 429, body: "<html>429</html>"), count: 4)
 
         do {
             _ = try await Networking.fetchHTML(
@@ -184,8 +181,101 @@ final class NetworkingTests: XCTestCase {
         }
     }
 
-    /// 짧은 백오프 스케줄 — 프로덕션 값(500ms/1500ms)을 그대로 쓰면 테스트가
-    /// 2초씩 잔다. 재시도 **횟수**와 종료 조건만 검증 대상이라 길이는 무관.
+    /// 429 재시도 예산과 transient 재시도 예산은 서로를 잡아먹지 않아야 한다.
+    /// 공유 `attempt` 로 판정하던 판에서는 "429 → 연결 끊김" 순서일 때 두 번째
+    /// 실패가 이미 예산을 다 쓴 것으로 읽혀 약속한 재다이얼이 사라졌다.
+    func testTransientRetryStillAvailableAfter429() async throws {
+        MockURLProtocol.handlers = [
+            .response(status: 429, body: "<html>429</html>"),
+            .failure(URLError(.networkConnectionLost)),
+            .response(status: 200, body: "<html>ok</html>"),
+        ]
+
+        let html = try await Networking.fetchHTML(
+            url: URL(string: "https://example.com/")!,
+            session: session,
+            rateLimitBackoff: Self.fastBackoff
+        )
+
+        XCTAssertEqual(html, "<html>ok</html>")
+        XCTAssertEqual(MockURLProtocol.attempts.count, 3)
+    }
+
+    /// 백오프 스케줄은 실측 회복창(t=2s 아직 429, t=4s 200)을 **넘겨야** 한다.
+    /// 마지막 시도가 회복 전에 떨어지면 재시도를 넣고도 같은 429 를 그대로
+    /// 사용자에게 돌려준다 — 실기기에서 실제로 그랬다.
+    func testProductionBackoffScheduleOutlastsMeasuredRecoveryWindow() {
+        let total = Networking.rateLimitBackoff.reduce(Duration.zero, +)
+        XCTAssertGreaterThanOrEqual(
+            total, .seconds(4),
+            "마지막 재시도가 실측 회복 시점(4s) 이후여야 함 — 현재 \(total)")
+    }
+
+    // MARK: - 시도 단위 계측
+
+    func testRecordsOneOutcomePerAttemptWithStatuses() async throws {
+        // 429 → 200 한 요청이 시도 2건으로 남아야 "재시도가 실제로 먹혔나"를
+        // 사후에 판정할 수 있다. 요청 단위로만 남기면 흡수된 429 가 안 보인다.
+        let spy = OutcomeSpy()
+        MockURLProtocol.handlers = [
+            .response(status: 429, body: "<html>429</html>"),
+            .response(status: 200, body: "<html>ok</html>"),
+        ]
+
+        _ = try await Networking.fetchHTML(
+            url: URL(string: "https://example.com/board")!,
+            session: session,
+            rateLimitBackoff: Self.fastBackoff,
+            recorder: { spy.append($0) }
+        )
+
+        let outcomes = spy.outcomes
+        XCTAssertEqual(outcomes.map(\.status), [429, 200])
+        XCTAssertEqual(outcomes.map(\.attempt), [1, 2])
+        XCTAssertTrue(outcomes.allSatisfy { $0.error == nil })
+    }
+
+    func testRecordsTransportFailureOnceWithoutStatus() async {
+        // 응답이 없는 실패(타임아웃 등)는 status 없이 err 로 남아야 하고,
+        // 같은 시도가 두 번 실리면 안 된다(위 do 블록과 catch 의 이중 기록).
+        let spy = OutcomeSpy()
+        MockURLProtocol.handlers = [
+            .failure(URLError(.timedOut)),
+            .failure(URLError(.timedOut)),
+        ]
+
+        _ = try? await Networking.fetchHTML(
+            url: URL(string: "https://example.com/board")!,
+            session: session,
+            rateLimitBackoff: Self.fastBackoff,
+            recorder: { spy.append($0) }
+        )
+
+        let outcomes = spy.outcomes
+        XCTAssertEqual(outcomes.count, 2, "시도 2회 = 이벤트 2건")
+        XCTAssertTrue(outcomes.allSatisfy { $0.status == nil })
+        XCTAssertEqual(
+            outcomes.compactMap { ($0.error as? URLError)?.code }, [.timedOut, .timedOut])
+    }
+
+    func testHTTPErrorStatusIsRecordedOnlyOnce() async {
+        // 500 은 do 블록이 기록하고 던진다 — catch 가 다시 실으면 상태 분포가
+        // 두 배가 된다.
+        let spy = OutcomeSpy()
+        MockURLProtocol.handlers = [.response(status: 500, body: "<html>boom</html>")]
+
+        _ = try? await Networking.fetchHTML(
+            url: URL(string: "https://example.com/board")!,
+            session: session,
+            recorder: { spy.append($0) }
+        )
+
+        XCTAssertEqual(spy.outcomes.map(\.status), [500])
+    }
+
+    /// 짧은 백오프 스케줄 — 프로덕션 값을 그대로 쓰면 테스트가 초 단위로 잔다.
+    /// 재시도 **횟수**와 종료 조건만 검증 대상이라 길이는 무관(스케줄 길이
+    /// 자체는 `testProductionBackoffScheduleOutlastsMeasuredRecoveryWindow` 가 핀).
     private static let fastBackoff: [Duration] = [.milliseconds(1), .milliseconds(1)]
 
     // MARK: - Non-retry paths
@@ -646,4 +736,23 @@ final class MockURLProtocol: URLProtocol {
     /// its response asynchronously (e.g. simulated slow network), this
     /// will need to cancel that timer.
     override func stopLoading() {}
+}
+
+/// `recorder` 시임이 받은 결과를 모으는 스파이. `@Sendable` 클로저에서 갱신되므로
+/// 락으로 감싼다 — 클래스 필드에 그냥 쓰면 Swift 6 sending 검사에 걸린다.
+private final class OutcomeSpy: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [FetchAttemptOutcome] = []
+
+    func append(_ outcome: FetchAttemptOutcome) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.append(outcome)
+    }
+
+    var outcomes: [FetchAttemptOutcome] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
 }

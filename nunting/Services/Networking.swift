@@ -112,16 +112,25 @@ struct Networking {
     /// 이걸 영구 실패로 올리면 목록 하단이 "다시 시도" 로 굳고 멀쩡한 글이
     /// 안 열린다(둘 다 재현된 증상).
     ///
-    /// 0.5s + 1.5s = 총 2s 대기로 실측 회복창을 덮는다. 재시도가 버킷을 더
-    /// 태우지는 않는다 — `limit_req` 는 거절한 요청에 토큰을 쓰지 않는다.
+    /// 시도 시각이 t≈0 / 0.5 / 2.0 / 5.0s 가 되도록 짰다. 실측 회복 폴링이
+    /// **t=2s 에서 아직 429, t=4s 에서 200** 이었으므로 2s 에서 끊으면 바로 그
+    /// 케이스를 놓친다(첫 판이 0.5+1.5 였고, 실기기에서 여전히 "다시 시도"가
+    /// 났다 — Codex 리뷰가 같은 지점을 지적). 버스트 10 을 다 쓴 뒤 `limit_req`
+    /// 의 초과분이 2r/s 로 빠지려면 ~5s 가 필요하다는 계산과도 맞는다.
+    /// 재시도가 버킷을 더 태우지는 않는다 — `limit_req` 는 거절한 요청에
+    /// 토큰을 쓰지 않는다.
     /// URLError transient 재시도(150ms)보다 긴 이유: 저쪽은 죽은 keep-alive
     /// 연결을 새로 다이얼하는 문제라 즉시 재시도가 맞고, 이쪽은 서버가
     /// 시간이 지나야 토큰을 채운다.
-    static let rateLimitBackoff: [Duration] = [.milliseconds(500), .milliseconds(1500)]
+    /// `nonisolated`: 기본 인자로 쓰이므로 비격리 호출부에서 읽혀야 한다
+    /// (`session` 이 같은 이유로 nonisolated 인 것과 동일).
+    nonisolated static let rateLimitBackoff: [Duration] = [
+        .milliseconds(500), .milliseconds(1500), .seconds(3),
+    ]
 
     /// 재시도 대상 상태 코드. 429 만 — 5xx 는 재시도가 장애를 키우고,
     /// 4xx 나머지는 재요청해도 같은 답이다.
-    static let rateLimitedStatus = 429
+    nonisolated static let rateLimitedStatus = 429
 
     static func fetchHTML(
         url: URL,
@@ -144,7 +153,13 @@ struct Networking {
         session: URLSession = Networking.session,
         /// 429 백오프 스케줄 override — 테스트 전용 시임(`session:` 과 같은 계약).
         /// 프로덕션 호출부는 기본값을 쓴다.
-        rateLimitBackoff: [Duration] = Networking.rateLimitBackoff
+        rateLimitBackoff: [Duration] = Networking.rateLimitBackoff,
+        /// 계측 라벨용 — 프리페치는 사용자가 기다리는 요청이 아니지만 rate limit
+        /// 버킷은 똑같이 태운다. 대시보드에서 갈리지 않으면 "느리다"의 원인이
+        /// 프리페치인지 본 요청인지 못 가른다.
+        prefetch: Bool = false,
+        /// 시도 단위 계측 싱크. 기본은 실제 텔레메트리, 테스트는 스파이를 넣는다.
+        recorder: FetchAttemptRecorder = Networking.defaultFetchRecorder
     ) async throws -> String {
         let retry: @Sendable () async throws -> String = {
             try await fetchHTMLOnce(
@@ -156,7 +171,9 @@ struct Networking {
                 referer: referer,
                 accept: accept,
                 session: session,
-                rateLimitBackoff: rateLimitBackoff
+                rateLimitBackoff: rateLimitBackoff,
+                prefetch: prefetch,
+                recorder: recorder
             )
         }
         do {
@@ -169,7 +186,9 @@ struct Networking {
                 referer: referer,
                 accept: accept,
                 session: session,
-                rateLimitBackoff: rateLimitBackoff
+                rateLimitBackoff: rateLimitBackoff,
+                prefetch: prefetch,
+                recorder: recorder
             )
             return try await applyBotCheckGuard(url: url, body: html, retry: retry)
         } catch {
@@ -194,7 +213,9 @@ struct Networking {
         referer: URL? = nil,
         accept: String? = nil,
         session: URLSession,
-        rateLimitBackoff: [Duration] = Networking.rateLimitBackoff
+        rateLimitBackoff: [Duration] = Networking.rateLimitBackoff,
+        prefetch: Bool = false,
+        recorder: FetchAttemptRecorder = Networking.defaultFetchRecorder
     ) async throws -> String {
         var request = URLRequest(url: url)
         request.httpShouldHandleCookies = handlesCookies
@@ -210,11 +231,15 @@ struct Networking {
             forHTTPHeaderField: "Accept")
         request.setValue("ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7", forHTTPHeaderField: "Accept-Language")
 
-        let maxAttempts = 2
+        // 429 재시도와 URLError transient 재시도는 예산이 따로다 — 두 실패는
+        // 원인이 달라(죽은 소켓 vs. 서버 토큰 고갈) 서로의 시도 횟수를 잡아먹으면
+        // 안 된다. 그래서 **각자 카운터를 센다**: 공유 `attempt` 로 판정하면
+        // "429 → 타임아웃" 순서일 때 transient 재시도가 이미 소진된 것으로 읽혀
+        // 약속한 재다이얼이 사라진다(Codex 리뷰 P2). `attempt` 는 첫-시도
+        // 타임아웃 판정에만 쓴다.
+        let maxTransientRetries = 1
         var attempt = 0
-        // 429 재시도는 URLError transient 재시도와 예산이 따로다 — 두 실패는
-        // 원인이 달라(죽은 소켓 vs. 서버 토큰 고갈) 서로의 시도 횟수를
-        // 잡아먹으면 안 된다. `attempt` 는 첫-시도 타임아웃 판정용으로만 쓴다.
+        var transientRetriesUsed = 0
         var rateLimitRetriesUsed = 0
         while true {
             attempt += 1
@@ -222,10 +247,16 @@ struct Networking {
             if attempt == 1 {
                 attemptRequest.timeoutInterval = firstAttemptIdleTimeout
             }
+            let startedAt = DispatchTime.now()
             do {
                 let (data, response) = try await session.data(for: attemptRequest)
-                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                    throw NetworkError.badResponse(http.statusCode)
+                let status = (response as? HTTPURLResponse)?.statusCode
+                recorder(FetchAttemptOutcome(
+                    url: url, attempt: attempt, prefetch: prefetch,
+                    elapsedMs: Self.elapsedMs(since: startedAt),
+                    status: status, error: nil))
+                if let status, !(200..<300).contains(status) {
+                    throw NetworkError.badResponse(status)
                 }
                 return decodeHTML(data: data, encoding: encoding)
             } catch let NetworkError.badResponse(status)
@@ -237,10 +268,19 @@ struct Networking {
                 try Task.checkCancellation()
                 continue
             } catch {
+                // 응답 없는 실패만 여기서 기록한다 — 위 do 블록이 이미 기록하고
+                // 던진 `badResponse` 는 재기록하면 상태 분포가 두 배가 된다.
+                if !(error is NetworkError) {
+                    recorder(FetchAttemptOutcome(
+                        url: url, attempt: attempt, prefetch: prefetch,
+                        elapsedMs: Self.elapsedMs(since: startedAt),
+                        status: nil, error: error))
+                }
                 let isTransient = (error as? URLError)
                     .map { Self.transientURLErrorCodes.contains($0.code) }
                     ?? false
-                if isTransient && attempt < maxAttempts {
+                if isTransient && transientRetriesUsed < maxTransientRetries {
+                    transientRetriesUsed += 1
                     try? await Task.sleep(for: .milliseconds(150))
                     try Task.checkCancellation()
                     continue
@@ -248,6 +288,13 @@ struct Networking {
                 throw error
             }
         }
+    }
+
+    /// 시도 소요 시간(ms). `DispatchTime` 을 쓰는 이유는 `Date` 와 달리 시스템
+    /// 시계 조정에 영향받지 않아서다 — 백그라운드 복귀 때 시계가 튀면 음수
+    /// 소요가 섞인다.
+    nonisolated static func elapsedMs(since start: DispatchTime) -> Int {
+        Int((DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000)
     }
 
     /// Strict-then-lossy decode shared with the redirect-resolver path that
