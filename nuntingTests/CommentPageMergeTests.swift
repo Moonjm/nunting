@@ -65,6 +65,35 @@ final class CommentPageMergeTests: XCTestCase {
         XCTAssertEqual(merged.map(\.content), ["p1", "p3"])
     }
 
+    // MARK: - 동시 fetch 상한
+
+    /// 댓글 페이지를 전부 동시에 쏘면 rate limit 이 있는 사이트에서 뒷
+    /// 페이지들이 통째로 429 를 맞는다 — 그리고 `testFailedPageIsSkipped`
+    /// 의 실패 흡수 때문에 **에러 없이 조용히 사라진다**(댓글 누락).
+    /// 뽐뿌 실측(2026-08-27): nginx 버스트 ~10, 리필 ~2/s. 12페이지 글이면
+    /// 무제한 fan-out 은 확정적으로 버킷을 넘긴다. 창을 두면 같은 요청이
+    /// 시간에 퍼져 버킷 리필을 탄다.
+    func testFetchesAreCappedAtConcurrencyLimit() async throws {
+        let probe = ConcurrencyProbe()
+        let total = 12
+        let merged = try await Self.parser.mergeCommentPages(
+            total: total, inlinePage: 1, inline: [Self.comment("p1")]
+        ) { page in
+            await probe.enter()
+            try? await Task.sleep(for: .milliseconds(20))
+            await probe.leave()
+            return [Self.comment("p\(page)")]
+        }
+
+        let peak = await probe.peak
+        XCTAssertLessThanOrEqual(
+            peak, CommentPaging.maxConcurrentPageFetches,
+            "동시 fetch 가 상한을 넘음 (peak=\(peak))")
+        // 창을 두는 구현이 페이지를 흘리지 않는지 — 상한만 지키고 뒤
+        // 페이지를 안 쏘면 조용한 댓글 누락을 되레 만든다.
+        XCTAssertEqual(merged.map(\.content), (1...total).map { "p\($0)" })
+    }
+
     func testCancellationRethrowsInsteadOfReturningPartial() async {
         // 페이지 실패 흡수(do/catch)가 CancellationError 까지 삼켜 부분 댓글이
         // 정상 완료처럼 popped 뷰에 붙으면 안 됨 — 취소는 다시 던져야 한다.
@@ -93,5 +122,21 @@ private func mergeRethrowsCancellation() async -> Bool {
         return true
     } catch {
         return false
+    }
+}
+
+/// `mergeCommentPages` 의 동시 실행 수 관측용. actor 라 `@Sendable`
+/// fetchPage 클로저에서 안전하게 갱신된다.
+private actor ConcurrencyProbe {
+    private var current = 0
+    private(set) var peak = 0
+
+    func enter() {
+        current += 1
+        peak = max(peak, current)
+    }
+
+    func leave() {
+        current -= 1
     }
 }

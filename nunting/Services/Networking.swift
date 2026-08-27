@@ -102,6 +102,27 @@ struct Networking {
     /// drops from ~30 s (15+15) to ~23 s (8+15).
     static let firstAttemptIdleTimeout: TimeInterval = 8
 
+    /// `429 Too Many Requests` 재시도 백오프 스케줄 — 길이가 곧 재시도 횟수다
+    /// (기본 2회 → 최대 3시도). 게시판들은 nginx `limit_req` 로 IP 당 토큰
+    /// 버킷을 돌린다: 뽐뿌 `m.ppomppu.co.kr` 실측(2026-08-27)이 버스트 ~10,
+    /// 리필 ~2/s, 거절 후 회복 2~4초였다. 앱은 목록 페이징 + 상세 프리페치
+    /// (`DetailPrefetcher`, 3건 동시) + 댓글 페이지 fan-out 을 같은 호스트로
+    /// 보내므로 평범한 세션에서도 버킷이 마른다 — 그때의 429 는 "이 요청이
+    /// 틀렸다"가 아니라 "몇 백 ms 뒤에 다시 오라"는 신호라 transient 로 다룬다.
+    /// 이걸 영구 실패로 올리면 목록 하단이 "다시 시도" 로 굳고 멀쩡한 글이
+    /// 안 열린다(둘 다 재현된 증상).
+    ///
+    /// 0.5s + 1.5s = 총 2s 대기로 실측 회복창을 덮는다. 재시도가 버킷을 더
+    /// 태우지는 않는다 — `limit_req` 는 거절한 요청에 토큰을 쓰지 않는다.
+    /// URLError transient 재시도(150ms)보다 긴 이유: 저쪽은 죽은 keep-alive
+    /// 연결을 새로 다이얼하는 문제라 즉시 재시도가 맞고, 이쪽은 서버가
+    /// 시간이 지나야 토큰을 채운다.
+    static let rateLimitBackoff: [Duration] = [.milliseconds(500), .milliseconds(1500)]
+
+    /// 재시도 대상 상태 코드. 429 만 — 5xx 는 재시도가 장애를 키우고,
+    /// 4xx 나머지는 재요청해도 같은 답이다.
+    static let rateLimitedStatus = 429
+
     static func fetchHTML(
         url: URL,
         encoding: String.Encoding = .utf8,
@@ -120,7 +141,10 @@ struct Networking {
         /// API 는 XML 로 답한다) 파서가 `BoardParser.acceptHeader(for:)` 로
         /// URL 단위 override 를 내려보낸다.
         accept: String? = nil,
-        session: URLSession = Networking.session
+        session: URLSession = Networking.session,
+        /// 429 백오프 스케줄 override — 테스트 전용 시임(`session:` 과 같은 계약).
+        /// 프로덕션 호출부는 기본값을 쓴다.
+        rateLimitBackoff: [Duration] = Networking.rateLimitBackoff
     ) async throws -> String {
         let retry: @Sendable () async throws -> String = {
             try await fetchHTMLOnce(
@@ -131,7 +155,8 @@ struct Networking {
                 cachePolicy: cachePolicy,
                 referer: referer,
                 accept: accept,
-                session: session
+                session: session,
+                rateLimitBackoff: rateLimitBackoff
             )
         }
         do {
@@ -143,7 +168,8 @@ struct Networking {
                 cachePolicy: cachePolicy,
                 referer: referer,
                 accept: accept,
-                session: session
+                session: session,
+                rateLimitBackoff: rateLimitBackoff
             )
             return try await applyBotCheckGuard(url: url, body: html, retry: retry)
         } catch {
@@ -167,7 +193,8 @@ struct Networking {
         cachePolicy: URLRequest.CachePolicy,
         referer: URL? = nil,
         accept: String? = nil,
-        session: URLSession
+        session: URLSession,
+        rateLimitBackoff: [Duration] = Networking.rateLimitBackoff
     ) async throws -> String {
         var request = URLRequest(url: url)
         request.httpShouldHandleCookies = handlesCookies
@@ -185,6 +212,10 @@ struct Networking {
 
         let maxAttempts = 2
         var attempt = 0
+        // 429 재시도는 URLError transient 재시도와 예산이 따로다 — 두 실패는
+        // 원인이 달라(죽은 소켓 vs. 서버 토큰 고갈) 서로의 시도 횟수를
+        // 잡아먹으면 안 된다. `attempt` 는 첫-시도 타임아웃 판정용으로만 쓴다.
+        var rateLimitRetriesUsed = 0
         while true {
             attempt += 1
             var attemptRequest = request
@@ -197,6 +228,14 @@ struct Networking {
                     throw NetworkError.badResponse(http.statusCode)
                 }
                 return decodeHTML(data: data, encoding: encoding)
+            } catch let NetworkError.badResponse(status)
+                        where status == Self.rateLimitedStatus
+                        && rateLimitRetriesUsed < rateLimitBackoff.count {
+                let delay = rateLimitBackoff[rateLimitRetriesUsed]
+                rateLimitRetriesUsed += 1
+                try? await Task.sleep(for: delay)
+                try Task.checkCancellation()
+                continue
             } catch {
                 let isTransient = (error as? URLError)
                     .map { Self.transientURLErrorCodes.contains($0.code) }

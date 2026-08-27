@@ -136,6 +136,58 @@ final class NetworkingTests: XCTestCase {
         }
     }
 
+    // MARK: - Rate limit (429) retry
+
+    /// 뽐뿌(`m.ppomppu.co.kr`)는 nginx `limit_req` 로 초당 ~2요청·버스트 ~10
+    /// 을 넘기면 즉시 `429` 를 던진다(2026-08-27 실측: 동시 12요청에서 첫
+    /// 거절, 회복은 2~4초). 앱은 목록 페이징·상세·댓글 페이지를 같은 호스트로
+    /// 한꺼번에 쏘므로 정상 세션에서도 버킷이 마른다 — 429 를 영구 실패로
+    /// 올리면 "하단 스크롤 → 다시 시도" / "특정 글만 안 열림"이 된다.
+    /// 짧은 백오프 재시도로 흡수한다.
+    func testFetchHTMLRetriesOn429AndSucceeds() async throws {
+        MockURLProtocol.handlers = [
+            .response(status: 429, body: "<html>429</html>"),
+            .response(status: 200, body: "<html>after-429</html>"),
+        ]
+
+        let html = try await Networking.fetchHTML(
+            url: URL(string: "https://example.com/")!,
+            session: session,
+            rateLimitBackoff: Self.fastBackoff
+        )
+
+        XCTAssertEqual(html, "<html>after-429</html>")
+        XCTAssertEqual(MockURLProtocol.attempts.count, 2)
+    }
+
+    func testFetchHTMLRetries429TwiceBeforeGivingUp() async {
+        // 백오프 스케줄 길이만큼만 재시도하고 마지막 429 를 그대로 던진다 —
+        // 무한 재시도로 rate limit 을 더 태우지 않는다.
+        MockURLProtocol.handlers = [
+            .response(status: 429, body: "<html>429</html>"),
+            .response(status: 429, body: "<html>429</html>"),
+            .response(status: 429, body: "<html>429</html>"),
+        ]
+
+        do {
+            _ = try await Networking.fetchHTML(
+                url: URL(string: "https://example.com/")!,
+                session: session,
+                rateLimitBackoff: Self.fastBackoff
+            )
+            XCTFail("expected failure")
+        } catch let NetworkError.badResponse(code) {
+            XCTAssertEqual(code, 429)
+            XCTAssertEqual(MockURLProtocol.attempts.count, 3, "백오프 2회 = 시도 3회")
+        } catch {
+            XCTFail("expected NetworkError.badResponse, got \(error)")
+        }
+    }
+
+    /// 짧은 백오프 스케줄 — 프로덕션 값(500ms/1500ms)을 그대로 쓰면 테스트가
+    /// 2초씩 잔다. 재시도 **횟수**와 종료 조건만 검증 대상이라 길이는 무관.
+    private static let fastBackoff: [Duration] = [.milliseconds(1), .milliseconds(1)]
+
     // MARK: - Non-retry paths
 
     func testFetchHTMLDoesNotRetryOnHTTPErrorResponse() async {
