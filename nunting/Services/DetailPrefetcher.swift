@@ -38,7 +38,14 @@ final class DetailPrefetcher {
         fetchHTML: @escaping FetchHTML = { url, encoding in
             // prefetch: true — 계측에서 본 요청과 갈라야 한다. 사용자가 기다리는
             // 요청은 아니지만 사이트 rate limit 버킷은 똑같이 태운다.
-            try await Networking.fetchHTML(url: url, encoding: encoding, prefetch: true)
+            //
+            // `rateLimitBackoff: []` — 429 면 재시도 없이 즉시 포기한다. 투기적
+            // 워밍이 사용자가 지금 기다리는 요청의 토큰을 뺏는 건 어느 각도로도
+            // 손해다(실측: 프리페치 3건이 각각 4번 재시도하며 12요청을 태우는
+            // 동안 정작 목록·댓글 요청이 거절당했다). 프리페치는 순수 최적화
+            // 계층이라 실패가 기능을 막지 않는다.
+            try await Networking.fetchHTML(
+                url: url, encoding: encoding, rateLimitBackoff: [], prefetch: true)
         },
         now: @escaping () -> Date = Date.init
     ) {

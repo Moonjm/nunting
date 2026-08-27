@@ -273,6 +273,63 @@ final class NetworkingTests: XCTestCase {
         XCTAssertEqual(spy.outcomes.map(\.status), [500])
     }
 
+    // MARK: - 요청률 게이트
+
+    func testRateLimitedHostPassesThroughPacer() async throws {
+        // 게이트가 fetch 경로에 실제로 물려 있는지 — 뽐뿌 호스트로 capacity(6)를
+        // 넘겨 쏘면 대기가 발생해야 한다. 배선이 빠지면 계측만 남고 429 는
+        // 그대로 난다.
+        let gate = PacerSpy()
+        let pacer = HostRequestPacer(clock: { gate.now }, sleeper: { gate.sleep($0) })
+        MockURLProtocol.handlers = Array(
+            repeating: .response(status: 200, body: "<html>ok</html>"), count: 8)
+
+        for _ in 0..<8 {
+            _ = try await Networking.fetchHTML(
+                url: URL(string: "https://m.ppomppu.co.kr/new/bbs_list.php?id=ppomppu")!,
+                session: session,
+                pacer: pacer)
+        }
+
+        XCTAssertEqual(gate.waits.count, 2, "6건은 즉시, 나머지는 대기")
+    }
+
+    func testUnknownHostIsNotPaced() async throws {
+        // 제한이 관측되지 않은 호스트까지 늦추면 순전한 손해다.
+        let gate = PacerSpy()
+        let pacer = HostRequestPacer(clock: { gate.now }, sleeper: { gate.sleep($0) })
+        MockURLProtocol.handlers = Array(
+            repeating: .response(status: 200, body: "<html>ok</html>"), count: 8)
+
+        for _ in 0..<8 {
+            _ = try await Networking.fetchHTML(
+                url: URL(string: "https://example.com/")!,
+                session: session,
+                pacer: pacer)
+        }
+
+        XCTAssertTrue(gate.waits.isEmpty)
+    }
+
+    func testRetriesAlsoPassThroughPacer() async throws {
+        // 429 재시도야말로 남은 토큰을 태우는 주범이었다 — 재시도가 게이트를
+        // 우회하면 증폭 고리가 그대로 남는다.
+        let gate = PacerSpy()
+        let pacer = HostRequestPacer(clock: { gate.now }, sleeper: { gate.sleep($0) })
+        // 1회 요청이 시도 7회(=capacity 6 초과)를 쓰도록 429 를 6번 준다.
+        MockURLProtocol.handlers = Array(
+            repeating: .response(status: 429, body: "<html>429</html>"), count: 6)
+            + [.response(status: 200, body: "<html>ok</html>")]
+
+        _ = try await Networking.fetchHTML(
+            url: URL(string: "https://m.ppomppu.co.kr/new/bbs_list.php?id=ppomppu")!,
+            session: session,
+            rateLimitBackoff: Array(repeating: .milliseconds(1), count: 6),
+            pacer: pacer)
+
+        XCTAssertEqual(gate.waits.count, 1, "7번째 시도는 게이트에서 대기해야 함")
+    }
+
     /// 짧은 백오프 스케줄 — 프로덕션 값을 그대로 쓰면 테스트가 초 단위로 잔다.
     /// 재시도 **횟수**와 종료 조건만 검증 대상이라 길이는 무관(스케줄 길이
     /// 자체는 `testProductionBackoffScheduleOutlastsMeasuredRecoveryWindow` 가 핀).
@@ -754,5 +811,28 @@ private final class OutcomeSpy: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return storage
+    }
+}
+
+/// 페이서의 가짜 시계 — 요청된 대기만큼 시계를 돌려 실제로 자지 않는다.
+private final class PacerSpy: @unchecked Sendable {
+    private let lock = NSLock()
+    private var seconds: Double = 1_000
+    private var recorded: [Double] = []
+
+    var now: Double {
+        lock.lock(); defer { lock.unlock() }
+        return seconds
+    }
+
+    func sleep(_ duration: Double) {
+        lock.lock(); defer { lock.unlock() }
+        recorded.append(duration)
+        seconds += duration
+    }
+
+    var waits: [Double] {
+        lock.lock(); defer { lock.unlock() }
+        return recorded
     }
 }

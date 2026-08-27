@@ -159,7 +159,9 @@ struct Networking {
         /// 프리페치인지 본 요청인지 못 가른다.
         prefetch: Bool = false,
         /// 시도 단위 계측 싱크. 기본은 실제 텔레메트리, 테스트는 스파이를 넣는다.
-        recorder: FetchAttemptRecorder = Networking.defaultFetchRecorder
+        recorder: FetchAttemptRecorder = Networking.defaultFetchRecorder,
+        /// 요청률 게이트. 테스트는 가짜 시계를 물린 인스턴스를 넣는다.
+        pacer: HostRequestPacer = .shared
     ) async throws -> String {
         let retry: @Sendable () async throws -> String = {
             try await fetchHTMLOnce(
@@ -173,7 +175,8 @@ struct Networking {
                 session: session,
                 rateLimitBackoff: rateLimitBackoff,
                 prefetch: prefetch,
-                recorder: recorder
+                recorder: recorder,
+                pacer: pacer
             )
         }
         do {
@@ -188,7 +191,8 @@ struct Networking {
                 session: session,
                 rateLimitBackoff: rateLimitBackoff,
                 prefetch: prefetch,
-                recorder: recorder
+                recorder: recorder,
+                pacer: pacer
             )
             return try await applyBotCheckGuard(url: url, body: html, retry: retry)
         } catch {
@@ -215,7 +219,8 @@ struct Networking {
         session: URLSession,
         rateLimitBackoff: [Duration] = Networking.rateLimitBackoff,
         prefetch: Bool = false,
-        recorder: FetchAttemptRecorder = Networking.defaultFetchRecorder
+        recorder: FetchAttemptRecorder = Networking.defaultFetchRecorder,
+        pacer: HostRequestPacer = .shared
     ) async throws -> String {
         var request = URLRequest(url: url)
         request.httpShouldHandleCookies = handlesCookies
@@ -243,6 +248,9 @@ struct Networking {
         var rateLimitRetriesUsed = 0
         while true {
             attempt += 1
+            // 재시도도 게이트를 통과한다 — 429 를 맞고 다시 쏘는 요청이야말로
+            // 남은 토큰을 태우는 주범이었다(계측: 429 하나가 요청 4개로 불어남).
+            try await pacer.acquire(site: Site.detect(host: url.host))
             var attemptRequest = request
             if attempt == 1 {
                 attemptRequest.timeoutInterval = firstAttemptIdleTimeout
