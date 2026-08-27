@@ -201,14 +201,19 @@ final class NetworkingTests: XCTestCase {
         XCTAssertEqual(MockURLProtocol.attempts.count, 3)
     }
 
-    /// 백오프 스케줄은 실측 회복창(t=2s 아직 429, t=4s 200)을 **넘겨야** 한다.
-    /// 마지막 시도가 회복 전에 떨어지면 재시도를 넣고도 같은 429 를 그대로
-    /// 사용자에게 돌려준다 — 실기기에서 실제로 그랬다.
-    func testProductionBackoffScheduleOutlastsMeasuredRecoveryWindow() {
-        let total = Networking.rateLimitBackoff.reduce(Duration.zero, +)
-        XCTAssertGreaterThanOrEqual(
-            total, .seconds(4),
-            "마지막 재시도가 실측 회복 시점(4s) 이후여야 함 — 현재 \(total)")
+    /// 백오프 간격은 **서버 토큰 주기 이상**이어야 한다. 그보다 촘촘한 재시도는
+    /// 토큰이 아직 없는 시점을 두드리는 것이라 거의 확정적으로 또 429 고, 그동안
+    /// 사용자는 그대로 기다린다(실기기 로그: 0.5초·1.5초 재시도가 둘 다 429).
+    func testProductionBackoffMatchesServerTokenInterval() throws {
+        let interval = 1 / (try XCTUnwrap(HostRequestPacer.limit(for: .ppomppu)).perSecond)
+        XCTAssertFalse(Networking.rateLimitBackoff.isEmpty)
+        for backoff in Networking.rateLimitBackoff {
+            let seconds = Double(backoff.components.seconds)
+                + Double(backoff.components.attoseconds) / 1e18
+            XCTAssertGreaterThanOrEqual(
+                seconds, interval,
+                "재시도 간격이 서버 토큰 주기(\(interval)s)보다 촘촘함")
+        }
     }
 
     // MARK: - 시도 단위 계측
