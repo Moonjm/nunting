@@ -83,10 +83,27 @@ actor HostRequestPacer {
         self.sleeper = sleeper
     }
 
-    /// 시스템 시계 조정에 영향받지 않는 단조 시계 — 백그라운드 복귀 때 시계가
-    /// 튀면 슬롯이 과거로 밀려 버스트가 통째로 열린다.
+    /// 슬롯 시각의 기준 시계.
+    ///
+    /// 두 성질이 **동시에** 필요하다:
+    /// - 벽시계 조정에 안 흔들려야 한다. `Date()` 를 쓰면 시각 보정 한 번에
+    ///   슬롯이 과거로 밀려 버스트가 통째로 열린다.
+    /// - **기기 슬립 시간을 포함해야 한다.** 서버 버킷은 화면이 꺼져 있는
+    ///   동안에도 채워지므로, 우리 시계만 멈추면 깨어났을 때 "쉰 적 없다"고
+    ///   판단해 이미 지난 슬롯을 계속 기다린다(폰을 다시 들었을 때 첫 목록이
+    ///   몇 초씩 멎는 모습으로 나온다).
+    ///
+    /// 종전의 `DispatchTime.now().uptimeNanoseconds` 는 두 번째를 어겼다.
+    /// man 3 clock_gettime 이 그걸 못박아 둔다 — `CLOCK_UPTIME_RAW` 는
+    /// "does not increment while the system is asleep. The returned value is
+    /// identical to the result of mach_absolute_time()" 이고, `DispatchTime`
+    /// 이 바로 그 `mach_absolute_time()` 기반이다. `CLOCK_MONOTONIC_RAW` 는
+    /// 같은 단조성에 슬립까지 센다(Codex 리뷰 P2).
+    ///
+    /// 이 성질은 단위 테스트로 못 잡는다 — 시뮬레이터를 재우지 못한다. 그래서
+    /// 근거를 여기 남긴다.
     nonisolated static func monotonicSeconds() -> Double {
-        Double(DispatchTime.now().uptimeNanoseconds) / 1_000_000_000
+        Double(clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW)) / 1_000_000_000
     }
 
     /// 이 사이트로 요청을 보내도 되는 시점까지 기다린다. 제한이 없는 사이트는

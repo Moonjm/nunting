@@ -278,6 +278,91 @@ final class NetworkingTests: XCTestCase {
         XCTAssertEqual(spy.outcomes.map(\.status), [500])
     }
 
+    // MARK: - Retry-After
+
+    func testRetryAfterSecondsIsParsed() throws {
+        let response = try XCTUnwrap(Self.response(headers: ["Retry-After": "7"]))
+        XCTAssertEqual(Networking.retryAfter(from: response), .seconds(7))
+    }
+
+    func testRetryAfterHTTPDateIsParsed() throws {
+        // 규격상 delta-seconds 와 HTTP-date 둘 다 온다. 로케일을 안 못박으면
+        // 한국 로케일 기기에서 영문 요일/월 약어 파싱이 깨진다.
+        let future = Date().addingTimeInterval(30)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        let response = try XCTUnwrap(
+            Self.response(headers: ["Retry-After": formatter.string(from: future)]))
+
+        let parsed = try XCTUnwrap(Networking.retryAfter(from: response))
+        let seconds = Double(parsed.components.seconds)
+        XCTAssertEqual(seconds, 30, accuracy: 2)
+    }
+
+    func testRetryAfterInThePastIsZeroNotNil() throws {
+        // "지금 다시 와도 된다" 와 "헤더가 없다" 는 다르다 — 전자는 즉시
+        // 재시도, 후자는 고정 스케줄 폴백이다.
+        let response = try XCTUnwrap(Self.response(headers: ["Retry-After": "0"]))
+        XCTAssertEqual(Networking.retryAfter(from: response), .zero)
+    }
+
+    func testRetryAfterMissingOrGarbageIsNil() throws {
+        let none = try XCTUnwrap(Self.response(headers: [:]))
+        XCTAssertNil(Networking.retryAfter(from: none))
+        let garbage = try XCTUnwrap(Self.response(headers: ["Retry-After": "곧"]))
+        XCTAssertNil(Networking.retryAfter(from: garbage))
+    }
+
+    func testLongRetryAfterSkipsRetriesEntirely() async {
+        // 60초 뒤에 오라는 응답에 3.5초 간격으로 두드려 봐야 확정적으로 또
+        // 429 다. 재시도를 아예 안 하고 즉시 던져 화면(다시 시도 버튼)에 넘긴다.
+        MockURLProtocol.handlers = [
+            .response(status: 429, body: "<html>429</html>",
+                      headers: ["Retry-After": "60"]),
+            .response(status: 200, body: "<html>ok</html>"),
+        ]
+
+        do {
+            _ = try await Networking.fetchHTML(
+                url: URL(string: "https://example.com/")!,
+                session: session,
+                rateLimitBackoff: Self.fastBackoff)
+            XCTFail("expected failure")
+        } catch let NetworkError.badResponse(code) {
+            XCTAssertEqual(code, 429)
+            XCTAssertEqual(
+                MockURLProtocol.attempts.count, 1,
+                "긴 Retry-After 면 재시도하지 않아야 함")
+        } catch {
+            XCTFail("expected NetworkError.badResponse, got \(error)")
+        }
+    }
+
+    func testShortRetryAfterStillRetries() async throws {
+        // 상한 이하면 그 값을 존중하되 재시도는 계속한다.
+        MockURLProtocol.handlers = [
+            .response(status: 429, body: "<html>429</html>",
+                      headers: ["Retry-After": "0"]),
+            .response(status: 200, body: "<html>ok</html>"),
+        ]
+
+        let html = try await Networking.fetchHTML(
+            url: URL(string: "https://example.com/")!,
+            session: session,
+            rateLimitBackoff: Self.fastBackoff)
+
+        XCTAssertEqual(html, "<html>ok</html>")
+        XCTAssertEqual(MockURLProtocol.attempts.count, 2)
+    }
+
+    private static func response(headers: [String: String]) -> HTTPURLResponse? {
+        HTTPURLResponse(
+            url: URL(string: "https://example.com/")!,
+            statusCode: 429, httpVersion: "HTTP/1.1", headerFields: headers)
+    }
+
     // MARK: - 요청률 게이트
 
     func testRateLimitedHostPassesThroughPacer() async throws {

@@ -142,6 +142,46 @@ struct Networking {
     /// 4xx 나머지는 재요청해도 같은 답이다.
     nonisolated static let rateLimitedStatus = 429
 
+    /// 서버가 `Retry-After` 로 지시한 대기를 존중하는 상한.
+    ///
+    /// 지시가 이 값 **이하**면 고정 스케줄 대신 그 값을 쓴다 — 서버가 자기
+    /// 버킷 상태를 우리보다 잘 안다. **초과**하면 재시도하지 않고 즉시
+    /// 던진다: 60초를 기다리라는 응답에 3.5초 간격으로 두 번 두드려 봐야
+    /// 확정적으로 또 429 고(피할 수 있는 실패 — Codex 리뷰 P2), 그렇다고
+    /// 60초를 스피너 뒤에서 자면 사용자에겐 멈춘 앱이다. 그 판단은 화면 쪽
+    /// (다시 시도 버튼)에 넘기는 게 맞다.
+    ///
+    /// 현재 관측된 rate limit 사이트(뽐뿌)는 `Retry-After` 를 **안 보낸다**
+    /// (429 응답 헤더 실측: Server/Date/Content-Type/Content-Length/Connection
+    /// 뿐). 그래서 이 경로는 지금 폴백(고정 스케줄)만 타지만, 헤더를 버리는
+    /// 구현은 다른 사이트가 보내기 시작하면 조용히 틀린 동작을 한다.
+    nonisolated static let rateLimitRetryAfterCap: Duration = .seconds(10)
+
+    /// `Retry-After` 헤더 해석. delta-seconds(정수)와 HTTP-date 둘 다 규격이다.
+    /// 이미 지난 시각이거나 음수면 `.zero`(= 즉시 재시도) — 서버가 "지금 다시
+    /// 와도 된다"고 말한 것이다. 해석 불가면 `nil` 로 폴백에 맡긴다.
+    nonisolated static func retryAfter(from response: HTTPURLResponse) -> Duration? {
+        guard let raw = response.value(forHTTPHeaderField: "Retry-After")?
+            .trimmingCharacters(in: .whitespaces), !raw.isEmpty
+        else { return nil }
+        if let seconds = Int(raw) {
+            return seconds > 0 ? .seconds(seconds) : .zero
+        }
+        guard let date = httpDateFormatter.date(from: raw) else { return nil }
+        let interval = date.timeIntervalSinceNow
+        return interval > 0 ? .seconds(interval) : .zero
+    }
+
+    /// RFC 9110 IMF-fixdate. 로케일/타임존을 못박지 않으면 기기 설정에 따라
+    /// 파싱이 깨진다(한국 로케일에서 영문 요일/월 약어를 못 읽는다).
+    nonisolated private static let httpDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        return formatter
+    }()
+
     static func fetchHTML(
         url: URL,
         encoding: String.Encoding = .utf8,
@@ -256,6 +296,8 @@ struct Networking {
         var attempt = 0
         var transientRetriesUsed = 0
         var rateLimitRetriesUsed = 0
+        /// 직전 시도의 `Retry-After`. 응답에서 캡처해 catch 로 넘긴다.
+        var retryAfterHint: Duration?
         while true {
             attempt += 1
             // 재시도도 게이트를 통과한다 — 429 를 맞고 다시 쏘는 요청이야말로
@@ -268,19 +310,29 @@ struct Networking {
             let startedAt = DispatchTime.now()
             do {
                 let (data, response) = try await session.data(for: attemptRequest)
-                let status = (response as? HTTPURLResponse)?.statusCode
+                let http = response as? HTTPURLResponse
+                let status = http?.statusCode
                 recorder(FetchAttemptOutcome(
                     url: url, attempt: attempt, prefetch: prefetch,
                     elapsedMs: Self.elapsedMs(since: startedAt),
                     status: status, error: nil))
                 if let status, !(200..<300).contains(status) {
+                    // 헤더는 여기서만 볼 수 있다 — 에러로 던지고 나면 사라진다.
+                    retryAfterHint = http.flatMap(Self.retryAfter(from:))
                     throw NetworkError.badResponse(status)
                 }
                 return decodeHTML(data: data, encoding: encoding)
             } catch let NetworkError.badResponse(status)
                         where status == Self.rateLimitedStatus
                         && rateLimitRetriesUsed < rateLimitBackoff.count {
-                let delay = rateLimitBackoff[rateLimitRetriesUsed]
+                let hint = retryAfterHint
+                retryAfterHint = nil
+                if let hint, hint > Self.rateLimitRetryAfterCap {
+                    // 서버가 한참 뒤에 오라고 했다. 그 전에 두드리는 재시도는
+                    // 확정적으로 또 429 다 — 기다림만 늘리고 실패는 그대로다.
+                    throw NetworkError.badResponse(status)
+                }
+                let delay = hint ?? rateLimitBackoff[rateLimitRetriesUsed]
                 rateLimitRetriesUsed += 1
                 try? await Task.sleep(for: delay)
                 try Task.checkCancellation()
