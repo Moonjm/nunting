@@ -157,6 +157,141 @@ final class HostRequestPacerTests: XCTestCase {
         XCTAssertTrue(clock.recordedWaits.isEmpty)
     }
 
+    // MARK: - 취소된 예약 반납
+
+    func testCancelledWaiterReleasesItsSlot() async throws {
+        // 게이트에서 자다 취소된 요청은 **아무것도 보내지 않는다**. 그런데도
+        // 예약을 붙들고 있으면, 보드를 넘긴 뒤의 새 요청이 쓰이지도 않은
+        // 슬롯을 기다린다 — 취소가 여러 건이면 그만큼 곱해진다.
+        let limit = try XCTUnwrap(HostRequestPacer.limit(for: .ppomppu))
+        let capacity = Int(limit.capacity)
+        let interval = 1 / limit.perSecond
+        let clock = FakeClock()
+        // 첫 취소 1건만 던지고 이후는 정상 대기.
+        let failNext = Flag()
+        let pacer = HostRequestPacer(
+            clock: { clock.read() },
+            sleeper: { duration in
+                if failNext.take() { throw CancellationError() }
+                clock.sleep(duration)
+            })
+
+        // 버스트를 다 쓴 뒤 한 건이 대기에 들어가 취소된다.
+        for _ in 0..<capacity { try await pacer.acquire(site: .ppomppu) }
+        failNext.set()
+        do {
+            try await pacer.acquire(site: .ppomppu)
+            XCTFail("expected cancellation")
+        } catch is CancellationError {}
+
+        // 취소된 요청은 나가지 않았으므로 그 슬롯은 비어 있다 — 다음 요청이
+        // 그 자리를 그대로 써야 한다(추가 대기 없이 한 간격만).
+        try await pacer.acquire(site: .ppomppu)
+
+        XCTAssertEqual(clock.recordedWaits.count, 1, "취소분만큼 더 기다리면 안 됨")
+        XCTAssertEqual(clock.recordedWaits.first ?? -1, interval, accuracy: 0.001)
+    }
+
+    func testMultipleCancellationsDoNotStackPhantomDelay() async throws {
+        // 보드 전환 한 번에 목록·댓글 여러 건이 동시에 취소되는 상황.
+        // 반납이 없으면 새 보드의 첫 요청이 취소 건수 x 간격만큼 밀린다.
+        let limit = try XCTUnwrap(HostRequestPacer.limit(for: .ppomppu))
+        let capacity = Int(limit.capacity)
+        let interval = 1 / limit.perSecond
+        let clock = FakeClock()
+        let failNext = Flag()
+        let pacer = HostRequestPacer(
+            clock: { clock.read() },
+            sleeper: { duration in
+                if failNext.take() { throw CancellationError() }
+                clock.sleep(duration)
+            })
+
+        for _ in 0..<capacity { try await pacer.acquire(site: .ppomppu) }
+        for _ in 0..<4 {
+            failNext.set()
+            do {
+                try await pacer.acquire(site: .ppomppu)
+                XCTFail("expected cancellation")
+            } catch is CancellationError {}
+        }
+
+        try await pacer.acquire(site: .ppomppu)
+
+        XCTAssertEqual(
+            clock.recordedWaits.first ?? -1, interval, accuracy: 0.001,
+            "취소 4건이 유령 예약으로 쌓여 다음 요청을 밀면 안 됨")
+    }
+
+    func testReleasedSlotIsReusedWhenLaterReservationsExist() async throws {
+        // 꼬리 되돌리기로는 못 푸는 경우: 취소된 요청 **뒤에 이미 다른 예약이
+        // 붙어** 있으면 `nextSlot` 을 물릴 수 없다(뒷 예약이 자기 시각을 지켜야
+        // 한다). 그 시각은 자유 목록으로 가서 다음 요청이 집어가야 한다.
+        let limit = try XCTUnwrap(HostRequestPacer.limit(for: .ppomppu))
+        let capacity = Int(limit.capacity)
+        let clock = FakeClock()
+        let box = PacerBox()
+        let nested = Flag()
+
+        let pacer = HostRequestPacer(
+            clock: { clock.read() },
+            sleeper: { duration in
+                if nested.take() {
+                    // A 가 자는 사이 B 가 예약을 붙인다 → A 는 더 이상 꼬리가 아니다.
+                    try? await box.pacer?.acquire(site: .ppomppu)
+                    throw CancellationError()
+                }
+                clock.sleep(duration)
+            })
+        box.pacer = pacer
+
+        for _ in 0..<capacity { try await pacer.acquire(site: .ppomppu) }
+        XCTAssertTrue(clock.recordedWaits.isEmpty)
+
+        nested.set()
+        do {
+            try await pacer.acquire(site: .ppomppu)  // A — B 를 끼운 뒤 취소된다
+            XCTFail("expected cancellation")
+        } catch is CancellationError {}
+
+        let waitsBefore = clock.recordedWaits.count  // B 가 잔 것만
+        try await pacer.acquire(site: .ppomppu)      // C — A 가 반납한 시각을 쓴다
+
+        XCTAssertEqual(
+            clock.recordedWaits.count, waitsBefore,
+            "A 가 반납한 슬롯은 이미 지난 시각이라 C 는 기다리지 않아야 함")
+    }
+
+    /// sleeper 클로저 안에서 페이서 자신을 다시 부르기 위한 상자 —
+    /// 클로저가 페이서보다 먼저 만들어져야 해서 직접 캡처가 안 된다.
+    private final class PacerBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: HostRequestPacer?
+
+        var pacer: HostRequestPacer? {
+            get { lock.lock(); defer { lock.unlock() }; return storage }
+            set { lock.lock(); defer { lock.unlock() }; storage = newValue }
+        }
+    }
+
+    /// 한 번만 참을 돌려주는 플래그 — sleeper 클로저가 `@Sendable` 이라
+    /// 캡처 가능한 참조 타입이 필요하다.
+    private final class Flag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var armed = false
+
+        func set() {
+            lock.lock(); defer { lock.unlock() }
+            armed = true
+        }
+
+        func take() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            defer { armed = false }
+            return armed
+        }
+    }
+
     // MARK: - 취소
 
     func testCancellationPropagatesInsteadOfSleeping() async {
