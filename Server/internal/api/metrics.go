@@ -29,7 +29,11 @@ import (
 // "몇 프레임 빠짐" 을 보기 위한 채널. 히치가 있는 구간만 올라온다.
 var validMetricKinds = map[string]bool{
 	"metric": true, "diagnostic": true, "parser": true, "hang": true, "hitch": true,
-	"media": true,
+	// fetch = iOS FetchTelemetry 의 HTML fetch 시도 배치({events:[{ts,ms,host,path,
+	// status?,err?,attempt?,pf?,link?}]}) — 목록/상세/댓글이 실제로 받은 응답을
+	// 남긴다. 429(즉시 거절)와 타임아웃(8s 물림)은 화면엔 똑같이 "다시 시도" 로
+	// 보이지만 대응이 정반대라, 기기 밖에서 가를 채널이 필요했다.
+	"media": true, "fetch": true,
 }
 
 // POST /me/metrics?kind=metric|diagnostic|parser
@@ -93,6 +97,14 @@ const adminMetricsPerKindLimit = 400
 //
 // 잘리는 건 raw 뿐이다 — 400 배치 전부 한 줄 요약으로 남고 집계에도 그대로 들어간다.
 const mediaRawLimit = 3
+
+// fetchRawLimit 표에서 raw JSON 을 펼쳐 싣는 fetch 배치 수(최신순).
+//
+// media 와 같은 이유·같은 값이다. fetch 배치 하나가 HTML 로 ~6KB 라 상한이
+// 없으면 400건에 2.3MB — 지금 페이지 전체 크기와 맞먹고, `mediaRawLimit` 이
+// 막아 둔 8.1MB 시절을 그대로 재현한다(Codex 리뷰 P2). 판정에 쓰는 건 아래
+// "HTML fetch" 집계(429 비율·호스트별)라 배치 원본은 거의 안 펼친다.
+const fetchRawLimit = 3
 
 // GET /admin/metrics?key=<secret>
 //
@@ -250,6 +262,8 @@ type metricsPage struct {
 
 	Media     mediaSectionView
 	mediaAggs mediaAggSet
+	Fetch     fetchSectionView
+	fetchAgg  fetchAgg
 }
 
 // mediaAggSet 은 **설정(cfg)별로** 집계를 나눠 담는다.
@@ -334,6 +348,7 @@ func addFootprint(page *metricsPage, rows []db.FootprintRow) {
 func buildMetricsPage(rows []db.MetricPayloadRow) metricsPage {
 	page := metricsPage{Count: len(rows)}
 	mediaSeen := 0
+	fetchSeen := 0
 	for _, row := range rows {
 		vr := metricsRow{
 			Received: row.ReceivedAt.Local().Format("2006-01-02 15:04"),
@@ -357,6 +372,10 @@ func buildMetricsPage(rows []db.MetricPayloadRow) metricsPage {
 			vr.Summary = summarizeMedia(row.Payload, &page.mediaAggs)
 			mediaSeen++
 			keepRaw = mediaSeen <= mediaRawLimit
+		case "fetch":
+			vr.Summary = summarizeFetch(row.Payload, &page.fetchAgg)
+			fetchSeen++
+			keepRaw = fetchSeen <= fetchRawLimit
 		}
 		if keepRaw {
 			vr.Raw = prettyJSON(row.Payload)
@@ -367,6 +386,7 @@ func buildMetricsPage(rows []db.MetricPayloadRow) metricsPage {
 		page.Rows = append(page.Rows, vr)
 	}
 	page.Media = page.mediaAggs.view()
+	page.Fetch = page.fetchAgg.view()
 	return page
 }
 
@@ -612,6 +632,24 @@ var metricsTemplate = template.Must(template.New("metrics").Parse(`<!doctype htm
 </table>
 {{else}}
 <p class="empty">아직 footprint 샘플이 없어. 앱을 좀 쓰다 백그라운드로 보내면 배치 전송돼.</p>
+{{end}}
+<h2>HTML fetch <span style="color:#999;font-weight:400">({{.Fetch.Events}} 시도{{if .Fetch.Limited}} · 429 {{.Fetch.Limited}} ({{.Fetch.LimitedPct}}){{end}}{{if .Fetch.Hidden}} · 호스트 {{.Fetch.Hidden}}개 생략{{end}})</span></h2>
+{{if .Fetch.Events}}
+<p style="color:#777;font-size:12px">목록/상세/댓글이 실제로 받은 응답. <b>429 는 사이트의 요청률 제한</b>이고 화면엔 "다시 시도" 로만 보여서, 이 표 없이는 타임아웃과 구분되지 않는다. 판정 지표는 <b>429 비율</b>. 재시도(att≥2)와 프리페치 비중이 높으면 예산을 그쪽이 먹고 있는 것이다.</p>
+<table>
+ <tr><th>host</th><th>시도</th><th>200</th><th>429</th><th>429 비율</th><th>실패</th><th>재시도</th><th>프리페치</th><th>p50</th><th>p90</th></tr>
+ {{range .Fetch.Hosts}}
+ <tr>
+  <td class="mono">{{.Host}}</td><td class="mono">{{.Events}}</td><td class="mono">{{.OK}}</td>
+  <td class="mono{{if .Limited}} up{{end}}">{{.Limited}}</td><td class="mono">{{.LimitedPct}}</td>
+  <td class="mono{{if .Failed}} up{{end}}">{{.Failed}}</td>
+  <td class="mono">{{.Retries}}</td><td class="mono">{{.Prefetch}}</td>
+  <td class="mono">{{.P50}}</td><td class="mono">{{.P90}}</td>
+ </tr>
+ {{end}}
+</table>
+{{else}}
+<p class="empty">아직 fetch 이벤트가 없어. 앱에서 목록/글을 좀 열고 백그라운드로 보내면 배치 전송돼.</p>
 {{end}}
 <h2>미디어 로딩 <span style="color:#999;font-weight:400">({{.Media.Events}} events{{if .Media.Fails}} · 실패 {{.Media.Fails}}{{end}}{{if .Media.Hidden}} · 설정 {{.Media.Hidden}}개 생략{{end}})</span></h2>
 {{if .Media.Events}}
@@ -892,6 +930,175 @@ func (a *mediaAgg) view() mediaView {
 		v.Hosts = v.Hosts[:5]
 	}
 	return v
+}
+
+// ---- HTML fetch(kind=fetch) 집계 -------------------------------------------
+//
+// 판정에 쓰는 값은 하나다: **429 비율**. 사이트가 IP 당 요청률을 제한하면
+// 목록/상세/댓글이 조용히 거절당하는데, 화면엔 전부 똑같이 "다시 시도" 로만
+// 보여 기기 안에서는 원인을 못 가른다. 여기서 호스트별로 200/429/실패와
+// 재시도·프리페치 비중을 같이 낸다 — 429 가 남았을 때 "요청을 누가 쓰고
+// 있나"를 바로 짚기 위해서다.
+
+// fetchPayloadJSON iOS FetchTelemetry 배치. 키는 Swift 쪽과 합의.
+type fetchPayloadJSON struct {
+	Events []fetchEventJSON `json:"events"`
+}
+
+// fetchEventJSON 시도 한 건. status 와 attempt 는 포인터 — 0 과 "없음"을
+// 가려야 한다(응답 없는 실패는 status 자체가 없고, attempt 는 1 이면 생략된다).
+type fetchEventJSON struct {
+	Ms      int    `json:"ms"`
+	Host    string `json:"host"`
+	Status  *int   `json:"status"`
+	Err     string `json:"err"`
+	Attempt *int   `json:"attempt"`
+	Pf      *bool  `json:"pf"`
+}
+
+// fetchHostLimit 렌더할 호스트 수 상한. 조용한 호스트까지 전부 늘어놓으면
+// 표가 사이트 수만큼 길어진다 — 건수 상위만 본다.
+const fetchHostLimit = 8
+
+type fetchHostAgg struct {
+	events   int
+	ok       int
+	limited  int
+	failed   int
+	retries  int
+	prefetch int
+	ms       []int
+}
+
+type fetchAgg struct {
+	events int
+	order  []string
+	byHost map[string]*fetchHostAgg
+}
+
+func (a *fetchAgg) add(e fetchEventJSON) {
+	if a.byHost == nil {
+		a.byHost = map[string]*fetchHostAgg{}
+	}
+	host := e.Host
+	if host == "" {
+		host = "?"
+	}
+	agg, ok := a.byHost[host]
+	if !ok {
+		agg = &fetchHostAgg{}
+		a.byHost[host] = agg
+		a.order = append(a.order, host)
+	}
+	a.events++
+	agg.events++
+	agg.ms = append(agg.ms, e.Ms)
+	switch {
+	case e.Status != nil && *e.Status == 429:
+		agg.limited++
+	case e.Status != nil && *e.Status >= 200 && *e.Status < 300:
+		agg.ok++
+	default:
+		agg.failed++
+	}
+	if e.Attempt != nil && *e.Attempt > 1 {
+		agg.retries++
+	}
+	if e.Pf != nil && *e.Pf {
+		agg.prefetch++
+	}
+}
+
+type fetchHostView struct {
+	Host                                           string
+	Events, OK, Limited, Failed, Retries, Prefetch int
+	LimitedPct                                     string
+	P50, P90                                       string
+}
+
+type fetchSectionView struct {
+	Events     int
+	Limited    int
+	LimitedPct string
+	Hidden     int
+	Hosts      []fetchHostView
+}
+
+func (a *fetchAgg) view() fetchSectionView {
+	v := fetchSectionView{Events: a.events}
+	hosts := append([]string(nil), a.order...)
+	sort.SliceStable(hosts, func(i, j int) bool {
+		return a.byHost[hosts[i]].events > a.byHost[hosts[j]].events
+	})
+	// 섹션 합계는 **생략된 호스트까지** 센다. 자르고 나서 더하면 429 를
+	// 표시된 호스트에서만 모으면서 분모는 전체 시도 수라 비율이 낮게 나오고,
+	// 429 가 전부 생략된 호스트에 있으면 헤더에서 429 가 통째로 사라진다
+	// (템플릿이 `{{if .Fetch.Limited}}` 로 감싸므로). 판정 지표가 바로 그
+	// 비율이라 이 오차는 결론을 뒤집는다 — Codex 리뷰 P2.
+	for _, host := range hosts {
+		v.Limited += a.byHost[host].limited
+	}
+	v.LimitedPct = pctLabel(v.Limited, v.Events)
+
+	// 자르는 건 렌더 목록뿐이다.
+	if len(hosts) > fetchHostLimit {
+		v.Hidden = len(hosts) - fetchHostLimit
+		hosts = hosts[:fetchHostLimit]
+	}
+	for _, host := range hosts {
+		agg := a.byHost[host]
+		v.Hosts = append(v.Hosts, fetchHostView{
+			Host:       host,
+			Events:     agg.events,
+			OK:         agg.ok,
+			Limited:    agg.limited,
+			Failed:     agg.failed,
+			Retries:    agg.retries,
+			Prefetch:   agg.prefetch,
+			LimitedPct: pctLabel(agg.limited, agg.events),
+			P50:        msLabel(percentile(agg.ms, 50)),
+			P90:        msLabel(percentile(agg.ms, 90)),
+		})
+	}
+	return v
+}
+
+// pctLabel 정수 퍼센트. 분모 0 이면 빈 문자열 — "0%" 로 찍으면 데이터가 없는
+// 것과 정말 0 인 것이 구분되지 않는다.
+func pctLabel(part, total int) string {
+	if total <= 0 {
+		return ""
+	}
+	return strconv.Itoa(part*100/total) + "%"
+}
+
+// summarizeFetch 배치 한 건의 행 요약 + 누적. 행 요약엔 이 배치의 상태 분포만
+// 싣는다(호스트별 분포는 아래 fetch 섹션).
+func summarizeFetch(payload string, agg *fetchAgg) string {
+	var p fetchPayloadJSON
+	if err := json.Unmarshal([]byte(payload), &p); err != nil || len(p.Events) == 0 {
+		return ""
+	}
+	ok, limited, failed := 0, 0, 0
+	for _, e := range p.Events {
+		agg.add(e)
+		switch {
+		case e.Status != nil && *e.Status == 429:
+			limited++
+		case e.Status != nil && *e.Status >= 200 && *e.Status < 300:
+			ok++
+		default:
+			failed++
+		}
+	}
+	s := "fetch " + strconv.Itoa(len(p.Events)) + "건 · 200:" + strconv.Itoa(ok)
+	if limited > 0 {
+		s += " · 429:" + strconv.Itoa(limited)
+	}
+	if failed > 0 {
+		s += " · 실패:" + strconv.Itoa(failed)
+	}
+	return s
 }
 
 // summarizeMedia 배치 한 건의 행 요약 + 누적. 행 요약은 "이 배치가 무슨 상황이었나"를

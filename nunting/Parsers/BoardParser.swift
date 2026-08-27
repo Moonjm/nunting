@@ -18,6 +18,28 @@ import SwiftSoup
 // regression net: `nuntingTests/ParserDispatchTests.swift` 가 `any BoardParser`
 // existential 로 fetchAllComments 를 호출해 witness binding 이 살아있는지 검증.
 
+/// 댓글 페이지 병렬 fetch 정책. `BoardParser` 는 protocol 이라 stored static
+/// 을 못 담아 별도 네임스페이스로 뺀다.
+public enum CommentPaging {
+    /// `mergeCommentPages` 가 동시에 띄우는 페이지 fetch 상한.
+    ///
+    /// 종전엔 상한이 없어 total 페이지 전부를 한 프레임에 쐈다. 게시판들은
+    /// nginx `limit_req` 로 IP 당 토큰 버킷을 돌리는데(뽐뿌 실측 2026-08-27:
+    /// 버스트 ~10, 리필 ~2/s), 댓글 12페이지짜리 인기글 하나면 상세 본문
+    /// + 댓글 1페이지까지 합쳐 14요청이 순간에 몰려 버킷을 확정적으로
+    /// 넘긴다. 그렇게 거절된 페이지는 아래 페이지 단위 실패 흡수에 걸려
+    /// **에러 없이 조용히 사라진다** — 사용자에겐 "댓글이 몇 개 빈 글".
+    ///
+    /// 3 인 이유: 같은 요청 수를 시간에 퍼뜨려 버킷 리필을 타게 하면서도
+    /// 페이지 많은 글의 댓글 완성이 눈에 띄게 느려지지 않는 지점. 이걸
+    /// 넘겨 거절되는 잔여분은 `Networking.rateLimitBackoff` 재시도가 받는다
+    /// — 두 장치는 세트다(창만 두면 여전히 리필보다 빠르고, 재시도만
+    /// 두면 매 글마다 2초씩 백오프를 문다).
+    /// `nonisolated`: 이 타겟의 기본 격리가 MainActor 라 그냥 두면 비격리인
+    /// `mergeCommentPages` 에서 못 읽는다(`Networking` 의 static 들과 같은 이유).
+    public nonisolated static let maxConcurrentPageFetches = 3
+}
+
 public protocol BoardParser: Sendable {
     nonisolated var site: Site { get }
     nonisolated func parseList(html: String, board: Board) throws -> [Post]
@@ -136,18 +158,34 @@ extension BoardParser {
     ) async throws -> [PostComment] {
         guard total > 1 else { return inline }
         var pageMap: [Int: [PostComment]] = [inlinePage: inline]
+        let pending = (1...total).filter { $0 != inlinePage }
+        // 페이지 단위 실패 흡수 — group 이 통째로 취소되지 않게 여기서 삼킨다
+        // (아래 `checkCancellation` 이 취소만 따로 복원). 창 채우기와 리필에서
+        // 같은 본문을 쓰므로 클로저로 한 번만 정의.
+        let fetch: @Sendable (Int) async -> (Int, [PostComment]?) = { page in
+            do {
+                return (page, try await fetchPage(page))
+            } catch {
+                return (page, nil)
+            }
+        }
         await withTaskGroup(of: (Int, [PostComment]?).self) { group in
-            for page in 1...total where page != inlinePage {
-                group.addTask {
-                    do {
-                        return (page, try await fetchPage(page))
-                    } catch {
-                        return (page, nil)
-                    }
-                }
+            // 슬라이딩 윈도우: 상한만큼 먼저 띄우고, 한 건 끝날 때마다 다음
+            // 페이지를 채운다. 전부 한꺼번에 addTask 하면 group 은 상한 없이
+            // 동시에 실행하므로 상한이 성립하지 않는다.
+            var issued = 0
+            while issued < min(CommentPaging.maxConcurrentPageFetches, pending.count) {
+                let page = pending[issued]
+                issued += 1
+                group.addTask { await fetch(page) }
             }
             for await (page, comments) in group {
                 if let comments { pageMap[page] = comments }
+                if issued < pending.count {
+                    let next = pending[issued]
+                    issued += 1
+                    group.addTask { await fetch(next) }
+                }
             }
         }
         // 취소는 페이지 실패가 아니다 — child task 가 CancellationError 를

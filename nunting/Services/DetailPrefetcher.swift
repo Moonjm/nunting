@@ -36,7 +36,16 @@ final class DetailPrefetcher {
         capacity: Int = 10,
         ttl: TimeInterval = 180,
         fetchHTML: @escaping FetchHTML = { url, encoding in
-            try await Networking.fetchHTML(url: url, encoding: encoding)
+            // prefetch: true — 계측에서 본 요청과 갈라야 한다. 사용자가 기다리는
+            // 요청은 아니지만 사이트 rate limit 버킷은 똑같이 태운다.
+            //
+            // `rateLimitBackoff: []` — 429 면 재시도 없이 즉시 포기한다. 투기적
+            // 워밍이 사용자가 지금 기다리는 요청의 토큰을 뺏는 건 어느 각도로도
+            // 손해다(실측: 프리페치 3건이 각각 4번 재시도하며 12요청을 태우는
+            // 동안 정작 목록·댓글 요청이 거절당했다). 프리페치는 순수 최적화
+            // 계층이라 실패가 기능을 막지 않는다.
+            try await Networking.fetchHTML(
+                url: url, encoding: encoding, rateLimitBackoff: [], prefetch: true)
         },
         now: @escaping () -> Date = Date.init
     ) {
@@ -52,6 +61,12 @@ final class DetailPrefetcher {
     func prefetch(posts: [Post], limit: Int = 3) async {
         let eligible = posts
             .filter { $0.site != .aagag }
+            // 요청률 제한이 있는 사이트는 제외 — 투기적 워밍 3건이 사용자가
+            // 지금 쓸 예산을 통째로 먹는다. 실측(2026-08-27) 뽐뿌의 지속
+            // 허용치는 초당 1건에도 못 미쳐서, 프리페치 3건이면 그 다음 목록
+            // 페이지가 몇 초를 기다린다 — RTT 를 아끼려던 최적화가 정확히
+            // 반대 효과를 낸다. aagag 제외와 같은 성격의 배제.
+            .filter { HostRequestPacer.limit(for: $0.site) == nil }
             .filter { entries[$0.id] == nil && !inFlight.contains($0.id) }
             .prefix(limit)
         guard !eligible.isEmpty else { return }

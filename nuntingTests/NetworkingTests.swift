@@ -136,6 +136,298 @@ final class NetworkingTests: XCTestCase {
         }
     }
 
+    // MARK: - Rate limit (429) retry
+
+    /// 뽐뿌(`m.ppomppu.co.kr`)는 nginx `limit_req` 로 초당 ~2요청·버스트 ~10
+    /// 을 넘기면 즉시 `429` 를 던진다(2026-08-27 실측: 동시 12요청에서 첫
+    /// 거절, 회복은 2~4초). 앱은 목록 페이징·상세·댓글 페이지를 같은 호스트로
+    /// 한꺼번에 쏘므로 정상 세션에서도 버킷이 마른다 — 429 를 영구 실패로
+    /// 올리면 "하단 스크롤 → 다시 시도" / "특정 글만 안 열림"이 된다.
+    /// 짧은 백오프 재시도로 흡수한다.
+    func testFetchHTMLRetriesOn429AndSucceeds() async throws {
+        MockURLProtocol.handlers = [
+            .response(status: 429, body: "<html>429</html>"),
+            .response(status: 200, body: "<html>after-429</html>"),
+        ]
+
+        let html = try await Networking.fetchHTML(
+            url: URL(string: "https://example.com/")!,
+            session: session,
+            rateLimitBackoff: Self.fastBackoff
+        )
+
+        XCTAssertEqual(html, "<html>after-429</html>")
+        XCTAssertEqual(MockURLProtocol.attempts.count, 2)
+    }
+
+    func testFetchHTMLRetries429TwiceBeforeGivingUp() async {
+        // 백오프 스케줄 길이만큼만 재시도하고 마지막 429 를 그대로 던진다 —
+        // 무한 재시도로 rate limit 을 더 태우지 않는다.
+        MockURLProtocol.handlers = Array(
+            repeating: .response(status: 429, body: "<html>429</html>"), count: 4)
+
+        do {
+            _ = try await Networking.fetchHTML(
+                url: URL(string: "https://example.com/")!,
+                session: session,
+                rateLimitBackoff: Self.fastBackoff
+            )
+            XCTFail("expected failure")
+        } catch let NetworkError.badResponse(code) {
+            XCTAssertEqual(code, 429)
+            XCTAssertEqual(MockURLProtocol.attempts.count, 3, "백오프 2회 = 시도 3회")
+        } catch {
+            XCTFail("expected NetworkError.badResponse, got \(error)")
+        }
+    }
+
+    /// 429 재시도 예산과 transient 재시도 예산은 서로를 잡아먹지 않아야 한다.
+    /// 공유 `attempt` 로 판정하던 판에서는 "429 → 연결 끊김" 순서일 때 두 번째
+    /// 실패가 이미 예산을 다 쓴 것으로 읽혀 약속한 재다이얼이 사라졌다.
+    func testTransientRetryStillAvailableAfter429() async throws {
+        MockURLProtocol.handlers = [
+            .response(status: 429, body: "<html>429</html>"),
+            .failure(URLError(.networkConnectionLost)),
+            .response(status: 200, body: "<html>ok</html>"),
+        ]
+
+        let html = try await Networking.fetchHTML(
+            url: URL(string: "https://example.com/")!,
+            session: session,
+            rateLimitBackoff: Self.fastBackoff
+        )
+
+        XCTAssertEqual(html, "<html>ok</html>")
+        XCTAssertEqual(MockURLProtocol.attempts.count, 3)
+    }
+
+    /// 백오프 간격은 **서버 토큰 주기 이상**이어야 한다. 그보다 촘촘한 재시도는
+    /// 토큰이 아직 없는 시점을 두드리는 것이라 거의 확정적으로 또 429 고, 그동안
+    /// 사용자는 그대로 기다린다(실기기 로그: 0.5초·1.5초 재시도가 둘 다 429).
+    func testProductionBackoffMatchesServerTokenInterval() throws {
+        let interval = 1 / (try XCTUnwrap(HostRequestPacer.limit(for: .ppomppu)).perSecond)
+        XCTAssertFalse(Networking.rateLimitBackoff.isEmpty)
+        for backoff in Networking.rateLimitBackoff {
+            let seconds = Double(backoff.components.seconds)
+                + Double(backoff.components.attoseconds) / 1e18
+            XCTAssertGreaterThanOrEqual(
+                seconds, interval,
+                "재시도 간격이 서버 토큰 주기(\(interval)s)보다 촘촘함")
+        }
+    }
+
+    // MARK: - 시도 단위 계측
+
+    func testRecordsOneOutcomePerAttemptWithStatuses() async throws {
+        // 429 → 200 한 요청이 시도 2건으로 남아야 "재시도가 실제로 먹혔나"를
+        // 사후에 판정할 수 있다. 요청 단위로만 남기면 흡수된 429 가 안 보인다.
+        let spy = OutcomeSpy()
+        MockURLProtocol.handlers = [
+            .response(status: 429, body: "<html>429</html>"),
+            .response(status: 200, body: "<html>ok</html>"),
+        ]
+
+        _ = try await Networking.fetchHTML(
+            url: URL(string: "https://example.com/board")!,
+            session: session,
+            rateLimitBackoff: Self.fastBackoff,
+            recorder: { spy.append($0) }
+        )
+
+        let outcomes = spy.outcomes
+        XCTAssertEqual(outcomes.map(\.status), [429, 200])
+        XCTAssertEqual(outcomes.map(\.attempt), [1, 2])
+        XCTAssertTrue(outcomes.allSatisfy { $0.error == nil })
+    }
+
+    func testRecordsTransportFailureOnceWithoutStatus() async {
+        // 응답이 없는 실패(타임아웃 등)는 status 없이 err 로 남아야 하고,
+        // 같은 시도가 두 번 실리면 안 된다(위 do 블록과 catch 의 이중 기록).
+        let spy = OutcomeSpy()
+        MockURLProtocol.handlers = [
+            .failure(URLError(.timedOut)),
+            .failure(URLError(.timedOut)),
+        ]
+
+        _ = try? await Networking.fetchHTML(
+            url: URL(string: "https://example.com/board")!,
+            session: session,
+            rateLimitBackoff: Self.fastBackoff,
+            recorder: { spy.append($0) }
+        )
+
+        let outcomes = spy.outcomes
+        XCTAssertEqual(outcomes.count, 2, "시도 2회 = 이벤트 2건")
+        XCTAssertTrue(outcomes.allSatisfy { $0.status == nil })
+        XCTAssertEqual(
+            outcomes.compactMap { ($0.error as? URLError)?.code }, [.timedOut, .timedOut])
+    }
+
+    func testHTTPErrorStatusIsRecordedOnlyOnce() async {
+        // 500 은 do 블록이 기록하고 던진다 — catch 가 다시 실으면 상태 분포가
+        // 두 배가 된다.
+        let spy = OutcomeSpy()
+        MockURLProtocol.handlers = [.response(status: 500, body: "<html>boom</html>")]
+
+        _ = try? await Networking.fetchHTML(
+            url: URL(string: "https://example.com/board")!,
+            session: session,
+            recorder: { spy.append($0) }
+        )
+
+        XCTAssertEqual(spy.outcomes.map(\.status), [500])
+    }
+
+    // MARK: - Retry-After
+
+    func testRetryAfterSecondsIsParsed() throws {
+        let response = try XCTUnwrap(Self.response(headers: ["Retry-After": "7"]))
+        XCTAssertEqual(Networking.retryAfter(from: response), .seconds(7))
+    }
+
+    func testRetryAfterHTTPDateIsParsed() throws {
+        // 규격상 delta-seconds 와 HTTP-date 둘 다 온다. 로케일을 안 못박으면
+        // 한국 로케일 기기에서 영문 요일/월 약어 파싱이 깨진다.
+        let future = Date().addingTimeInterval(30)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        let response = try XCTUnwrap(
+            Self.response(headers: ["Retry-After": formatter.string(from: future)]))
+
+        let parsed = try XCTUnwrap(Networking.retryAfter(from: response))
+        let seconds = Double(parsed.components.seconds)
+        XCTAssertEqual(seconds, 30, accuracy: 2)
+    }
+
+    func testRetryAfterInThePastIsZeroNotNil() throws {
+        // "지금 다시 와도 된다" 와 "헤더가 없다" 는 다르다 — 전자는 즉시
+        // 재시도, 후자는 고정 스케줄 폴백이다.
+        let response = try XCTUnwrap(Self.response(headers: ["Retry-After": "0"]))
+        XCTAssertEqual(Networking.retryAfter(from: response), .zero)
+    }
+
+    func testRetryAfterMissingOrGarbageIsNil() throws {
+        let none = try XCTUnwrap(Self.response(headers: [:]))
+        XCTAssertNil(Networking.retryAfter(from: none))
+        let garbage = try XCTUnwrap(Self.response(headers: ["Retry-After": "곧"]))
+        XCTAssertNil(Networking.retryAfter(from: garbage))
+    }
+
+    func testLongRetryAfterSkipsRetriesEntirely() async {
+        // 60초 뒤에 오라는 응답에 3.5초 간격으로 두드려 봐야 확정적으로 또
+        // 429 다. 재시도를 아예 안 하고 즉시 던져 화면(다시 시도 버튼)에 넘긴다.
+        MockURLProtocol.handlers = [
+            .response(status: 429, body: "<html>429</html>",
+                      headers: ["Retry-After": "60"]),
+            .response(status: 200, body: "<html>ok</html>"),
+        ]
+
+        do {
+            _ = try await Networking.fetchHTML(
+                url: URL(string: "https://example.com/")!,
+                session: session,
+                rateLimitBackoff: Self.fastBackoff)
+            XCTFail("expected failure")
+        } catch let NetworkError.badResponse(code) {
+            XCTAssertEqual(code, 429)
+            XCTAssertEqual(
+                MockURLProtocol.attempts.count, 1,
+                "긴 Retry-After 면 재시도하지 않아야 함")
+        } catch {
+            XCTFail("expected NetworkError.badResponse, got \(error)")
+        }
+    }
+
+    func testShortRetryAfterStillRetries() async throws {
+        // 상한 이하면 그 값을 존중하되 재시도는 계속한다.
+        MockURLProtocol.handlers = [
+            .response(status: 429, body: "<html>429</html>",
+                      headers: ["Retry-After": "0"]),
+            .response(status: 200, body: "<html>ok</html>"),
+        ]
+
+        let html = try await Networking.fetchHTML(
+            url: URL(string: "https://example.com/")!,
+            session: session,
+            rateLimitBackoff: Self.fastBackoff)
+
+        XCTAssertEqual(html, "<html>ok</html>")
+        XCTAssertEqual(MockURLProtocol.attempts.count, 2)
+    }
+
+    private static func response(headers: [String: String]) -> HTTPURLResponse? {
+        HTTPURLResponse(
+            url: URL(string: "https://example.com/")!,
+            statusCode: 429, httpVersion: "HTTP/1.1", headerFields: headers)
+    }
+
+    // MARK: - 요청률 게이트
+
+    func testRateLimitedHostPassesThroughPacer() async throws {
+        // 게이트가 fetch 경로에 실제로 물려 있는지 — 뽐뿌 호스트로 capacity(6)를
+        // 넘겨 쏘면 대기가 발생해야 한다. 배선이 빠지면 계측만 남고 429 는
+        // 그대로 난다.
+        let gate = PacerSpy()
+        let pacer = HostRequestPacer(clock: { gate.now }, sleeper: { gate.sleep($0) })
+        let capacity = Int(try XCTUnwrap(HostRequestPacer.limit(for: .ppomppu)).capacity)
+        let total = capacity + 2
+        MockURLProtocol.handlers = Array(
+            repeating: .response(status: 200, body: "<html>ok</html>"), count: total)
+
+        for _ in 0..<total {
+            _ = try await Networking.fetchHTML(
+                url: URL(string: "https://m.ppomppu.co.kr/new/bbs_list.php?id=ppomppu")!,
+                session: session,
+                pacer: pacer)
+        }
+
+        XCTAssertEqual(gate.waits.count, 2, "capacity 까지는 즉시, 나머지는 대기")
+    }
+
+    func testUnknownHostIsNotPaced() async throws {
+        // 제한이 관측되지 않은 호스트까지 늦추면 순전한 손해다.
+        let gate = PacerSpy()
+        let pacer = HostRequestPacer(clock: { gate.now }, sleeper: { gate.sleep($0) })
+        MockURLProtocol.handlers = Array(
+            repeating: .response(status: 200, body: "<html>ok</html>"), count: 20)
+
+        for _ in 0..<20 {
+            _ = try await Networking.fetchHTML(
+                url: URL(string: "https://example.com/")!,
+                session: session,
+                pacer: pacer)
+        }
+
+        XCTAssertTrue(gate.waits.isEmpty)
+    }
+
+    func testRetriesAlsoPassThroughPacer() async throws {
+        // 429 재시도야말로 남은 토큰을 태우는 주범이었다 — 재시도가 게이트를
+        // 우회하면 증폭 고리가 그대로 남는다.
+        let gate = PacerSpy()
+        let pacer = HostRequestPacer(clock: { gate.now }, sleeper: { gate.sleep($0) })
+        // 1회 요청이 capacity + 1 회 시도하도록 429 를 capacity 번 준다.
+        let capacity = Int(try XCTUnwrap(HostRequestPacer.limit(for: .ppomppu)).capacity)
+        MockURLProtocol.handlers = Array(
+            repeating: .response(status: 429, body: "<html>429</html>"), count: capacity)
+            + [.response(status: 200, body: "<html>ok</html>")]
+
+        _ = try await Networking.fetchHTML(
+            url: URL(string: "https://m.ppomppu.co.kr/new/bbs_list.php?id=ppomppu")!,
+            session: session,
+            rateLimitBackoff: Array(repeating: .milliseconds(1), count: capacity),
+            pacer: pacer)
+
+        XCTAssertEqual(gate.waits.count, 1, "capacity 를 넘긴 시도는 게이트에서 대기해야 함")
+    }
+
+    /// 짧은 백오프 스케줄 — 프로덕션 값을 그대로 쓰면 테스트가 초 단위로 잔다.
+    /// 재시도 **횟수**와 종료 조건만 검증 대상이라 길이는 무관(스케줄 길이
+    /// 자체는 `testProductionBackoffScheduleOutlastsMeasuredRecoveryWindow` 가 핀).
+    private static let fastBackoff: [Duration] = [.milliseconds(1), .milliseconds(1)]
+
     // MARK: - Non-retry paths
 
     func testFetchHTMLDoesNotRetryOnHTTPErrorResponse() async {
@@ -594,4 +886,46 @@ final class MockURLProtocol: URLProtocol {
     /// its response asynchronously (e.g. simulated slow network), this
     /// will need to cancel that timer.
     override func stopLoading() {}
+}
+
+/// `recorder` 시임이 받은 결과를 모으는 스파이. `@Sendable` 클로저에서 갱신되므로
+/// 락으로 감싼다 — 클래스 필드에 그냥 쓰면 Swift 6 sending 검사에 걸린다.
+private final class OutcomeSpy: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [FetchAttemptOutcome] = []
+
+    func append(_ outcome: FetchAttemptOutcome) {
+        lock.lock()
+        defer { lock.unlock() }
+        storage.append(outcome)
+    }
+
+    var outcomes: [FetchAttemptOutcome] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+}
+
+/// 페이서의 가짜 시계 — 요청된 대기만큼 시계를 돌려 실제로 자지 않는다.
+private final class PacerSpy: @unchecked Sendable {
+    private let lock = NSLock()
+    private var seconds: Double = 1_000
+    private var recorded: [Double] = []
+
+    var now: Double {
+        lock.lock(); defer { lock.unlock() }
+        return seconds
+    }
+
+    func sleep(_ duration: Double) {
+        lock.lock(); defer { lock.unlock() }
+        recorded.append(duration)
+        seconds += duration
+    }
+
+    var waits: [Double] {
+        lock.lock(); defer { lock.unlock() }
+        return recorded
+    }
 }

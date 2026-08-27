@@ -226,6 +226,15 @@ final class AlertSubscriptionService {
         _ = try await post("/me/metrics?kind=media", jsonBody: body)
     }
 
+    /// HTML fetch 시도 배치를 metrics 채널(kind=fetch)로 전송. `FetchTelemetry`
+    /// 가 버퍼가 차거나 백그라운드 진입 시 호출한다. 목록/상세/댓글이 실제로
+    /// 무엇을 받았는지(429·타임아웃·소요)를 남기는 유일한 채널 — 화면엔 전부
+    /// 똑같이 "다시 시도" 로만 보인다.
+    func reportFetches(_ events: [FetchEventDTO]) async throws {
+        let body = try JSONEncoder().encode(FetchBatch(events: events))
+        _ = try await post("/me/metrics?kind=fetch", jsonBody: body)
+    }
+
     /// 메모리 footprint 샘플 배치를 서버로 전송. FootprintLogger 가 버퍼가 차거나
     /// 백그라운드/메모리경고 시 호출. 서버는 저장하고 admin 뷰가 타임라인으로 렌더.
     func reportFootprint(_ samples: [FootprintSampleDTO]) async throws {
