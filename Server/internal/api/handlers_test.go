@@ -1073,3 +1073,55 @@ func TestAdminMetricsSplitsPrefetchAndDisplayWait(t *testing.T) {
 		}
 	}
 }
+
+// TestAdminMetricsLimitsFetchRawAndAggregates fetch 배치의 raw 는 최신 몇 건만
+// 펼치고, 집계는 전 건을 먹는다. 상한이 없으면 배치 하나가 HTML 로 ~6KB 라
+// 400건에 2.3MB — mediaRawLimit 이 막아 둔 페이지 비대화를 그대로 재현한다.
+func TestAdminMetricsLimitsFetchRawAndAggregates(t *testing.T) {
+	t.Setenv("NUNTING_ADMIN_KEY", "s3cret")
+	store := dbtest.New(t)
+	defer store.Close()
+	srv := httptest.NewServer(NewRouter(store))
+	defer srv.Close()
+
+	if err := store.UpsertUser(t.Context(), "nnt_x"); err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
+	// path 는 집계에 안 쓰이고 raw 에만 나타난다 — 배치별 표식으로 쓴다.
+	// 오래된 것부터 넣으므로 batch5 가 최신이다. 배치마다 200 1건 + 429 1건.
+	for i := 1; i <= fetchRawLimit+2; i++ {
+		payload := fmt.Sprintf(
+			`{"events":[`+
+				`{"ts":1753000000,"ms":100,"host":"m.ppomppu.co.kr","path":"/batch%d","status":200},`+
+				`{"ts":1753000001,"ms":10,"host":"m.ppomppu.co.kr","path":"/batch%d","status":429,"attempt":2}]}`,
+			i, i)
+		if err := store.InsertMetricPayload(t.Context(), "nnt_x", "fetch", payload); err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+	}
+
+	code, body := do(t, "GET", srv.URL+"/admin/metrics?key=s3cret", "", "")
+	if code != 200 {
+		t.Fatalf("admin: want 200, got %d", code)
+	}
+	for _, want := range []string{"/batch5", "/batch4", "/batch3"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("최신 %d건은 raw 가 남아야 한다: %q 없음", fetchRawLimit, want)
+		}
+	}
+	for _, gone := range []string{"/batch2", "/batch1"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("오래된 배치의 raw 는 안 실려야 한다: %q 남음", gone)
+		}
+	}
+	// 집계는 5건 전부 먹는다 — 10 시도 중 429 5건 = 50%.
+	for _, want := range []string{"HTML fetch", "m.ppomppu.co.kr", "50%"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("fetch 집계에 %q 가 있어야 한다", want)
+		}
+	}
+	// 행 요약은 잘린 배치에도 남는다.
+	if strings.Count(body, "fetch 2건") != fetchRawLimit+2 {
+		t.Errorf("행 요약은 전 배치에 남아야 한다: %d개", strings.Count(body, "fetch 2건"))
+	}
+}

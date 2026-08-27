@@ -101,8 +101,26 @@ final class FetchTelemetry {
     }
 
     /// 백그라운드 진입: 임계 미만이어도 잔량을 내보낸다(안 그러면 세션 끝의
-    /// 이벤트가 증발한다 — `MediaLoadTelemetry` 와 동일).
-    func onBackground() { flush() }
+    /// 이벤트가 증발한다).
+    ///
+    /// **두 번 비운다.** 이벤트는 `Task { @MainActor in ... }` 로 건너와 버퍼에
+    /// 담기는데, 백그라운드 직전에 끝난 시도의 hop 은 이 메서드가 도는 시점에
+    /// 아직 큐에 남아 있을 수 있다. 그러면 그 이벤트는 유일한 flush 를 놓치고
+    /// 임계 미만인 버퍼에 얹힌 채 프로세스가 정지한다 — 하필 "마지막에 무엇이
+    /// 실패했나"가 거기 있다. 두 번째 flush 를 뒤에 걸어 그 hop 들이 도착한
+    /// 뒤를 훑는다. 순서 보장은 실행자 FIFO 에 기대는 best-effort 지만, 계측은
+    /// 원래 best-effort 이고 지금은 **확정적으로** 놓치고 있다.
+    ///
+    /// 두 번째 flush 도 `BackgroundFlushWindow` 로 감싼다 — 안 감싸면 그게
+    /// 돌기 전에 앱이 정지해 무의미하다.
+    func onBackground() {
+        flush()
+        let ticket = flushWindow.enter()
+        Task { @MainActor in
+            defer { flushWindow.leave(ticket) }
+            flush()
+        }
+    }
 
     /// 테스트 실행에서는 업로드하지 않는다.
     ///

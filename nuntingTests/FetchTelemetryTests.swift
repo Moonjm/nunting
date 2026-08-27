@@ -116,6 +116,28 @@ final class FetchTelemetryTests: XCTestCase {
             "실기기 환경은 업로드해야 함")
     }
 
+    func testBackgroundFlushCatchesEventsThatArriveAfterIt() async {
+        // 이벤트는 `Task { @MainActor in ... }` 로 건너온다. 백그라운드 직전에
+        // 끝난 시도의 hop 은 onBackground 가 도는 시점에 아직 큐에 있을 수
+        // 있고, 그러면 유일한 flush 를 놓친 채 프로세스가 정지한다 — 하필
+        // "마지막에 무엇이 실패했나"가 거기 있다.
+        var batches: [[FetchEventDTO]] = []
+        let telemetry = FetchTelemetry(
+            flushThreshold: 30,
+            linkProvider: { "wifi" },
+            onFlush: { batches.append($0) })
+
+        telemetry.onBackground()          // 버퍼가 비어 있어 아직 배치 없음
+        XCTAssertTrue(batches.isEmpty)
+
+        telemetry.record(Self.sample)     // 늦게 도착한 hop
+        // 예약된 두 번째 flush 가 돌 기회를 준다.
+        for _ in 0..<5 { await Task.yield() }
+
+        XCTAssertEqual(batches.count, 1, "뒤늦게 도착한 이벤트도 실려야 함")
+        XCTAssertEqual(batches.first?.count, 1)
+    }
+
     private static let sample = FetchEventDTO(
         ts: 1, ms: 100, host: "m.ppomppu.co.kr", path: "/new/bbs_list.php?id=ppomppu",
         status: 200, err: nil, attempt: nil, pf: nil, link: nil)
