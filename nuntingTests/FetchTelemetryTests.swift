@@ -11,15 +11,33 @@ final class FetchTelemetryTests: XCTestCase {
 
     // MARK: - 라벨
 
-    func testLabelKeepsBoardAndPageQueryOnly() {
-        // 쿼리 전체를 실으면 글 번호마다 다른 문자열이 돼 집계가 안 되고,
-        // 경로만 실으면 보드가 안 갈린다.
+    func testLabelKeepsBoardAndPageValuesButOnlyNamesOfTheRest() {
+        // 쿼리 값을 전부 실으면 글 번호마다 다른 문자열이 돼 집계가 안 되고,
+        // 경로만 실으면 보드가 안 갈린다. 집계 축(id/page)만 값째 남긴다.
         let url = URL(string: "https://m.ppomppu.co.kr/new/bbs_list.php?id=ppomppu&page=3&divpage=99")!
-        XCTAssertEqual(FetchEventDTO.label(for: url), "/new/bbs_list.php?id=ppomppu&page=3")
+        XCTAssertEqual(FetchEventDTO.label(for: url), "/new/bbs_list.php?id=ppomppu&page=3&divpage")
     }
 
-    func testLabelFallsBackToPathWhenNoKeptQuery() {
-        let url = URL(string: "https://m.ppomppu.co.kr/new/bbs_view.php?no=123456")!
+    func testLabelSplitsListFromDetailThatSharesThePath() {
+        // aagag 이슈모음은 목록과 상세가 같은 경로를 쓰고 글 번호만 쿼리로 단다.
+        // 여기가 접히면 상세 30건이 "같은 목록 URL 30건"으로 보인다(2026-08-28 오진).
+        let list = URL(string: "https://aagag.com/issue/")!
+        let detail = URL(string: "https://aagag.com/issue/?idx=1633837")!
+
+        XCTAssertEqual(FetchEventDTO.label(for: list), "/issue/")
+        XCTAssertEqual(FetchEventDTO.label(for: detail), "/issue/?idx")
+    }
+
+    func testLabelIsStableAcrossQueryOrderAndDuplicates() {
+        // 순서·중복 때문에 같은 요청이 두 라벨로 갈리면 집계가 쪼개진다.
+        let a = URL(string: "https://aagag.com/issue/?idx=1&v=2&idx=3")!
+        let b = URL(string: "https://aagag.com/issue/?v=2&idx=1")!
+        XCTAssertEqual(FetchEventDTO.label(for: a), "/issue/?idx&v")
+        XCTAssertEqual(FetchEventDTO.label(for: b), "/issue/?idx&v")
+    }
+
+    func testLabelFallsBackToPathWhenNoQuery() {
+        let url = URL(string: "https://m.ppomppu.co.kr/new/bbs_view.php")!
         XCTAssertEqual(FetchEventDTO.label(for: url), "/new/bbs_view.php")
     }
 

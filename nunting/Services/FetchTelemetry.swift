@@ -30,17 +30,33 @@ nonisolated struct FetchEventDTO: Encodable, Sendable {
 
     /// 대시보드에서 눈으로 갈리는 최소 라벨. 쿼리 전체를 실으면 글 번호마다
     /// 다른 문자열이 돼 집계가 안 되고, 경로만 실으면 게시판이 안 갈린다.
-    /// 그래서 경로 + `id`(보드)/`page` 만 남긴다.
+    /// 그래서 집계 축이 되는 `id`(보드)/`page` 만 **값째** 남기고, 나머지 쿼리는
+    /// **키 이름만** 남긴다.
+    ///
+    /// 남은 키를 통째로 버리지 않는 이유 — 목록과 상세가 같은 경로를 쓰고 글
+    /// 번호만 쿼리로 다는 사이트가 있다(aagag 이슈모음: 목록 `/issue/`, 상세
+    /// `/issue/?idx=1633837`). 키를 버리면 둘이 같은 문자열로 접혀, 서로 다른
+    /// 글 30개를 연 것이 "같은 URL 을 3분 반에 30번 쳤다"로 보인다 — 실제로
+    /// 그렇게 오진했다(2026-08-28). 값까지 실으면 글마다 라벨이 달라져 집계가
+    /// 깨지므로, 가르는 데 필요한 최소치인 이름만 남긴다. 사이트별 키 목록을
+    /// 두지 않은 건 같은 함정이 다른 사이트에 생겨도 저절로 갈리게 하려는 것.
     static func label(for url: URL) -> String {
         let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
         let items = comps?.queryItems ?? []
         let keep = ["id", "page", "c_page"]
-        let kept = keep.compactMap { key -> String? in
-            guard let value = items.first(where: { $0.name == key })?.value else { return nil }
-            return "\(key)=\(value)"
+        var kept: [String] = []
+        var keptKeys: Set<String> = []
+        for key in keep {
+            guard let value = items.first(where: { $0.name == key })?.value else { continue }
+            kept.append("\(key)=\(value)")
+            keptKeys.insert(key)
         }
+        // 이름만 남는 쪽은 정렬 + 중복 제거 — 같은 요청이 쿼리 순서나 중복
+        // 파라미터 때문에 두 라벨로 갈리면 집계가 쪼개진다.
+        let marked = Set(items.map(\.name)).subtracting(keptKeys).sorted()
+        let parts = kept + marked
         let path = comps?.path ?? url.path
-        return kept.isEmpty ? path : "\(path)?\(kept.joined(separator: "&"))"
+        return parts.isEmpty ? path : "\(path)?\(parts.joined(separator: "&"))"
     }
 
     /// 응답이 아예 없는 실패의 라벨. `URLError` 는 코드 숫자로 — 이름은
