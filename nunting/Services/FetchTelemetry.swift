@@ -25,6 +25,7 @@ nonisolated struct FetchEventDTO: Encodable, Sendable {
     var err: String?    // URLError 코드 등 (응답 자체가 없는 경우)
     var attempt: Int?   // 2 이상일 때만 — 1 이 기본
     var pf: Bool?       // 프리페치 요청일 때만 true
+    var via: String?    // 이 요청을 낸 경로(activate|refresh|more) — 아래 참조
     var link: String?   // wifi|cell|... — record() 시점에 찍는다
 
     /// 대시보드에서 눈으로 갈리는 최소 라벨. 쿼리 전체를 실으면 글 번호마다
@@ -159,6 +160,10 @@ nonisolated struct FetchAttemptOutcome: Sendable {
     let elapsedMs: Int
     let status: Int?
     let error: Error?
+    /// `FetchReason.current` 를 요청 시점에 떠 온 값. 구조체에 명시적으로 담는
+    /// 이유는 `event()` 가 task-local 을 몰래 읽으면 테스트가 만든 outcome 의
+    /// 결과가 실행 문맥에 따라 달라지기 때문이다.
+    var via: String? = nil
 
     /// 계측에 실을 형태로 변환. 취소는 싣지 않는다(`nil`) — 뷰 교체/보드 전환이
     /// 쏟아내는 정상 취소가 실패 분포를 뒤덮는다. 이미지 쪽에서 취소를 영구
@@ -176,8 +181,34 @@ nonisolated struct FetchAttemptOutcome: Sendable {
             status: status,
             err: error.map(FetchEventDTO.errorLabel),
             attempt: attempt > 1 ? attempt : nil,
-            pf: prefetch ? true : nil)
+            pf: prefetch ? true : nil,
+            via: via)
     }
+}
+
+/// 목록 요청이 **왜** 나갔는지 전달하는 task-local.
+///
+/// 왜 이 형태인가 — 계측은 "요청이 나갔다"는 남기지만 "왜 나갔는지"는 안
+/// 남긴다. 그래서 aagag 이슈 보드에 3분 반 동안 같은 URL 요청이 30번 찍혔을 때
+/// (2초 간격이 8회) 그게 사용자가 당겨서 새로고침한 것인지, 페이저에서 살짝
+/// 밀었다 되돌아오며 `.task(id:)` 가 재시작된 것인지 가를 수 없었다.
+/// 페이징(`page=N`)은 URL 로 이미 갈리므로 필요한 건 사실상 한 비트다.
+///
+/// `BoardListLoader.Fetcher` 시그니처를 늘리지 않은 이유: 그 typealias 는
+/// 테스트 fake 61곳이 물려 있어, 한 비트 때문에 그 전부를 건드리게 된다.
+/// task-local 은 같은 태스크 트리 안에서 await 를 건너 전파되므로 로더가
+/// 감싸기만 하면 `fetchHTMLOnce` 가 읽는다.
+/// `nonisolated`: 이 타겟의 기본 격리가 MainActor 라 그냥 두면 비격리인
+/// `fetchHTMLOnce` 에서 못 읽는다(`MediaLoadEventDTO` 와 같은 처리).
+nonisolated enum FetchReason {
+    @TaskLocal static var current: String?
+
+    /// 페이지 도착(페이저 활성화)으로 인한 재로드.
+    static let activate = "activate"
+    /// 사용자가 당긴 새로고침.
+    static let refresh = "refresh"
+    /// 하단 스크롤 페이징.
+    static let more = "more"
 }
 
 /// 시도 결과 싱크. `@Sendable` 인 이유는 `fetchHTMLOnce` 가 비격리 정적

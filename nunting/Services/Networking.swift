@@ -318,7 +318,7 @@ struct Networking {
                 recorder(FetchAttemptOutcome(
                     url: url, attempt: attempt, prefetch: prefetch,
                     elapsedMs: Self.elapsedMs(since: startedAt),
-                    status: status, error: nil))
+                    status: status, error: nil, via: FetchReason.current))
                 if let status, !(200..<300).contains(status) {
                     // 헤더는 여기서만 볼 수 있다 — 에러로 던지고 나면 사라진다.
                     retryAfterHint = http.flatMap(Self.retryAfter(from:))
@@ -347,7 +347,7 @@ struct Networking {
                     recorder(FetchAttemptOutcome(
                         url: url, attempt: attempt, prefetch: prefetch,
                         elapsedMs: Self.elapsedMs(since: startedAt),
-                        status: nil, error: error))
+                        status: nil, error: error, via: FetchReason.current))
                 }
                 let isTransient = (error as? URLError)
                     .map { Self.transientURLErrorCodes.contains($0.code) }

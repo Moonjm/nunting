@@ -472,6 +472,35 @@ final class BoardListLoaderTests: XCTestCase {
                      "검색 0건은 실질 크기 페이지여도 정상 결과 — 센티널 제외")
         XCTAssertTrue(loader.posts.isEmpty)
     }
+
+    // MARK: - 요청 사유(계측)
+
+    /// 같은 URL 이 반복 요청될 때 "사용자가 당긴 새로고침"과 "페이지 도착
+    /// 재로드"를 가르는 유일한 수단이다 — 둘 다 page 파라미터가 없어 URL 로는
+    /// 구분되지 않는다(aagag 이슈 보드에 3분 반 동안 같은 URL 30건이 찍혔을 때
+    /// 이걸 못 갈라 원인 판정이 막혔다).
+    func testFetchReasonIsTaggedPerLoadPath() async {
+        let seen = ReasonSpy()
+        let html = clienHTML
+        let loader = makeLoader(fetcher: { _, _, _, _ in
+            seen.record(FetchReason.current)
+            return html
+        })
+        let board = Board.clienNews
+
+        // 첫 방문(페이지 도착)
+        await loader.activate(board: board, filter: nil, searchQuery: nil)
+        // 재방문(페이지 재도착)
+        await loader.activate(board: board, filter: nil, searchQuery: nil)
+        // 당겨서 새로고침
+        await loader.reload(board: board, filter: nil, searchQuery: nil)
+        // 하단 페이징
+        await loader.loadMore(board: board, filter: nil, searchQuery: nil)
+
+        XCTAssertEqual(
+            seen.reasons, ["activate", "activate", "refresh", "more"],
+            "각 로드 경로가 자기 사유로 태그돼야 함")
+    }
 }
 
 // MARK: - Test helpers (shared shapes)
@@ -506,6 +535,7 @@ private actor TestGate {
         for w in waiters { w.resume() }
         waiters = []
     }
+
 }
 
 private final class TestCounter: @unchecked Sendable {
@@ -545,5 +575,22 @@ private final class TestRecorder<T>: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return items.count
+    }
+}
+
+/// task-local 사유를 fetcher 안에서 관측한다. `@Sendable` 클로저에서 갱신되므로
+/// 락으로 감싼다.
+private final class ReasonSpy: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String] = []
+
+    func record(_ reason: String?) {
+        lock.lock(); defer { lock.unlock() }
+        storage.append(reason ?? "(none)")
+    }
+
+    var reasons: [String] {
+        lock.lock(); defer { lock.unlock() }
+        return storage
     }
 }

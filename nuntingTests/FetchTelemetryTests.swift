@@ -70,6 +70,30 @@ final class FetchTelemetryTests: XCTestCase {
         XCTAssertEqual(event?.status, 200)
     }
 
+    // MARK: - 요청 사유
+
+    func testViaIsCarriedOntoTheEvent() {
+        let url = URL(string: "https://aagag.com/issue/")!
+        let event = FetchAttemptOutcome(
+            url: url, attempt: 1, prefetch: false, elapsedMs: 60,
+            status: 200, error: nil, via: FetchReason.refresh
+        ).event()
+
+        XCTAssertEqual(event?.via, "refresh")
+    }
+
+    func testViaIsOmittedWhenUnknown() {
+        // 사유를 모르는 경로(상세·댓글 등)는 키를 안 싣는다 — 배치 크기가
+        // 이벤트 수에 곱해진다.
+        let url = URL(string: "https://aagag.com/issue/")!
+        let event = FetchAttemptOutcome(
+            url: url, attempt: 1, prefetch: false, elapsedMs: 60,
+            status: 200, error: nil
+        ).event()
+
+        XCTAssertNil(event?.via)
+    }
+
     // MARK: - 버퍼
 
     func testFlushesWhenThresholdReached() {
