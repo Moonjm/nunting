@@ -278,6 +278,50 @@ final class NetworkingTests: XCTestCase {
         XCTAssertEqual(spy.outcomes.map(\.status), [500])
     }
 
+    // MARK: - 기본 Referer
+
+    func testRateLimitedHostGetsDefaultReferer() async throws {
+        // 뽐뿌는 Referer 없는 요청을 훨씬 빡빡한 요청률로 취급한다(실측:
+        // 없으면 19건에서 429, 있으면 60초 연속 60건 통과).
+        MockURLProtocol.handlers = [.response(status: 200, body: "<html>ok</html>")]
+
+        _ = try await Networking.fetchHTML(
+            url: URL(string: "https://m.ppomppu.co.kr/new/bbs_list.php?id=ppomppu")!,
+            session: session)
+
+        XCTAssertEqual(
+            MockURLProtocol.attempts.first?.value(forHTTPHeaderField: "Referer"),
+            Site.ppomppu.baseURL.absoluteString)
+    }
+
+    func testExplicitRefererWinsOverSiteDefault() async throws {
+        // 다모앙 댓글 API 처럼 호출부가 특정 Referer 를 요구하는 경로가 있다 —
+        // 기본값이 그걸 덮으면 안 된다.
+        MockURLProtocol.handlers = [.response(status: 200, body: "<html>ok</html>")]
+        let explicit = URL(string: "https://m.ppomppu.co.kr/new/bbs_view.php?id=x&no=1")!
+
+        _ = try await Networking.fetchHTML(
+            url: URL(string: "https://m.ppomppu.co.kr/new/bbs_list.php?id=ppomppu")!,
+            referer: explicit,
+            session: session)
+
+        XCTAssertEqual(
+            MockURLProtocol.attempts.first?.value(forHTTPHeaderField: "Referer"),
+            explicit.absoluteString)
+    }
+
+    func testUnmeasuredSiteGetsNoDefaultReferer() async throws {
+        // 이득이 확인되지 않은 사이트의 요청 모양은 건드리지 않는다 —
+        // 근거 없이 한꺼번에 바꾸면 회귀가 나도 귀속이 안 된다.
+        MockURLProtocol.handlers = [.response(status: 200, body: "<html>ok</html>")]
+
+        _ = try await Networking.fetchHTML(
+            url: URL(string: "https://www.clien.net/service/board/jirum")!,
+            session: session)
+
+        XCTAssertNil(MockURLProtocol.attempts.first?.value(forHTTPHeaderField: "Referer"))
+    }
+
     // MARK: - Retry-After
 
     func testRetryAfterSecondsIsParsed() throws {

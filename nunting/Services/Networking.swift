@@ -278,7 +278,10 @@ struct Networking {
         if let userAgent {
             request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         }
-        if let referer {
+        // 호출부가 지정한 Referer 가 우선. 없으면 사이트 기본값(`defaultReferer`)
+        // — 뽐뿌는 Referer 없는 요청을 훨씬 빡빡한 요청률로 취급한다(근거는
+        // `Site.defaultReferer` 주석의 실측).
+        if let referer = referer ?? Site.detect(host: url.host)?.defaultReferer {
             request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer")
         }
         request.setValue(

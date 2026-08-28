@@ -64,19 +64,32 @@ final class HostRequestPacerTests: XCTestCase {
         }
     }
 
-    /// 실측(2026-08-27)에 대한 안전 마진을 지킨다. 이 숫자를 올리는 변경은
-    /// 곧 실기기 429 로 돌아온다 — 첫 판(2/s)이 정확히 그래서 실패했고,
+    /// 실측에 대한 안전 마진을 지킨다. 이 숫자를 올리는 변경은 곧 실기기
+    /// 429 로 돌아온다 — 첫 판(2/s, Referer 없이)이 정확히 그래서 실패했고,
     /// 그때 로그가 "초당 1.4건만 보냈는데 거절"이었다.
+    ///
+    /// 기준선은 2026-08-28 재측정이다: `Site.defaultReferer` 로 Referer 를
+    /// 실은 상태에서 **1초 간격 60건이 60초 연속 전부 200**. 그 값을 그대로
+    /// 상한으로 쓴다. 더 촘촘하게 잡으려면 같은 길이의 지속 측정을 다시 해야
+    /// 한다 — 짧은 부하는 버스트를 재는 것이지 rate 를 재는 게 아니다.
     func testPpomppuLimitStaysWithinMeasuredServerAllowance() throws {
         let limit = try XCTUnwrap(HostRequestPacer.limit(for: .ppomppu))
         let interval = 1 / limit.perSecond
 
-        // 실측 지속 허용치 = 3초에 1건. 그보다 촘촘하면 결국 버킷이 마른다.
         XCTAssertGreaterThanOrEqual(
-            interval, 3.0, "지속 간격이 실측 허용치(3초)보다 촘촘함")
+            interval, 1.0, "지속 간격이 실증된 값(1초)보다 촘촘함")
         // 실측 버스트 ~19~20. 그보다 크면 첫 화면에서 바로 거절당한다.
         XCTAssertLessThanOrEqual(
             limit.capacity, 19, "버스트가 실측치를 넘음")
+    }
+
+    /// 게이트를 푼 근거가 Referer 라, 그 둘은 세트로 유지돼야 한다. Referer 를
+    /// 빼면(= `defaultReferer` 가 nil 이 되면) 허용치가 3초에 1건으로 되돌아가는데
+    /// 게이트만 1초로 남아 있으면 429 폭풍이 그대로 돌아온다.
+    func testRateLimitedSiteAlsoSendsDefaultReferer() {
+        XCTAssertNotNil(
+            Site.ppomppu.defaultReferer,
+            "요청률 게이트를 푼 근거가 Referer 다 — 둘은 같이 있어야 한다")
     }
 
     func testIdlePeriodRefillsBurstButDoesNotBankBeyondCapacity() async throws {
