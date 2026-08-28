@@ -636,6 +636,9 @@ var metricsTemplate = template.Must(template.New("metrics").Parse(`<!doctype htm
 <h2>HTML fetch <span style="color:#999;font-weight:400">({{.Fetch.Events}} 시도{{if .Fetch.Limited}} · 429 {{.Fetch.Limited}} ({{.Fetch.LimitedPct}}){{end}}{{if .Fetch.Hidden}} · 호스트 {{.Fetch.Hidden}}개 생략{{end}})</span></h2>
 {{if .Fetch.Events}}
 <p style="color:#777;font-size:12px">목록/상세/댓글이 실제로 받은 응답. <b>429 는 사이트의 요청률 제한</b>이고 화면엔 "다시 시도" 로만 보여서, 이 표 없이는 타임아웃과 구분되지 않는다. 판정 지표는 <b>429 비율</b>. 재시도(att≥2)와 프리페치 비중이 높으면 예산을 그쪽이 먹고 있는 것이다.</p>
+{{if .Fetch.Vias}}
+<p style="color:#777;font-size:12px">목록 요청 사유: {{range $i, $v := .Fetch.Vias}}{{if $i}} · {{end}}<b>{{$v.Via}}</b> {{$v.Count}}{{end}} <span style="color:#999">(activate=페이지 도착 재로드, refresh=당겨서 새로고침, more=하단 페이징. 같은 URL 이 반복될 때 이 셋은 URL 로 안 갈린다)</span></p>
+{{end}}
 <table>
  <tr><th>host</th><th>시도</th><th>200</th><th>429</th><th>429 비율</th><th>실패</th><th>재시도</th><th>프리페치</th><th>p50</th><th>p90</th></tr>
  {{range .Fetch.Hosts}}
@@ -954,6 +957,7 @@ type fetchEventJSON struct {
 	Err     string `json:"err"`
 	Attempt *int   `json:"attempt"`
 	Pf      *bool  `json:"pf"`
+	Via     string `json:"via"`
 }
 
 // fetchHostLimit 렌더할 호스트 수 상한. 조용한 호스트까지 전부 늘어놓으면
@@ -974,6 +978,11 @@ type fetchAgg struct {
 	events int
 	order  []string
 	byHost map[string]*fetchHostAgg
+	// byVia 요청이 **왜** 나갔는지의 분포(activate|refresh|more). 같은 URL 이
+	// 반복 요청될 때 사용자의 새로고침인지 페이지 재활성화인지는 URL 로 못
+	// 가른다 — 둘 다 page 파라미터가 없다.
+	byVia    map[string]int
+	viaOrder []string
 }
 
 func (a *fetchAgg) add(e fetchEventJSON) {
@@ -989,6 +998,15 @@ func (a *fetchAgg) add(e fetchEventJSON) {
 		agg = &fetchHostAgg{}
 		a.byHost[host] = agg
 		a.order = append(a.order, host)
+	}
+	if e.Via != "" {
+		if a.byVia == nil {
+			a.byVia = map[string]int{}
+		}
+		if a.byVia[e.Via] == 0 {
+			a.viaOrder = append(a.viaOrder, e.Via)
+		}
+		a.byVia[e.Via]++
 	}
 	a.events++
 	agg.events++
@@ -1016,12 +1034,18 @@ type fetchHostView struct {
 	P50, P90                                       string
 }
 
+type fetchViaView struct {
+	Via   string
+	Count int
+}
+
 type fetchSectionView struct {
 	Events     int
 	Limited    int
 	LimitedPct string
 	Hidden     int
 	Hosts      []fetchHostView
+	Vias       []fetchViaView
 }
 
 func (a *fetchAgg) view() fetchSectionView {
@@ -1039,6 +1063,13 @@ func (a *fetchAgg) view() fetchSectionView {
 		v.Limited += a.byHost[host].limited
 	}
 	v.LimitedPct = pctLabel(v.Limited, v.Events)
+
+	sort.SliceStable(a.viaOrder, func(i, j int) bool {
+		return a.byVia[a.viaOrder[i]] > a.byVia[a.viaOrder[j]]
+	})
+	for _, via := range a.viaOrder {
+		v.Vias = append(v.Vias, fetchViaView{Via: via, Count: a.byVia[via]})
+	}
 
 	// 자르는 건 렌더 목록뿐이다.
 	if len(hosts) > fetchHostLimit {

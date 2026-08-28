@@ -59,6 +59,31 @@ nonisolated public enum Site: String, CaseIterable, Identifiable, Codable, Senda
         }
     }
 
+    /// 이 사이트로 나가는 요청에 기본으로 실을 `Referer`.
+    ///
+    /// 뽐뿌는 **Referer 가 없는 요청을 훨씬 빡빡한 요청률로 취급한다.**
+    /// 실측(2026-08-28, 90초 유휴 후 1초 간격, 쿠키는 양쪽 다 있음):
+    ///
+    ///     Referer 없음 → 19건까지 통과, 20번째부터 429 (두 번 재현, 같은 자리)
+    ///     Referer 있음 → 60초 연속 60건 전부 200
+    ///
+    /// **값은 검사하지 않는다** — 사이트 루트도, 무관한 외부 URL 도 똑같이
+    /// 30/30 통과했다. 존재 여부만 본다. 값이 무의미하므로 지어낼 이유가 없어
+    /// 사실대로 이 사이트의 주소를 싣는다(앱은 실제로 이 사이트 안에서
+    /// 목록→글→댓글로 이동한다).
+    ///
+    /// 측정한 사이트에만 켠다. 나머지는 이득이 확인되지 않았고, 근거 없이
+    /// 12개 사이트의 요청 모양을 한꺼번에 바꾸면 회귀가 나도 귀속이 안 된다.
+    public nonisolated var defaultReferer: URL? {
+        switch self {
+        case .ppomppu:
+            baseURL
+        case .clien, .coolenjoy, .inven, .aagag, .humor, .bobae, .slr,
+             .ddanzi, .cook82, .etoland, .damoang:
+            nil
+        }
+    }
+
     public nonisolated var encoding: String.Encoding {
         switch self {
         case .ppomppu, .humor:

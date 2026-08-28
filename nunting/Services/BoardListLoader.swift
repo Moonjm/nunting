@@ -132,7 +132,9 @@ final class BoardListLoader {
             // loadedKey 가 nil 로 남아, 다음 refresh 가 stale 스냅샷에 갇히지 않고
             // 다시 fresh 를 시도할 수 있다. (cold-path 분기와도 일관 — 거기도
             // load 성공 시에만 loadedKey 를 찍는다.)
-            await load(board: board, filter: filter, searchQuery: searchQuery)
+            await load(
+                board: board, filter: filter, searchQuery: searchQuery,
+                reason: FetchReason.activate)
             return
         }
         guard key == currentKey else { return }
@@ -152,7 +154,9 @@ final class BoardListLoader {
         loadMoreError = false
         errorMessage = nil
         nextSearchURL = nil
-        await load(board: board, filter: filter, searchQuery: searchQuery)
+        await load(
+            board: board, filter: filter, searchQuery: searchQuery,
+            reason: FetchReason.activate)
     }
 
     /// 페이저 페이지 활성화(도착)의 **단일** 로딩 경로 — `BoardListView` 의
@@ -166,7 +170,9 @@ final class BoardListLoader {
     func activate(board: Board, filter: BoardFilter?, searchQuery: String?) async {
         let key = Self.taskKey(board: board, filter: filter, searchQuery: searchQuery)
         if loadedKey == key {
-            await reload(board: board, filter: filter, searchQuery: searchQuery, clearingList: true)
+            await reload(
+                board: board, filter: filter, searchQuery: searchQuery,
+                clearingList: true, reason: FetchReason.activate)
         } else {
             await refresh(board: board, filter: filter, searchQuery: searchQuery)
         }
@@ -181,7 +187,13 @@ final class BoardListLoader {
     /// "새로고침 중"이 눈에 보이게(헐렸다 다시 만들어지는 먼 보드와 동일한
     /// 피드백). pull-to-refresh 는 `false`(기본) — `.refreshable` 자체 스피너가
     /// 있으니 이전 목록을 화면에 유지한다.
-    func reload(board: Board, filter: BoardFilter?, searchQuery: String?, clearingList: Bool = false) async {
+    /// `reason`: 이 재로드가 어디서 왔는지(계측용). 기본값이 `refresh` 인 이유는
+    /// 이 메서드의 원래 호출부가 pull-to-refresh 이기 때문 — 보드 도착 경로
+    /// (`activate`)는 명시적으로 넘긴다.
+    func reload(
+        board: Board, filter: BoardFilter?, searchQuery: String?,
+        clearingList: Bool = false, reason: String = FetchReason.refresh
+    ) async {
         let key = Self.taskKey(board: board, filter: filter, searchQuery: searchQuery)
         currentKey = key
         if clearingList {
@@ -194,7 +206,7 @@ final class BoardListLoader {
             errorMessage = nil
             nextSearchURL = nil
         }
-        await load(board: board, filter: filter, searchQuery: searchQuery)
+        await load(board: board, filter: filter, searchQuery: searchQuery, reason: reason)
     }
 
     /// Drive from the list's last-row `.onAppear` paging trigger.
@@ -213,7 +225,9 @@ final class BoardListLoader {
         }
         do {
             let url = nextSearchURL ?? board.url(filter: filter, search: searchQuery, page: nextPage)
-            let html = try await fetchHTML(url: url, board: board, searchQuery: searchQuery)
+            let html = try await FetchReason.$current.withValue(FetchReason.more) {
+                try await fetchHTML(url: url, board: board, searchQuery: searchQuery)
+            }
             try Task.checkCancellation()
             let parsed = try await Self.parseListOffMain(html: html, board: board)
             guard key == currentKey else { return }
@@ -271,7 +285,9 @@ final class BoardListLoader {
 
     // MARK: - Private
 
-    private func load(board: Board, filter: BoardFilter?, searchQuery: String?) async {
+    private func load(
+        board: Board, filter: BoardFilter?, searchQuery: String?, reason: String
+    ) async {
         guard !Task.isCancelled else { return }
         let key = Self.taskKey(board: board, filter: filter, searchQuery: searchQuery)
         errorMessage = nil
@@ -283,7 +299,12 @@ final class BoardListLoader {
         }
         do {
             let url = board.url(filter: filter, search: searchQuery, page: nil)
-            let html = try await fetchHTML(url: url, board: board, searchQuery: searchQuery)
+            // 이 요청이 왜 나갔는지를 계측에 실어 보낸다 — 같은 URL 의 반복
+            // 요청이 사용자의 새로고침인지 페이지 재활성화인지 가르려면
+            // URL 만으로는 안 된다(둘 다 page 파라미터가 없다).
+            let html = try await FetchReason.$current.withValue(reason) {
+                try await fetchHTML(url: url, board: board, searchQuery: searchQuery)
+            }
             try Task.checkCancellation()
             let parsed = try await Self.parseListOffMain(html: html, board: board)
             guard key == currentKey else { return }

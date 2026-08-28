@@ -278,7 +278,10 @@ struct Networking {
         if let userAgent {
             request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         }
-        if let referer {
+        // 호출부가 지정한 Referer 가 우선. 없으면 사이트 기본값(`defaultReferer`)
+        // — 뽐뿌는 Referer 없는 요청을 훨씬 빡빡한 요청률로 취급한다(근거는
+        // `Site.defaultReferer` 주석의 실측).
+        if let referer = referer ?? Site.detect(host: url.host)?.defaultReferer {
             request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer")
         }
         request.setValue(
@@ -315,7 +318,7 @@ struct Networking {
                 recorder(FetchAttemptOutcome(
                     url: url, attempt: attempt, prefetch: prefetch,
                     elapsedMs: Self.elapsedMs(since: startedAt),
-                    status: status, error: nil))
+                    status: status, error: nil, via: FetchReason.current))
                 if let status, !(200..<300).contains(status) {
                     // 헤더는 여기서만 볼 수 있다 — 에러로 던지고 나면 사라진다.
                     retryAfterHint = http.flatMap(Self.retryAfter(from:))
@@ -344,7 +347,7 @@ struct Networking {
                     recorder(FetchAttemptOutcome(
                         url: url, attempt: attempt, prefetch: prefetch,
                         elapsedMs: Self.elapsedMs(since: startedAt),
-                        status: nil, error: error))
+                        status: nil, error: error, via: FetchReason.current))
                 }
                 let isTransient = (error as? URLError)
                     .map { Self.transientURLErrorCodes.contains($0.code) }
