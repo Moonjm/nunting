@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -67,6 +68,7 @@ type Watcher struct {
 	coveredUntil time.Time // 이 날짜(KST 자정)까지 등록됨. zero 면 미상.
 	retryPending bool      // 진입 등록 실패 → 재시도 대기 중
 	retryCount   int       // 이번 진입에서 소진한 재시도 횟수
+	entryGen     int       // 진입 세대. 재시도 타이머가 어느 진입 것인지 태깅.
 }
 
 // NewWatcher main.go 배선용.
@@ -170,15 +172,43 @@ func (w *Watcher) HandleGeofence(ctx context.Context, payload string, retained b
 	if prev == target {
 		return
 	}
+	w.entryGen++
 	w.retryCount = 0
 	w.registerLocked(ctx)
 }
 
-// HandleRetry 등록 실패 후 스케줄된 재시도. 여전히 진입 상태이고 재시도 대기 중일 때만.
-func (w *Watcher) HandleRetry(ctx context.Context) {
+// HandleRetry 등록 실패 후 스케줄된 재시도. gen 이 현재 진입 세대와 다르면(그 사이
+// 나갔다 다시 들어옴) 옛 타이머이므로 무시. 여전히 진입 상태이고 대기 중일 때만.
+//
+// 실패한 POST 가 서버엔 커밋됐는데 응답만 유실됐을 수 있다(타임아웃 등). 등록은
+// 비멱등이라 그대로 다시 쏘면 중복 예약 + 월 주차한도 소모 — 재시도 전에 목록으로
+// 현재 커버리지를 먼저 확인한다. 목록 조회마저 실패하면 POST 하지 않고 다음
+// 재시도로 미룬다.
+func (w *Watcher) HandleRetry(ctx context.Context, gen int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if !w.retryPending || w.lastGeo != w.mqttCfg.Geofence {
+	if !w.retryPending || gen != w.entryGen || w.lastGeo != w.mqttCfg.Geofence {
+		return
+	}
+	today := DayOf(w.now())
+	start, end, err := CoverageWindow(today, MaxCoverageDays)
+	if err != nil {
+		w.retryPending = false
+		return
+	}
+	lctx, cancel := context.WithTimeout(ctx, registerTimeout)
+	rows, err := w.api.List(lctx, start, end)
+	cancel()
+	if err != nil {
+		slog.Warn("oitalk_retry_list_failed", "err", err)
+		w.scheduleRetryLocked(ctx)
+		return
+	}
+	if until := coverageEnd(rows, w.cfg.CarNum, today); !until.IsZero() {
+		w.coveredUntil = until
+		w.retryPending = false
+		w.retryCount = 0
+		slog.Info("oitalk_retry_found_existing", "covered_until", until.Format("2006-01-02"))
 		return
 	}
 	w.registerLocked(ctx)
@@ -204,15 +234,8 @@ func (w *Watcher) registerLocked(ctx context.Context) {
 	defer cancel()
 	row, err := w.api.Register(rctx, start, end)
 	if err != nil {
-		if w.retryCount >= maxRegisterRetries {
-			w.retryPending = false
-			slog.Error("oitalk_register_gave_up", "err", err, "attempts", w.retryCount+1)
-			return
-		}
-		w.retryCount++
-		w.retryPending = true
-		slog.Error("oitalk_register_failed", "err", err, "retry", w.retryCount, "in", w.retryDelay.String())
-		time.AfterFunc(w.retryDelay, func() { w.enqueue(ctx, topicRetry, "", false) })
+		slog.Error("oitalk_register_failed", "err", err, "attempt", w.retryCount+1)
+		w.scheduleRetryLocked(ctx)
 		return
 	}
 	w.coveredUntil = DayOf(end)
@@ -220,6 +243,21 @@ func (w *Watcher) registerLocked(ctx context.Context) {
 	w.retryCount = 0
 	slog.Info("oitalk_registered", "start_date", DayOf(start).Format("2006-01-02"),
 		"end_date", w.coveredUntil.Format("2006-01-02"), "id", string(row.ID), "state", row.State)
+}
+
+// scheduleRetryLocked 예산이 남았으면 현재 진입 세대를 태깅한 재시도 이벤트를
+// retryDelay 뒤 큐에 넣는다. mu 보유 전제.
+func (w *Watcher) scheduleRetryLocked(ctx context.Context) {
+	if w.retryCount >= maxRegisterRetries {
+		w.retryPending = false
+		slog.Error("oitalk_register_gave_up", "attempts", w.retryCount+1)
+		return
+	}
+	w.retryCount++
+	w.retryPending = true
+	gen := w.entryGen
+	slog.Info("oitalk_retry_scheduled", "retry", w.retryCount, "in", w.retryDelay.String())
+	time.AfterFunc(w.retryDelay, func() { w.enqueue(ctx, topicRetry, strconv.Itoa(gen), false) })
 }
 
 // HandleState 차량 state 페이로드. driving 으로 바뀌면 토큰을 미리 데워
@@ -320,6 +358,8 @@ func (w *Watcher) dispatch(ctx context.Context, topic, payload string, retained 
 	case strings.HasSuffix(topic, "/state"):
 		w.HandleState(ctx, payload)
 	case topic == topicRetry:
-		w.HandleRetry(ctx)
+		if gen, err := strconv.Atoi(payload); err == nil {
+			w.HandleRetry(ctx, gen)
+		}
 	}
 }

@@ -16,6 +16,7 @@ type fakeOitalk struct {
 	registerErr   error
 	listRows      []Reservation
 	listErr       error
+	listCalls     int
 	ensureCalls   int
 }
 
@@ -26,6 +27,9 @@ func (f *fakeOitalk) EnsureToken(context.Context) (string, error) {
 	return "tok", nil
 }
 func (f *fakeOitalk) List(context.Context, time.Time, time.Time) ([]Reservation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listCalls++
 	return f.listRows, f.listErr
 }
 func (f *fakeOitalk) Register(_ context.Context, start, end time.Time) (Reservation, error) {
@@ -330,11 +334,11 @@ func TestWatcher_RetryAfterFailureRegistersWithoutReentry(t *testing.T) {
 	ctx := context.Background()
 	w.HandleGeofence(ctx, "일산", false) // 진입, 실패
 	api.registerErr = nil
-	w.HandleRetry(ctx) // 재진입 없이 재시도 → 성공
+	w.HandleRetry(ctx, w.entryGen) // 재진입 없이 재시도 → 성공
 	if len(api.registerCalls) != 2 {
 		t.Fatalf("register calls = %d, want 2", len(api.registerCalls))
 	}
-	w.HandleRetry(ctx) // 성공 후 남은 재시도 이벤트는 무동작
+	w.HandleRetry(ctx, w.entryGen) // 성공 후 남은 재시도 이벤트는 무동작
 	if len(api.registerCalls) != 2 {
 		t.Fatalf("register calls after success = %d, want 2", len(api.registerCalls))
 	}
@@ -347,7 +351,7 @@ func TestWatcher_RetryStopsAfterExit(t *testing.T) {
 	w.HandleGeofence(ctx, "일산", false) // 진입, 실패
 	w.HandleGeofence(ctx, "", false)   // 나감
 	api.registerErr = nil
-	w.HandleRetry(ctx)
+	w.HandleRetry(ctx, w.entryGen)
 	if len(api.registerCalls) != 1 {
 		t.Fatalf("register calls = %d, want 1 (no retry after exit)", len(api.registerCalls))
 	}
@@ -359,7 +363,7 @@ func TestWatcher_RetryGivesUpAfterMaxAttempts(t *testing.T) {
 	ctx := context.Background()
 	w.HandleGeofence(ctx, "일산", false)
 	for i := 0; i < maxRegisterRetries+5; i++ {
-		w.HandleRetry(ctx)
+		w.HandleRetry(ctx, w.entryGen)
 	}
 	if len(api.registerCalls) != 1+maxRegisterRetries {
 		t.Fatalf("register calls = %d, want %d", len(api.registerCalls), 1+maxRegisterRetries)
@@ -400,4 +404,68 @@ func TestWatcher_RetryIsScheduledThroughWorker(t *testing.T) {
 	}
 	cancel()
 	<-done
+}
+
+func TestWatcher_RetryFindsExistingReservationInsteadOfPosting(t *testing.T) {
+	// POST 가 서버엔 커밋됐는데 응답만 유실된 경우 — 재시도 전 목록으로 확인해 중복 POST 방지.
+	api := &fakeOitalk{registerErr: errors.New("timeout")}
+	w, now := newTestWatcher(t, api)
+	ctx := context.Background()
+	w.HandleGeofence(ctx, "일산", false) // 진입, 실패(모호)
+	api.listRows = []Reservation{{ID: "srv", CarNum: "12가3456", StartDate: "20260902", EndDate: "20260904", State: "ok"}}
+	api.registerErr = nil
+	w.HandleRetry(ctx, w.entryGen)
+	if len(api.registerCalls) != 1 {
+		t.Fatalf("register calls = %d, want 1 (existing reservation found)", len(api.registerCalls))
+	}
+	if api.listCalls != 1 {
+		t.Fatalf("list calls = %d, want 1", api.listCalls)
+	}
+	// 목록에서 찾은 커버리지가 캐시에 반영돼 다음날 진입도 skip
+	*now = now.AddDate(0, 0, 1)
+	w.HandleGeofence(ctx, "", false)
+	w.HandleGeofence(ctx, "일산", false)
+	if len(api.registerCalls) != 1 {
+		t.Fatalf("register calls = %d, want 1 (coverage seeded from list)", len(api.registerCalls))
+	}
+}
+
+func TestWatcher_RetryDefersWhenListFails(t *testing.T) {
+	api := &fakeOitalk{registerErr: errors.New("timeout")}
+	w, _ := newTestWatcher(t, api)
+	ctx := context.Background()
+	w.HandleGeofence(ctx, "일산", false)
+	api.listErr = errors.New("down")
+	api.registerErr = nil
+	w.HandleRetry(ctx, w.entryGen) // 확인 불가 → POST 하지 않고 다음 재시도로
+	if len(api.registerCalls) != 1 {
+		t.Fatalf("register calls = %d, want 1 (must not POST blindly)", len(api.registerCalls))
+	}
+	api.listErr = nil
+	w.HandleRetry(ctx, w.entryGen) // 목록 OK(비어 있음) → 등록
+	if len(api.registerCalls) != 2 {
+		t.Fatalf("register calls = %d, want 2", len(api.registerCalls))
+	}
+}
+
+func TestWatcher_StaleRetryFromPreviousEntryIgnored(t *testing.T) {
+	api := &fakeOitalk{registerErr: errors.New("boom")}
+	w, _ := newTestWatcher(t, api)
+	ctx := context.Background()
+	w.HandleGeofence(ctx, "일산", false) // 진입 1(실패)
+	oldGen := w.entryGen
+	w.HandleGeofence(ctx, "", false)
+	w.HandleGeofence(ctx, "일산", false) // 진입 2(실패)
+	if w.entryGen == oldGen {
+		t.Fatal("entry generation must advance on re-entry")
+	}
+	api.registerErr = nil
+	w.HandleRetry(ctx, oldGen) // 이전 진입의 타이머 → 무시
+	if len(api.registerCalls) != 2 {
+		t.Fatalf("register calls = %d, want 2 (stale retry ignored)", len(api.registerCalls))
+	}
+	w.HandleRetry(ctx, w.entryGen)
+	if len(api.registerCalls) != 3 {
+		t.Fatalf("register calls = %d, want 3", len(api.registerCalls))
+	}
 }
