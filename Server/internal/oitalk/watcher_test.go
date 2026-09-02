@@ -37,6 +37,11 @@ func (f *fakeOitalk) Register(_ context.Context, start, end time.Time) (Reservat
 	}
 	return Reservation{ID: "r1", State: "ok"}, nil
 }
+func (f *fakeOitalk) setRegisterErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.registerErr = err
+}
 func (f *fakeOitalk) counts() (register, ensure int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -317,4 +322,82 @@ func TestWatcher_ServeProcessesInOrder(t *testing.T) {
 	if reg, _ := api.counts(); reg != 1 {
 		t.Fatalf("register calls = %d, want 1", reg)
 	}
+}
+
+func TestWatcher_RetryAfterFailureRegistersWithoutReentry(t *testing.T) {
+	api := &fakeOitalk{registerErr: errors.New("boom")}
+	w, _ := newTestWatcher(t, api)
+	ctx := context.Background()
+	w.HandleGeofence(ctx, "일산", false) // 진입, 실패
+	api.registerErr = nil
+	w.HandleRetry(ctx) // 재진입 없이 재시도 → 성공
+	if len(api.registerCalls) != 2 {
+		t.Fatalf("register calls = %d, want 2", len(api.registerCalls))
+	}
+	w.HandleRetry(ctx) // 성공 후 남은 재시도 이벤트는 무동작
+	if len(api.registerCalls) != 2 {
+		t.Fatalf("register calls after success = %d, want 2", len(api.registerCalls))
+	}
+}
+
+func TestWatcher_RetryStopsAfterExit(t *testing.T) {
+	api := &fakeOitalk{registerErr: errors.New("boom")}
+	w, _ := newTestWatcher(t, api)
+	ctx := context.Background()
+	w.HandleGeofence(ctx, "일산", false) // 진입, 실패
+	w.HandleGeofence(ctx, "", false)   // 나감
+	api.registerErr = nil
+	w.HandleRetry(ctx)
+	if len(api.registerCalls) != 1 {
+		t.Fatalf("register calls = %d, want 1 (no retry after exit)", len(api.registerCalls))
+	}
+}
+
+func TestWatcher_RetryGivesUpAfterMaxAttempts(t *testing.T) {
+	api := &fakeOitalk{registerErr: errors.New("boom")}
+	w, _ := newTestWatcher(t, api)
+	ctx := context.Background()
+	w.HandleGeofence(ctx, "일산", false)
+	for i := 0; i < maxRegisterRetries+5; i++ {
+		w.HandleRetry(ctx)
+	}
+	if len(api.registerCalls) != 1+maxRegisterRetries {
+		t.Fatalf("register calls = %d, want %d", len(api.registerCalls), 1+maxRegisterRetries)
+	}
+}
+
+func TestWatcher_RetryIsScheduledThroughWorker(t *testing.T) {
+	api := &fakeOitalk{registerErr: errors.New("boom")}
+	w := newWatcher(api, testCfg, MQTTConfig{Geofence: "일산"})
+	w.now = func() time.Time { return time.Date(2026, 9, 2, 10, 0, 0, 0, KST) }
+	w.retryDelay = 5 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { w.serve(ctx); close(done) }()
+	w.enqueue(ctx, "teslamate/cars/1/geofence", "", true)
+	w.enqueue(ctx, "teslamate/cars/1/geofence", "일산", false)
+	deadline := time.After(2 * time.Second)
+	for {
+		if reg, _ := api.counts(); reg >= 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting first register")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	api.setRegisterErr(nil)
+	for {
+		if reg, _ := api.counts(); reg >= 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting scheduled retry")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	cancel()
+	<-done
 }

@@ -21,6 +21,12 @@ const (
 	tokenWarmInterval = time.Hour
 	// eventQueueSize paho 콜백 → 워커 사이 버퍼. 지오펜스·state 는 분당 몇 건이라 넉넉.
 	eventQueueSize = 64
+
+	// 등록 실패 재시도. TeslaMate 는 값이 바뀔 때만 publish 하므로 실패 후 차가 주차된
+	// 채면 이벤트가 더 오지 않는다 — 진입 상태가 유지되는 동안 스스로 재시도한다.
+	topicRetry         = "nunting/oitalk/retry"
+	defaultRetryDelay  = 30 * time.Second
+	maxRegisterRetries = 10
 )
 
 // event MQTT 메시지 1건. paho 콜백은 이것만 큐에 넣고 즉시 반환한다.
@@ -51,13 +57,16 @@ type Watcher struct {
 	mqttCfg MQTTConfig
 	now     func() time.Time
 
-	events chan event
+	events     chan event
+	retryDelay time.Duration
 
 	mu           sync.Mutex
 	hasBaseline  bool
 	lastGeo      string
 	lastState    string
 	coveredUntil time.Time // 이 날짜(KST 자정)까지 등록됨. zero 면 미상.
+	retryPending bool      // 진입 등록 실패 → 재시도 대기 중
+	retryCount   int       // 이번 진입에서 소진한 재시도 횟수
 }
 
 // NewWatcher main.go 배선용.
@@ -66,7 +75,10 @@ func NewWatcher(client *Client, m MQTTConfig) *Watcher {
 }
 
 func newWatcher(api API, cfg Config, m MQTTConfig) *Watcher {
-	return &Watcher{api: api, cfg: cfg, mqttCfg: m, now: time.Now, events: make(chan event, eventQueueSize)}
+	return &Watcher{
+		api: api, cfg: cfg, mqttCfg: m, now: time.Now,
+		events: make(chan event, eventQueueSize), retryDelay: defaultRetryDelay,
+	}
 }
 
 // Bootstrap 오이톡 목록으로 오늘 기준 커버리지를 1회 조회해 캐시를 seed 한다.
@@ -149,12 +161,34 @@ func (w *Watcher) HandleGeofence(ctx context.Context, payload string, retained b
 	}
 	prev := w.lastGeo
 	w.lastGeo = cur
-	if prev == target || cur != target {
+	if cur != target {
+		// 나감(또는 다른 지오펜스) — 이번 진입의 재시도는 의미 없어 폐기.
+		w.retryPending = false
+		w.retryCount = 0
 		return
 	}
+	if prev == target {
+		return
+	}
+	w.retryCount = 0
+	w.registerLocked(ctx)
+}
 
+// HandleRetry 등록 실패 후 스케줄된 재시도. 여전히 진입 상태이고 재시도 대기 중일 때만.
+func (w *Watcher) HandleRetry(ctx context.Context) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.retryPending || w.lastGeo != w.mqttCfg.Geofence {
+		return
+	}
+	w.registerLocked(ctx)
+}
+
+// registerLocked 오늘 기준 커버리지 확인 후 등록. 실패하면 재시도 예약. mu 보유 전제.
+func (w *Watcher) registerLocked(ctx context.Context) {
 	today := DayOf(w.now())
 	if !w.coveredUntil.IsZero() && !today.After(w.coveredUntil) {
+		w.retryPending = false
 		slog.Debug("oitalk_entry_covered", "today", today.Format("2006-01-02"),
 			"covered_until", w.coveredUntil.Format("2006-01-02"))
 		return
@@ -162,6 +196,7 @@ func (w *Watcher) HandleGeofence(ctx context.Context, payload string, retained b
 
 	start, end, err := CoverageWindow(today, w.cfg.CoverageDays)
 	if err != nil {
+		w.retryPending = false
 		slog.Error("oitalk_register_skipped", "err", err)
 		return
 	}
@@ -169,10 +204,20 @@ func (w *Watcher) HandleGeofence(ctx context.Context, payload string, retained b
 	defer cancel()
 	row, err := w.api.Register(rctx, start, end)
 	if err != nil {
-		slog.Error("oitalk_register_failed", "err", err)
+		if w.retryCount >= maxRegisterRetries {
+			w.retryPending = false
+			slog.Error("oitalk_register_gave_up", "err", err, "attempts", w.retryCount+1)
+			return
+		}
+		w.retryCount++
+		w.retryPending = true
+		slog.Error("oitalk_register_failed", "err", err, "retry", w.retryCount, "in", w.retryDelay.String())
+		time.AfterFunc(w.retryDelay, func() { w.enqueue(ctx, topicRetry, "", false) })
 		return
 	}
 	w.coveredUntil = DayOf(end)
+	w.retryPending = false
+	w.retryCount = 0
 	slog.Info("oitalk_registered", "start_date", DayOf(start).Format("2006-01-02"),
 		"end_date", w.coveredUntil.Format("2006-01-02"), "id", string(row.ID), "state", row.State)
 }
@@ -274,5 +319,7 @@ func (w *Watcher) dispatch(ctx context.Context, topic, payload string, retained 
 		w.HandleGeofence(ctx, payload, retained)
 	case strings.HasSuffix(topic, "/state"):
 		w.HandleState(ctx, payload)
+	case topic == topicRetry:
+		w.HandleRetry(ctx)
 	}
 }
