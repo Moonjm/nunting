@@ -469,3 +469,96 @@ func TestWatcher_StaleRetryFromPreviousEntryIgnored(t *testing.T) {
 		t.Fatalf("register calls = %d, want 3", len(api.registerCalls))
 	}
 }
+
+// blockingList List 가 release 될 때까지 막힌다 — 부트스트랩 중 진입 검증용.
+type blockingList struct {
+	fakeOitalk
+	release chan struct{}
+	entered chan struct{}
+}
+
+func (b *blockingList) List(ctx context.Context, s, e time.Time) ([]Reservation, error) {
+	b.entered <- struct{}{}
+	<-b.release
+	return b.fakeOitalk.List(ctx, s, e)
+}
+
+func TestWatcher_EntryDuringBootstrapIsProcessedAfterSeed(t *testing.T) {
+	// 부트스트랩(목록 조회)이 느린 동안 차가 진입: 구독은 이미 돼 있어 이벤트가
+	// 큐에 잡히고, 캐시 seed 가 끝난 뒤 순서대로 처리돼 등록된다.
+	api := &blockingList{release: make(chan struct{}), entered: make(chan struct{}, 1)}
+	w := newWatcher(api, testCfg, MQTTConfig{Geofence: "일산"})
+	w.now = func() time.Time { return time.Date(2026, 9, 2, 10, 0, 0, 0, KST) }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	subscribed := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- w.runWith(ctx, func(ctx context.Context) (func(), error) {
+			close(subscribed)
+			return func() {}, nil
+		})
+	}()
+	<-subscribed
+	<-api.entered // 부트스트랩 목록 조회 진행 중 — 이 사이 진입
+	w.enqueue(ctx, "teslamate/cars/1/geofence", "", true)
+	w.enqueue(ctx, "teslamate/cars/1/geofence", "일산", false)
+	if reg, _ := api.counts(); reg != 0 {
+		t.Fatalf("must not process before seed, got %d", reg)
+	}
+	close(api.release)
+	deadline := time.After(2 * time.Second)
+	for {
+		if reg, _ := api.counts(); reg == 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			reg, _ := api.counts()
+			t.Fatalf("register calls = %d, want 1", reg)
+		case <-time.After(time.Millisecond):
+		}
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("runWith: %v", err)
+	}
+}
+
+func TestWatcher_EntryDuringBootstrapSkippedWhenSeedCoversToday(t *testing.T) {
+	api := &blockingList{release: make(chan struct{}), entered: make(chan struct{}, 1)}
+	api.listRows = []Reservation{{ID: "x", CarNum: "12가3456", StartDate: "20260902", EndDate: "20260904"}}
+	w := newWatcher(api, testCfg, MQTTConfig{Geofence: "일산"})
+	w.now = func() time.Time { return time.Date(2026, 9, 2, 10, 0, 0, 0, KST) }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- w.runWith(ctx, func(context.Context) (func(), error) { return func() {}, nil })
+	}()
+	<-api.entered
+	w.enqueue(ctx, "teslamate/cars/1/geofence", "", true)
+	w.enqueue(ctx, "teslamate/cars/1/geofence", "일산", false)
+	close(api.release)
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	<-done
+	if reg, _ := api.counts(); reg != 0 {
+		t.Fatalf("register calls = %d, want 0 (seed covers today)", reg)
+	}
+}
+
+func TestWatcher_RunWithReturnsSubscribeError(t *testing.T) {
+	api := &fakeOitalk{}
+	w := newWatcher(api, testCfg, MQTTConfig{Geofence: "일산"})
+	err := w.runWith(context.Background(), func(context.Context) (func(), error) {
+		return nil, errors.New("connect refused")
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if api.listCalls != 0 {
+		t.Fatalf("bootstrap must not run when subscribe fails, list calls = %d", api.listCalls)
+	}
+}

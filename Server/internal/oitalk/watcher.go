@@ -277,15 +277,51 @@ func (w *Watcher) HandleState(ctx context.Context, payload string) {
 }
 
 // Run 브로커 접속 + 구독 후 ctx 취소까지 유지. 자동 재접속, 재접속 시 재구독.
+func (w *Watcher) Run(ctx context.Context) error {
+	return w.runWith(ctx, w.connectMQTT)
+}
+
+// runWith 기동 순서가 핵심이다:
+//
+//  1. 구독(subscribe) — 콜백은 큐에 넣기만 한다.
+//  2. 부트스트랩 — 오이톡 목록으로 커버리지 캐시 seed(네트워크, 느릴 수 있음).
+//  3. 워커(serve) 시작 — 그제서야 큐를 순서대로 소비.
+//
+// 부트스트랩이 느린 동안 차가 진입해도 이벤트는 이미 큐에 잡혀 있고(retained
+// baseline → live 진입 순서 그대로), seed 가 끝난 뒤 처리되므로 놓치지 않는다.
+// 구독을 부트스트랩 뒤로 미루면 그 사이 진입은 retained 값 하나로만 도착해
+// baseline 으로 삼켜진다.
 //
 // paho 는 기본(OrderMatters) 모드에서 메시지 핸들러가 블로킹하지 않기를 요구한다
 // — 핸들러가 막히면 뒤이은 QoS1 메시지·ack 가 직렬화돼 keepalive 끊김까지 갈 수
-// 있다. 그래서 콜백은 큐에 넣기만 하고, 단일 워커(serve)가 순서대로 처리한다.
-// 워커가 하나라 엣지 판정 순서는 그대로 보존된다.
-func (w *Watcher) Run(ctx context.Context) error {
+// 있다. 그래서 콜백은 큐에 넣기만 하고, 단일 워커가 처리한다. 워커가 하나라
+// 엣지 판정 순서는 그대로 보존된다.
+func (w *Watcher) runWith(ctx context.Context, subscribe func(context.Context) (func(), error)) error {
+	closeFn, err := subscribe(ctx)
+	if err != nil {
+		return err
+	}
+	defer closeFn()
+
 	w.Bootstrap(ctx)
 	go w.serve(ctx)
 
+	ticker := time.NewTicker(tokenWarmInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if _, err := w.api.EnsureToken(ctx); err != nil {
+				slog.Warn("oitalk_token_prewarm_failed", "err", err)
+			}
+		}
+	}
+}
+
+// connectMQTT paho 접속 + 구독. 반환 함수는 접속 해제.
+func (w *Watcher) connectMQTT(ctx context.Context) (func(), error) {
 	opts := mqtt.NewClientOptions().
 		AddBroker(w.mqttCfg.Broker).
 		SetClientID(w.mqttCfg.ClientID).
@@ -310,22 +346,9 @@ func (w *Watcher) Run(ctx context.Context) error {
 
 	cli := mqtt.NewClient(opts)
 	if tok := cli.Connect(); tok.Wait() && tok.Error() != nil {
-		return fmt.Errorf("mqtt connect: %w", tok.Error())
+		return nil, fmt.Errorf("mqtt connect: %w", tok.Error())
 	}
-	defer cli.Disconnect(250)
-
-	ticker := time.NewTicker(tokenWarmInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-			if _, err := w.api.EnsureToken(ctx); err != nil {
-				slog.Warn("oitalk_token_prewarm_failed", "err", err)
-			}
-		}
-	}
+	return func() { cli.Disconnect(250) }, nil
 }
 
 // enqueue paho 콜백용. 큐가 차 있으면 기다리지 않고 버린다(로그) — 콜백을 막는
