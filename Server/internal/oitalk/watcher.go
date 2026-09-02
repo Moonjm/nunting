@@ -114,7 +114,12 @@ func coverageEnd(rows []Reservation, carNum string, today time.Time) time.Time {
 }
 
 // HandleGeofence MQTT geofence 페이로드 1건 처리(hot-path).
-func (w *Watcher) HandleGeofence(ctx context.Context, payload string) {
+//
+// retained 는 브로커가 보관하던 과거 값(구독 직후 즉시 도착)이라 baseline 으로만
+// 쓴다 — 이미 주차 중인 차를 진입으로 오인하지 않기 위해. 반대로 첫 메시지가
+// live 면(차가 밖에 있어 retained 값이 없던 상태) 그 자체가 실제 변화이므로
+// 직전값을 "밖"(빈 값)으로 놓고 엣지 판정을 그대로 태운다.
+func (w *Watcher) HandleGeofence(ctx context.Context, payload string, retained bool) {
 	cur := strings.TrimSpace(payload)
 	target := w.mqttCfg.Geofence
 
@@ -123,9 +128,13 @@ func (w *Watcher) HandleGeofence(ctx context.Context, payload string) {
 
 	if !w.hasBaseline {
 		w.hasBaseline = true
-		w.lastGeo = cur
-		slog.Info("oitalk_geofence_baseline", "geofence", cur)
-		return
+		if retained {
+			w.lastGeo = cur
+			slog.Info("oitalk_geofence_baseline", "geofence", cur)
+			return
+		}
+		w.lastGeo = ""
+		slog.Info("oitalk_geofence_baseline", "geofence", "", "reason", "no retained value")
 	}
 	prev := w.lastGeo
 	w.lastGeo = cur
@@ -190,7 +199,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 		slog.Info("oitalk_mqtt_connected", "broker", w.mqttCfg.Broker)
 		subs := map[string]byte{topicGeofence: 1, topicState: 1}
 		if tok := c.SubscribeMultiple(subs, func(_ mqtt.Client, msg mqtt.Message) {
-			w.dispatch(ctx, msg.Topic(), string(msg.Payload()))
+			w.dispatch(ctx, msg.Topic(), string(msg.Payload()), msg.Retained())
 		}); tok.Wait() && tok.Error() != nil {
 			slog.Error("oitalk_mqtt_subscribe_failed", "err", tok.Error())
 		}
@@ -219,10 +228,10 @@ func (w *Watcher) Run(ctx context.Context) error {
 	}
 }
 
-func (w *Watcher) dispatch(ctx context.Context, topic, payload string) {
+func (w *Watcher) dispatch(ctx context.Context, topic, payload string, retained bool) {
 	switch {
 	case strings.HasSuffix(topic, "/geofence"):
-		w.HandleGeofence(ctx, payload)
+		w.HandleGeofence(ctx, payload, retained)
 	case strings.HasSuffix(topic, "/state"):
 		w.HandleState(ctx, payload)
 	}
