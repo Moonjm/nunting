@@ -29,6 +29,8 @@ type fakeAPI struct {
 	lastRegister map[string]any
 	lastRegToken string
 	lastListURL  string
+	listOffsets  []string
+	listPages    func(offset string) string // nil 이면 기본 2건 응답
 }
 
 func newFakeAPI(t *testing.T) (*fakeAPI, *Client) {
@@ -55,8 +57,13 @@ func newFakeAPI(t *testing.T) (*fakeAPI, *Client) {
 	})
 	mux.HandleFunc("GET /groups/grp/visit_cars", func(w http.ResponseWriter, r *http.Request) {
 		f.lastListURL = r.URL.String()
+		f.listOffsets = append(f.listOffsets, r.URL.Query().Get("offset"))
 		if r.Header.Get("x-access-token") == "" {
 			w.WriteHeader(401)
+			return
+		}
+		if f.listPages != nil {
+			fmt.Fprint(w, f.listPages(r.URL.Query().Get("offset")))
 			return
 		}
 		fmt.Fprint(w, `{"data":{"rows":[
@@ -184,5 +191,34 @@ func TestClient_List_QueryAndRows(t *testing.T) {
 		if !strings.Contains(f.lastListURL, q) {
 			t.Errorf("list URL %q missing %q", f.lastListURL, q)
 		}
+	}
+}
+
+func TestClient_List_PaginatesUntilShortPage(t *testing.T) {
+	f, c := newFakeAPI(t)
+	f.listPages = func(offset string) string {
+		var rows []string
+		n := 20
+		if offset == "20" {
+			n = 1
+		}
+		if offset == "40" {
+			t.Errorf("offset 40 must not be requested after a short page")
+		}
+		for i := 0; i < n; i++ {
+			rows = append(rows, fmt.Sprintf(`{"_id":"%s-%d","car_num":"x","start_date":"20260902","end_date":"20260902"}`, offset, i))
+		}
+		return `{"data":{"rows":[` + strings.Join(rows, ",") + `]}}`
+	}
+	start, end, _ := CoverageWindow(time.Date(2026, 9, 2, 0, 0, 0, 0, KST), 3)
+	rows, err := c.List(context.Background(), start, end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 21 {
+		t.Errorf("rows = %d, want 21", len(rows))
+	}
+	if strings.Join(f.listOffsets, ",") != "0,20" {
+		t.Errorf("offsets = %v, want [0 20]", f.listOffsets)
 	}
 }

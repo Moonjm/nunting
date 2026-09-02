@@ -3,11 +3,15 @@ package oitalk
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
 
+// fakeOitalk 워커 goroutine 에서도 호출되므로 mutex 로 보호. 순차 테스트는 필드를
+// 직접 읽어도 되지만 동시 테스트는 counts() 를 쓴다.
 type fakeOitalk struct {
+	mu            sync.Mutex
 	registerCalls []struct{ start, end time.Time }
 	registerErr   error
 	listRows      []Reservation
@@ -16,6 +20,8 @@ type fakeOitalk struct {
 }
 
 func (f *fakeOitalk) EnsureToken(context.Context) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.ensureCalls++
 	return "tok", nil
 }
@@ -23,11 +29,18 @@ func (f *fakeOitalk) List(context.Context, time.Time, time.Time) ([]Reservation,
 	return f.listRows, f.listErr
 }
 func (f *fakeOitalk) Register(_ context.Context, start, end time.Time) (Reservation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.registerCalls = append(f.registerCalls, struct{ start, end time.Time }{start, end})
 	if f.registerErr != nil {
 		return Reservation{}, f.registerErr
 	}
 	return Reservation{ID: "r1", State: "ok"}, nil
+}
+func (f *fakeOitalk) counts() (register, ensure int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.registerCalls), f.ensureCalls
 }
 
 var testCfg = Config{CarNum: "12가3456", CoverageDays: 3}
@@ -227,5 +240,81 @@ func TestWatcher_FirstLiveMessageIsRealEntry(t *testing.T) {
 	w.HandleGeofence(context.Background(), "일산", false)
 	if len(api.registerCalls) != 1 {
 		t.Fatalf("first live entry must register, got %d", len(api.registerCalls))
+	}
+}
+
+// blockingOitalk Register 가 release 될 때까지 막힌다 — 콜백 비블로킹 검증용.
+type blockingOitalk struct {
+	fakeOitalk
+	release chan struct{}
+	entered chan struct{}
+}
+
+func (b *blockingOitalk) Register(ctx context.Context, start, end time.Time) (Reservation, error) {
+	b.entered <- struct{}{}
+	<-b.release
+	return b.fakeOitalk.Register(ctx, start, end)
+}
+
+func TestWatcher_EnqueueDoesNotBlockWhileRegisterInFlight(t *testing.T) {
+	api := &blockingOitalk{release: make(chan struct{}), entered: make(chan struct{}, 1)}
+	w := newWatcher(api, testCfg, MQTTConfig{Geofence: "일산"})
+	w.now = func() time.Time { return time.Date(2026, 9, 2, 10, 0, 0, 0, KST) }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { w.serve(ctx); close(done) }()
+
+	w.enqueue(ctx, "teslamate/cars/1/geofence", "", true)
+	w.enqueue(ctx, "teslamate/cars/1/geofence", "일산", false)
+	<-api.entered // Register 진행 중
+
+	// 진행 중에도 enqueue 는 즉시 돌아와야 한다(paho 콜백을 막지 않는다).
+	returned := make(chan struct{})
+	go func() {
+		w.enqueue(ctx, "teslamate/cars/1/state", "online", false)
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("enqueue blocked while Register in flight")
+	}
+	close(api.release)
+	cancel()
+	<-done
+	if reg, _ := api.counts(); reg != 1 {
+		t.Fatalf("register calls = %d, want 1", reg)
+	}
+}
+
+func TestWatcher_ServeProcessesInOrder(t *testing.T) {
+	api := &fakeOitalk{}
+	w := newWatcher(api, testCfg, MQTTConfig{Geofence: "일산"})
+	w.now = func() time.Time { return time.Date(2026, 9, 2, 10, 0, 0, 0, KST) }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { w.serve(ctx); close(done) }()
+	// retained baseline "집" → 밖 → 집: 순서대로면 정확히 1회 등록.
+	w.enqueue(ctx, "teslamate/cars/1/geofence", "일산", true)
+	w.enqueue(ctx, "teslamate/cars/1/geofence", "", false)
+	w.enqueue(ctx, "teslamate/cars/1/geofence", "일산", false)
+	w.enqueue(ctx, "teslamate/cars/1/state", "driving", false)
+	deadline := time.After(2 * time.Second)
+	for {
+		reg, ens := api.counts()
+		if reg >= 1 && ens >= 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timeout: register=%d ensure=%d", reg, ens)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	cancel()
+	<-done
+	if reg, _ := api.counts(); reg != 1 {
+		t.Fatalf("register calls = %d, want 1", reg)
 	}
 }

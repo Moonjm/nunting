@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -144,24 +145,38 @@ func (c *Client) Register(ctx context.Context, start, end time.Time) (Reservatio
 	return resp.Data.Row, nil
 }
 
-// List [start,end] 와 겹치는 방문차량 목록(최대 20건).
+const (
+	listPageSize = 20
+	// listMaxPages 페이지네이션 상한(안전장치). 3일 구간에 400건이면 이미 비정상.
+	listMaxPages = 20
+)
+
+// List [start,end] 와 겹치는 방문차량 목록. 20건씩 offset 을 늘려 가며 페이지가
+// 짧게 올 때까지 모두 모은다 — 첫 페이지만 보면 우리 차 예약이 빠져 중복 등록될 수 있다.
 func (c *Client) List(ctx context.Context, start, end time.Time) ([]Reservation, error) {
-	q := url.Values{}
-	q.Set("ver", "1")
-	q.Set("offset", "0")
-	q.Set("limit", "20")
-	q.Set("start_dt", FormatISO(start))
-	q.Set("end_dt", FormatISO(end))
-	var resp struct {
-		Data struct {
-			Rows []Reservation `json:"rows"`
-		} `json:"data"`
+	var all []Reservation
+	for page := 0; page < listMaxPages; page++ {
+		q := url.Values{}
+		q.Set("ver", "1")
+		q.Set("offset", strconv.Itoa(page*listPageSize))
+		q.Set("limit", strconv.Itoa(listPageSize))
+		q.Set("start_dt", FormatISO(start))
+		q.Set("end_dt", FormatISO(end))
+		var resp struct {
+			Data struct {
+				Rows []Reservation `json:"rows"`
+			} `json:"data"`
+		}
+		path := "/groups/" + url.PathEscape(c.cfg.GroupID) + "/visit_cars?" + q.Encode()
+		if err := c.doAuthed(ctx, http.MethodGet, path, nil, &resp); err != nil {
+			return nil, fmt.Errorf("oitalk list: %w", err)
+		}
+		all = append(all, resp.Data.Rows...)
+		if len(resp.Data.Rows) < listPageSize {
+			return all, nil
+		}
 	}
-	path := "/groups/" + url.PathEscape(c.cfg.GroupID) + "/visit_cars?" + q.Encode()
-	if err := c.doAuthed(ctx, http.MethodGet, path, nil, &resp); err != nil {
-		return nil, fmt.Errorf("oitalk list: %w", err)
-	}
-	return resp.Data.Rows, nil
+	return all, fmt.Errorf("oitalk list: exceeded %d pages", listMaxPages)
 }
 
 // doAuthed 토큰 붙여 호출. 401 이면 강제 refresh 후 한 번 더.

@@ -19,7 +19,16 @@ const (
 	registerTimeout = 15 * time.Second
 	// tokenWarmInterval 저빈도 토큰 프리워밍 주기(driving 엣지와 별개 백스톱).
 	tokenWarmInterval = time.Hour
+	// eventQueueSize paho 콜백 → 워커 사이 버퍼. 지오펜스·state 는 분당 몇 건이라 넉넉.
+	eventQueueSize = 64
 )
+
+// event MQTT 메시지 1건. paho 콜백은 이것만 큐에 넣고 즉시 반환한다.
+type event struct {
+	topic    string
+	payload  string
+	retained bool
+}
 
 // API watcher 가 쓰는 오이톡 클라이언트 표면. 테스트에서 fake 로 대체.
 type API interface {
@@ -42,6 +51,8 @@ type Watcher struct {
 	mqttCfg MQTTConfig
 	now     func() time.Time
 
+	events chan event
+
 	mu           sync.Mutex
 	hasBaseline  bool
 	lastGeo      string
@@ -55,7 +66,7 @@ func NewWatcher(client *Client, m MQTTConfig) *Watcher {
 }
 
 func newWatcher(api API, cfg Config, m MQTTConfig) *Watcher {
-	return &Watcher{api: api, cfg: cfg, mqttCfg: m, now: time.Now}
+	return &Watcher{api: api, cfg: cfg, mqttCfg: m, now: time.Now, events: make(chan event, eventQueueSize)}
 }
 
 // Bootstrap 오이톡 목록으로 오늘 기준 커버리지를 1회 조회해 캐시를 seed 한다.
@@ -183,8 +194,14 @@ func (w *Watcher) HandleState(ctx context.Context, payload string) {
 }
 
 // Run 브로커 접속 + 구독 후 ctx 취소까지 유지. 자동 재접속, 재접속 시 재구독.
+//
+// paho 는 기본(OrderMatters) 모드에서 메시지 핸들러가 블로킹하지 않기를 요구한다
+// — 핸들러가 막히면 뒤이은 QoS1 메시지·ack 가 직렬화돼 keepalive 끊김까지 갈 수
+// 있다. 그래서 콜백은 큐에 넣기만 하고, 단일 워커(serve)가 순서대로 처리한다.
+// 워커가 하나라 엣지 판정 순서는 그대로 보존된다.
 func (w *Watcher) Run(ctx context.Context) error {
 	w.Bootstrap(ctx)
+	go w.serve(ctx)
 
 	opts := mqtt.NewClientOptions().
 		AddBroker(w.mqttCfg.Broker).
@@ -199,7 +216,7 @@ func (w *Watcher) Run(ctx context.Context) error {
 		slog.Info("oitalk_mqtt_connected", "broker", w.mqttCfg.Broker)
 		subs := map[string]byte{topicGeofence: 1, topicState: 1}
 		if tok := c.SubscribeMultiple(subs, func(_ mqtt.Client, msg mqtt.Message) {
-			w.dispatch(ctx, msg.Topic(), string(msg.Payload()), msg.Retained())
+			w.enqueue(ctx, msg.Topic(), string(msg.Payload()), msg.Retained())
 		}); tok.Wait() && tok.Error() != nil {
 			slog.Error("oitalk_mqtt_subscribe_failed", "err", tok.Error())
 		}
@@ -224,6 +241,29 @@ func (w *Watcher) Run(ctx context.Context) error {
 			if _, err := w.api.EnsureToken(ctx); err != nil {
 				slog.Warn("oitalk_token_prewarm_failed", "err", err)
 			}
+		}
+	}
+}
+
+// enqueue paho 콜백용. 큐가 차 있으면 기다리지 않고 버린다(로그) — 콜백을 막는
+// 것보다 낫고, 지오펜스는 retained 라 재접속 시 최신 값이 다시 온다.
+func (w *Watcher) enqueue(ctx context.Context, topic, payload string, retained bool) {
+	select {
+	case w.events <- event{topic: topic, payload: payload, retained: retained}:
+	case <-ctx.Done():
+	default:
+		slog.Warn("oitalk_event_dropped", "topic", topic, "queue", cap(w.events))
+	}
+}
+
+// serve 단일 워커. ctx 취소까지 큐를 순서대로 소비한다.
+func (w *Watcher) serve(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev := <-w.events:
+			w.dispatch(ctx, ev.topic, ev.payload, ev.retained)
 		}
 	}
 }
