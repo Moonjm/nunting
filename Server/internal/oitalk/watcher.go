@@ -1,0 +1,229 @@
+package oitalk
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"strings"
+	"sync"
+	"time"
+
+	mqtt "github.com/eclipse/paho.mqtt.golang"
+)
+
+const (
+	topicGeofence = "teslamate/cars/+/geofence"
+	topicState    = "teslamate/cars/+/state"
+
+	// registerTimeout 진입 hot-path 의 등록 POST 상한.
+	registerTimeout = 15 * time.Second
+	// tokenWarmInterval 저빈도 토큰 프리워밍 주기(driving 엣지와 별개 백스톱).
+	tokenWarmInterval = time.Hour
+)
+
+// API watcher 가 쓰는 오이톡 클라이언트 표면. 테스트에서 fake 로 대체.
+type API interface {
+	EnsureToken(ctx context.Context) (string, error)
+	List(ctx context.Context, start, end time.Time) ([]Reservation, error)
+	Register(ctx context.Context, start, end time.Time) (Reservation, error)
+}
+
+// Watcher TeslaMate MQTT 지오펜스를 구독해 "밖→집" 상승엣지에 방문차량을 등록한다.
+//
+// 멱등성은 DB 없이 메모리 커버리지 캐시(coveredUntil)로 처리한다. 등록 1건이
+// 3일을 덮으므로 대부분의 진입은 네트워크 없이 여기서 끝난다. 재시작 시엔
+// Bootstrap 이 오이톡 목록으로 캐시를 seed 하고, 첫 지오펜스 값(retained)은
+// baseline 으로만 저장해 이미 주차 중인 차를 진입으로 오인하지 않는다.
+//
+// 차 1대 전제 — 토픽 와일드카드(+)로 받지만 상태는 차량별로 나누지 않는다.
+type Watcher struct {
+	api     API
+	cfg     Config
+	mqttCfg MQTTConfig
+	now     func() time.Time
+
+	mu           sync.Mutex
+	hasBaseline  bool
+	lastGeo      string
+	lastState    string
+	coveredUntil time.Time // 이 날짜(KST 자정)까지 등록됨. zero 면 미상.
+}
+
+// NewWatcher main.go 배선용.
+func NewWatcher(client *Client, m MQTTConfig) *Watcher {
+	return newWatcher(client, client.Config(), m)
+}
+
+func newWatcher(api API, cfg Config, m MQTTConfig) *Watcher {
+	return &Watcher{api: api, cfg: cfg, mqttCfg: m, now: time.Now}
+}
+
+// Bootstrap 오이톡 목록으로 오늘 기준 커버리지를 1회 조회해 캐시를 seed 한다.
+// 실패해도 치명적이지 않다 — 캐시가 비면 다음 진입에 등록을 시도할 뿐이다.
+func (w *Watcher) Bootstrap(ctx context.Context) {
+	today := DayOf(w.now())
+	start, end, err := CoverageWindow(today, MaxCoverageDays)
+	if err != nil {
+		return
+	}
+	rows, err := w.api.List(ctx, start, end)
+	if err != nil {
+		slog.Warn("oitalk_bootstrap_list_failed", "err", err)
+		return
+	}
+	until := coverageEnd(rows, w.cfg.CarNum, today)
+	w.mu.Lock()
+	w.coveredUntil = until
+	w.mu.Unlock()
+	if until.IsZero() {
+		slog.Info("oitalk_bootstrap", "covered_until", "", "rows", len(rows))
+		return
+	}
+	slog.Info("oitalk_bootstrap", "covered_until", until.Format("2006-01-02"), "rows", len(rows))
+}
+
+// coverageEnd today 부터 연속으로 carNum 예약이 덮는 마지막 날. 오늘이 비면 zero.
+func coverageEnd(rows []Reservation, carNum string, today time.Time) time.Time {
+	type span struct{ s, e time.Time }
+	var spans []span
+	for _, r := range rows {
+		if r.CarNum != carNum {
+			continue
+		}
+		s, err1 := ParseYMD(r.StartDate)
+		e, err2 := ParseYMD(r.EndDate)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		spans = append(spans, span{s, e})
+	}
+	var until time.Time
+	for day := today; ; day = day.AddDate(0, 0, 1) {
+		covered := false
+		for _, sp := range spans {
+			if !day.Before(sp.s) && !day.After(sp.e) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			return until
+		}
+		until = day
+	}
+}
+
+// HandleGeofence MQTT geofence 페이로드 1건 처리(hot-path).
+func (w *Watcher) HandleGeofence(ctx context.Context, payload string) {
+	cur := strings.TrimSpace(payload)
+	target := w.mqttCfg.Geofence
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if !w.hasBaseline {
+		w.hasBaseline = true
+		w.lastGeo = cur
+		slog.Info("oitalk_geofence_baseline", "geofence", cur)
+		return
+	}
+	prev := w.lastGeo
+	w.lastGeo = cur
+	if prev == target || cur != target {
+		return
+	}
+
+	today := DayOf(w.now())
+	if !w.coveredUntil.IsZero() && !today.After(w.coveredUntil) {
+		slog.Debug("oitalk_entry_covered", "today", today.Format("2006-01-02"),
+			"covered_until", w.coveredUntil.Format("2006-01-02"))
+		return
+	}
+
+	start, end, err := CoverageWindow(today, w.cfg.CoverageDays)
+	if err != nil {
+		slog.Error("oitalk_register_skipped", "err", err)
+		return
+	}
+	rctx, cancel := context.WithTimeout(ctx, registerTimeout)
+	defer cancel()
+	row, err := w.api.Register(rctx, start, end)
+	if err != nil {
+		slog.Error("oitalk_register_failed", "err", err)
+		return
+	}
+	w.coveredUntil = DayOf(end)
+	slog.Info("oitalk_registered", "start_date", DayOf(start).Format("2006-01-02"),
+		"end_date", w.coveredUntil.Format("2006-01-02"), "id", string(row.ID), "state", row.State)
+}
+
+// HandleState 차량 state 페이로드. driving 으로 바뀌면 토큰을 미리 데워
+// 진입 순간엔 register POST 한 방만 나가게 한다.
+func (w *Watcher) HandleState(ctx context.Context, payload string) {
+	cur := strings.TrimSpace(payload)
+	w.mu.Lock()
+	prev := w.lastState
+	w.lastState = cur
+	w.mu.Unlock()
+	if cur != "driving" || prev == "driving" {
+		return
+	}
+	if _, err := w.api.EnsureToken(ctx); err != nil {
+		slog.Warn("oitalk_token_prewarm_failed", "err", err)
+	}
+}
+
+// Run 브로커 접속 + 구독 후 ctx 취소까지 유지. 자동 재접속, 재접속 시 재구독.
+func (w *Watcher) Run(ctx context.Context) error {
+	w.Bootstrap(ctx)
+
+	opts := mqtt.NewClientOptions().
+		AddBroker(w.mqttCfg.Broker).
+		SetClientID(w.mqttCfg.ClientID).
+		SetUsername(w.mqttCfg.Username).
+		SetPassword(w.mqttCfg.Password).
+		SetAutoReconnect(true).
+		SetConnectRetry(true).
+		SetConnectRetryInterval(10 * time.Second).
+		SetKeepAlive(30 * time.Second)
+	opts.SetOnConnectHandler(func(c mqtt.Client) {
+		slog.Info("oitalk_mqtt_connected", "broker", w.mqttCfg.Broker)
+		subs := map[string]byte{topicGeofence: 1, topicState: 1}
+		if tok := c.SubscribeMultiple(subs, func(_ mqtt.Client, msg mqtt.Message) {
+			w.dispatch(ctx, msg.Topic(), string(msg.Payload()))
+		}); tok.Wait() && tok.Error() != nil {
+			slog.Error("oitalk_mqtt_subscribe_failed", "err", tok.Error())
+		}
+	})
+	opts.SetConnectionLostHandler(func(_ mqtt.Client, err error) {
+		slog.Warn("oitalk_mqtt_connection_lost", "err", err)
+	})
+
+	cli := mqtt.NewClient(opts)
+	if tok := cli.Connect(); tok.Wait() && tok.Error() != nil {
+		return fmt.Errorf("mqtt connect: %w", tok.Error())
+	}
+	defer cli.Disconnect(250)
+
+	ticker := time.NewTicker(tokenWarmInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if _, err := w.api.EnsureToken(ctx); err != nil {
+				slog.Warn("oitalk_token_prewarm_failed", "err", err)
+			}
+		}
+	}
+}
+
+func (w *Watcher) dispatch(ctx context.Context, topic, payload string) {
+	switch {
+	case strings.HasSuffix(topic, "/geofence"):
+		w.HandleGeofence(ctx, payload)
+	case strings.HasSuffix(topic, "/state"):
+		w.HandleState(ctx, payload)
+	}
+}
