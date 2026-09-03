@@ -2,6 +2,7 @@ package oitalk
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -28,6 +29,11 @@ const (
 	topicRetry         = "nunting/oitalk/retry"
 	defaultRetryDelay  = 30 * time.Second
 	maxRegisterRetries = 10
+
+	// topicReconnect 접속 세대 경계. 재접속 시 구독보다 먼저 큐에 넣어, 뒤따르는
+	// retained 값이 새 baseline 이 되게 한다.
+	topicReconnect     = "nunting/oitalk/reconnect"
+	subscribeRetryWait = 5 * time.Second
 )
 
 // event MQTT 메시지 1건. paho 콜백은 이것만 큐에 넣고 즉시 반환한다.
@@ -177,6 +183,20 @@ func (w *Watcher) HandleGeofence(ctx context.Context, payload string, retained b
 	w.registerLocked(ctx)
 }
 
+// HandleReconnect 접속 세대 경계. 끊긴 사이 차가 나가면 TeslaMate 의 빈 값이
+// retained 메시지를 지워 재접속 후 아무것도 오지 않는다 — lastGeo 가 "집" 으로
+// 굳어 다음 진입이 집→집으로 보여 영구히 등록을 놓친다. 그래서 세대마다 baseline
+// 을 다시 잡는다: 재접속 후 retained 가 오면 baseline, live 가 오면 "밖" 에서의
+// 진입으로 판정한다. 재시도 상태는 건드리지 않는다(진입 중 재시도는 계속).
+func (w *Watcher) HandleReconnect() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.hasBaseline = false
+	w.lastGeo = ""
+	w.lastState = ""
+	slog.Info("oitalk_geofence_rebaseline")
+}
+
 // HandleRetry 등록 실패 후 스케줄된 재시도. gen 이 현재 진입 세대와 다르면(그 사이
 // 나갔다 다시 들어옴) 옛 타이머이므로 무시. 여전히 진입 상태이고 대기 중일 때만.
 //
@@ -321,7 +341,16 @@ func (w *Watcher) runWith(ctx context.Context, subscribe func(context.Context) (
 }
 
 // connectMQTT paho 접속 + 구독. 반환 함수는 접속 해제.
+//
+// paho 는 OnConnect 를 별도 goroutine 에서 부르므로 Connect() 완료 ≠ 구독 완료.
+// 최초 구독이 실제로 성공할 때까지 기다렸다가 돌아온다 — 그래야 이어지는
+// Bootstrap 동안의 진입이 큐에 잡힌다. 매 (재)접속마다 세대 경계 이벤트를 먼저
+// 큐에 넣고, 구독은 성공할 때까지 재시도한다(브로커가 접속은 받고 SUBACK 만
+// 실패하면 OnConnect 가 다시 불리지 않아 영구 무구독이 되기 때문).
 func (w *Watcher) connectMQTT(ctx context.Context) (func(), error) {
+	firstSub := make(chan error, 1)
+	var firstOnce sync.Once
+
 	opts := mqtt.NewClientOptions().
 		AddBroker(w.mqttCfg.Broker).
 		SetClientID(w.mqttCfg.ClientID).
@@ -333,12 +362,24 @@ func (w *Watcher) connectMQTT(ctx context.Context) (func(), error) {
 		SetKeepAlive(30 * time.Second)
 	opts.SetOnConnectHandler(func(c mqtt.Client) {
 		slog.Info("oitalk_mqtt_connected", "broker", w.mqttCfg.Broker)
+		w.enqueueReconnect(ctx)
 		subs := map[string]byte{topicGeofence: 1, topicState: 1}
-		if tok := c.SubscribeMultiple(subs, func(_ mqtt.Client, msg mqtt.Message) {
-			w.enqueue(ctx, msg.Topic(), string(msg.Payload()), msg.Retained())
-		}); tok.Wait() && tok.Error() != nil {
-			slog.Error("oitalk_mqtt_subscribe_failed", "err", tok.Error())
+		err := subscribeWithRetry(ctx, subscribeRetryWait, func() error {
+			if !c.IsConnectionOpen() {
+				return errors.New("connection not open")
+			}
+			tok := c.SubscribeMultiple(subs, func(_ mqtt.Client, msg mqtt.Message) {
+				w.enqueue(ctx, msg.Topic(), string(msg.Payload()), msg.Retained())
+			})
+			tok.Wait()
+			return tok.Error()
+		})
+		if err != nil {
+			slog.Error("oitalk_mqtt_subscribe_failed", "err", err)
+		} else {
+			slog.Info("oitalk_mqtt_subscribed")
 		}
+		firstOnce.Do(func() { firstSub <- err })
 	})
 	opts.SetConnectionLostHandler(func(_ mqtt.Client, err error) {
 		slog.Warn("oitalk_mqtt_connection_lost", "err", err)
@@ -348,7 +389,38 @@ func (w *Watcher) connectMQTT(ctx context.Context) (func(), error) {
 	if tok := cli.Connect(); tok.Wait() && tok.Error() != nil {
 		return nil, fmt.Errorf("mqtt connect: %w", tok.Error())
 	}
+	select {
+	case err := <-firstSub:
+		if err != nil {
+			cli.Disconnect(250)
+			return nil, fmt.Errorf("mqtt subscribe: %w", err)
+		}
+	case <-ctx.Done():
+		cli.Disconnect(250)
+		return nil, ctx.Err()
+	}
 	return func() { cli.Disconnect(250) }, nil
+}
+
+// subscribeWithRetry 구독이 성공할 때까지 wait 간격으로 반복. ctx 취소 시 중단.
+func subscribeWithRetry(ctx context.Context, wait time.Duration, subscribe func() error) error {
+	for {
+		err := subscribe()
+		if err == nil {
+			return nil
+		}
+		slog.Warn("oitalk_mqtt_subscribe_retry", "err", err, "in", wait.String())
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+}
+
+// enqueueReconnect 접속 세대 경계를 큐에 넣는다(구독보다 먼저 호출).
+func (w *Watcher) enqueueReconnect(ctx context.Context) {
+	w.enqueue(ctx, topicReconnect, "", false)
 }
 
 // enqueue paho 콜백용. 큐가 차 있으면 기다리지 않고 버린다(로그) — 콜백을 막는
@@ -380,6 +452,8 @@ func (w *Watcher) dispatch(ctx context.Context, topic, payload string, retained 
 		w.HandleGeofence(ctx, payload, retained)
 	case strings.HasSuffix(topic, "/state"):
 		w.HandleState(ctx, payload)
+	case topic == topicReconnect:
+		w.HandleReconnect()
 	case topic == topicRetry:
 		if gen, err := strconv.Atoi(payload); err == nil {
 			w.HandleRetry(ctx, gen)

@@ -562,3 +562,104 @@ func TestWatcher_RunWithReturnsSubscribeError(t *testing.T) {
 		t.Fatalf("bootstrap must not run when subscribe fails, list calls = %d", api.listCalls)
 	}
 }
+
+func TestWatcher_ReconnectRebaselinesSoNextLiveEntryRegisters(t *testing.T) {
+	// 집에 있을 때 끊김 → 오프라인 중 나감(빈 값 publish = retained 삭제) → 재접속.
+	// 재접속 후엔 retained 가 없어 아무것도 안 오고, 다음 진입은 live "일산" 하나뿐.
+	api := &fakeOitalk{}
+	w, now := newTestWatcher(t, api)
+	ctx := context.Background()
+	w.HandleGeofence(ctx, "일산", false) // 진입 1 → 등록
+	w.HandleReconnect()
+	*now = now.AddDate(0, 0, 3)        // 커버리지 만료
+	w.HandleGeofence(ctx, "일산", false) // 재접속 후 첫 메시지 = live 진입
+	if len(api.registerCalls) != 2 {
+		t.Fatalf("register calls = %d, want 2 (stale lastGeo must be reset on reconnect)", len(api.registerCalls))
+	}
+}
+
+func TestWatcher_ReconnectRetainedTargetIsBaselineAgain(t *testing.T) {
+	// 집에 주차된 채 재접속 → retained "일산" 이 다시 옴 → 진입 아님.
+	api := &fakeOitalk{}
+	w, now := newTestWatcher(t, api)
+	ctx := context.Background()
+	w.HandleGeofence(ctx, "일산", false) // 진입 → 등록 1
+	w.HandleReconnect()
+	*now = now.AddDate(0, 0, 3)
+	w.HandleGeofence(ctx, "일산", true) // retained
+	if len(api.registerCalls) != 1 {
+		t.Fatalf("register calls = %d, want 1 (retained after reconnect is baseline)", len(api.registerCalls))
+	}
+	w.HandleGeofence(ctx, "", false)
+	w.HandleGeofence(ctx, "일산", false)
+	if len(api.registerCalls) != 2 {
+		t.Fatalf("register calls = %d, want 2", len(api.registerCalls))
+	}
+}
+
+func TestWatcher_ReconnectEventGoesThroughWorkerInOrder(t *testing.T) {
+	api := &fakeOitalk{}
+	w := newWatcher(api, testCfg, MQTTConfig{Geofence: "일산"})
+	now := time.Date(2026, 9, 2, 10, 0, 0, 0, KST)
+	w.now = func() time.Time { return now }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { w.serve(ctx); close(done) }()
+	w.enqueue(ctx, "teslamate/cars/1/geofence", "", true)
+	w.enqueue(ctx, "teslamate/cars/1/geofence", "일산", false) // 등록 1
+	w.enqueueReconnect(ctx)
+	w.enqueue(ctx, "teslamate/cars/1/geofence", "일산", true) // 재접속 retained → baseline
+	deadline := time.After(2 * time.Second)
+	for {
+		if reg, _ := api.counts(); reg >= 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timeout")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	<-done
+	if reg, _ := api.counts(); reg != 1 {
+		t.Fatalf("register calls = %d, want 1", reg)
+	}
+}
+
+func TestSubscribeWithRetry_RetriesUntilSuccess(t *testing.T) {
+	attempts := 0
+	err := subscribeWithRetry(context.Background(), time.Millisecond, func() error {
+		attempts++
+		if attempts < 3 {
+			return errors.New("SUBACK failure")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+}
+
+func TestSubscribeWithRetry_StopsOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	attempts := 0
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+	}()
+	err := subscribeWithRetry(ctx, time.Millisecond, func() error {
+		attempts++
+		return errors.New("still failing")
+	})
+	if err == nil {
+		t.Fatal("expected ctx error")
+	}
+	if attempts == 0 {
+		t.Fatal("expected at least one attempt")
+	}
+}
