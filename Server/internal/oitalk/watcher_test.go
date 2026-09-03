@@ -663,3 +663,42 @@ func TestSubscribeWithRetry_StopsOnCancel(t *testing.T) {
 		t.Fatal("expected at least one attempt")
 	}
 }
+
+func TestConnEpochs_NextBeginCancelsPrevious(t *testing.T) {
+	var e connEpochs
+	ctx1 := e.begin(context.Background())
+	ctx2 := e.begin(context.Background())
+	if ctx1.Err() == nil {
+		t.Fatal("previous epoch must be cancelled by next begin")
+	}
+	if ctx2.Err() != nil {
+		t.Fatal("current epoch must be live")
+	}
+}
+
+func TestConnEpochs_EndCancelsCurrent(t *testing.T) {
+	var e connEpochs
+	ctx := e.begin(context.Background())
+	e.end()
+	if ctx.Err() == nil {
+		t.Fatal("end must cancel current epoch")
+	}
+	e.end() // 중복 호출 안전
+}
+
+func TestSubscribeWithRetry_AbortsWhenEpochEnds(t *testing.T) {
+	var e connEpochs
+	ctx := e.begin(context.Background())
+	attempts := 0
+	go func() {
+		time.Sleep(5 * time.Millisecond)
+		e.end() // 접속 끊김
+	}()
+	err := subscribeWithRetry(ctx, time.Millisecond, func() error {
+		attempts++
+		return errors.New("SUBACK failure")
+	})
+	if err == nil {
+		t.Fatal("stale loop must stop after its connection epoch ends")
+	}
+}

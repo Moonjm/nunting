@@ -350,6 +350,7 @@ func (w *Watcher) runWith(ctx context.Context, subscribe func(context.Context) (
 func (w *Watcher) connectMQTT(ctx context.Context) (func(), error) {
 	firstSub := make(chan error, 1)
 	var firstOnce sync.Once
+	var epochs connEpochs
 
 	opts := mqtt.NewClientOptions().
 		AddBroker(w.mqttCfg.Broker).
@@ -362,9 +363,10 @@ func (w *Watcher) connectMQTT(ctx context.Context) (func(), error) {
 		SetKeepAlive(30 * time.Second)
 	opts.SetOnConnectHandler(func(c mqtt.Client) {
 		slog.Info("oitalk_mqtt_connected", "broker", w.mqttCfg.Broker)
+		epochCtx := epochs.begin(ctx) // 이전 세대의 재시도 루프 취소
 		w.enqueueReconnect(ctx)
 		subs := map[string]byte{topicGeofence: 1, topicState: 1}
-		err := subscribeWithRetry(ctx, subscribeRetryWait, func() error {
+		err := subscribeWithRetry(epochCtx, subscribeRetryWait, func() error {
 			if !c.IsConnectionOpen() {
 				return errors.New("connection not open")
 			}
@@ -383,6 +385,7 @@ func (w *Watcher) connectMQTT(ctx context.Context) (func(), error) {
 	})
 	opts.SetConnectionLostHandler(func(_ mqtt.Client, err error) {
 		slog.Warn("oitalk_mqtt_connection_lost", "err", err)
+		epochs.end() // 이 접속의 구독 재시도 루프 중단
 	})
 
 	cli := mqtt.NewClient(opts)
@@ -400,6 +403,37 @@ func (w *Watcher) connectMQTT(ctx context.Context) (func(), error) {
 		return nil, ctx.Err()
 	}
 	return func() { cli.Disconnect(250) }, nil
+}
+
+// connEpochs 접속 세대별 컨텍스트. OnConnect 마다 begin, ConnectionLost 마다 end.
+// 이전 세대의 구독 재시도 루프가 새 접속에서 먼저 구독해 버려(재접속 마커보다
+// 앞서 retained 수신) baseline 순서를 깨는 걸 막는다 — 세대가 끝나면 그 루프는
+// ctx 취소로 멈춘다.
+type connEpochs struct {
+	mu     sync.Mutex
+	cancel context.CancelFunc
+}
+
+// begin 이전 세대를 취소하고 새 세대 ctx 를 만든다.
+func (e *connEpochs) begin(parent context.Context) context.Context {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.cancel != nil {
+		e.cancel()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	e.cancel = cancel
+	return ctx
+}
+
+// end 현재 세대를 취소한다. 중복 호출 안전.
+func (e *connEpochs) end() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.cancel != nil {
+		e.cancel()
+		e.cancel = nil
+	}
 }
 
 // subscribeWithRetry 구독이 성공할 때까지 wait 간격으로 반복. ctx 취소 시 중단.
