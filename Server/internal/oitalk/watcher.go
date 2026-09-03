@@ -239,7 +239,8 @@ func (w *Watcher) connectMQTT(ctx context.Context) (func(), error) {
 	})
 
 	cli := mqtt.NewClient(opts)
-	slog.Info("oitalk_mqtt_connecting", "broker", w.mqttCfg.Broker)
+	slog.Info("oitalk_mqtt_connecting", "broker", w.mqttCfg.Broker,
+		"hint", "이 뒤에 oitalk_mqtt_connected 가 안 뜨면 브로커 주소/네트워크 문제 — 10초 간격 무한 재시도 중")
 	if tok := cli.Connect(); tok.Wait() && tok.Error() != nil {
 		return nil, fmt.Errorf("mqtt connect: %w", tok.Error())
 	}
