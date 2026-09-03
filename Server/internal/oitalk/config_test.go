@@ -12,11 +12,7 @@ func setFullEnv(t *testing.T) {
 	t.Setenv("OITALK_CAR_NUM", "12가3456")
 	t.Setenv("OITALK_RECV_PHONE", "+821012345678")
 	t.Setenv("OITALK_VISIT_REASON", "")
-	t.Setenv("OITALK_COVERAGE_DAYS", "")
 	t.Setenv("TESLAMATE_MQTT_BROKER", "tcp://192.168.0.10:1883")
-	t.Setenv("TESLAMATE_MQTT_USERNAME", "")
-	t.Setenv("TESLAMATE_MQTT_PASSWORD", "")
-	t.Setenv("TESLAMATE_MQTT_CLIENT_ID", "")
 	t.Setenv("TESLAMATE_GEOFENCE", " 일산 ")
 }
 
@@ -28,9 +24,6 @@ func TestConfigFromEnv_FullEnvEnabledWithDefaults(t *testing.T) {
 	}
 	if c.VisitReason != "세대 방문" {
 		t.Errorf("VisitReason default = %q", c.VisitReason)
-	}
-	if c.CoverageDays != 3 {
-		t.Errorf("CoverageDays default = %d", c.CoverageDays)
 	}
 	if c.BaseURL != "https://api.oitalk.net" {
 		t.Errorf("BaseURL = %q", c.BaseURL)
@@ -60,9 +53,6 @@ func TestMQTTConfigFromEnv(t *testing.T) {
 	}
 	if m.Geofence != "일산" {
 		t.Errorf("Geofence should be trimmed: %q", m.Geofence)
-	}
-	if m.ClientID != "nunting-oitalk" {
-		t.Errorf("ClientID default = %q", m.ClientID)
 	}
 
 	t.Setenv("TESLAMATE_MQTT_BROKER", "")

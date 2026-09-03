@@ -2,7 +2,6 @@ package oitalk
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,13 +11,6 @@ import (
 	"testing"
 	"time"
 )
-
-// fakeJWT exp 클레임만 있는 unsigned JWT.
-func fakeJWT(exp time.Time) string {
-	hdr := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
-	body := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d}`, exp.Unix())))
-	return hdr + "." + body + ".sig"
-}
 
 type fakeAPI struct {
 	t            *testing.T
@@ -34,7 +26,7 @@ type fakeAPI struct {
 }
 
 func newFakeAPI(t *testing.T) (*fakeAPI, *Client) {
-	f := &fakeAPI{t: t, token: fakeJWT(time.Now().Add(24 * time.Hour)), registerCode: 200}
+	f := &fakeAPI{t: t, token: "tok-1", registerCode: 200}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /auth/refresh", func(w http.ResponseWriter, r *http.Request) {
 		f.refreshCalls.Add(1)
@@ -76,7 +68,7 @@ func newFakeAPI(t *testing.T) (*fakeAPI, *Client) {
 	cfg := Config{
 		BaseURL: srv.URL, ClientSecret: "sec", AccountID: "acc", GroupID: "grp",
 		DeviceID: "dev", MobiKey: "mobi", CarNum: "12가3456", RecvPhone: "+821012345678",
-		VisitReason: "세대 방문", CoverageDays: 3,
+		VisitReason: "세대 방문",
 	}
 	return f, NewClient(cfg)
 }
@@ -107,18 +99,20 @@ func TestClient_EnsureToken_RefreshesOnceThenCaches(t *testing.T) {
 	}
 }
 
-func TestClient_EnsureToken_RefreshesWhenNearExpiry(t *testing.T) {
+func TestClient_EnsureToken_RefreshesWhenExpired(t *testing.T) {
 	f, c := newFakeAPI(t)
-	f.token = fakeJWT(time.Now().Add(2 * time.Minute)) // 5분 여유 안쪽
 	ctx := context.Background()
 	if _, err := c.EnsureToken(ctx); err != nil {
 		t.Fatal(err)
 	}
+	c.mu.Lock()
+	c.tokenExp = time.Now().Add(-time.Minute) // 만료 경과
+	c.mu.Unlock()
 	if _, err := c.EnsureToken(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if n := f.refreshCalls.Load(); n != 2 {
-		t.Errorf("refresh calls = %d, want 2 (near-expiry token must be refreshed again)", n)
+		t.Errorf("refresh calls = %d, want 2 (expired token must be refreshed)", n)
 	}
 }
 
@@ -142,7 +136,7 @@ func TestClient_Register_SendsSpecAndParsesRow(t *testing.T) {
 			t.Errorf("body[%s] = %v, want %v", k, f.lastRegister[k], v)
 		}
 	}
-	if row.ID != "abc123" || row.State != "ok" || row.StartDate != "20260902" || row.EndDate != "20260904" {
+	if row.IDString() != "abc123" || row.State != "ok" || row.StartDate != "20260902" || row.EndDate != "20260904" {
 		t.Errorf("row = %+v", row)
 	}
 }
@@ -181,8 +175,8 @@ func TestClient_List_QueryAndRows(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("rows = %d", len(rows))
 	}
-	if rows[0].ID != "1" || rows[1].ID != "2" {
-		t.Errorf("_id number/string both → string: %q %q", rows[0].ID, rows[1].ID)
+	if rows[0].IDString() != "1" || rows[1].IDString() != "2" {
+		t.Errorf("_id number/string both → string: %q %q", rows[0].IDString(), rows[1].IDString())
 	}
 	if rows[0].CarNum != "12가3456" || rows[0].StartDate != "20260902" || rows[0].EndDate != "20260904" {
 		t.Errorf("row0 = %+v", rows[0])

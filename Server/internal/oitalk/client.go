@@ -3,7 +3,6 @@ package oitalk
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,36 +16,21 @@ import (
 	"time"
 )
 
-// tokenSlack access token 만료 이 시간 전부터 갱신 대상으로 본다.
-const tokenSlack = 5 * time.Minute
-
-// defaultTokenTTL JWT exp 를 못 읽을 때의 보수적 수명(관찰값 ≈24h).
-const defaultTokenTTL = 23 * time.Hour
+// tokenTTL 발급 후 이 시간이 지나면 갱신한다. 관찰된 수명은 ≈24h — 절반이면
+// 넉넉하고, 혹시 더 짧아도 401 → refresh 재시도 안전망이 받는다.
+const tokenTTL = 12 * time.Hour
 
 // Reservation 오이톡 방문차량 1건. 등록 응답 row / 목록 rows 공용.
-// _id 는 숫자·문자열 둘 다 관찰 가능성이 있어 문자열로 흡수.
 type Reservation struct {
-	ID        flexString `json:"_id"`
-	CarNum    string     `json:"car_num"`
-	StartDate string     `json:"start_date"` // YYYYMMDD (KST)
-	EndDate   string     `json:"end_date"`   // YYYYMMDD (KST)
-	State     string     `json:"state"`
+	ID        json.RawMessage `json:"_id"` // 숫자·문자열 미상 — 로그에만 쓰므로 raw
+	CarNum    string          `json:"car_num"`
+	StartDate string          `json:"start_date"` // YYYYMMDD (KST)
+	EndDate   string          `json:"end_date"`   // YYYYMMDD (KST)
+	State     string          `json:"state"`
 }
 
-type flexString string
-
-func (s *flexString) UnmarshalJSON(b []byte) error {
-	if len(b) > 0 && b[0] == '"' {
-		var v string
-		if err := json.Unmarshal(b, &v); err != nil {
-			return err
-		}
-		*s = flexString(v)
-		return nil
-	}
-	*s = flexString(bytes.TrimSpace(b))
-	return nil
-}
+// IDString 로그용 — 문자열 _id 면 따옴표를 벗긴다.
+func (r Reservation) IDString() string { return strings.Trim(string(r.ID), `"`) }
 
 // Client 오이톡 HTTP 클라이언트. access token 을 캐시하고 만료 임박 시
 // client_secret 으로 재발급(전화인증 없음). 트리거 방식과 무관하게 재사용 가능.
@@ -73,11 +57,11 @@ func (c *Client) Enabled() bool { return c.cfg.Enabled() }
 // Config 주입된 설정(읽기용).
 func (c *Client) Config() Config { return c.cfg }
 
-// EnsureToken 유효한(만료 5분 이상 남은) access token 을 돌려준다. 필요 시 refresh.
+// EnsureToken 유효한 access token 을 돌려준다. 발급 후 tokenTTL 지났으면 refresh.
 func (c *Client) EnsureToken(ctx context.Context) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.accessToken != "" && time.Now().Add(tokenSlack).Before(c.tokenExp) {
+	if c.accessToken != "" && time.Now().Before(c.tokenExp) {
 		return c.accessToken, nil
 	}
 	if err := c.refreshLocked(ctx); err != nil {
@@ -121,9 +105,8 @@ func (c *Client) refreshLocked(ctx context.Context) error {
 		return errors.New("oitalk refresh: empty token")
 	}
 	c.accessToken = resp.Data.Token
-	c.tokenExp = jwtExpiry(resp.Data.Token)
-	slog.Info("oitalk_token_refreshed", "exp", c.tokenExp.In(KST).Format(time.RFC3339),
-		"ttl_min", int(time.Until(c.tokenExp).Minutes()))
+	c.tokenExp = time.Now().Add(tokenTTL)
+	slog.Info("oitalk_token_refreshed", "renew_after", c.tokenExp.In(KST).Format(time.RFC3339))
 	return nil
 }
 
@@ -247,22 +230,6 @@ func (c *Client) do(ctx context.Context, method, path, token string, body, out a
 		}
 	}
 	return res.StatusCode, nil
-}
-
-// jwtExpiry JWT payload 의 exp 클레임. 못 읽으면 now+defaultTokenTTL.
-func jwtExpiry(tok string) time.Time {
-	parts := strings.Split(tok, ".")
-	if len(parts) == 3 {
-		if raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "=")); err == nil {
-			var claims struct {
-				Exp int64 `json:"exp"`
-			}
-			if json.Unmarshal(raw, &claims) == nil && claims.Exp > 0 {
-				return time.Unix(claims.Exp, 0)
-			}
-		}
-	}
-	return time.Now().Add(defaultTokenTTL)
 }
 
 // stripQuery 로그용 경로 — 쿼리(날짜 등)는 잘라 한 줄로.

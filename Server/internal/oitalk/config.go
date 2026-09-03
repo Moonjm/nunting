@@ -2,11 +2,13 @@ package oitalk
 
 import (
 	"os"
-	"strconv"
 	"strings"
 )
 
-const defaultBaseURL = "https://api.oitalk.net"
+const (
+	defaultBaseURL = "https://api.oitalk.net"
+	mqttClientID   = "nunting-oitalk"
+)
 
 // Config 오이톡 API 자격증명·등록 파라미터. 전부 env(OITALK_*) 주입.
 // client_secret 은 오이톡 계정 전체를 여는 열쇠 — 로그에 남기지 않는다.
@@ -20,7 +22,6 @@ type Config struct {
 	CarNum       string
 	RecvPhone    string // E.164
 	VisitReason  string
-	CoverageDays int
 }
 
 // Enabled 필수 env 가 모두 있어야 true. 하나라도 비면 watcher 는 뜨지 않는다.
@@ -29,16 +30,10 @@ func (c Config) Enabled() bool {
 		c.DeviceID != "" && c.MobiKey != "" && c.CarNum != "" && c.RecvPhone != ""
 }
 
-// ConfigFromEnv OITALK_* env 를 읽는다. 기본값: 사유 "세대 방문", 3일.
+// ConfigFromEnv OITALK_* env 를 읽는다. 기본값: 사유 "세대 방문".
 func ConfigFromEnv() Config {
-	days := MaxCoverageDays
-	if v := os.Getenv("OITALK_COVERAGE_DAYS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			days = n
-		}
-	}
 	return Config{
-		BaseURL:      envOr("OITALK_BASE_URL", defaultBaseURL),
+		BaseURL:      defaultBaseURL,
 		ClientSecret: os.Getenv("OITALK_CLIENT_SECRET"),
 		AccountID:    os.Getenv("OITALK_ACCOUNT_ID"),
 		GroupID:      os.Getenv("OITALK_GROUP_ID"),
@@ -47,16 +42,13 @@ func ConfigFromEnv() Config {
 		CarNum:       os.Getenv("OITALK_CAR_NUM"),
 		RecvPhone:    os.Getenv("OITALK_RECV_PHONE"),
 		VisitReason:  envOr("OITALK_VISIT_REASON", "세대 방문"),
-		CoverageDays: days,
 	}
 }
 
-// MQTTConfig TeslaMate 브로커 접속 + 매칭할 지오펜스 이름.
+// MQTTConfig TeslaMate 브로커 접속 + 매칭할 지오펜스 이름. 브로커는 익명(공식
+// compose 의 mosquitto-no-auth) 전제라 인증 필드가 없다.
 type MQTTConfig struct {
 	Broker   string // tcp://host:1883
-	Username string
-	Password string
-	ClientID string
 	Geofence string // TESLAMATE_GEOFENCE — trim 후 정확 일치
 }
 
@@ -69,9 +61,6 @@ func (m MQTTConfig) Enabled() bool {
 func MQTTConfigFromEnv() MQTTConfig {
 	return MQTTConfig{
 		Broker:   os.Getenv("TESLAMATE_MQTT_BROKER"),
-		Username: os.Getenv("TESLAMATE_MQTT_USERNAME"),
-		Password: os.Getenv("TESLAMATE_MQTT_PASSWORD"),
-		ClientID: envOr("TESLAMATE_MQTT_CLIENT_ID", "nunting-oitalk"),
 		Geofence: strings.TrimSpace(os.Getenv("TESLAMATE_GEOFENCE")),
 	}
 }

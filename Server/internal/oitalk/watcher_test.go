@@ -16,15 +16,8 @@ type fakeOitalk struct {
 	listRows      []Reservation
 	listErrs      []error // 호출 순서대로 소비. 비면 nil.
 	listCalls     int
-	ensureCalls   int
 }
 
-func (f *fakeOitalk) EnsureToken(context.Context) (string, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.ensureCalls++
-	return "tok", nil
-}
 func (f *fakeOitalk) List(context.Context, time.Time, time.Time) ([]Reservation, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -49,15 +42,15 @@ func (f *fakeOitalk) Register(_ context.Context, start, end time.Time) (Reservat
 			return Reservation{}, err
 		}
 	}
-	return Reservation{ID: "r1", State: "ok"}, nil
+	return Reservation{ID: []byte(`"r1"`), State: "ok"}, nil
 }
-func (f *fakeOitalk) counts() (register, list, ensure int) {
+func (f *fakeOitalk) counts() (register, list int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return len(f.registerCalls), f.listCalls, f.ensureCalls
+	return len(f.registerCalls), f.listCalls
 }
 
-var testCfg = Config{CarNum: "12가3456", CoverageDays: 3}
+var testCfg = Config{CarNum: "12가3456"}
 
 // newTestWatcher 2026-09-02 10:00 KST 고정 시계, 재시도 대기 0.
 func newTestWatcher(t *testing.T, api API) (*Watcher, *time.Time) {
@@ -135,18 +128,6 @@ func TestWatcher_CoverageCacheSkipsUntilWindowEnds(t *testing.T) {
 	}
 }
 
-func TestWatcher_InvalidCoverageDaysRefusesRegister(t *testing.T) {
-	api := &fakeOitalk{}
-	cfg := testCfg
-	cfg.CoverageDays = 4
-	w := newWatcher(api, cfg, MQTTConfig{Geofence: "일산"})
-	w.now = func() time.Time { return time.Date(2026, 9, 2, 10, 0, 0, 0, KST) }
-	w.HandleGeofence(context.Background(), "일산", false)
-	if len(api.registerCalls) != 0 {
-		t.Fatalf("register calls = %d, want 0", len(api.registerCalls))
-	}
-}
-
 func TestWatcher_RegisterFailureRetriesThenSucceeds(t *testing.T) {
 	api := &fakeOitalk{registerErrs: []error{errors.New("boom")}}
 	w, _ := newTestWatcher(t, api)
@@ -163,7 +144,7 @@ func TestWatcher_RetryFindsExistingReservationInsteadOfPosting(t *testing.T) {
 	// POST 는 서버에 커밋됐는데 응답만 유실 → 재시도 전 목록에서 발견 → 다시 POST 안 함.
 	api := &fakeOitalk{
 		registerErrs: []error{errors.New("timeout")},
-		listRows:     []Reservation{{ID: "srv", CarNum: "12가3456", StartDate: "20260902", EndDate: "20260904"}},
+		listRows:     []Reservation{{ID: []byte(`"srv"`), CarNum: "12가3456", StartDate: "20260902", EndDate: "20260904"}},
 	}
 	w, now := newTestWatcher(t, api)
 	ctx := context.Background()
@@ -236,8 +217,8 @@ func TestWatcher_RetryStopsOnContextCancel(t *testing.T) {
 
 func TestWatcher_BootstrapSeedsCoverageFromList(t *testing.T) {
 	api := &fakeOitalk{listRows: []Reservation{
-		{ID: "x", CarNum: "12가3456", StartDate: "20260901", EndDate: "20260903", State: "ok"},
-		{ID: "y", CarNum: "99하9999", StartDate: "20260901", EndDate: "20260930", State: "ok"}, // 다른 차량
+		{ID: []byte(`"x"`), CarNum: "12가3456", StartDate: "20260901", EndDate: "20260903", State: "ok"},
+		{ID: []byte(`"y"`), CarNum: "99하9999", StartDate: "20260901", EndDate: "20260930", State: "ok"}, // 다른 차량
 	}}
 	w, now := newTestWatcher(t, api)
 	ctx := context.Background()
@@ -258,7 +239,7 @@ func TestWatcher_BootstrapSeedsCoverageFromList(t *testing.T) {
 func TestWatcher_BootstrapIgnoresGapCoverage(t *testing.T) {
 	// 오늘(9/2)은 비고 9/4 만 커버된 행 → 오늘 진입 시 등록해야 한다.
 	api := &fakeOitalk{listRows: []Reservation{
-		{ID: "x", CarNum: "12가3456", StartDate: "20260904", EndDate: "20260904"},
+		{ID: []byte(`"x"`), CarNum: "12가3456", StartDate: "20260904", EndDate: "20260904"},
 	}}
 	w, _ := newTestWatcher(t, api)
 	ctx := context.Background()
@@ -277,21 +258,6 @@ func TestWatcher_BootstrapListFailureLeavesCacheEmpty(t *testing.T) {
 	w.HandleGeofence(ctx, "일산", false)
 	if len(api.registerCalls) != 1 {
 		t.Fatalf("register calls = %d, want 1", len(api.registerCalls))
-	}
-}
-
-func TestWatcher_DrivingStatePrewarmsToken(t *testing.T) {
-	api := &fakeOitalk{}
-	w, _ := newTestWatcher(t, api)
-	ctx := context.Background()
-	w.HandleState(ctx, "online")
-	w.HandleState(ctx, "asleep")
-	if api.ensureCalls != 0 {
-		t.Fatalf("non-driving must not prewarm, got %d", api.ensureCalls)
-	}
-	w.HandleState(ctx, "driving")
-	if api.ensureCalls != 1 {
-		t.Fatalf("ensure calls = %d, want 1", api.ensureCalls)
 	}
 }
 
@@ -328,7 +294,7 @@ func runBootstrapEntry(t *testing.T, api *blockingList) {
 		t.Fatal("entry must wait until bootstrap seed completes")
 	case <-time.After(20 * time.Millisecond):
 	}
-	if reg, _, _ := api.counts(); reg != 0 {
+	if reg, _ := api.counts(); reg != 0 {
 		t.Fatalf("must not register before seed, got %d", reg)
 	}
 	close(api.release)
@@ -346,16 +312,16 @@ func runBootstrapEntry(t *testing.T, api *blockingList) {
 func TestWatcher_EntryDuringBootstrapRegistersAfterSeed(t *testing.T) {
 	api := &blockingList{release: make(chan struct{}), entered: make(chan struct{}, 1)}
 	runBootstrapEntry(t, api)
-	if reg, _, _ := api.counts(); reg != 1 {
+	if reg, _ := api.counts(); reg != 1 {
 		t.Fatalf("register calls = %d, want 1", reg)
 	}
 }
 
 func TestWatcher_EntryDuringBootstrapSkippedWhenSeedCoversToday(t *testing.T) {
 	api := &blockingList{release: make(chan struct{}), entered: make(chan struct{}, 1)}
-	api.listRows = []Reservation{{ID: "x", CarNum: "12가3456", StartDate: "20260902", EndDate: "20260904"}}
+	api.listRows = []Reservation{{ID: []byte(`"x"`), CarNum: "12가3456", StartDate: "20260902", EndDate: "20260904"}}
 	runBootstrapEntry(t, api)
-	if reg, _, _ := api.counts(); reg != 0 {
+	if reg, _ := api.counts(); reg != 0 {
 		t.Fatalf("register calls = %d, want 0 (seed covers today)", reg)
 	}
 }
