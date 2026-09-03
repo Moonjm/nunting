@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -121,6 +122,8 @@ func (c *Client) refreshLocked(ctx context.Context) error {
 	}
 	c.accessToken = resp.Data.Token
 	c.tokenExp = jwtExpiry(resp.Data.Token)
+	slog.Info("oitalk_token_refreshed", "exp", c.tokenExp.In(KST).Format(time.RFC3339),
+		"ttl_min", int(time.Until(c.tokenExp).Minutes()))
 	return nil
 }
 
@@ -189,6 +192,8 @@ func (c *Client) doAuthed(ctx context.Context, method, path string, body, out an
 	if status != http.StatusUnauthorized {
 		return err
 	}
+	slog.Warn("oitalk_http_401", "method", method, "path", stripQuery(path),
+		"action", "refresh_and_retry_once", "hint", "반복되면 client_secret 무효화 — 재캡처 필요")
 	if err := c.Refresh(ctx); err != nil {
 		return err
 	}
@@ -220,8 +225,10 @@ func (c *Client) do(ctx context.Context, method, path, token string, body, out a
 	if token != "" {
 		req.Header.Set("x-access-token", token)
 	}
+	t0 := time.Now()
 	res, err := c.http.Do(req)
 	if err != nil {
+		slog.Warn("oitalk_http", "method", method, "path", stripQuery(path), "err", err, "elapsed_ms", ms(t0))
 		return 0, err
 	}
 	defer res.Body.Close()
@@ -229,6 +236,8 @@ func (c *Client) do(ctx context.Context, method, path, token string, body, out a
 	if err != nil {
 		return res.StatusCode, err
 	}
+	slog.Info("oitalk_http", "method", method, "path", stripQuery(path), "status", res.StatusCode,
+		"bytes", len(raw), "elapsed_ms", ms(t0))
 	if res.StatusCode != http.StatusOK {
 		return res.StatusCode, fmt.Errorf("%s %s: status %d body=%s", method, path, res.StatusCode, truncate(raw, 300))
 	}
@@ -254,6 +263,14 @@ func jwtExpiry(tok string) time.Time {
 		}
 	}
 	return time.Now().Add(defaultTokenTTL)
+}
+
+// stripQuery 로그용 경로 — 쿼리(날짜 등)는 잘라 한 줄로.
+func stripQuery(path string) string {
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		return path[:i]
+	}
+	return path
 }
 
 func truncate(b []byte, n int) string {

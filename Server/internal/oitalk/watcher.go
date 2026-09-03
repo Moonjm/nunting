@@ -2,10 +2,8 @@ package oitalk
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,31 +15,14 @@ const (
 	topicGeofence = "teslamate/cars/+/geofence"
 	topicState    = "teslamate/cars/+/state"
 
-	// registerTimeout 진입 hot-path 의 등록 POST 상한.
-	registerTimeout = 15 * time.Second
+	// apiTimeout 진입 hot-path 의 등록·목록 호출 상한.
+	apiTimeout = 15 * time.Second
 	// tokenWarmInterval 저빈도 토큰 프리워밍 주기(driving 엣지와 별개 백스톱).
 	tokenWarmInterval = time.Hour
-	// eventQueueSize paho 콜백 → 워커 사이 버퍼. 지오펜스·state 는 분당 몇 건이라 넉넉.
-	eventQueueSize = 64
-
-	// 등록 실패 재시도. TeslaMate 는 값이 바뀔 때만 publish 하므로 실패 후 차가 주차된
-	// 채면 이벤트가 더 오지 않는다 — 진입 상태가 유지되는 동안 스스로 재시도한다.
-	topicRetry         = "nunting/oitalk/retry"
-	defaultRetryDelay  = 30 * time.Second
-	maxRegisterRetries = 10
-
-	// topicReconnect 접속 세대 경계. 재접속 시 구독보다 먼저 큐에 넣어, 뒤따르는
-	// retained 값이 새 baseline 이 되게 한다.
-	topicReconnect     = "nunting/oitalk/reconnect"
-	subscribeRetryWait = 5 * time.Second
+	// 등록 실패 재시도: 최대 maxRegisterAttempts 회, 사이에 defaultRetryDelay.
+	maxRegisterAttempts = 3
+	defaultRetryDelay   = 10 * time.Second
 )
-
-// event MQTT 메시지 1건. paho 콜백은 이것만 큐에 넣고 즉시 반환한다.
-type event struct {
-	topic    string
-	payload  string
-	retained bool
-}
 
 // API watcher 가 쓰는 오이톡 클라이언트 표면. 테스트에서 fake 로 대체.
 type API interface {
@@ -50,31 +31,35 @@ type API interface {
 	Register(ctx context.Context, start, end time.Time) (Reservation, error)
 }
 
-// Watcher TeslaMate MQTT 지오펜스를 구독해 "밖→집" 상승엣지에 방문차량을 등록한다.
+// Watcher TeslaMate MQTT 지오펜스를 구독해 진입 순간 방문차량을 등록한다.
 //
-// 멱등성은 DB 없이 메모리 커버리지 캐시(coveredUntil)로 처리한다. 등록 1건이
-// 3일을 덮으므로 대부분의 진입은 네트워크 없이 여기서 끝난다. 재시작 시엔
-// Bootstrap 이 오이톡 목록으로 캐시를 seed 하고, 첫 지오펜스 값(retained)은
-// baseline 으로만 저장해 이미 주차 중인 차를 진입으로 오인하지 않는다.
+// 판정은 MQTT 의 retained 플래그 하나로 끝난다. TeslaMate 는 값이 바뀔 때만
+// publish 하고, 브로커는 구독 직후 보관값을 줄 때만 retained 를 켠다. 따라서
+//
+//	retained "일산" = 구독 시점에 이미 안에 있음(재시작·재접속) → 무시
+//	live     "일산" = 방금 들어옴                              → 등록
+//
+// 직전값을 기억하지 않으므로 재시작·재접속·끊김에 오염될 상태가 없다.
+// 멱등성은 메모리 커버리지 캐시(coveredUntil)로 — 등록 1건이 3일을 덮으니
+// 대부분의 진입은 네트워크 없이 여기서 끝난다. 재시작 시 Bootstrap 이 오이톡
+// 목록으로 캐시를 seed 한다.
+//
+// 알려진 한계: TeslaMate 자체가 재시작되면 현재값을 live 로 다시 publish 할 수
+// 있다. 차가 3일 넘게 주차돼 캐시가 만료된 상태에서 그게 겹치면 방문차량 1건이
+// 헛되이 등록된다(로그 oitalk_registered 로 드러남). 드물고 피해가 작아 수용.
 //
 // 차 1대 전제 — 토픽 와일드카드(+)로 받지만 상태는 차량별로 나누지 않는다.
 type Watcher struct {
-	api     API
-	cfg     Config
-	mqttCfg MQTTConfig
-	now     func() time.Time
-
-	events     chan event
+	api        API
+	cfg        Config
+	mqttCfg    MQTTConfig
+	now        func() time.Time
 	retryDelay time.Duration
 
+	// mu 는 핸들러를 직렬화하고, Bootstrap 동안 잡혀 있어 그 사이 온 진입이
+	// seed 가 끝난 뒤 처리되게 한다.
 	mu           sync.Mutex
-	hasBaseline  bool
-	lastGeo      string
-	lastState    string
 	coveredUntil time.Time // 이 날짜(KST 자정)까지 등록됨. zero 면 미상.
-	retryPending bool      // 진입 등록 실패 → 재시도 대기 중
-	retryCount   int       // 이번 진입에서 소진한 재시도 횟수
-	entryGen     int       // 진입 세대. 재시도 타이머가 어느 진입 것인지 태깅.
 }
 
 // NewWatcher main.go 배선용.
@@ -83,34 +68,242 @@ func NewWatcher(client *Client, m MQTTConfig) *Watcher {
 }
 
 func newWatcher(api API, cfg Config, m MQTTConfig) *Watcher {
-	return &Watcher{
-		api: api, cfg: cfg, mqttCfg: m, now: time.Now,
-		events: make(chan event, eventQueueSize), retryDelay: defaultRetryDelay,
-	}
+	return &Watcher{api: api, cfg: cfg, mqttCfg: m, now: time.Now, retryDelay: defaultRetryDelay}
 }
 
 // Bootstrap 오이톡 목록으로 오늘 기준 커버리지를 1회 조회해 캐시를 seed 한다.
 // 실패해도 치명적이지 않다 — 캐시가 비면 다음 진입에 등록을 시도할 뿐이다.
 func (w *Watcher) Bootstrap(ctx context.Context) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.bootstrapLocked(ctx)
+}
+
+func (w *Watcher) bootstrapLocked(ctx context.Context) {
 	today := DayOf(w.now())
 	start, end, err := CoverageWindow(today, MaxCoverageDays)
 	if err != nil {
 		return
 	}
-	rows, err := w.api.List(ctx, start, end)
+	t0 := time.Now()
+	lctx, cancel := context.WithTimeout(ctx, apiTimeout)
+	rows, err := w.api.List(lctx, start, end)
+	cancel()
 	if err != nil {
-		slog.Warn("oitalk_bootstrap_list_failed", "err", err)
+		slog.Warn("oitalk_bootstrap_list_failed", "err", err, "elapsed_ms", ms(t0))
 		return
+	}
+	w.coveredUntil = coverageEnd(rows, w.cfg.CarNum, today)
+	slog.Info("oitalk_bootstrap", "today", ymd(today), "covered_until", ymd(w.coveredUntil),
+		"rows", len(rows), "car_rows", countCar(rows, w.cfg.CarNum), "elapsed_ms", ms(t0))
+}
+
+// HandleGeofence MQTT geofence 페이로드 1건 처리(hot-path).
+func (w *Watcher) HandleGeofence(ctx context.Context, payload string, retained bool) {
+	value := strings.TrimSpace(payload)
+	target := w.mqttCfg.Geofence
+	switch {
+	case value != target:
+		slog.Info("oitalk_geofence", "value", value, "retained", retained, "action", "ignore_other")
+		return
+	case retained:
+		slog.Info("oitalk_geofence", "value", value, "retained", true, "action", "ignore_retained",
+			"reason", "구독 시점 보관값 — 이미 안에 있음")
+		return
+	}
+	slog.Info("oitalk_geofence", "value", value, "retained", false, "action", "entry")
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.registerLocked(ctx)
+}
+
+// registerLocked 오늘 기준 커버리지 확인 후 등록. 실패하면 같은 자리에서 재시도.
+// 재시도 전엔 목록으로 먼저 확인한다 — 실패한 POST 가 서버엔 커밋됐는데 응답만
+// 유실됐을 수 있고, 등록은 비멱등이라 그대로 다시 쏘면 중복 예약 + 월 주차한도
+// 소모. 목록 조회마저 실패한 회차는 POST 를 건너뛴다. mu 보유 전제.
+func (w *Watcher) registerLocked(ctx context.Context) {
+	today := DayOf(w.now())
+	if !w.coveredUntil.IsZero() && !today.After(w.coveredUntil) {
+		slog.Info("oitalk_entry_covered", "today", ymd(today), "covered_until", ymd(w.coveredUntil))
+		return
+	}
+	start, end, err := CoverageWindow(today, w.cfg.CoverageDays)
+	if err != nil {
+		slog.Error("oitalk_register_skipped", "err", err, "coverage_days", w.cfg.CoverageDays)
+		return
+	}
+
+	for attempt := 1; attempt <= maxRegisterAttempts; attempt++ {
+		if attempt > 1 {
+			if !sleepCtx(ctx, w.retryDelay) {
+				slog.Warn("oitalk_register_aborted", "reason", "context cancelled", "attempt", attempt)
+				return
+			}
+			if found, ok := w.verifyExistingLocked(ctx, today); !ok {
+				continue // 확인 불가 → 이 회차 POST 생략
+			} else if found {
+				return
+			}
+		}
+		t0 := time.Now()
+		rctx, cancel := context.WithTimeout(ctx, apiTimeout)
+		row, err := w.api.Register(rctx, start, end)
+		cancel()
+		if err != nil {
+			slog.Error("oitalk_register_failed", "attempt", attempt, "max", maxRegisterAttempts,
+				"err", err, "elapsed_ms", ms(t0), "start_date", ymd(start), "end_date", ymd(DayOf(end)))
+			continue
+		}
+		w.coveredUntil = DayOf(end)
+		slog.Info("oitalk_registered", "attempt", attempt, "id", string(row.ID), "state", row.State,
+			"car_num", row.CarNum, "start_date", ymd(start), "end_date", ymd(w.coveredUntil), "elapsed_ms", ms(t0))
+		return
+	}
+	slog.Error("oitalk_register_gave_up", "attempts", maxRegisterAttempts,
+		"hint", "다음 진입 때 다시 시도함. 오이톡 앱에서 수동 등록 필요할 수 있음")
+}
+
+// verifyExistingLocked 재시도 전 목록 확인. found=이미 커버됨(캐시 반영), ok=조회 성공.
+func (w *Watcher) verifyExistingLocked(ctx context.Context, today time.Time) (found, ok bool) {
+	start, end, _ := CoverageWindow(today, MaxCoverageDays)
+	t0 := time.Now()
+	lctx, cancel := context.WithTimeout(ctx, apiTimeout)
+	rows, err := w.api.List(lctx, start, end)
+	cancel()
+	if err != nil {
+		slog.Warn("oitalk_retry_verify_failed", "err", err, "elapsed_ms", ms(t0),
+			"action", "skip_post_this_attempt")
+		return false, false
 	}
 	until := coverageEnd(rows, w.cfg.CarNum, today)
-	w.mu.Lock()
-	w.coveredUntil = until
-	w.mu.Unlock()
 	if until.IsZero() {
-		slog.Info("oitalk_bootstrap", "covered_until", "", "rows", len(rows))
+		slog.Info("oitalk_retry_verify", "existing", false, "rows", len(rows), "elapsed_ms", ms(t0))
+		return false, true
+	}
+	w.coveredUntil = until
+	slog.Info("oitalk_retry_verify", "existing", true, "covered_until", ymd(until),
+		"reason", "이전 POST 가 서버에 반영돼 있었음", "elapsed_ms", ms(t0))
+	return true, true
+}
+
+// HandleState 차량 state 페이로드. driving 이면 토큰을 미리 데워 진입 순간엔
+// register POST 한 방만 나가게 한다.
+func (w *Watcher) HandleState(ctx context.Context, payload string) {
+	value := strings.TrimSpace(payload)
+	slog.Info("oitalk_state", "value", value)
+	if value != "driving" {
 		return
 	}
-	slog.Info("oitalk_bootstrap", "covered_until", until.Format("2006-01-02"), "rows", len(rows))
+	t0 := time.Now()
+	if _, err := w.api.EnsureToken(ctx); err != nil {
+		slog.Warn("oitalk_token_prewarm_failed", "trigger", "driving", "err", err, "elapsed_ms", ms(t0))
+		return
+	}
+	slog.Info("oitalk_token_prewarm", "trigger", "driving", "elapsed_ms", ms(t0))
+}
+
+// Run 브로커 접속 + 구독 후 ctx 취소까지 유지.
+func (w *Watcher) Run(ctx context.Context) error {
+	return w.runWith(ctx, w.connectMQTT)
+}
+
+// runWith 기동 순서: mu 잠금 → 구독 → 부트스트랩(seed) → mu 해제. 구독이 먼저라
+// 부트스트랩 중 진입도 콜백에 잡히고, 콜백은 mu 에서 기다리다 seed 뒤에 처리된다.
+func (w *Watcher) runWith(ctx context.Context, subscribe func(context.Context) (func(), error)) error {
+	w.mu.Lock()
+	closeFn, err := subscribe(ctx)
+	if err != nil {
+		w.mu.Unlock()
+		return err
+	}
+	defer closeFn()
+	w.bootstrapLocked(ctx)
+	w.mu.Unlock()
+	slog.Info("oitalk_watcher_ready", "geofence", w.mqttCfg.Geofence, "coverage_days", w.cfg.CoverageDays)
+
+	ticker := time.NewTicker(tokenWarmInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("oitalk_watcher_stopped")
+			return nil
+		case <-ticker.C:
+			t0 := time.Now()
+			if _, err := w.api.EnsureToken(ctx); err != nil {
+				slog.Warn("oitalk_token_prewarm_failed", "trigger", "timer", "err", err, "elapsed_ms", ms(t0))
+			}
+		}
+	}
+}
+
+// connectMQTT paho 접속 + 구독. 최초 구독이 끝날 때까지 기다렸다 돌아온다
+// (OnConnect 는 별도 goroutine 이라 Connect() 완료 ≠ 구독 완료). 재접속 시에도
+// OnConnect 가 다시 불려 재구독된다. 콜백은 goroutine 으로 돌려(OrderMatters=false)
+// 핸들러가 mu 나 HTTP 에서 기다려도 paho 수신 루프를 막지 않는다.
+func (w *Watcher) connectMQTT(ctx context.Context) (func(), error) {
+	firstSub := make(chan error, 1)
+	var firstOnce sync.Once
+
+	opts := mqtt.NewClientOptions().
+		AddBroker(w.mqttCfg.Broker).
+		SetClientID(w.mqttCfg.ClientID).
+		SetUsername(w.mqttCfg.Username).
+		SetPassword(w.mqttCfg.Password).
+		SetAutoReconnect(true).
+		SetConnectRetry(true).
+		SetConnectRetryInterval(10 * time.Second).
+		SetKeepAlive(30 * time.Second).
+		SetOrderMatters(false)
+	opts.SetOnConnectHandler(func(c mqtt.Client) {
+		slog.Info("oitalk_mqtt_connected", "broker", w.mqttCfg.Broker, "client_id", w.mqttCfg.ClientID)
+		subs := map[string]byte{topicGeofence: 1, topicState: 1}
+		tok := c.SubscribeMultiple(subs, func(_ mqtt.Client, msg mqtt.Message) {
+			w.dispatch(ctx, msg.Topic(), string(msg.Payload()), msg.Retained())
+		})
+		tok.Wait()
+		if err := tok.Error(); err != nil {
+			slog.Error("oitalk_mqtt_subscribe_failed", "err", err,
+				"hint", "브로커가 접속은 받고 구독을 거부함 — 재접속 전까지 이벤트 없음")
+			firstOnce.Do(func() { firstSub <- err })
+			return
+		}
+		slog.Info("oitalk_mqtt_subscribed", "topics", []string{topicGeofence, topicState})
+		firstOnce.Do(func() { firstSub <- nil })
+	})
+	opts.SetConnectionLostHandler(func(_ mqtt.Client, err error) {
+		slog.Warn("oitalk_mqtt_connection_lost", "err", err, "hint", "자동 재접속 대기")
+	})
+	opts.SetReconnectingHandler(func(_ mqtt.Client, _ *mqtt.ClientOptions) {
+		slog.Info("oitalk_mqtt_reconnecting")
+	})
+
+	cli := mqtt.NewClient(opts)
+	slog.Info("oitalk_mqtt_connecting", "broker", w.mqttCfg.Broker)
+	if tok := cli.Connect(); tok.Wait() && tok.Error() != nil {
+		return nil, fmt.Errorf("mqtt connect: %w", tok.Error())
+	}
+	select {
+	case err := <-firstSub:
+		if err != nil {
+			cli.Disconnect(250)
+			return nil, fmt.Errorf("mqtt subscribe: %w", err)
+		}
+	case <-ctx.Done():
+		cli.Disconnect(250)
+		return nil, ctx.Err()
+	}
+	return func() { cli.Disconnect(250) }, nil
+}
+
+func (w *Watcher) dispatch(ctx context.Context, topic, payload string, retained bool) {
+	switch {
+	case strings.HasSuffix(topic, "/geofence"):
+		w.HandleGeofence(ctx, payload, retained)
+	case strings.HasSuffix(topic, "/state"):
+		w.HandleState(ctx, payload)
+	}
 }
 
 // coverageEnd today 부터 연속으로 carNum 예약이 덮는 마지막 날. 오늘이 비면 zero.
@@ -124,6 +317,7 @@ func coverageEnd(rows []Reservation, carNum string, today time.Time) time.Time {
 		s, err1 := ParseYMD(r.StartDate)
 		e, err2 := ParseYMD(r.EndDate)
 		if err1 != nil || err2 != nil {
+			slog.Warn("oitalk_row_date_unparsable", "id", string(r.ID), "start_date", r.StartDate, "end_date", r.EndDate)
 			continue
 		}
 		spans = append(spans, span{s, e})
@@ -144,353 +338,34 @@ func coverageEnd(rows []Reservation, carNum string, today time.Time) time.Time {
 	}
 }
 
-// HandleGeofence MQTT geofence 페이로드 1건 처리(hot-path).
-//
-// retained 는 브로커가 보관하던 과거 값(구독 직후 즉시 도착)이라 baseline 으로만
-// 쓴다 — 이미 주차 중인 차를 진입으로 오인하지 않기 위해. 반대로 첫 메시지가
-// live 면(차가 밖에 있어 retained 값이 없던 상태) 그 자체가 실제 변화이므로
-// 직전값을 "밖"(빈 값)으로 놓고 엣지 판정을 그대로 태운다.
-func (w *Watcher) HandleGeofence(ctx context.Context, payload string, retained bool) {
-	cur := strings.TrimSpace(payload)
-	target := w.mqttCfg.Geofence
-
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	if !w.hasBaseline {
-		w.hasBaseline = true
-		if retained {
-			w.lastGeo = cur
-			slog.Info("oitalk_geofence_baseline", "geofence", cur)
-			return
-		}
-		w.lastGeo = ""
-		slog.Info("oitalk_geofence_baseline", "geofence", "", "reason", "no retained value")
-	}
-	prev := w.lastGeo
-	w.lastGeo = cur
-	if cur != target {
-		// 나감(또는 다른 지오펜스) — 이번 진입의 재시도는 의미 없어 폐기.
-		w.retryPending = false
-		w.retryCount = 0
-		return
-	}
-	if prev == target {
-		return
-	}
-	w.entryGen++
-	w.retryCount = 0
-	w.registerLocked(ctx)
-}
-
-// HandleReconnect 접속 세대 경계. 끊긴 사이 차가 나가면 TeslaMate 의 빈 값이
-// retained 메시지를 지워 재접속 후 아무것도 오지 않는다 — lastGeo 가 "집" 으로
-// 굳어 다음 진입이 집→집으로 보여 영구히 등록을 놓친다. 그래서 세대마다 baseline
-// 을 다시 잡는다: 재접속 후 retained 가 오면 baseline, live 가 오면 "밖" 에서의
-// 진입으로 판정한다. 재시도 상태는 건드리지 않는다(진입 중 재시도는 계속).
-func (w *Watcher) HandleReconnect() {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.hasBaseline = false
-	w.lastGeo = ""
-	w.lastState = ""
-	slog.Info("oitalk_geofence_rebaseline")
-}
-
-// HandleRetry 등록 실패 후 스케줄된 재시도. gen 이 현재 진입 세대와 다르면(그 사이
-// 나갔다 다시 들어옴) 옛 타이머이므로 무시. 여전히 진입 상태이고 대기 중일 때만.
-//
-// 실패한 POST 가 서버엔 커밋됐는데 응답만 유실됐을 수 있다(타임아웃 등). 등록은
-// 비멱등이라 그대로 다시 쏘면 중복 예약 + 월 주차한도 소모 — 재시도 전에 목록으로
-// 현재 커버리지를 먼저 확인한다. 목록 조회마저 실패하면 POST 하지 않고 다음
-// 재시도로 미룬다.
-func (w *Watcher) HandleRetry(ctx context.Context, gen int) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if !w.retryPending || gen != w.entryGen || w.lastGeo != w.mqttCfg.Geofence {
-		return
-	}
-	today := DayOf(w.now())
-	start, end, err := CoverageWindow(today, MaxCoverageDays)
-	if err != nil {
-		w.retryPending = false
-		return
-	}
-	lctx, cancel := context.WithTimeout(ctx, registerTimeout)
-	rows, err := w.api.List(lctx, start, end)
-	cancel()
-	if err != nil {
-		slog.Warn("oitalk_retry_list_failed", "err", err)
-		w.scheduleRetryLocked(ctx)
-		return
-	}
-	if until := coverageEnd(rows, w.cfg.CarNum, today); !until.IsZero() {
-		w.coveredUntil = until
-		w.retryPending = false
-		w.retryCount = 0
-		slog.Info("oitalk_retry_found_existing", "covered_until", until.Format("2006-01-02"))
-		return
-	}
-	w.registerLocked(ctx)
-}
-
-// registerLocked 오늘 기준 커버리지 확인 후 등록. 실패하면 재시도 예약. mu 보유 전제.
-func (w *Watcher) registerLocked(ctx context.Context) {
-	today := DayOf(w.now())
-	if !w.coveredUntil.IsZero() && !today.After(w.coveredUntil) {
-		w.retryPending = false
-		slog.Debug("oitalk_entry_covered", "today", today.Format("2006-01-02"),
-			"covered_until", w.coveredUntil.Format("2006-01-02"))
-		return
-	}
-
-	start, end, err := CoverageWindow(today, w.cfg.CoverageDays)
-	if err != nil {
-		w.retryPending = false
-		slog.Error("oitalk_register_skipped", "err", err)
-		return
-	}
-	rctx, cancel := context.WithTimeout(ctx, registerTimeout)
-	defer cancel()
-	row, err := w.api.Register(rctx, start, end)
-	if err != nil {
-		slog.Error("oitalk_register_failed", "err", err, "attempt", w.retryCount+1)
-		w.scheduleRetryLocked(ctx)
-		return
-	}
-	w.coveredUntil = DayOf(end)
-	w.retryPending = false
-	w.retryCount = 0
-	slog.Info("oitalk_registered", "start_date", DayOf(start).Format("2006-01-02"),
-		"end_date", w.coveredUntil.Format("2006-01-02"), "id", string(row.ID), "state", row.State)
-}
-
-// scheduleRetryLocked 예산이 남았으면 현재 진입 세대를 태깅한 재시도 이벤트를
-// retryDelay 뒤 큐에 넣는다. mu 보유 전제.
-func (w *Watcher) scheduleRetryLocked(ctx context.Context) {
-	if w.retryCount >= maxRegisterRetries {
-		w.retryPending = false
-		slog.Error("oitalk_register_gave_up", "attempts", w.retryCount+1)
-		return
-	}
-	w.retryCount++
-	w.retryPending = true
-	gen := w.entryGen
-	slog.Info("oitalk_retry_scheduled", "retry", w.retryCount, "in", w.retryDelay.String())
-	time.AfterFunc(w.retryDelay, func() { w.enqueue(ctx, topicRetry, strconv.Itoa(gen), false) })
-}
-
-// HandleState 차량 state 페이로드. driving 으로 바뀌면 토큰을 미리 데워
-// 진입 순간엔 register POST 한 방만 나가게 한다.
-func (w *Watcher) HandleState(ctx context.Context, payload string) {
-	cur := strings.TrimSpace(payload)
-	w.mu.Lock()
-	prev := w.lastState
-	w.lastState = cur
-	w.mu.Unlock()
-	if cur != "driving" || prev == "driving" {
-		return
-	}
-	if _, err := w.api.EnsureToken(ctx); err != nil {
-		slog.Warn("oitalk_token_prewarm_failed", "err", err)
-	}
-}
-
-// Run 브로커 접속 + 구독 후 ctx 취소까지 유지. 자동 재접속, 재접속 시 재구독.
-func (w *Watcher) Run(ctx context.Context) error {
-	return w.runWith(ctx, w.connectMQTT)
-}
-
-// runWith 기동 순서가 핵심이다:
-//
-//  1. 구독(subscribe) — 콜백은 큐에 넣기만 한다.
-//  2. 부트스트랩 — 오이톡 목록으로 커버리지 캐시 seed(네트워크, 느릴 수 있음).
-//  3. 워커(serve) 시작 — 그제서야 큐를 순서대로 소비.
-//
-// 부트스트랩이 느린 동안 차가 진입해도 이벤트는 이미 큐에 잡혀 있고(retained
-// baseline → live 진입 순서 그대로), seed 가 끝난 뒤 처리되므로 놓치지 않는다.
-// 구독을 부트스트랩 뒤로 미루면 그 사이 진입은 retained 값 하나로만 도착해
-// baseline 으로 삼켜진다.
-//
-// paho 는 기본(OrderMatters) 모드에서 메시지 핸들러가 블로킹하지 않기를 요구한다
-// — 핸들러가 막히면 뒤이은 QoS1 메시지·ack 가 직렬화돼 keepalive 끊김까지 갈 수
-// 있다. 그래서 콜백은 큐에 넣기만 하고, 단일 워커가 처리한다. 워커가 하나라
-// 엣지 판정 순서는 그대로 보존된다.
-func (w *Watcher) runWith(ctx context.Context, subscribe func(context.Context) (func(), error)) error {
-	closeFn, err := subscribe(ctx)
-	if err != nil {
-		return err
-	}
-	defer closeFn()
-
-	w.Bootstrap(ctx)
-	go w.serve(ctx)
-
-	ticker := time.NewTicker(tokenWarmInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-			if _, err := w.api.EnsureToken(ctx); err != nil {
-				slog.Warn("oitalk_token_prewarm_failed", "err", err)
-			}
+func countCar(rows []Reservation, carNum string) int {
+	n := 0
+	for _, r := range rows {
+		if r.CarNum == carNum {
+			n++
 		}
 	}
+	return n
 }
 
-// connectMQTT paho 접속 + 구독. 반환 함수는 접속 해제.
-//
-// paho 는 OnConnect 를 별도 goroutine 에서 부르므로 Connect() 완료 ≠ 구독 완료.
-// 최초 구독이 실제로 성공할 때까지 기다렸다가 돌아온다 — 그래야 이어지는
-// Bootstrap 동안의 진입이 큐에 잡힌다. 매 (재)접속마다 세대 경계 이벤트를 먼저
-// 큐에 넣고, 구독은 성공할 때까지 재시도한다(브로커가 접속은 받고 SUBACK 만
-// 실패하면 OnConnect 가 다시 불리지 않아 영구 무구독이 되기 때문).
-func (w *Watcher) connectMQTT(ctx context.Context) (func(), error) {
-	firstSub := make(chan error, 1)
-	var firstOnce sync.Once
-	var epochs connEpochs
-
-	opts := mqtt.NewClientOptions().
-		AddBroker(w.mqttCfg.Broker).
-		SetClientID(w.mqttCfg.ClientID).
-		SetUsername(w.mqttCfg.Username).
-		SetPassword(w.mqttCfg.Password).
-		SetAutoReconnect(true).
-		SetConnectRetry(true).
-		SetConnectRetryInterval(10 * time.Second).
-		SetKeepAlive(30 * time.Second)
-	opts.SetOnConnectHandler(func(c mqtt.Client) {
-		slog.Info("oitalk_mqtt_connected", "broker", w.mqttCfg.Broker)
-		epochCtx := epochs.begin(ctx) // 이전 세대의 재시도 루프 취소
-		w.enqueueReconnect(ctx)
-		subs := map[string]byte{topicGeofence: 1, topicState: 1}
-		err := subscribeWithRetry(epochCtx, subscribeRetryWait, func() error {
-			if !c.IsConnectionOpen() {
-				return errors.New("connection not open")
-			}
-			tok := c.SubscribeMultiple(subs, func(_ mqtt.Client, msg mqtt.Message) {
-				w.enqueue(ctx, msg.Topic(), string(msg.Payload()), msg.Retained())
-			})
-			tok.Wait()
-			return tok.Error()
-		})
-		if err != nil {
-			slog.Error("oitalk_mqtt_subscribe_failed", "err", err)
-		} else {
-			slog.Info("oitalk_mqtt_subscribed")
-		}
-		firstOnce.Do(func() { firstSub <- err })
-	})
-	opts.SetConnectionLostHandler(func(_ mqtt.Client, err error) {
-		slog.Warn("oitalk_mqtt_connection_lost", "err", err)
-		epochs.end() // 이 접속의 구독 재시도 루프 중단
-	})
-
-	cli := mqtt.NewClient(opts)
-	if tok := cli.Connect(); tok.Wait() && tok.Error() != nil {
-		return nil, fmt.Errorf("mqtt connect: %w", tok.Error())
+// sleepCtx d 만큼 기다린다. ctx 취소 시 false.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
 	}
 	select {
-	case err := <-firstSub:
-		if err != nil {
-			cli.Disconnect(250)
-			return nil, fmt.Errorf("mqtt subscribe: %w", err)
-		}
 	case <-ctx.Done():
-		cli.Disconnect(250)
-		return nil, ctx.Err()
-	}
-	return func() { cli.Disconnect(250) }, nil
-}
-
-// connEpochs 접속 세대별 컨텍스트. OnConnect 마다 begin, ConnectionLost 마다 end.
-// 이전 세대의 구독 재시도 루프가 새 접속에서 먼저 구독해 버려(재접속 마커보다
-// 앞서 retained 수신) baseline 순서를 깨는 걸 막는다 — 세대가 끝나면 그 루프는
-// ctx 취소로 멈춘다.
-type connEpochs struct {
-	mu     sync.Mutex
-	cancel context.CancelFunc
-}
-
-// begin 이전 세대를 취소하고 새 세대 ctx 를 만든다.
-func (e *connEpochs) begin(parent context.Context) context.Context {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.cancel != nil {
-		e.cancel()
-	}
-	ctx, cancel := context.WithCancel(parent)
-	e.cancel = cancel
-	return ctx
-}
-
-// end 현재 세대를 취소한다. 중복 호출 안전.
-func (e *connEpochs) end() {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.cancel != nil {
-		e.cancel()
-		e.cancel = nil
+		return false
+	case <-time.After(d):
+		return true
 	}
 }
 
-// subscribeWithRetry 구독이 성공할 때까지 wait 간격으로 반복. ctx 취소 시 중단.
-func subscribeWithRetry(ctx context.Context, wait time.Duration, subscribe func() error) error {
-	for {
-		err := subscribe()
-		if err == nil {
-			return nil
-		}
-		slog.Warn("oitalk_mqtt_subscribe_retry", "err", err, "in", wait.String())
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(wait):
-		}
+func ymd(t time.Time) string {
+	if t.IsZero() {
+		return ""
 	}
+	return t.In(KST).Format("2006-01-02")
 }
 
-// enqueueReconnect 접속 세대 경계를 큐에 넣는다(구독보다 먼저 호출).
-func (w *Watcher) enqueueReconnect(ctx context.Context) {
-	w.enqueue(ctx, topicReconnect, "", false)
-}
-
-// enqueue paho 콜백용. 큐가 차 있으면 기다리지 않고 버린다(로그) — 콜백을 막는
-// 것보다 낫고, 지오펜스는 retained 라 재접속 시 최신 값이 다시 온다.
-func (w *Watcher) enqueue(ctx context.Context, topic, payload string, retained bool) {
-	select {
-	case w.events <- event{topic: topic, payload: payload, retained: retained}:
-	case <-ctx.Done():
-	default:
-		slog.Warn("oitalk_event_dropped", "topic", topic, "queue", cap(w.events))
-	}
-}
-
-// serve 단일 워커. ctx 취소까지 큐를 순서대로 소비한다.
-func (w *Watcher) serve(ctx context.Context) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case ev := <-w.events:
-			w.dispatch(ctx, ev.topic, ev.payload, ev.retained)
-		}
-	}
-}
-
-func (w *Watcher) dispatch(ctx context.Context, topic, payload string, retained bool) {
-	switch {
-	case strings.HasSuffix(topic, "/geofence"):
-		w.HandleGeofence(ctx, payload, retained)
-	case strings.HasSuffix(topic, "/state"):
-		w.HandleState(ctx, payload)
-	case topic == topicReconnect:
-		w.HandleReconnect()
-	case topic == topicRetry:
-		if gen, err := strconv.Atoi(payload); err == nil {
-			w.HandleRetry(ctx, gen)
-		}
-	}
-}
+func ms(t0 time.Time) int64 { return time.Since(t0).Milliseconds() }

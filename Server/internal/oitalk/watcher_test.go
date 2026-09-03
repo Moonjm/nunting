@@ -8,14 +8,13 @@ import (
 	"time"
 )
 
-// fakeOitalk 워커 goroutine 에서도 호출되므로 mutex 로 보호. 순차 테스트는 필드를
-// 직접 읽어도 되지만 동시 테스트는 counts() 를 쓴다.
+// fakeOitalk 핸들러가 다른 goroutine 에서도 불리므로 mutex 로 보호.
 type fakeOitalk struct {
 	mu            sync.Mutex
 	registerCalls []struct{ start, end time.Time }
-	registerErr   error
+	registerErrs  []error // 호출 순서대로 소비. 비면 nil(성공).
 	listRows      []Reservation
-	listErr       error
+	listErrs      []error // 호출 순서대로 소비. 비면 nil.
 	listCalls     int
 	ensureCalls   int
 }
@@ -30,41 +29,47 @@ func (f *fakeOitalk) List(context.Context, time.Time, time.Time) ([]Reservation,
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.listCalls++
-	return f.listRows, f.listErr
+	if len(f.listErrs) > 0 {
+		err := f.listErrs[0]
+		f.listErrs = f.listErrs[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
+	return f.listRows, nil
 }
 func (f *fakeOitalk) Register(_ context.Context, start, end time.Time) (Reservation, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.registerCalls = append(f.registerCalls, struct{ start, end time.Time }{start, end})
-	if f.registerErr != nil {
-		return Reservation{}, f.registerErr
+	if len(f.registerErrs) > 0 {
+		err := f.registerErrs[0]
+		f.registerErrs = f.registerErrs[1:]
+		if err != nil {
+			return Reservation{}, err
+		}
 	}
 	return Reservation{ID: "r1", State: "ok"}, nil
 }
-func (f *fakeOitalk) setRegisterErr(err error) {
+func (f *fakeOitalk) counts() (register, list, ensure int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.registerErr = err
-}
-func (f *fakeOitalk) counts() (register, ensure int) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.registerCalls), f.ensureCalls
+	return len(f.registerCalls), f.listCalls, f.ensureCalls
 }
 
 var testCfg = Config{CarNum: "12가3456", CoverageDays: 3}
 
-// newTestWatcher 2026-09-02 10:00 KST 고정 시계, baseline 은 "밖"(빈 값)으로 잡힌 상태.
-func newTestWatcher(t *testing.T, api *fakeOitalk) (*Watcher, *time.Time) {
+// newTestWatcher 2026-09-02 10:00 KST 고정 시계, 재시도 대기 0.
+func newTestWatcher(t *testing.T, api API) (*Watcher, *time.Time) {
 	t.Helper()
 	now := time.Date(2026, 9, 2, 10, 0, 0, 0, KST)
 	w := newWatcher(api, testCfg, MQTTConfig{Geofence: "일산"})
 	w.now = func() time.Time { return now }
-	w.HandleGeofence(context.Background(), "", true) // retained baseline
+	w.retryDelay = 0
 	return w, &now
 }
 
-func TestWatcher_RisingEdgeRegistersThreeDaysFromToday(t *testing.T) {
+func TestWatcher_LiveTargetRegistersThreeDaysFromToday(t *testing.T) {
 	api := &fakeOitalk{}
 	w, _ := newTestWatcher(t, api)
 	w.HandleGeofence(context.Background(), "일산", false)
@@ -86,37 +91,25 @@ func TestWatcher_TrimsPayloadBeforeMatch(t *testing.T) {
 	}
 }
 
-func TestWatcher_NonRisingTransitionsDoNothing(t *testing.T) {
+func TestWatcher_RetainedTargetIsIgnored(t *testing.T) {
+	// retained = 구독 시점 보관값 = 이미 안에 있음(재시작·재접속). 진입이 아니다.
 	api := &fakeOitalk{}
 	w, _ := newTestWatcher(t, api)
-	ctx := context.Background()
-	w.HandleGeofence(ctx, "", false)    // 밖→밖
-	w.HandleGeofence(ctx, "다른곳", false) // 밖→다른 지오펜스
-	w.HandleGeofence(ctx, "", false)    // 다른곳→밖
+	w.HandleGeofence(context.Background(), "일산", true)
 	if len(api.registerCalls) != 0 {
 		t.Fatalf("register calls = %d, want 0", len(api.registerCalls))
 	}
-	w.HandleGeofence(ctx, "일산", false) // 진입 1회
-	w.HandleGeofence(ctx, "일산", false) // 집→집 (retained 재수신 등)
-	w.HandleGeofence(ctx, "", false)   // 집→밖
-	if len(api.registerCalls) != 1 {
-		t.Fatalf("register calls = %d, want 1", len(api.registerCalls))
-	}
 }
 
-func TestWatcher_FirstValueIsBaselineOnly(t *testing.T) {
+func TestWatcher_OtherValuesIgnored(t *testing.T) {
 	api := &fakeOitalk{}
-	w := newWatcher(api, testCfg, MQTTConfig{Geofence: "일산"})
-	w.now = func() time.Time { return time.Date(2026, 9, 2, 10, 0, 0, 0, KST) }
+	w, _ := newTestWatcher(t, api)
 	ctx := context.Background()
-	w.HandleGeofence(ctx, "일산", true) // 재시작 직후 retained "집" — 이미 주차 중
-	if len(api.registerCalls) != 0 {
-		t.Fatalf("baseline must not register, got %d", len(api.registerCalls))
-	}
 	w.HandleGeofence(ctx, "", false)
-	w.HandleGeofence(ctx, "일산", false)
-	if len(api.registerCalls) != 1 {
-		t.Fatalf("register calls = %d, want 1", len(api.registerCalls))
+	w.HandleGeofence(ctx, "다른곳", false)
+	w.HandleGeofence(ctx, "일산역", false)
+	if len(api.registerCalls) != 0 {
+		t.Fatalf("register calls = %d, want 0", len(api.registerCalls))
 	}
 }
 
@@ -124,20 +117,16 @@ func TestWatcher_CoverageCacheSkipsUntilWindowEnds(t *testing.T) {
 	api := &fakeOitalk{}
 	w, now := newTestWatcher(t, api)
 	ctx := context.Background()
-	enter := func() {
-		w.HandleGeofence(ctx, "", false)
-		w.HandleGeofence(ctx, "일산", false)
-	}
-	enter() // D → 등록
+	w.HandleGeofence(ctx, "일산", false) // D → 등록
 	*now = now.AddDate(0, 0, 1)
-	enter() // D+1 → skip
+	w.HandleGeofence(ctx, "일산", false) // D+1 → skip
 	*now = now.AddDate(0, 0, 1)
-	enter() // D+2 → skip
+	w.HandleGeofence(ctx, "일산", false) // D+2 → skip
 	if len(api.registerCalls) != 1 {
-		t.Fatalf("register calls = %d, want 1 (D+1, D+2 covered)", len(api.registerCalls))
+		t.Fatalf("register calls = %d, want 1", len(api.registerCalls))
 	}
 	*now = now.AddDate(0, 0, 1)
-	enter() // D+3 → 새 등록
+	w.HandleGeofence(ctx, "일산", false) // D+3 → 새 등록
 	if len(api.registerCalls) != 2 {
 		t.Fatalf("register calls = %d, want 2", len(api.registerCalls))
 	}
@@ -146,16 +135,102 @@ func TestWatcher_CoverageCacheSkipsUntilWindowEnds(t *testing.T) {
 	}
 }
 
-func TestWatcher_RegisterFailureDoesNotCacheCoverage(t *testing.T) {
-	api := &fakeOitalk{registerErr: errors.New("boom")}
+func TestWatcher_InvalidCoverageDaysRefusesRegister(t *testing.T) {
+	api := &fakeOitalk{}
+	cfg := testCfg
+	cfg.CoverageDays = 4
+	w := newWatcher(api, cfg, MQTTConfig{Geofence: "일산"})
+	w.now = func() time.Time { return time.Date(2026, 9, 2, 10, 0, 0, 0, KST) }
+	w.HandleGeofence(context.Background(), "일산", false)
+	if len(api.registerCalls) != 0 {
+		t.Fatalf("register calls = %d, want 0", len(api.registerCalls))
+	}
+}
+
+func TestWatcher_RegisterFailureRetriesThenSucceeds(t *testing.T) {
+	api := &fakeOitalk{registerErrs: []error{errors.New("boom")}}
 	w, _ := newTestWatcher(t, api)
+	w.HandleGeofence(context.Background(), "일산", false)
+	if len(api.registerCalls) != 2 {
+		t.Fatalf("register calls = %d, want 2 (fail → retry → ok)", len(api.registerCalls))
+	}
+	if api.listCalls != 1 {
+		t.Fatalf("list calls = %d, want 1 (verify before retry)", api.listCalls)
+	}
+}
+
+func TestWatcher_RetryFindsExistingReservationInsteadOfPosting(t *testing.T) {
+	// POST 는 서버에 커밋됐는데 응답만 유실 → 재시도 전 목록에서 발견 → 다시 POST 안 함.
+	api := &fakeOitalk{
+		registerErrs: []error{errors.New("timeout")},
+		listRows:     []Reservation{{ID: "srv", CarNum: "12가3456", StartDate: "20260902", EndDate: "20260904"}},
+	}
+	w, now := newTestWatcher(t, api)
 	ctx := context.Background()
 	w.HandleGeofence(ctx, "일산", false)
-	api.registerErr = nil
-	w.HandleGeofence(ctx, "", false)
-	w.HandleGeofence(ctx, "일산", false)
+	if len(api.registerCalls) != 1 {
+		t.Fatalf("register calls = %d, want 1", len(api.registerCalls))
+	}
+	*now = now.AddDate(0, 0, 2)
+	w.HandleGeofence(ctx, "일산", false) // 목록에서 찾은 커버리지가 캐시에 반영
+	if len(api.registerCalls) != 1 {
+		t.Fatalf("register calls = %d, want 1 (coverage seeded from list)", len(api.registerCalls))
+	}
+}
+
+func TestWatcher_RetrySkipsPostWhenListFails(t *testing.T) {
+	// 확인 불가면 그 회차는 POST 하지 않는다(중복 위험). 다음 회차에 목록 OK → POST.
+	api := &fakeOitalk{
+		registerErrs: []error{errors.New("timeout")},
+		listErrs:     []error{errors.New("down"), nil},
+	}
+	w, _ := newTestWatcher(t, api)
+	w.HandleGeofence(context.Background(), "일산", false)
 	if len(api.registerCalls) != 2 {
-		t.Fatalf("register calls = %d, want 2 (retry after failure)", len(api.registerCalls))
+		t.Fatalf("register calls = %d, want 2 (attempt2 skipped, attempt3 posted)", len(api.registerCalls))
+	}
+	if api.listCalls != 2 {
+		t.Fatalf("list calls = %d, want 2", api.listCalls)
+	}
+}
+
+func TestWatcher_RetryGivesUpAfterMaxAttempts(t *testing.T) {
+	errs := make([]error, maxRegisterAttempts) // 첫 진입의 시도 전부 실패, 그 뒤엔 성공
+	for i := range errs {
+		errs[i] = errors.New("boom")
+	}
+	api := &fakeOitalk{registerErrs: errs}
+	w, _ := newTestWatcher(t, api)
+	w.HandleGeofence(context.Background(), "일산", false)
+	if len(api.registerCalls) != maxRegisterAttempts {
+		t.Fatalf("register calls = %d, want %d", len(api.registerCalls), maxRegisterAttempts)
+	}
+	// 포기 후 캐시는 비어 있어 다음 진입에 다시 시도
+	w.HandleGeofence(context.Background(), "일산", false)
+	if len(api.registerCalls) != maxRegisterAttempts+1 {
+		t.Fatalf("register calls = %d, want %d", len(api.registerCalls), maxRegisterAttempts+1)
+	}
+}
+
+func TestWatcher_RetryStopsOnContextCancel(t *testing.T) {
+	api := &fakeOitalk{registerErrs: []error{errors.New("boom"), errors.New("boom")}}
+	w, _ := newTestWatcher(t, api)
+	w.retryDelay = time.Hour
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		w.HandleGeofence(ctx, "일산", false)
+		close(done)
+	}()
+	time.Sleep(10 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("HandleGeofence must return promptly after ctx cancel")
+	}
+	if len(api.registerCalls) != 1 {
+		t.Fatalf("register calls = %d, want 1", len(api.registerCalls))
 	}
 }
 
@@ -169,13 +244,11 @@ func TestWatcher_BootstrapSeedsCoverageFromList(t *testing.T) {
 	w.Bootstrap(ctx)
 	w.HandleGeofence(ctx, "일산", false) // 9/2 — 9/3 까지 커버됨
 	*now = now.AddDate(0, 0, 1)
-	w.HandleGeofence(ctx, "", false)
 	w.HandleGeofence(ctx, "일산", false) // 9/3 — 커버됨
 	if len(api.registerCalls) != 0 {
 		t.Fatalf("register calls = %d, want 0", len(api.registerCalls))
 	}
 	*now = now.AddDate(0, 0, 1)
-	w.HandleGeofence(ctx, "", false)
 	w.HandleGeofence(ctx, "일산", false) // 9/4 — 새 등록
 	if len(api.registerCalls) != 1 {
 		t.Fatalf("register calls = %d, want 1", len(api.registerCalls))
@@ -185,7 +258,7 @@ func TestWatcher_BootstrapSeedsCoverageFromList(t *testing.T) {
 func TestWatcher_BootstrapIgnoresGapCoverage(t *testing.T) {
 	// 오늘(9/2)은 비고 9/4 만 커버된 행 → 오늘 진입 시 등록해야 한다.
 	api := &fakeOitalk{listRows: []Reservation{
-		{ID: "x", CarNum: "12가3456", StartDate: "20260904", EndDate: "20260904", State: "ok"},
+		{ID: "x", CarNum: "12가3456", StartDate: "20260904", EndDate: "20260904"},
 	}}
 	w, _ := newTestWatcher(t, api)
 	ctx := context.Background()
@@ -197,7 +270,7 @@ func TestWatcher_BootstrapIgnoresGapCoverage(t *testing.T) {
 }
 
 func TestWatcher_BootstrapListFailureLeavesCacheEmpty(t *testing.T) {
-	api := &fakeOitalk{listErr: errors.New("down")}
+	api := &fakeOitalk{listErrs: []error{errors.New("down")}}
 	w, _ := newTestWatcher(t, api)
 	ctx := context.Background()
 	w.Bootstrap(ctx)
@@ -212,261 +285,13 @@ func TestWatcher_DrivingStatePrewarmsToken(t *testing.T) {
 	w, _ := newTestWatcher(t, api)
 	ctx := context.Background()
 	w.HandleState(ctx, "online")
+	w.HandleState(ctx, "asleep")
 	if api.ensureCalls != 0 {
-		t.Fatalf("online must not prewarm, got %d", api.ensureCalls)
+		t.Fatalf("non-driving must not prewarm, got %d", api.ensureCalls)
 	}
 	w.HandleState(ctx, "driving")
-	w.HandleState(ctx, "driving") // 같은 상태 반복 → 재호출 안 함
 	if api.ensureCalls != 1 {
 		t.Fatalf("ensure calls = %d, want 1", api.ensureCalls)
-	}
-	w.HandleState(ctx, "online")
-	w.HandleState(ctx, "driving")
-	if api.ensureCalls != 2 {
-		t.Fatalf("ensure calls = %d, want 2", api.ensureCalls)
-	}
-}
-
-func TestWatcher_InvalidCoverageDaysRefusesRegister(t *testing.T) {
-	api := &fakeOitalk{}
-	cfg := testCfg
-	cfg.CoverageDays = 4
-	w := newWatcher(api, cfg, MQTTConfig{Geofence: "일산"})
-	w.now = func() time.Time { return time.Date(2026, 9, 2, 10, 0, 0, 0, KST) }
-	ctx := context.Background()
-	w.HandleGeofence(ctx, "", false)
-	w.HandleGeofence(ctx, "일산", false)
-	if len(api.registerCalls) != 0 {
-		t.Fatalf("register calls = %d, want 0", len(api.registerCalls))
-	}
-}
-
-func TestWatcher_FirstLiveMessageIsRealEntry(t *testing.T) {
-	// 차가 밖에 있어 retained 값이 없는 상태로 시작 → 첫 메시지(live "일산")는 진입이다.
-	api := &fakeOitalk{}
-	w := newWatcher(api, testCfg, MQTTConfig{Geofence: "일산"})
-	w.now = func() time.Time { return time.Date(2026, 9, 2, 10, 0, 0, 0, KST) }
-	w.HandleGeofence(context.Background(), "일산", false)
-	if len(api.registerCalls) != 1 {
-		t.Fatalf("first live entry must register, got %d", len(api.registerCalls))
-	}
-}
-
-// blockingOitalk Register 가 release 될 때까지 막힌다 — 콜백 비블로킹 검증용.
-type blockingOitalk struct {
-	fakeOitalk
-	release chan struct{}
-	entered chan struct{}
-}
-
-func (b *blockingOitalk) Register(ctx context.Context, start, end time.Time) (Reservation, error) {
-	b.entered <- struct{}{}
-	<-b.release
-	return b.fakeOitalk.Register(ctx, start, end)
-}
-
-func TestWatcher_EnqueueDoesNotBlockWhileRegisterInFlight(t *testing.T) {
-	api := &blockingOitalk{release: make(chan struct{}), entered: make(chan struct{}, 1)}
-	w := newWatcher(api, testCfg, MQTTConfig{Geofence: "일산"})
-	w.now = func() time.Time { return time.Date(2026, 9, 2, 10, 0, 0, 0, KST) }
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan struct{})
-	go func() { w.serve(ctx); close(done) }()
-
-	w.enqueue(ctx, "teslamate/cars/1/geofence", "", true)
-	w.enqueue(ctx, "teslamate/cars/1/geofence", "일산", false)
-	<-api.entered // Register 진행 중
-
-	// 진행 중에도 enqueue 는 즉시 돌아와야 한다(paho 콜백을 막지 않는다).
-	returned := make(chan struct{})
-	go func() {
-		w.enqueue(ctx, "teslamate/cars/1/state", "online", false)
-		close(returned)
-	}()
-	select {
-	case <-returned:
-	case <-time.After(time.Second):
-		t.Fatal("enqueue blocked while Register in flight")
-	}
-	close(api.release)
-	cancel()
-	<-done
-	if reg, _ := api.counts(); reg != 1 {
-		t.Fatalf("register calls = %d, want 1", reg)
-	}
-}
-
-func TestWatcher_ServeProcessesInOrder(t *testing.T) {
-	api := &fakeOitalk{}
-	w := newWatcher(api, testCfg, MQTTConfig{Geofence: "일산"})
-	w.now = func() time.Time { return time.Date(2026, 9, 2, 10, 0, 0, 0, KST) }
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { w.serve(ctx); close(done) }()
-	// retained baseline "집" → 밖 → 집: 순서대로면 정확히 1회 등록.
-	w.enqueue(ctx, "teslamate/cars/1/geofence", "일산", true)
-	w.enqueue(ctx, "teslamate/cars/1/geofence", "", false)
-	w.enqueue(ctx, "teslamate/cars/1/geofence", "일산", false)
-	w.enqueue(ctx, "teslamate/cars/1/state", "driving", false)
-	deadline := time.After(2 * time.Second)
-	for {
-		reg, ens := api.counts()
-		if reg >= 1 && ens >= 1 {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("timeout: register=%d ensure=%d", reg, ens)
-		case <-time.After(5 * time.Millisecond):
-		}
-	}
-	cancel()
-	<-done
-	if reg, _ := api.counts(); reg != 1 {
-		t.Fatalf("register calls = %d, want 1", reg)
-	}
-}
-
-func TestWatcher_RetryAfterFailureRegistersWithoutReentry(t *testing.T) {
-	api := &fakeOitalk{registerErr: errors.New("boom")}
-	w, _ := newTestWatcher(t, api)
-	ctx := context.Background()
-	w.HandleGeofence(ctx, "일산", false) // 진입, 실패
-	api.registerErr = nil
-	w.HandleRetry(ctx, w.entryGen) // 재진입 없이 재시도 → 성공
-	if len(api.registerCalls) != 2 {
-		t.Fatalf("register calls = %d, want 2", len(api.registerCalls))
-	}
-	w.HandleRetry(ctx, w.entryGen) // 성공 후 남은 재시도 이벤트는 무동작
-	if len(api.registerCalls) != 2 {
-		t.Fatalf("register calls after success = %d, want 2", len(api.registerCalls))
-	}
-}
-
-func TestWatcher_RetryStopsAfterExit(t *testing.T) {
-	api := &fakeOitalk{registerErr: errors.New("boom")}
-	w, _ := newTestWatcher(t, api)
-	ctx := context.Background()
-	w.HandleGeofence(ctx, "일산", false) // 진입, 실패
-	w.HandleGeofence(ctx, "", false)   // 나감
-	api.registerErr = nil
-	w.HandleRetry(ctx, w.entryGen)
-	if len(api.registerCalls) != 1 {
-		t.Fatalf("register calls = %d, want 1 (no retry after exit)", len(api.registerCalls))
-	}
-}
-
-func TestWatcher_RetryGivesUpAfterMaxAttempts(t *testing.T) {
-	api := &fakeOitalk{registerErr: errors.New("boom")}
-	w, _ := newTestWatcher(t, api)
-	ctx := context.Background()
-	w.HandleGeofence(ctx, "일산", false)
-	for i := 0; i < maxRegisterRetries+5; i++ {
-		w.HandleRetry(ctx, w.entryGen)
-	}
-	if len(api.registerCalls) != 1+maxRegisterRetries {
-		t.Fatalf("register calls = %d, want %d", len(api.registerCalls), 1+maxRegisterRetries)
-	}
-}
-
-func TestWatcher_RetryIsScheduledThroughWorker(t *testing.T) {
-	api := &fakeOitalk{registerErr: errors.New("boom")}
-	w := newWatcher(api, testCfg, MQTTConfig{Geofence: "일산"})
-	w.now = func() time.Time { return time.Date(2026, 9, 2, 10, 0, 0, 0, KST) }
-	w.retryDelay = 5 * time.Millisecond
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { w.serve(ctx); close(done) }()
-	w.enqueue(ctx, "teslamate/cars/1/geofence", "", true)
-	w.enqueue(ctx, "teslamate/cars/1/geofence", "일산", false)
-	deadline := time.After(2 * time.Second)
-	for {
-		if reg, _ := api.counts(); reg >= 1 {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("timeout waiting first register")
-		case <-time.After(time.Millisecond):
-		}
-	}
-	api.setRegisterErr(nil)
-	for {
-		if reg, _ := api.counts(); reg >= 2 {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("timeout waiting scheduled retry")
-		case <-time.After(time.Millisecond):
-		}
-	}
-	cancel()
-	<-done
-}
-
-func TestWatcher_RetryFindsExistingReservationInsteadOfPosting(t *testing.T) {
-	// POST 가 서버엔 커밋됐는데 응답만 유실된 경우 — 재시도 전 목록으로 확인해 중복 POST 방지.
-	api := &fakeOitalk{registerErr: errors.New("timeout")}
-	w, now := newTestWatcher(t, api)
-	ctx := context.Background()
-	w.HandleGeofence(ctx, "일산", false) // 진입, 실패(모호)
-	api.listRows = []Reservation{{ID: "srv", CarNum: "12가3456", StartDate: "20260902", EndDate: "20260904", State: "ok"}}
-	api.registerErr = nil
-	w.HandleRetry(ctx, w.entryGen)
-	if len(api.registerCalls) != 1 {
-		t.Fatalf("register calls = %d, want 1 (existing reservation found)", len(api.registerCalls))
-	}
-	if api.listCalls != 1 {
-		t.Fatalf("list calls = %d, want 1", api.listCalls)
-	}
-	// 목록에서 찾은 커버리지가 캐시에 반영돼 다음날 진입도 skip
-	*now = now.AddDate(0, 0, 1)
-	w.HandleGeofence(ctx, "", false)
-	w.HandleGeofence(ctx, "일산", false)
-	if len(api.registerCalls) != 1 {
-		t.Fatalf("register calls = %d, want 1 (coverage seeded from list)", len(api.registerCalls))
-	}
-}
-
-func TestWatcher_RetryDefersWhenListFails(t *testing.T) {
-	api := &fakeOitalk{registerErr: errors.New("timeout")}
-	w, _ := newTestWatcher(t, api)
-	ctx := context.Background()
-	w.HandleGeofence(ctx, "일산", false)
-	api.listErr = errors.New("down")
-	api.registerErr = nil
-	w.HandleRetry(ctx, w.entryGen) // 확인 불가 → POST 하지 않고 다음 재시도로
-	if len(api.registerCalls) != 1 {
-		t.Fatalf("register calls = %d, want 1 (must not POST blindly)", len(api.registerCalls))
-	}
-	api.listErr = nil
-	w.HandleRetry(ctx, w.entryGen) // 목록 OK(비어 있음) → 등록
-	if len(api.registerCalls) != 2 {
-		t.Fatalf("register calls = %d, want 2", len(api.registerCalls))
-	}
-}
-
-func TestWatcher_StaleRetryFromPreviousEntryIgnored(t *testing.T) {
-	api := &fakeOitalk{registerErr: errors.New("boom")}
-	w, _ := newTestWatcher(t, api)
-	ctx := context.Background()
-	w.HandleGeofence(ctx, "일산", false) // 진입 1(실패)
-	oldGen := w.entryGen
-	w.HandleGeofence(ctx, "", false)
-	w.HandleGeofence(ctx, "일산", false) // 진입 2(실패)
-	if w.entryGen == oldGen {
-		t.Fatal("entry generation must advance on re-entry")
-	}
-	api.registerErr = nil
-	w.HandleRetry(ctx, oldGen) // 이전 진입의 타이머 → 무시
-	if len(api.registerCalls) != 2 {
-		t.Fatalf("register calls = %d, want 2 (stale retry ignored)", len(api.registerCalls))
-	}
-	w.HandleRetry(ctx, w.entryGen)
-	if len(api.registerCalls) != 3 {
-		t.Fatalf("register calls = %d, want 3", len(api.registerCalls))
 	}
 }
 
@@ -483,42 +308,34 @@ func (b *blockingList) List(ctx context.Context, s, e time.Time) ([]Reservation,
 	return b.fakeOitalk.List(ctx, s, e)
 }
 
-func TestWatcher_EntryDuringBootstrapIsProcessedAfterSeed(t *testing.T) {
-	// 부트스트랩(목록 조회)이 느린 동안 차가 진입: 구독은 이미 돼 있어 이벤트가
-	// 큐에 잡히고, 캐시 seed 가 끝난 뒤 순서대로 처리돼 등록된다.
-	api := &blockingList{release: make(chan struct{}), entered: make(chan struct{}, 1)}
-	w := newWatcher(api, testCfg, MQTTConfig{Geofence: "일산"})
-	w.now = func() time.Time { return time.Date(2026, 9, 2, 10, 0, 0, 0, KST) }
+func runBootstrapEntry(t *testing.T, api *blockingList) {
+	t.Helper()
+	w, _ := newTestWatcher(t, api)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	subscribed := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		done <- w.runWith(ctx, func(ctx context.Context) (func(), error) {
-			close(subscribed)
-			return func() {}, nil
-		})
+		done <- w.runWith(ctx, func(context.Context) (func(), error) { return func() {}, nil })
 	}()
-	<-subscribed
 	<-api.entered // 부트스트랩 목록 조회 진행 중 — 이 사이 진입
-	w.enqueue(ctx, "teslamate/cars/1/geofence", "", true)
-	w.enqueue(ctx, "teslamate/cars/1/geofence", "일산", false)
-	if reg, _ := api.counts(); reg != 0 {
-		t.Fatalf("must not process before seed, got %d", reg)
+	handled := make(chan struct{})
+	go func() {
+		w.HandleGeofence(ctx, "일산", false)
+		close(handled)
+	}()
+	select {
+	case <-handled:
+		t.Fatal("entry must wait until bootstrap seed completes")
+	case <-time.After(20 * time.Millisecond):
+	}
+	if reg, _, _ := api.counts(); reg != 0 {
+		t.Fatalf("must not register before seed, got %d", reg)
 	}
 	close(api.release)
-	deadline := time.After(2 * time.Second)
-	for {
-		if reg, _ := api.counts(); reg == 1 {
-			break
-		}
-		select {
-		case <-deadline:
-			reg, _ := api.counts()
-			t.Fatalf("register calls = %d, want 1", reg)
-		case <-time.After(time.Millisecond):
-		}
+	select {
+	case <-handled:
+	case <-time.After(time.Second):
+		t.Fatal("entry not processed after seed")
 	}
 	cancel()
 	if err := <-done; err != nil {
@@ -526,32 +343,26 @@ func TestWatcher_EntryDuringBootstrapIsProcessedAfterSeed(t *testing.T) {
 	}
 }
 
+func TestWatcher_EntryDuringBootstrapRegistersAfterSeed(t *testing.T) {
+	api := &blockingList{release: make(chan struct{}), entered: make(chan struct{}, 1)}
+	runBootstrapEntry(t, api)
+	if reg, _, _ := api.counts(); reg != 1 {
+		t.Fatalf("register calls = %d, want 1", reg)
+	}
+}
+
 func TestWatcher_EntryDuringBootstrapSkippedWhenSeedCoversToday(t *testing.T) {
 	api := &blockingList{release: make(chan struct{}), entered: make(chan struct{}, 1)}
 	api.listRows = []Reservation{{ID: "x", CarNum: "12가3456", StartDate: "20260902", EndDate: "20260904"}}
-	w := newWatcher(api, testCfg, MQTTConfig{Geofence: "일산"})
-	w.now = func() time.Time { return time.Date(2026, 9, 2, 10, 0, 0, 0, KST) }
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() {
-		done <- w.runWith(ctx, func(context.Context) (func(), error) { return func() {}, nil })
-	}()
-	<-api.entered
-	w.enqueue(ctx, "teslamate/cars/1/geofence", "", true)
-	w.enqueue(ctx, "teslamate/cars/1/geofence", "일산", false)
-	close(api.release)
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-	<-done
-	if reg, _ := api.counts(); reg != 0 {
+	runBootstrapEntry(t, api)
+	if reg, _, _ := api.counts(); reg != 0 {
 		t.Fatalf("register calls = %d, want 0 (seed covers today)", reg)
 	}
 }
 
 func TestWatcher_RunWithReturnsSubscribeError(t *testing.T) {
 	api := &fakeOitalk{}
-	w := newWatcher(api, testCfg, MQTTConfig{Geofence: "일산"})
+	w, _ := newTestWatcher(t, api)
 	err := w.runWith(context.Background(), func(context.Context) (func(), error) {
 		return nil, errors.New("connect refused")
 	})
@@ -560,145 +371,5 @@ func TestWatcher_RunWithReturnsSubscribeError(t *testing.T) {
 	}
 	if api.listCalls != 0 {
 		t.Fatalf("bootstrap must not run when subscribe fails, list calls = %d", api.listCalls)
-	}
-}
-
-func TestWatcher_ReconnectRebaselinesSoNextLiveEntryRegisters(t *testing.T) {
-	// 집에 있을 때 끊김 → 오프라인 중 나감(빈 값 publish = retained 삭제) → 재접속.
-	// 재접속 후엔 retained 가 없어 아무것도 안 오고, 다음 진입은 live "일산" 하나뿐.
-	api := &fakeOitalk{}
-	w, now := newTestWatcher(t, api)
-	ctx := context.Background()
-	w.HandleGeofence(ctx, "일산", false) // 진입 1 → 등록
-	w.HandleReconnect()
-	*now = now.AddDate(0, 0, 3)        // 커버리지 만료
-	w.HandleGeofence(ctx, "일산", false) // 재접속 후 첫 메시지 = live 진입
-	if len(api.registerCalls) != 2 {
-		t.Fatalf("register calls = %d, want 2 (stale lastGeo must be reset on reconnect)", len(api.registerCalls))
-	}
-}
-
-func TestWatcher_ReconnectRetainedTargetIsBaselineAgain(t *testing.T) {
-	// 집에 주차된 채 재접속 → retained "일산" 이 다시 옴 → 진입 아님.
-	api := &fakeOitalk{}
-	w, now := newTestWatcher(t, api)
-	ctx := context.Background()
-	w.HandleGeofence(ctx, "일산", false) // 진입 → 등록 1
-	w.HandleReconnect()
-	*now = now.AddDate(0, 0, 3)
-	w.HandleGeofence(ctx, "일산", true) // retained
-	if len(api.registerCalls) != 1 {
-		t.Fatalf("register calls = %d, want 1 (retained after reconnect is baseline)", len(api.registerCalls))
-	}
-	w.HandleGeofence(ctx, "", false)
-	w.HandleGeofence(ctx, "일산", false)
-	if len(api.registerCalls) != 2 {
-		t.Fatalf("register calls = %d, want 2", len(api.registerCalls))
-	}
-}
-
-func TestWatcher_ReconnectEventGoesThroughWorkerInOrder(t *testing.T) {
-	api := &fakeOitalk{}
-	w := newWatcher(api, testCfg, MQTTConfig{Geofence: "일산"})
-	now := time.Date(2026, 9, 2, 10, 0, 0, 0, KST)
-	w.now = func() time.Time { return now }
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { w.serve(ctx); close(done) }()
-	w.enqueue(ctx, "teslamate/cars/1/geofence", "", true)
-	w.enqueue(ctx, "teslamate/cars/1/geofence", "일산", false) // 등록 1
-	w.enqueueReconnect(ctx)
-	w.enqueue(ctx, "teslamate/cars/1/geofence", "일산", true) // 재접속 retained → baseline
-	deadline := time.After(2 * time.Second)
-	for {
-		if reg, _ := api.counts(); reg >= 1 {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("timeout")
-		case <-time.After(time.Millisecond):
-		}
-	}
-	time.Sleep(20 * time.Millisecond)
-	cancel()
-	<-done
-	if reg, _ := api.counts(); reg != 1 {
-		t.Fatalf("register calls = %d, want 1", reg)
-	}
-}
-
-func TestSubscribeWithRetry_RetriesUntilSuccess(t *testing.T) {
-	attempts := 0
-	err := subscribeWithRetry(context.Background(), time.Millisecond, func() error {
-		attempts++
-		if attempts < 3 {
-			return errors.New("SUBACK failure")
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if attempts != 3 {
-		t.Fatalf("attempts = %d, want 3", attempts)
-	}
-}
-
-func TestSubscribeWithRetry_StopsOnCancel(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	attempts := 0
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		cancel()
-	}()
-	err := subscribeWithRetry(ctx, time.Millisecond, func() error {
-		attempts++
-		return errors.New("still failing")
-	})
-	if err == nil {
-		t.Fatal("expected ctx error")
-	}
-	if attempts == 0 {
-		t.Fatal("expected at least one attempt")
-	}
-}
-
-func TestConnEpochs_NextBeginCancelsPrevious(t *testing.T) {
-	var e connEpochs
-	ctx1 := e.begin(context.Background())
-	ctx2 := e.begin(context.Background())
-	if ctx1.Err() == nil {
-		t.Fatal("previous epoch must be cancelled by next begin")
-	}
-	if ctx2.Err() != nil {
-		t.Fatal("current epoch must be live")
-	}
-}
-
-func TestConnEpochs_EndCancelsCurrent(t *testing.T) {
-	var e connEpochs
-	ctx := e.begin(context.Background())
-	e.end()
-	if ctx.Err() == nil {
-		t.Fatal("end must cancel current epoch")
-	}
-	e.end() // 중복 호출 안전
-}
-
-func TestSubscribeWithRetry_AbortsWhenEpochEnds(t *testing.T) {
-	var e connEpochs
-	ctx := e.begin(context.Background())
-	attempts := 0
-	go func() {
-		time.Sleep(5 * time.Millisecond)
-		e.end() // 접속 끊김
-	}()
-	err := subscribeWithRetry(ctx, time.Millisecond, func() error {
-		attempts++
-		return errors.New("SUBACK failure")
-	})
-	if err == nil {
-		t.Fatal("stale loop must stop after its connection epoch ends")
 	}
 }
