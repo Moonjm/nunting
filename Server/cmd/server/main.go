@@ -5,6 +5,7 @@
 //  3. APNs 클라이언트 (env 누락 시 stub 모드)
 //  4. HTTP 서버 (NUNTING_BIND_HOST:NUNTING_BIND_PORT)
 //  5. 폴러 goroutine (NUNTING_POLL_INTERVAL_SECONDS)
+//     5b. 오이톡 방문차량 watcher goroutine (OITALK_* + TESLAMATE_* 모두 있을 때만)
 //  6. SIGINT/SIGTERM 시 graceful: ctx cancel → 서버 Shutdown(5s) → db Close
 package main
 
@@ -26,6 +27,7 @@ import (
 	"github.com/Moonjm/nunting/server/internal/apns"
 	"github.com/Moonjm/nunting/server/internal/db"
 	"github.com/Moonjm/nunting/server/internal/logfile"
+	"github.com/Moonjm/nunting/server/internal/oitalk"
 	"github.com/Moonjm/nunting/server/internal/poll"
 )
 
@@ -105,6 +107,23 @@ func main() {
 	fetcher := &poll.HTTPFetcher{Client: &http.Client{Timeout: 15 * time.Second}}
 	poller := poll.New(store, fetcher, apnsClient)
 	go poller.Run(ctx, time.Duration(pollIntervalSec)*time.Second)
+
+	// 5b) 오이톡 방문차량 지오펜스 자동등록 — TeslaMate MQTT 구독(이벤트 구동).
+	// 자격증명(OITALK_*) 또는 브로커/지오펜스(TESLAMATE_*) 가 하나라도 비면 조용히
+	// 비활성 — 뽐뿌 서버는 그대로 동작.
+	oiClient := oitalk.NewClient(oitalk.ConfigFromEnv())
+	mqttCfg := oitalk.MQTTConfigFromEnv()
+	if oiClient.Enabled() && mqttCfg.Enabled() {
+		w := oitalk.NewWatcher(oiClient, mqttCfg)
+		go func() {
+			if err := w.Run(ctx); err != nil {
+				slog.Error("oitalk_watcher_exit", "err", err)
+			}
+		}()
+		slog.Info("oitalk_watcher_started", "broker", mqttCfg.Broker, "geofence", mqttCfg.Geofence)
+	} else {
+		slog.Info("oitalk_watcher_disabled")
+	}
 
 	// 6) Run + graceful shutdown
 	serveErr := make(chan error, 1)
